@@ -1,0 +1,723 @@
+'use client';
+
+import { useEffect, useMemo, useState } from 'react';
+import { useSession } from 'next-auth/react';
+import {
+  Alert,
+  Button,
+  Col,
+  Empty,
+  Form,
+  InputNumber,
+  Modal,
+  Popconfirm,
+  Row,
+  Select,
+  Space,
+  Spin,
+  Switch,
+  Table,
+  Tag,
+  Typography,
+  message,
+} from 'antd';
+import {
+  BranchesOutlined,
+  DeleteOutlined,
+  LockOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  StarFilled,
+  TrophyOutlined,
+  UnlockOutlined,
+} from '@ant-design/icons';
+import { apiFetch } from '@/lib/api';
+
+const EVENT_TYPE_LABELS: Record<string, string> = {
+  MENS_SINGLES: '男子单打',
+  WOMENS_SINGLES: '女子单打',
+  MENS_DOUBLES: '男子双打',
+  WOMENS_DOUBLES: '女子双打',
+  MIXED_DOUBLES: '混合双打',
+};
+
+const FORMAT_LABELS: Record<string, string> = {
+  SINGLE_ELIMINATION: '单淘汰制',
+  GROUP_PLUS_KNOCKOUT: '小组赛 + 淘汰赛',
+};
+
+const ROUND_CN: Record<string, string> = {
+  F: '决赛',
+  SF: '半决赛',
+  QF: '1/4 决赛',
+  R1: '1/8 决赛',
+  R2: '1/16 决赛',
+  R3: '1/32 决赛',
+};
+
+const STATUS_LABELS: Record<string, { label: string; color: string }> = {
+  PENDING: { label: '待排程', color: 'default' },
+  LIVE: { label: '进行中', color: 'red' },
+  COMPLETED: { label: '已结束', color: 'blue' },
+  CANCELLED: { label: '已取消', color: 'default' },
+};
+
+const CIRCLED_SEEDS = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩', '⑪', '⑫', '⑬', '⑭', '⑮', '⑯'];
+
+interface Tournament {
+  id: string;
+  name: string;
+  edition: number;
+}
+
+interface EventItem {
+  id: string;
+  tournamentId: string;
+  type: string;
+  format: string;
+  groupSize?: number | null;
+  qualifiersPerGroup?: number | null;
+  drawLocked: boolean;
+  drawGeneratedAt?: string | null;
+}
+
+interface Player {
+  id: string;
+  name: string;
+  gender: 'MALE' | 'FEMALE';
+  affiliation: string;
+}
+
+interface Registration {
+  id: string;
+  player1: Player;
+  player2?: Player | null;
+  isSeed: boolean;
+  seedRank?: number | null;
+  groupName?: string | null;
+  createdAt?: string;
+}
+
+interface DrawBracket {
+  id: string;
+  status: string;
+  version: number;
+  bracketSize: number;
+}
+
+interface MatchItem {
+  id: string;
+  round: string;
+  roundNo: number;
+  matchNo: number;
+  side1?: Registration | null;
+  side2?: Registration | null;
+  status: string;
+  winnerSide?: number | null;
+}
+
+interface RoundItem {
+  roundNo: number;
+  round: string;
+  matches: MatchItem[];
+}
+
+interface GroupItem {
+  name: string;
+  registrations: Registration[];
+  matches: MatchItem[];
+}
+
+interface BracketData {
+  event: EventItem;
+  currentDraw?: DrawBracket | null;
+  registrations: Registration[];
+  rounds: RoundItem[];
+  groups: GroupItem[];
+}
+
+function seedMark(seed?: number | null) {
+  if (!seed) return '';
+  return CIRCLED_SEEDS[seed - 1] ?? `(${seed})`;
+}
+
+function sideName(registration?: Registration | null) {
+  if (!registration) return '';
+  const name = registration.player2
+    ? `${registration.player1.name} / ${registration.player2.name}`
+    : registration.player1.name;
+  return `${name}${registration.isSeed ? ` ${seedMark(registration.seedRank)}` : ''}`;
+}
+
+function affiliation(registration?: Registration | null) {
+  if (!registration) return '';
+  return registration.player2
+    ? `${registration.player1.affiliation} / ${registration.player2.affiliation}`
+    : registration.player1.affiliation;
+}
+
+function displayRound(round: string) {
+  return ROUND_CN[round] ? `${round} ${ROUND_CN[round]}` : round;
+}
+
+function sourceLabel(rounds: RoundItem[], match: MatchItem, sideNo: 1 | 2) {
+  if (match.roundNo <= 1) return '轮空';
+  const previousRound = rounds.find((round) => round.roundNo === match.roundNo - 1);
+  const previousMatchNo = match.matchNo * 2 - (sideNo === 1 ? 1 : 0);
+  const previousRoundName = previousRound?.round ?? `R${match.roundNo - 1}`;
+  return `${previousRoundName} 第 ${previousMatchNo} 场胜者`;
+}
+
+function isDoublesEvent(type?: string) {
+  return ['MENS_DOUBLES', 'WOMENS_DOUBLES', 'MIXED_DOUBLES'].includes(type ?? '');
+}
+
+function isSingleElimination(event?: EventItem) {
+  return event?.format === 'SINGLE_ELIMINATION';
+}
+
+function statusMeta(status: string) {
+  return STATUS_LABELS[status] ?? STATUS_LABELS.PENDING;
+}
+
+function MatchCard({
+  match,
+  rounds,
+}: {
+  match: MatchItem;
+  rounds: RoundItem[];
+}) {
+  const normalized = match.status || 'PENDING';
+  const isLive = normalized === 'LIVE';
+  const isCompleted = normalized === 'COMPLETED';
+  const isFinal = match.round === 'F';
+  const finalWinner = isFinal && isCompleted && match.winnerSide;
+  const cardBorder = finalWinner
+    ? '1px solid #f59e0b'
+    : isLive
+      ? '1px solid #ef4444'
+      : '1px solid #d8e6ff';
+
+  return (
+    <div
+      style={{
+        width: 236,
+        border: cardBorder,
+        borderRadius: 8,
+        background: '#fff',
+        boxShadow: finalWinner
+          ? '0 0 0 3px rgba(245,158,11,0.12), 0 12px 28px rgba(245,158,11,0.18)'
+          : '0 8px 22px rgba(30, 90, 180, 0.08)',
+        overflow: 'hidden',
+      }}
+    >
+      <div style={{ padding: '8px 10px', background: isLive ? '#fff1f2' : '#f0f6ff' }}>
+        <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+          <Typography.Text strong style={{ color: isLive ? '#dc2626' : '#1d4ed8' }}>
+            第 {match.matchNo} 场
+          </Typography.Text>
+          <Tag color={statusMeta(normalized).color}>{isLive ? 'LIVE' : statusMeta(normalized).label}</Tag>
+        </Space>
+      </div>
+      {[1, 2].map((sideNo) => {
+        const side = sideNo === 1 ? match.side1 : match.side2;
+        const winner = match.winnerSide === sideNo;
+        const loser = isCompleted && match.winnerSide && !winner;
+        const placeholder = sideNo === 1 ? sourceLabel(rounds, match, 1) : sourceLabel(rounds, match, 2);
+        return (
+          <div
+            key={sideNo}
+            style={{
+              minHeight: 58,
+              padding: '10px 12px',
+              borderTop: '1px solid #eef4ff',
+              background: side ? (winner ? '#fff7e6' : '#fff') : '#f8fafc',
+            }}
+          >
+            {side ? (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                  <Typography.Text
+                    strong={winner}
+                    delete={Boolean(loser)}
+                    style={{ color: loser ? '#94a3b8' : '#111827' }}
+                  >
+                    {side.isSeed && <StarFilled style={{ color: '#2563eb', marginRight: 4 }} />}
+                    {sideName(side)}
+                  </Typography.Text>
+                  {winner && (
+                    <Space size={4}>
+                      <TrophyOutlined style={{ color: '#f59e0b' }} />
+                      {finalWinner && <Tag color="gold">冠军</Tag>}
+                    </Space>
+                  )}
+                </div>
+                <Typography.Text type="secondary" style={{ display: 'block', marginTop: 4, fontSize: 12 }}>
+                  {affiliation(side)}
+                </Typography.Text>
+              </>
+            ) : (
+              <>
+                <Typography.Text type="secondary" strong>
+                  {placeholder}
+                </Typography.Text>
+                <Typography.Text type="secondary" style={{ display: 'block', marginTop: 4, fontSize: 12 }}>
+                  待定
+                </Typography.Text>
+              </>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function BracketRenderer({ data }: { data?: BracketData | null }) {
+  if (!data) return <Empty description="请选择单项查看对阵" />;
+  if (!data.rounds.length && !data.groups.length) return <Empty description="暂无抽签结果，请先点击抽签" />;
+
+  if (data.groups.length) {
+    return (
+      <Space direction="vertical" size={16} style={{ width: '100%' }}>
+        <Alert
+          type="info"
+          showIcon
+          message="小组循环已生成"
+          description="当前阶段显示小组分组与组内循环赛。小组赛完成后，可按出线名额继续生成淘汰赛对阵。"
+        />
+        <Row gutter={[16, 16]}>
+          {data.groups.map((group) => (
+            <Col xs={24} lg={12} key={group.name}>
+              <section style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 12 }}>
+                <Typography.Title level={5} style={{ marginTop: 0 }}>{group.name} 组</Typography.Title>
+                <Table
+                  rowKey="id"
+                  dataSource={group.registrations}
+                  pagination={false}
+                  size="small"
+                  columns={[
+                    { title: '报名', render: (_, row: Registration) => sideName(row) },
+                    { title: '单位', render: (_, row: Registration) => affiliation(row) },
+                    {
+                      title: '种子',
+                      render: (_, row: Registration) =>
+                        row.isSeed ? <Tag color="gold">{row.seedRank}号种子</Tag> : <Typography.Text type="secondary">非种子</Typography.Text>,
+                    },
+                  ]}
+                />
+                <Typography.Text type="secondary" style={{ display: 'block', marginTop: 12 }}>
+                  组内循环场次：{group.matches.length}
+                </Typography.Text>
+              </section>
+            </Col>
+          ))}
+        </Row>
+      </Space>
+    );
+  }
+
+  return (
+    <div style={{ overflowX: 'auto', paddingBottom: 12 }}>
+      <div style={{ display: 'flex', gap: 28, alignItems: 'flex-start', minWidth: data.rounds.length * 264 }}>
+        {data.rounds.map((round) => {
+          const allCompleted = round.matches.every((match) => match.status === 'COMPLETED');
+          const anyLive = round.matches.some((match) => match.status === 'LIVE');
+          return (
+            <div key={round.roundNo} style={{ width: 236, flex: '0 0 236px' }}>
+              <div
+                style={{
+                  height: 40,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderRadius: 8,
+                  marginBottom: 12,
+                  background: anyLive
+                    ? 'linear-gradient(90deg, #1d4ed8, #38bdf8)'
+                    : allCompleted
+                      ? '#e5e7eb'
+                      : '#dbeafe',
+                  color: allCompleted && !anyLive ? '#475569' : '#0f172a',
+                  fontWeight: 800,
+                }}
+              >
+                {displayRound(round.round)}
+              </div>
+              <Space direction="vertical" size={18}>
+                {round.matches.map((match) => (
+                  <MatchCard key={match.id} match={match} rounds={data.rounds} />
+                ))}
+              </Space>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+export default function DrawsPage() {
+  const { data: session } = useSession();
+  const token = session?.user?.accessToken as string | undefined;
+  const [tournaments, setTournaments] = useState<Tournament[]>([]);
+  const [events, setEvents] = useState<EventItem[]>([]);
+  const [players, setPlayers] = useState<Player[]>([]);
+  const [selectedTournamentId, setSelectedTournamentId] = useState('');
+  const [selectedEventId, setSelectedEventId] = useState('');
+  const [registrations, setRegistrations] = useState<Registration[]>([]);
+  const [bracket, setBracket] = useState<BracketData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [registrationOpen, setRegistrationOpen] = useState(false);
+  const [registrationForm] = Form.useForm();
+
+  const selectedEvent = useMemo(
+    () => events.find((event) => event.id === selectedEventId),
+    [events, selectedEventId],
+  );
+
+  const visibleRegistrations = useMemo(() => {
+    return [...(selectedEventId ? registrations : [])].sort((a, b) => {
+      if (a.isSeed !== b.isSeed) return a.isSeed ? -1 : 1;
+      if (a.isSeed && b.isSeed) return (a.seedRank ?? 999) - (b.seedRank ?? 999);
+      return String(a.createdAt ?? '').localeCompare(String(b.createdAt ?? ''));
+    });
+  }, [registrations, selectedEventId]);
+  const visibleBracket = selectedEventId ? bracket : null;
+  const unplacedRegistrations = useMemo(() => {
+    if (!visibleBracket?.rounds.length) return [];
+    const placedIds = new Set(
+      visibleBracket.rounds.flatMap((round) =>
+        round.matches.flatMap((match) => [match.side1?.id, match.side2?.id].filter(Boolean) as string[]),
+      ),
+    );
+    return visibleRegistrations.filter((registration) => !placedIds.has(registration.id));
+  }, [visibleBracket, visibleRegistrations]);
+
+  async function loadEvents(tournamentId: string) {
+    if (!token || !tournamentId) return;
+    const data = await apiFetch<EventItem[]>(`/events?tournamentId=${tournamentId}`, { token });
+    setEvents(data);
+    setSelectedEventId(data[0]?.id ?? '');
+  }
+
+  async function refreshDraw() {
+    if (!token || !selectedEventId) return;
+    const [registrationData, bracketData] = await Promise.all([
+      apiFetch<Registration[]>(`/events/${selectedEventId}/registrations`, { token }),
+      apiFetch<BracketData>(`/events/${selectedEventId}/bracket`, { token }),
+    ]);
+    setRegistrations(registrationData);
+    setBracket(bracketData);
+    setEvents((prev) =>
+      prev.map((event) =>
+        event.id === selectedEventId
+          ? { ...event, drawLocked: bracketData.event.drawLocked, drawGeneratedAt: bracketData.event.drawGeneratedAt }
+          : event,
+      ),
+    );
+  }
+
+  useEffect(() => {
+    if (!token) return;
+    let alive = true;
+    async function loadBase() {
+      const [tournamentData, playerData] = await Promise.all([
+        apiFetch<Tournament[]>('/tournaments', { token }),
+        apiFetch<Player[]>('/players', { token }),
+      ]);
+      if (!alive) return;
+      setTournaments(tournamentData);
+      setPlayers(playerData);
+      if (tournamentData[0]) setSelectedTournamentId(tournamentData[0].id);
+    }
+    loadBase().catch((error) => message.error(error instanceof Error ? error.message : '加载基础数据失败'));
+    return () => {
+      alive = false;
+    };
+  }, [token]);
+
+  useEffect(() => {
+    if (!token || !selectedTournamentId) return;
+    loadEvents(selectedTournamentId).catch((error) => message.error(error instanceof Error ? error.message : '加载单项失败'));
+  }, [token, selectedTournamentId]);
+
+  useEffect(() => {
+    if (!token || !selectedEventId) return;
+    let alive = true;
+    async function loadDraw() {
+      setLoading(true);
+      try {
+        const [registrationData, bracketData] = await Promise.all([
+          apiFetch<Registration[]>(`/events/${selectedEventId}/registrations`, { token }),
+          apiFetch<BracketData>(`/events/${selectedEventId}/bracket`, { token }),
+        ]);
+        if (!alive) return;
+        setRegistrations(registrationData);
+        setBracket(bracketData);
+      } finally {
+        if (alive) setLoading(false);
+      }
+    }
+    loadDraw().catch((error) => message.error(error instanceof Error ? error.message : '加载抽签数据失败'));
+    return () => {
+      alive = false;
+    };
+  }, [token, selectedEventId]);
+
+  async function handleAddRegistration() {
+    const values = await registrationForm.validateFields();
+    try {
+      await apiFetch(`/events/${selectedEventId}/registrations`, {
+        method: 'POST',
+        token,
+        body: JSON.stringify(values),
+      });
+      message.success('报名已加入单项');
+      setRegistrationOpen(false);
+      registrationForm.resetFields();
+      refreshDraw();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '添加报名失败');
+    }
+  }
+
+  async function handleDeleteRegistration(id: string) {
+    try {
+      await apiFetch(`/registrations/${id}`, { method: 'DELETE', token });
+      message.success('已移除报名');
+      refreshDraw();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '移除失败');
+    }
+  }
+
+  async function handleDraw(force = false) {
+    if (!selectedEventId) return;
+    setLoading(true);
+    try {
+      await apiFetch(`/events/${selectedEventId}/draw`, {
+        method: 'POST',
+        token,
+        body: JSON.stringify({ force }),
+      });
+      await refreshDraw();
+      message.success(force ? '已重新抽签并冻结' : '抽签完成并冻结');
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '抽签失败');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function toggleFreeze(nextLocked: boolean) {
+    if (!token || !selectedEventId || !bracket?.currentDraw) return;
+    try {
+      await apiFetch(`/events/${selectedEventId}/draw/${nextLocked ? 'freeze' : 'unfreeze'}`, {
+        method: 'POST',
+        token,
+        body: JSON.stringify({ drawId: bracket.currentDraw.id }),
+      });
+      await refreshDraw();
+      message.success(nextLocked ? '签表已冻结' : '签表已解冻');
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '操作失败');
+    }
+  }
+
+  const playerOptions = players.map((player) => ({
+    value: player.id,
+    label: `${player.name} · ${player.gender === 'MALE' ? '男' : '女'} · ${player.affiliation}`,
+  }));
+
+  const registrationColumns = [
+    {
+      title: '报名',
+      render: (_: unknown, row: Registration) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text strong>{sideName(row)}</Typography.Text>
+          <Typography.Text type="secondary">{affiliation(row)}</Typography.Text>
+        </Space>
+      ),
+    },
+    {
+      title: '种子',
+      width: 110,
+      render: (_: unknown, row: Registration) =>
+        row.isSeed ? <Tag color="gold">{row.seedRank}号种子</Tag> : <Typography.Text type="secondary">非种子</Typography.Text>,
+    },
+    ...(!isSingleElimination(selectedEvent)
+      ? [
+          {
+            title: '小组',
+            width: 90,
+            render: (_: unknown, row: Registration) => (row.groupName ? <Tag color="blue">{row.groupName} 组</Tag> : '-'),
+          },
+        ]
+      : []),
+    {
+      title: '操作',
+      width: 90,
+      render: (_: unknown, row: Registration) => (
+        <Popconfirm title="确认移除该报名？" onConfirm={() => handleDeleteRegistration(row.id)}>
+          <Button size="small" danger icon={<DeleteOutlined />} disabled={selectedEvent?.drawLocked}>
+            移除
+          </Button>
+        </Popconfirm>
+      ),
+    },
+  ];
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 12, flexWrap: 'wrap' }}>
+        <div>
+          <Typography.Title level={4} style={{ margin: 0 }}>抽签编排</Typography.Title>
+          <Typography.Text type="secondary">按单项管理报名、种子、冻结状态和淘汰赛对阵。</Typography.Text>
+        </div>
+        <Space wrap>
+          <Button icon={<ReloadOutlined />} onClick={refreshDraw} disabled={!selectedEventId}>
+            刷新
+          </Button>
+          {bracket?.currentDraw && (
+            selectedEvent?.drawLocked ? (
+              <Popconfirm title="解冻后可调整未开始签位，确认继续？" onConfirm={() => toggleFreeze(false)}>
+                <Button icon={<UnlockOutlined />}>解冻</Button>
+              </Popconfirm>
+            ) : (
+              <Button type="primary" icon={<LockOutlined />} onClick={() => toggleFreeze(true)}>
+                冻结
+              </Button>
+            )
+          )}
+          {selectedEvent?.drawLocked ? (
+            <Popconfirm title="重新抽签会覆盖当前未开始对阵，确认继续？" onConfirm={() => handleDraw(true)}>
+              <Button danger icon={<BranchesOutlined />} disabled={!selectedEventId || registrations.length < 2}>
+                重新抽签
+              </Button>
+            </Popconfirm>
+          ) : (
+            <Button type="primary" icon={<BranchesOutlined />} onClick={() => handleDraw(false)} disabled={!selectedEventId || registrations.length < 2}>
+              抽签
+            </Button>
+          )}
+        </Space>
+      </div>
+
+      <section style={{ marginBottom: 16, border: '1px solid #f0f0f0', borderRadius: 8, padding: 16, background: '#fff' }}>
+        <Row gutter={[16, 16]} align="middle">
+          <Col xs={24} md={10}>
+            <Select
+              style={{ width: '100%' }}
+              placeholder="选择赛事"
+              value={selectedTournamentId || undefined}
+              onChange={setSelectedTournamentId}
+              options={tournaments.map((t) => ({ value: t.id, label: `第${t.edition}届 ${t.name}` }))}
+            />
+          </Col>
+          <Col xs={24} md={10}>
+            <Select
+              style={{ width: '100%' }}
+              placeholder="选择单项"
+              value={selectedEventId || undefined}
+              onChange={setSelectedEventId}
+              options={events.map((event) => ({
+                value: event.id,
+                label: `${EVENT_TYPE_LABELS[event.type] || event.type} · ${FORMAT_LABELS[event.format] || event.format}`,
+              }))}
+            />
+          </Col>
+          <Col xs={24} md={4}>
+            {selectedEvent?.drawLocked ? <Tag color="green">已冻结</Tag> : <Tag color="orange">编辑中</Tag>}
+          </Col>
+        </Row>
+      </section>
+
+      <Spin spinning={loading}>
+        <Row gutter={[16, 16]}>
+          <Col xs={24} xl={8}>
+            <section style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 16, background: '#fff' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <Typography.Title level={5} style={{ margin: 0 }}>报名名单</Typography.Title>
+                <Button
+                  type="primary"
+                  icon={<PlusOutlined />}
+                  disabled={!selectedEventId || selectedEvent?.drawLocked}
+                  onClick={() => setRegistrationOpen(true)}
+                >
+                  添加报名
+                </Button>
+              </div>
+              <Alert
+                type="info"
+                showIcon
+                style={{ marginBottom: 12 }}
+                message={selectedEvent ? `${EVENT_TYPE_LABELS[selectedEvent.type]} · ${FORMAT_LABELS[selectedEvent.format]}` : '请选择单项'}
+              />
+              {!selectedEvent?.drawLocked && unplacedRegistrations.length > 0 && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  style={{ marginBottom: 12 }}
+                  message={`未排位选手：${unplacedRegistrations.map(sideName).join('、')}`}
+                />
+              )}
+              <Table
+                rowKey="id"
+                size="small"
+                columns={registrationColumns}
+                dataSource={visibleRegistrations}
+                pagination={{ pageSize: 8 }}
+              />
+            </section>
+          </Col>
+          <Col xs={24} xl={16}>
+            <section style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 16, background: '#fff' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12, flexWrap: 'wrap' }}>
+                <Typography.Title level={5} style={{ margin: 0 }}>对阵图</Typography.Title>
+                <Typography.Text type="secondary">
+                  {selectedEvent?.drawGeneratedAt
+                    ? `生成时间：${new Date(selectedEvent.drawGeneratedAt).toLocaleString()}`
+                    : '尚未生成'}
+                </Typography.Text>
+              </div>
+              <BracketRenderer data={visibleBracket} />
+            </section>
+          </Col>
+        </Row>
+      </Spin>
+
+      <Modal
+        title="添加单项报名"
+        open={registrationOpen}
+        onOk={handleAddRegistration}
+        onCancel={() => setRegistrationOpen(false)}
+        okText="保存"
+        cancelText="取消"
+      >
+        <Form form={registrationForm} layout="vertical" style={{ marginTop: 16 }} initialValues={{ isSeed: false }}>
+          <Form.Item name="player1Id" label={isDoublesEvent(selectedEvent?.type) ? '选手 1' : '选手'} rules={[{ required: true, message: '请选择选手' }]}>
+            <Select showSearch optionFilterProp="label" options={playerOptions} />
+          </Form.Item>
+          {isDoublesEvent(selectedEvent?.type) && (
+            <Form.Item name="player2Id" label="选手 2" rules={[{ required: true, message: '请选择搭档' }]}>
+              <Select showSearch optionFilterProp="label" options={playerOptions} />
+            </Form.Item>
+          )}
+          <Form.Item name="isSeed" label="是否种子" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+          <Form.Item shouldUpdate noStyle>
+            {({ getFieldValue }) =>
+              getFieldValue('isSeed') ? (
+                <Form.Item name="seedRank" label="种子顺位" rules={[{ required: true, message: '请输入种子顺位' }]}>
+                  <InputNumber min={1} max={16} style={{ width: '100%' }} />
+                </Form.Item>
+              ) : null
+            }
+          </Form.Item>
+        </Form>
+      </Modal>
+    </div>
+  );
+}

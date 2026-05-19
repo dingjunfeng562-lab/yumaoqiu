@@ -1,0 +1,29 @@
+<svg width="520" height="340" viewBox="0 0 520 340" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="trailBlue" x1="0" y1="260" x2="420" y2="90" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#16b8ff" stop-opacity="0"/>
+      <stop offset=".45" stop-color="#12aaff"/>
+      <stop offset="1" stop-color="#eaf8ff"/>
+    </linearGradient>
+    <linearGradient id="trailOrange" x1="30" y1="300" x2="390" y2="150" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ff9d12" stop-opacity="0"/>
+      <stop offset=".62" stop-color="#ff9d12"/>
+      <stop offset="1" stop-color="#fff2bd"/>
+    </linearGradient>
+    <filter id="glow" x="-50" y="-50" width="620" height="440" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="0" stdDeviation="12" flood-color="#22b8ff" flood-opacity=".75"/>
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#ff9d12" flood-opacity=".32"/>
+    </filter>
+  </defs>
+  <path d="M28 270C155 196 250 154 374 102" stroke="url(#trailBlue)" stroke-width="12" stroke-linecap="round"/>
+  <path d="M72 305C196 235 276 202 406 162" stroke="url(#trailOrange)" stroke-width="7" stroke-linecap="round"/>
+  <g transform="translate(310 34) rotate(19)" filter="url(#glow)">
+    <ellipse cx="64" cy="212" rx="44" ry="38" fill="#f5f7fb"/>
+    <ellipse cx="65" cy="211" rx="26" ry="21" fill="#d9e2ef"/>
+    <path d="M28 176C25 99 37 42 65 9C86 53 94 108 86 178" fill="#f4f8ff"/>
+    <path d="M62 174C83 93 108 38 144 13C148 63 132 120 96 184" fill="#f4f8ff"/>
+    <path d="M85 186C129 122 170 86 216 78C203 126 164 165 106 203" fill="#f4f8ff"/>
+    <path d="M33 177L65 11M62 176L144 15M86 187L216 79" stroke="#7aa2d8" stroke-width="6" stroke-linecap="round"/>
+    <path d="M43 183C60 195 76 202 99 202" stroke="#ff9d12" stroke-width="7" stroke-linecap="round"/>
+  </g>
+</svg>
