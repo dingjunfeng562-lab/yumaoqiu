@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -10,6 +11,7 @@ import {
   Gender,
   Prisma,
   RegistrationStatus,
+  Role,
   ScoringMode,
   ScoringRule,
   TournamentStatus,
@@ -40,11 +42,32 @@ const REGISTRATION_STATUS_LABELS: Record<RegistrationStatus, string> = {
   REMOVED: '已移除',
 };
 
-type CompetitionWithEvents = Prisma.TournamentGetPayload<{
+type CompetitionWithRelations = Prisma.TournamentGetPayload<{
   include: {
     events: {
       include: {
         registrations: true;
+      };
+    };
+    competitionRegistrations: {
+      include: {
+        user: true;
+        eventItems: {
+          include: {
+            event: true;
+          };
+        };
+      };
+    };
+  };
+}>;
+
+type CompetitionRegistrationWithRelations = Prisma.CompetitionRegistrationGetPayload<{
+  include: {
+    user: true;
+    eventItems: {
+      include: {
+        event: true;
       };
     };
   };
@@ -55,6 +78,11 @@ type RegistrationWithRelations = Prisma.RegistrationGetPayload<{
     event: true;
     player1: true;
     player2: true;
+    competitionRegistration: {
+      include: {
+        user: true;
+      };
+    };
   };
 }>;
 
@@ -72,6 +100,16 @@ export class CompetitionsService {
           },
           orderBy: { type: 'asc' },
         },
+        competitionRegistrations: {
+          include: {
+            user: true,
+            eventItems: {
+              include: {
+                event: true,
+              },
+            },
+          },
+        },
       },
       orderBy: [{ startDate: 'desc' }, { edition: 'desc' }],
     });
@@ -84,56 +122,180 @@ export class CompetitionsService {
     return this.toCompetitionView(competition, true);
   }
 
-  async submitRegistration(competitionId: string, dto: SubmitCompetitionRegistrationDto) {
+  async getMyRegistration(competitionId: string, userId: string) {
+    await this.findCompetition(competitionId, false);
+    const registration = await this.prisma.competitionRegistration.findUnique({
+      where: {
+        competitionId_userId: {
+          competitionId,
+          userId,
+        },
+      },
+      include: {
+        user: true,
+        eventItems: {
+          include: {
+            event: true,
+          },
+        },
+      },
+    });
+
+    if (!registration) {
+      return null;
+    }
+
+    return this.toCompetitionRegistrationView(registration);
+  }
+
+  async submitRegistration(competitionId: string, userId: string, dto: SubmitCompetitionRegistrationDto) {
     const competition = await this.findCompetition(competitionId, false);
     this.ensureRegistrationWindow(competition);
 
-    const eventType = this.normalizeEventType(dto.eventName);
-    const eventName = EVENT_TYPE_LABELS[eventType];
-    const gender = this.normalizeGender(dto.gender);
-    const event = await this.ensureEvent(competition.id, competition.events, eventType);
-
-    const existing = await this.prisma.registration.findFirst({
-      where: {
-        eventId: event.id,
-        studentId: dto.studentId.trim(),
-      },
-    });
-    if (existing) {
-      throw new ConflictException('你已报名该赛事，请勿重复提交。');
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException('用户不存在');
+    }
+    if (user.role !== Role.PLAYER) {
+      throw new ForbiddenException('只有普通用户可以提交报名');
     }
 
-    const registration = await this.prisma.$transaction(async (tx) => {
-      const player = await tx.player.create({
-        data: {
-          name: dto.name.trim(),
-          gender,
-          affiliation: dto.className.trim(),
-          contact: dto.phone.trim(),
-          notes: dto.remark?.trim() || null,
-        },
-      });
+    const eventIds = [...new Set(dto.items.map((item) => item.eventId.trim()))];
+    if (eventIds.length !== dto.items.length) {
+      throw new BadRequestException('报名项目不能重复');
+    }
+    const maxRegistrationEvents = competition.allowCrossEventRegistration ? competition.maxRegistrationEvents : 1;
+    if (eventIds.length > maxRegistrationEvents) {
+      throw new BadRequestException(`最多选择 ${maxRegistrationEvents} 个报名项目`);
+    }
 
-      return tx.registration.create({
-        data: {
-          eventId: event.id,
-          player1Id: player.id,
-          name: dto.name.trim(),
-          studentId: dto.studentId.trim(),
-          className: dto.className.trim(),
-          phone: dto.phone.trim(),
-          gender,
-          eventName,
-          remark: dto.remark?.trim() || null,
-          status: RegistrationStatus.PENDING,
+    const events = competition.events.filter((event) => eventIds.includes(event.id));
+    if (events.length !== eventIds.length) {
+      throw new BadRequestException('存在无效的报名项目');
+    }
+
+    for (const item of dto.items) {
+      const event = events.find((current) => current.id === item.eventId.trim());
+      if (!event) {
+        throw new BadRequestException('存在无效的报名项目');
+      }
+      this.ensurePartnerFields(event.type, item.partnerName, item.partnerStudentId);
+    }
+
+    const existing = await this.prisma.competitionRegistration.findUnique({
+      where: {
+        competitionId_userId: {
+          competitionId,
+          userId,
         },
-        include: { event: true, player1: true, player2: true },
+      },
+      include: {
+        user: true,
+        eventItems: {
+          include: {
+            event: true,
+          },
+        },
+      },
+    });
+
+    if (existing && (existing.status === RegistrationStatus.PENDING || existing.status === RegistrationStatus.APPROVED)) {
+      throw new ConflictException('你已提交报名，当前状态下不能重复提交');
+    }
+
+    const gender = this.normalizeGender(dto.gender);
+    const nextStatus = competition.needsRegistrationReview ? RegistrationStatus.PENDING : RegistrationStatus.APPROVED;
+
+    const registration = await this.prisma.$transaction(async (tx) => {
+      if (existing) {
+        await tx.competitionRegistrationEventItem.deleteMany({
+          where: { competitionRegistrationId: existing.id },
+        });
+        await tx.registration.updateMany({
+          where: { competitionRegistrationId: existing.id },
+          data: {
+            status: RegistrationStatus.REMOVED,
+            reviewedAt: null,
+            reviewedBy: null,
+            rejectReason: null,
+            groupName: null,
+            isSeed: false,
+            seedRank: null,
+          },
+        });
+
+        const updated = await tx.competitionRegistration.update({
+          where: { id: existing.id },
+          data: {
+            studentId: dto.studentId.trim(),
+            name: dto.name.trim(),
+            gender,
+            contact: dto.contact?.trim() || null,
+            remark: dto.remark?.trim() || null,
+            status: nextStatus,
+            rejectReason: null,
+            reviewedAt: nextStatus === RegistrationStatus.APPROVED ? new Date() : null,
+            reviewedById: null,
+            eventItems: {
+              create: dto.items.map((item) => ({
+                eventId: item.eventId.trim(),
+                partnerName: item.partnerName?.trim() || null,
+                partnerStudentId: item.partnerStudentId?.trim() || null,
+              })),
+            },
+          },
+          include: {
+            user: true,
+            eventItems: {
+              include: {
+                event: true,
+              },
+            },
+          },
+        });
+        if (nextStatus === RegistrationStatus.APPROVED) {
+          await this.createApprovedRegistrationRecords(tx, updated, null);
+        }
+        return updated;
+      }
+
+      const created = await tx.competitionRegistration.create({
+        data: {
+          competitionId,
+          userId,
+          studentId: dto.studentId.trim(),
+          name: dto.name.trim(),
+          gender,
+          contact: dto.contact?.trim() || null,
+          remark: dto.remark?.trim() || null,
+          status: nextStatus,
+          reviewedAt: nextStatus === RegistrationStatus.APPROVED ? new Date() : undefined,
+          eventItems: {
+            create: dto.items.map((item) => ({
+              eventId: item.eventId.trim(),
+              partnerName: item.partnerName?.trim() || null,
+              partnerStudentId: item.partnerStudentId?.trim() || null,
+            })),
+          },
+        },
+        include: {
+          user: true,
+          eventItems: {
+            include: {
+              event: true,
+            },
+          },
+        },
       });
+      if (nextStatus === RegistrationStatus.APPROVED) {
+        await this.createApprovedRegistrationRecords(tx, created, null);
+      }
+      return created;
     });
 
     return {
-      message: '报名已提交，请等待管理员审核。审核通过后，你的信息将显示在参赛选手列表中。',
-      registration: this.toRegistrationView(registration),
+      message: competition.needsRegistrationReview ? '报名已提交，请等待管理员审核。' : '报名已提交并自动通过。',
+      registration: this.toCompetitionRegistrationView(registration),
     };
   }
 
@@ -154,25 +316,36 @@ export class CompetitionsService {
           },
           orderBy: { type: 'asc' },
         },
+        competitionRegistrations: {
+          include: {
+            user: true,
+            eventItems: {
+              include: {
+                event: true,
+              },
+            },
+          },
+        },
       },
       orderBy: [{ createdAt: 'desc' }],
     });
 
-    return competitions.map((competition) => {
-      const registrations = competition.events.flatMap((event) => event.registrations);
-      return {
-        ...this.toCompetitionView(competition, true),
-        isArchived: competition.isArchived,
-        isPublished: competition.isPublished,
-        counts: {
-          all: registrations.length,
-          pending: registrations.filter((item) => item.status === RegistrationStatus.PENDING).length,
-          approved: registrations.filter((item) => item.status === RegistrationStatus.APPROVED).length,
-          rejected: registrations.filter((item) => item.status === RegistrationStatus.REJECTED).length,
-          removed: registrations.filter((item) => item.status === RegistrationStatus.REMOVED).length,
-        },
-      };
-    });
+    return competitions.map((competition) => ({
+      ...this.toCompetitionView(competition, true),
+      isArchived: competition.isArchived,
+      isPublished: competition.isPublished,
+      counts: {
+        all: competition.competitionRegistrations.length,
+        pending: competition.competitionRegistrations.filter((item) => item.status === RegistrationStatus.PENDING)
+          .length,
+        approved: competition.competitionRegistrations.filter((item) => item.status === RegistrationStatus.APPROVED)
+          .length,
+        rejected: competition.competitionRegistrations.filter((item) => item.status === RegistrationStatus.REJECTED)
+          .length,
+        removed: competition.competitionRegistrations.filter((item) => item.status === RegistrationStatus.REMOVED)
+          .length,
+      },
+    }));
   }
 
   async publishCompetition(id: string) {
@@ -188,6 +361,16 @@ export class CompetitionsService {
         events: {
           include: { registrations: true },
         },
+        competitionRegistrations: {
+          include: {
+            user: true,
+            eventItems: {
+              include: {
+                event: true,
+              },
+            },
+          },
+        },
       },
     });
     return this.toCompetitionView(competition, true);
@@ -202,6 +385,16 @@ export class CompetitionsService {
         events: {
           include: { registrations: true },
         },
+        competitionRegistrations: {
+          include: {
+            user: true,
+            eventItems: {
+              include: {
+                event: true,
+              },
+            },
+          },
+        },
       },
     });
     return this.toCompetitionView(competition, true);
@@ -210,13 +403,25 @@ export class CompetitionsService {
   async listAdminRegistrations(competitionId: string, status?: string) {
     await this.findCompetition(competitionId, true);
     const normalizedStatus = this.normalizeStatusFilter(status);
-    const registrations = await this.findRegistrationsByCompetition(competitionId, {
-      status: normalizedStatus,
+    const registrations = await this.prisma.competitionRegistration.findMany({
+      where: {
+        competitionId,
+        ...(normalizedStatus ? { status: normalizedStatus } : {}),
+      },
+      include: {
+        user: true,
+        eventItems: {
+          include: {
+            event: true,
+          },
+        },
+      },
+      orderBy: [{ createdAt: 'desc' }],
     });
 
     return registrations
       .sort((a, b) => this.statusPriority(a.status) - this.statusPriority(b.status))
-      .map((registration) => this.toRegistrationView(registration));
+      .map((registration) => this.toCompetitionRegistrationView(registration));
   }
 
   async listAdminPlayers(competitionId: string, eventName?: string, search?: string) {
@@ -231,32 +436,110 @@ export class CompetitionsService {
     return registrations.map((registration) => this.toRegistrationView(registration));
   }
 
-  async approveRegistration(registrationId: string, reviewedBy?: string) {
-    const registration = await this.ensureRegistration(registrationId);
-    return this.updateRegistrationStatus(
-      registration.id,
-      RegistrationStatus.APPROVED,
-      reviewedBy,
-    );
+  async approveRegistration(competitionRegistrationId: string, reviewedById?: string) {
+    const competitionRegistration = await this.ensureCompetitionRegistration(competitionRegistrationId);
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const registration = await tx.competitionRegistration.update({
+        where: { id: competitionRegistration.id },
+        data: {
+          status: RegistrationStatus.APPROVED,
+          reviewedAt: new Date(),
+          reviewedById: reviewedById ?? null,
+          rejectReason: null,
+        },
+        include: {
+          user: true,
+          eventItems: {
+            include: {
+              event: true,
+            },
+          },
+        },
+      });
+
+      const existingRegularRegistrations = await tx.registration.findMany({
+        where: { competitionRegistrationId: competitionRegistration.id },
+      });
+
+      if (existingRegularRegistrations.length) {
+        await tx.registration.updateMany({
+          where: { competitionRegistrationId: competitionRegistration.id },
+          data: {
+            status: RegistrationStatus.APPROVED,
+            reviewedAt: new Date(),
+            reviewedBy: reviewedById ?? null,
+            rejectReason: null,
+          },
+        });
+      } else {
+        await this.createApprovedRegistrationRecords(tx, registration, reviewedById ?? null);
+      }
+
+      return registration;
+    });
+
+    return this.toCompetitionRegistrationView(updated);
   }
 
-  async rejectRegistration(registrationId: string, reviewedBy?: string, rejectReason?: string) {
-    const registration = await this.ensureRegistration(registrationId);
-    return this.updateRegistrationStatus(
-      registration.id,
-      RegistrationStatus.REJECTED,
-      reviewedBy,
-      rejectReason,
-    );
+  async rejectRegistration(competitionRegistrationId: string, reviewedById?: string, rejectReason?: string) {
+    const competitionRegistration = await this.ensureCompetitionRegistration(competitionRegistrationId);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.competitionRegistration.update({
+        where: { id: competitionRegistration.id },
+        data: {
+          status: RegistrationStatus.REJECTED,
+          reviewedAt: new Date(),
+          reviewedById: reviewedById ?? null,
+          rejectReason: rejectReason?.trim() || null,
+        },
+      });
+      await tx.registration.updateMany({
+        where: { competitionRegistrationId: competitionRegistration.id },
+        data: {
+          status: RegistrationStatus.REJECTED,
+          reviewedAt: new Date(),
+          reviewedBy: reviewedById ?? null,
+          rejectReason: rejectReason?.trim() || null,
+          groupName: null,
+          isSeed: false,
+          seedRank: null,
+        },
+      });
+    });
+
+    const updated = await this.ensureCompetitionRegistration(competitionRegistration.id);
+    return this.toCompetitionRegistrationView(updated);
   }
 
-  async removeRegistration(registrationId: string, reviewedBy?: string) {
-    const registration = await this.ensureRegistration(registrationId);
-    return this.updateRegistrationStatus(
-      registration.id,
-      RegistrationStatus.REMOVED,
-      reviewedBy,
-    );
+  async removeRegistration(competitionRegistrationId: string, reviewedById?: string) {
+    const competitionRegistration = await this.ensureCompetitionRegistration(competitionRegistrationId);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.competitionRegistration.update({
+        where: { id: competitionRegistration.id },
+        data: {
+          status: RegistrationStatus.REMOVED,
+          reviewedAt: new Date(),
+          reviewedById: reviewedById ?? null,
+          rejectReason: null,
+        },
+      });
+      await tx.registration.updateMany({
+        where: { competitionRegistrationId: competitionRegistration.id },
+        data: {
+          status: RegistrationStatus.REMOVED,
+          reviewedAt: new Date(),
+          reviewedBy: reviewedById ?? null,
+          rejectReason: null,
+          groupName: null,
+          isSeed: false,
+          seedRank: null,
+        },
+      });
+    });
+
+    const updated = await this.ensureCompetitionRegistration(competitionRegistration.id);
+    return this.toCompetitionRegistrationView(updated);
   }
 
   private async findCompetition(id: string, includeArchived: boolean) {
@@ -273,16 +556,33 @@ export class CompetitionsService {
           },
           orderBy: { type: 'asc' },
         },
+        competitionRegistrations: {
+          include: {
+            user: true,
+            eventItems: {
+              include: {
+                event: true,
+              },
+            },
+          },
+        },
       },
     });
     if (!competition) throw new NotFoundException('赛事不存在');
     return competition;
   }
 
-  private async ensureRegistration(id: string) {
-    const registration = await this.prisma.registration.findUnique({
+  private async ensureCompetitionRegistration(id: string) {
+    const registration = await this.prisma.competitionRegistration.findUnique({
       where: { id },
-      include: { event: true, player1: true, player2: true },
+      include: {
+        user: true,
+        eventItems: {
+          include: {
+            event: true,
+          },
+        },
+      },
     });
     if (!registration) throw new NotFoundException('报名记录不存在');
     return registration;
@@ -290,7 +590,7 @@ export class CompetitionsService {
 
   private async ensureEvent(
     tournamentId: string,
-    events: CompetitionWithEvents['events'],
+    events: CompetitionWithRelations['events'],
     type: EventType,
   ) {
     const existing = events.find((event) => event.type === type);
@@ -308,7 +608,7 @@ export class CompetitionsService {
     });
   }
 
-  private ensureRegistrationWindow(competition: CompetitionWithEvents) {
+  private ensureRegistrationWindow(competition: CompetitionWithRelations) {
     if (competition.status !== TournamentStatus.REGISTRATION_OPEN) {
       throw new BadRequestException('当前赛事暂未开放报名。');
     }
@@ -343,6 +643,7 @@ export class CompetitionsService {
                 { name: { contains: search } },
                 { studentId: { contains: search } },
                 { className: { contains: search } },
+                { competitionRegistration: { user: { email: { contains: search } } } },
                 { player1: { name: { contains: search } } },
                 { player1: { affiliation: { contains: search } } },
               ],
@@ -353,40 +654,71 @@ export class CompetitionsService {
         event: true,
         player1: true,
         player2: true,
+        competitionRegistration: {
+          include: {
+            user: true,
+          },
+        },
       },
       orderBy: [{ createdAt: 'desc' }],
     });
   }
 
-  private async updateRegistrationStatus(
-    id: string,
-    status: RegistrationStatus,
-    reviewedBy?: string,
-    rejectReason?: string,
+  private async createApprovedRegistrationRecords(
+    tx: Prisma.TransactionClient,
+    registration: CompetitionRegistrationWithRelations,
+    reviewedById: string | null,
   ) {
-    const registration = await this.prisma.registration.update({
-      where: { id },
-      data: {
-        status,
-        reviewedAt: new Date(),
-        reviewedBy,
-        rejectReason: status === RegistrationStatus.REJECTED ? rejectReason?.trim() || null : null,
-        groupName: status === RegistrationStatus.APPROVED ? undefined : null,
-        isSeed: status === RegistrationStatus.APPROVED ? undefined : false,
-        seedRank: status === RegistrationStatus.APPROVED ? undefined : null,
-      },
-      include: { event: true, player1: true, player2: true },
-    });
+    for (const item of registration.eventItems) {
+      const primaryPlayer = await tx.player.create({
+        data: {
+          name: registration.name,
+          gender: registration.gender,
+          affiliation: registration.studentId,
+          contact: registration.contact,
+          notes: registration.remark,
+        },
+      });
 
-    return this.toRegistrationView(registration);
+      let secondaryPlayerId: string | null = null;
+      if (this.isDoubleEvent(item.event.type) && item.partnerName) {
+        const secondaryPlayer = await tx.player.create({
+          data: {
+            name: item.partnerName,
+            gender: this.resolvePartnerGender(item.event.type, registration.gender),
+            affiliation: item.partnerStudentId?.trim() || '未填写学号',
+            contact: null,
+            notes: null,
+          },
+        });
+        secondaryPlayerId = secondaryPlayer.id;
+      }
+
+      await tx.registration.create({
+        data: {
+          competitionRegistrationId: registration.id,
+          eventId: item.eventId,
+          player1Id: primaryPlayer.id,
+          player2Id: secondaryPlayerId,
+          name: secondaryPlayerId && item.partnerName ? `${registration.name} / ${item.partnerName}` : registration.name,
+          studentId: registration.studentId,
+          className: registration.studentId,
+          phone: registration.contact,
+          gender: registration.gender,
+          eventName: EVENT_TYPE_LABELS[item.event.type],
+          remark: registration.remark,
+          status: RegistrationStatus.APPROVED,
+          reviewedAt: new Date(),
+          reviewedBy: reviewedById,
+        },
+      });
+    }
   }
 
-  private toCompetitionView(competition: CompetitionWithEvents, detailed = false) {
-    const approvedCount = competition.events.reduce(
-      (sum, event) =>
-        sum + event.registrations.filter((item) => item.status === RegistrationStatus.APPROVED).length,
-      0,
-    );
+  private toCompetitionView(competition: CompetitionWithRelations, detailed = false) {
+    const approvedCount = competition.competitionRegistrations.filter(
+      (item) => item.status === RegistrationStatus.APPROVED,
+    ).length;
     const events = this.projectLabels(competition);
 
     return {
@@ -401,7 +733,17 @@ export class CompetitionsService {
       location: competition.location,
       events,
       projects: events,
-      description: competition.rules,
+      eventOptions: competition.events.map((event) => ({
+        id: event.id,
+        type: event.type,
+        label: EVENT_TYPE_LABELS[event.type],
+        isDouble: this.isDoubleEvent(event.type),
+      })),
+      description: competition.description ?? competition.rules,
+      registrationNotice: competition.registrationNotice,
+      maxRegistrationEvents: competition.maxRegistrationEvents,
+      allowCrossEventRegistration: competition.allowCrossEventRegistration,
+      needsRegistrationReview: competition.needsRegistrationReview,
       status: competition.status,
       statusLabel: TOURNAMENT_STATUS_LABELS[competition.status],
       registrationStatus: this.registrationStatusText(competition),
@@ -414,12 +756,47 @@ export class CompetitionsService {
     };
   }
 
+  private toCompetitionRegistrationView(registration: CompetitionRegistrationWithRelations) {
+    return {
+      id: registration.id,
+      competitionId: registration.competitionId,
+      userId: registration.userId,
+      email: registration.user.email ?? '',
+      studentId: registration.studentId,
+      name: registration.name,
+      gender: registration.gender,
+      genderLabel: registration.gender === Gender.MALE ? '男' : '女',
+      contact: registration.contact ?? '',
+      phone: registration.contact ?? '',
+      remark: registration.remark ?? '',
+      items: registration.eventItems.map((item) => ({
+        id: item.id,
+        eventId: item.eventId,
+        eventType: item.event.type,
+        eventName: EVENT_TYPE_LABELS[item.event.type],
+        partnerName: item.partnerName,
+        partnerStudentId: item.partnerStudentId,
+      })),
+      eventNames: registration.eventItems.map((item) => EVENT_TYPE_LABELS[item.event.type]),
+      eventSummary: registration.eventItems.map((item) => EVENT_TYPE_LABELS[item.event.type]).join(' / '),
+      status: registration.status.toLowerCase(),
+      statusRaw: registration.status,
+      statusLabel: REGISTRATION_STATUS_LABELS[registration.status],
+      createdAt: registration.createdAt.toISOString(),
+      reviewedAt: registration.reviewedAt?.toISOString() ?? null,
+      reviewedBy: registration.reviewedById,
+      rejectReason: registration.rejectReason,
+    };
+  }
+
   private toRegistrationView(registration: RegistrationWithRelations) {
     const gender = registration.gender ?? registration.player1.gender;
     return {
       id: registration.id,
+      competitionRegistrationId: registration.competitionRegistrationId,
       competitionId: registration.event.tournamentId,
       eventId: registration.eventId,
+      email: registration.competitionRegistration?.user.email ?? '',
       name: registration.name ?? registration.player1.name,
       studentId: registration.studentId ?? '',
       className: registration.className ?? registration.player1.affiliation,
@@ -446,6 +823,9 @@ export class CompetitionsService {
       groups: {
         mensSingles: players.filter((item) => item.eventType === EventType.MENS_SINGLES),
         womensSingles: players.filter((item) => item.eventType === EventType.WOMENS_SINGLES),
+        mensDoubles: players.filter((item) => item.eventType === EventType.MENS_DOUBLES),
+        womensDoubles: players.filter((item) => item.eventType === EventType.WOMENS_DOUBLES),
+        mixedDoubles: players.filter((item) => item.eventType === EventType.MIXED_DOUBLES),
       },
     };
   }
@@ -464,7 +844,7 @@ export class CompetitionsService {
     return [...new Set(labels)].filter(Boolean);
   }
 
-  private registrationStatusText(competition: CompetitionWithEvents) {
+  private registrationStatusText(competition: CompetitionWithRelations) {
     const now = new Date();
     if (competition.status !== TournamentStatus.REGISTRATION_OPEN) {
       return TOURNAMENT_STATUS_LABELS[competition.status];
@@ -481,7 +861,10 @@ export class CompetitionsService {
   private normalizeEventType(value: string): EventType {
     if (value === EventType.MENS_SINGLES || value === '男子单打') return EventType.MENS_SINGLES;
     if (value === EventType.WOMENS_SINGLES || value === '女子单打') return EventType.WOMENS_SINGLES;
-    throw new BadRequestException('暂时只支持男子单打和女子单打报名。');
+    if (value === EventType.MENS_DOUBLES || value === '男子双打') return EventType.MENS_DOUBLES;
+    if (value === EventType.WOMENS_DOUBLES || value === '女子双打') return EventType.WOMENS_DOUBLES;
+    if (value === EventType.MIXED_DOUBLES || value === '混合双打') return EventType.MIXED_DOUBLES;
+    throw new BadRequestException('报名项目填写有误。');
   }
 
   private normalizeGender(value: string): Gender {
@@ -507,5 +890,28 @@ export class CompetitionsService {
       REMOVED: 3,
     };
     return priorities[status] ?? 9;
+  }
+
+  private isDoubleEvent(eventType: EventType) {
+    return (
+      eventType === EventType.MENS_DOUBLES ||
+      eventType === EventType.WOMENS_DOUBLES ||
+      eventType === EventType.MIXED_DOUBLES
+    );
+  }
+
+  private ensurePartnerFields(eventType: EventType, partnerName?: string, partnerStudentId?: string) {
+    if (!this.isDoubleEvent(eventType)) {
+      return;
+    }
+    if (!partnerName?.trim() || !partnerStudentId?.trim()) {
+      throw new BadRequestException('双打项目必须填写搭档姓名和学号');
+    }
+  }
+
+  private resolvePartnerGender(eventType: EventType, primaryGender: Gender) {
+    if (eventType === EventType.MENS_DOUBLES) return Gender.MALE;
+    if (eventType === EventType.WOMENS_DOUBLES) return Gender.FEMALE;
+    return primaryGender === Gender.MALE ? Gender.FEMALE : Gender.MALE;
   }
 }

@@ -27,6 +27,9 @@ type PlayersResponse = {
   groups: {
     mensSingles: Player[];
     womensSingles: Player[];
+    mensDoubles: Player[];
+    womensDoubles: Player[];
+    mixedDoubles: Player[];
   };
 };
 
@@ -88,7 +91,7 @@ export default function CompetitionPlayersPage() {
       activeHref="/competitions"
       eyebrow="Players"
       title="参赛选手列表"
-      description="这里只展示当前赛事中已通过管理员审核的报名人员，待审核和已拒绝报名不会出现在这里。"
+      description="这里只展示当前赛事中已通过管理员审核的报名人员，待审核和已驳回报名不会出现在这里。"
     >
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
         <div>
@@ -125,6 +128,9 @@ export default function CompetitionPlayersPage() {
         <div className="grid gap-6 xl:grid-cols-2">
           <PlayerGroup title="男子单打" players={data?.groups.mensSingles ?? []} />
           <PlayerGroup title="女子单打" players={data?.groups.womensSingles ?? []} />
+          <PlayerGroup title="男子双打" players={data?.groups.mensDoubles ?? []} />
+          <PlayerGroup title="女子双打" players={data?.groups.womensDoubles ?? []} />
+          <PlayerGroup title="混合双打" players={data?.groups.mixedDoubles ?? []} />
         </div>
       ) : (
         <div className="rounded-lg border border-blue-100 bg-white p-10 text-center shadow-sm">
@@ -153,7 +159,7 @@ function PlayerGroup({ title, players }: { title: string; players: Player[] }) {
             <thead className="bg-white text-xs font-black uppercase text-slate-500">
               <tr>
                 <th className="px-5 py-3">姓名</th>
-                <th className="px-5 py-3">班级</th>
+                <th className="px-5 py-3">班级/学号</th>
                 <th className="px-5 py-3">参赛项目</th>
                 <th className="px-5 py-3">报名时间</th>
                 <th className="px-5 py-3">审核状态</th>

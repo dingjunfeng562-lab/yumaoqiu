@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { Button, Popconfirm, Select, Space, Table, Tag, Typography, message } from 'antd';
+import { Button, Popconfirm, Select, Space, Table, Tag, Typography, message, Modal, Input } from 'antd';
 import { CheckOutlined, CloseOutlined, TeamOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 
@@ -12,25 +12,35 @@ type Competition = {
   title: string;
 };
 
+type RegistrationItem = {
+  id: string;
+  eventId: string;
+  eventName: string;
+  partnerName?: string | null;
+  partnerStudentId?: string | null;
+};
+
 type Registration = {
   id: string;
+  email: string;
   name: string;
   studentId: string;
-  className: string;
   phone: string;
   genderLabel: string;
-  eventName: string;
+  eventSummary: string;
+  items: RegistrationItem[];
   createdAt: string;
   status: 'pending' | 'approved' | 'rejected' | 'removed';
   statusLabel: string;
   reviewedAt?: string | null;
+  rejectReason?: string | null;
 };
 
 const STATUS_OPTIONS = [
   { value: 'all', label: '全部' },
   { value: 'pending', label: '待审核' },
   { value: 'approved', label: '已通过' },
-  { value: 'rejected', label: '已拒绝' },
+  { value: 'rejected', label: '已驳回' },
 ];
 
 const STATUS_COLORS: Record<Registration['status'], string> = {
@@ -56,6 +66,8 @@ export default function AdminCompetitionRegistrationsPage() {
   const [registrations, setRegistrations] = useState<Registration[]>([]);
   const [status, setStatus] = useState('pending');
   const [loading, setLoading] = useState(false);
+  const [rejectingId, setRejectingId] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
 
   const loadData = useCallback(async () => {
     if (!token || !id) return;
@@ -83,27 +95,59 @@ export default function AdminCompetitionRegistrationsPage() {
     [registrations],
   );
 
-  async function review(registrationId: string, action: 'approve' | 'reject') {
+  async function approve(registrationId: string) {
     if (!token) return;
     try {
-      await apiFetch(`/admin/registrations/${registrationId}/${action}`, {
+      await apiFetch(`/admin/competition-registrations/${registrationId}/approve`, {
         method: 'PATCH',
         token,
       });
-      message.success(action === 'approve' ? '已审核通过' : '已审核拒绝');
+      message.success('已审核通过');
       await loadData();
     } catch (error) {
       message.error(error instanceof Error ? error.message : '审核操作失败');
     }
   }
 
+  async function reject() {
+    if (!token || !rejectingId) return;
+    try {
+      await apiFetch(`/admin/competition-registrations/${rejectingId}/reject`, {
+        method: 'PATCH',
+        token,
+        body: JSON.stringify({ rejectReason }),
+      });
+      message.success('已驳回报名');
+      setRejectingId(null);
+      setRejectReason('');
+      await loadData();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '驳回操作失败');
+    }
+  }
+
   const columns = [
+    { title: '邮箱', dataIndex: 'email', key: 'email' },
     { title: '姓名', dataIndex: 'name', key: 'name' },
     { title: '学号', dataIndex: 'studentId', key: 'studentId' },
-    { title: '班级', dataIndex: 'className', key: 'className' },
-    { title: '联系电话', dataIndex: 'phone', key: 'phone' },
+    { title: '联系方式', dataIndex: 'phone', key: 'phone' },
     { title: '性别', dataIndex: 'genderLabel', key: 'genderLabel', width: 80 },
-    { title: '参赛项目', dataIndex: 'eventName', key: 'eventName' },
+    {
+      title: '报名项目',
+      key: 'eventSummary',
+      render: (_: unknown, record: Registration) => (
+        <Space direction="vertical" size={2}>
+          <Typography.Text>{record.eventSummary}</Typography.Text>
+          {record.items.map((item) =>
+            item.partnerName ? (
+              <Typography.Text key={item.id} type="secondary">
+                {item.eventName}：搭档 {item.partnerName}（{item.partnerStudentId || '未填学号'}）
+              </Typography.Text>
+            ) : null,
+          )}
+        </Space>
+      ),
+    },
     {
       title: '报名时间',
       dataIndex: 'createdAt',
@@ -114,18 +158,21 @@ export default function AdminCompetitionRegistrationsPage() {
       title: '审核状态',
       key: 'status',
       render: (_: unknown, record: Registration) => (
-        <Tag color={STATUS_COLORS[record.status]}>{record.statusLabel}</Tag>
+        <Space direction="vertical" size={2}>
+          <Tag color={STATUS_COLORS[record.status]}>{record.statusLabel}</Tag>
+          {record.rejectReason ? <Typography.Text type="danger">{record.rejectReason}</Typography.Text> : null}
+        </Space>
       ),
     },
     {
       title: '操作',
       key: 'actions',
-      width: 160,
+      width: 180,
       render: (_: unknown, record: Registration) => (
         <Space>
           <Popconfirm
             title="确认通过该报名？"
-            onConfirm={() => review(record.id, 'approve')}
+            onConfirm={() => approve(record.id)}
             disabled={record.status === 'approved'}
           >
             <Button
@@ -137,20 +184,18 @@ export default function AdminCompetitionRegistrationsPage() {
               通过
             </Button>
           </Popconfirm>
-          <Popconfirm
-            title="确认拒绝该报名？"
-            onConfirm={() => review(record.id, 'reject')}
+          <Button
+            size="small"
+            danger
+            icon={<CloseOutlined />}
             disabled={record.status === 'rejected'}
+            onClick={() => {
+              setRejectingId(record.id);
+              setRejectReason(record.rejectReason || '');
+            }}
           >
-            <Button
-              size="small"
-              danger
-              icon={<CloseOutlined />}
-              disabled={record.status === 'rejected'}
-            >
-              拒绝
-            </Button>
-          </Popconfirm>
+            驳回
+          </Button>
         </Space>
       ),
     },
@@ -188,6 +233,23 @@ export default function AdminCompetitionRegistrationsPage() {
         loading={loading}
         pagination={{ pageSize: 20 }}
       />
+      <Modal
+        title="填写驳回原因"
+        open={Boolean(rejectingId)}
+        onCancel={() => {
+          setRejectingId(null);
+          setRejectReason('');
+        }}
+        onOk={reject}
+        okText="确认驳回"
+      >
+        <Input.TextArea
+          rows={4}
+          value={rejectReason}
+          onChange={(event) => setRejectReason(event.target.value)}
+          placeholder="请输入驳回原因"
+        />
+      </Modal>
     </div>
   );
 }

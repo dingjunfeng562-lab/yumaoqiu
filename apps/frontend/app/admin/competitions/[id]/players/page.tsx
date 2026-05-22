@@ -14,6 +14,8 @@ type Competition = {
 
 type Player = {
   id: string;
+  competitionRegistrationId?: string | null;
+  email: string;
   name: string;
   studentId: string;
   className: string;
@@ -71,14 +73,14 @@ export default function AdminCompetitionPlayersPage() {
     loadData();
   }, [loadData]);
 
-  async function removePlayer(registrationId: string) {
-    if (!token) return;
+  async function removePlayer(registrationId?: string | null) {
+    if (!token || !registrationId) return;
     try {
-      await apiFetch(`/admin/registrations/${registrationId}/remove`, {
+      await apiFetch(`/admin/competition-registrations/${registrationId}/remove`, {
         method: 'PATCH',
         token,
       });
-      message.success('已移除选手，该报名不再显示在参赛选手列表');
+      message.success('已移除该报名');
       await loadData();
     } catch (error) {
       message.error(error instanceof Error ? error.message : '移除失败');
@@ -86,16 +88,17 @@ export default function AdminCompetitionPlayersPage() {
   }
 
   const columns = [
+    { title: '邮箱', dataIndex: 'email', key: 'email' },
     { title: '姓名', dataIndex: 'name', key: 'name' },
     { title: '学号', dataIndex: 'studentId', key: 'studentId' },
-    { title: '班级', dataIndex: 'className', key: 'className' },
+    { title: '班级/学号', dataIndex: 'className', key: 'className' },
     { title: '联系电话', dataIndex: 'phone', key: 'phone' },
     { title: '性别', dataIndex: 'genderLabel', key: 'genderLabel', width: 80 },
     {
       title: '参赛项目',
       dataIndex: 'eventName',
       key: 'eventName',
-      render: (value: string) => <Tag color={value === '男子单打' ? 'blue' : 'magenta'}>{value}</Tag>,
+      render: (value: string) => <Tag color="blue">{value}</Tag>,
     },
     {
       title: '报名时间',
@@ -113,10 +116,8 @@ export default function AdminCompetitionPlayersPage() {
       key: 'actions',
       width: 120,
       render: (_: unknown, record: Player) => (
-        <Popconfirm title="确认移除该选手？" onConfirm={() => removePlayer(record.id)}>
-          <Button size="small" danger icon={<StopOutlined />}>
-            移除
-          </Button>
+        <Popconfirm title="确认移除该报名？" onConfirm={() => removePlayer(record.competitionRegistrationId)}>
+          <Button size="small" danger icon={<StopOutlined />}>移除</Button>
         </Popconfirm>
       ),
     },
@@ -137,16 +138,19 @@ export default function AdminCompetitionPlayersPage() {
           <Select
             value={eventName}
             onChange={setEventName}
-            style={{ width: 150 }}
+            style={{ width: 180 }}
             options={[
               { value: 'all', label: '全部项目' },
               { value: '男子单打', label: '男子单打' },
               { value: '女子单打', label: '女子单打' },
+              { value: '男子双打', label: '男子双打' },
+              { value: '女子双打', label: '女子双打' },
+              { value: '混合双打', label: '混合双打' },
             ]}
           />
           <Input.Search
             allowClear
-            placeholder="搜索姓名、学号、班级"
+            placeholder="搜索邮箱、姓名、学号"
             onSearch={setSearch}
             style={{ width: 240 }}
           />

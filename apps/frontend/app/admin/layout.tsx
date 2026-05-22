@@ -22,14 +22,17 @@ import {
   ApartmentOutlined,
   LockOutlined,
   NotificationOutlined,
+  KeyOutlined,
 } from '@ant-design/icons';
 
 const { Header, Sider, Content } = Layout;
 
 const menuItems = [
   { key: '/admin', icon: <DashboardOutlined />, label: '仪表板' },
-  { key: '/admin/users', icon: <TeamOutlined />, label: '账号管理' },
+  { key: '/admin/users', icon: <TeamOutlined />, label: '用户管理' },
+  { key: '/admin/invite-codes', icon: <KeyOutlined />, label: '邀请码管理' },
   { key: '/admin/players', icon: <UserOutlined />, label: '选手管理' },
+  { key: '/admin/tournaments', icon: <TrophyOutlined />, label: '赛事配置' },
   { key: '/admin/competitions', icon: <TrophyOutlined />, label: '赛事管理' },
   { key: '/admin/events', icon: <UnorderedListOutlined />, label: '单项管理' },
   { key: '/admin/team-competitions', icon: <ApartmentOutlined />, label: '团体赛管理' },
@@ -147,7 +150,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                   key: 'logout',
                   icon: <LogoutOutlined />,
                   label: '退出登录',
-                  onClick: () => signOut({ callbackUrl: '/login' }),
+                  onClick: () => signOut({ callbackUrl: '/' }),
                 },
               ],
             }}
@@ -184,7 +187,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             <Form.Item
               name="newPassword"
               label="新密码"
-              rules={[{ required: true, min: 6, message: '新密码至少 6 位' }]}
+              rules={[{ required: true, min: 8, message: '新密码至少 8 位' }]}
             >
               <Input.Password />
             </Form.Item>

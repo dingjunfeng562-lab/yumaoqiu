@@ -1,15 +1,10 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
-import {
-  CloseOutlined,
-  DragOutlined,
-  EyeOutlined,
-  FullscreenOutlined,
-  SwapOutlined,
-  ZoomInOutlined,
-  ZoomOutOutlined,
-} from '@ant-design/icons';
+import { useEffect, useMemo, useRef, useState } from 'react';
+
+// ─────────────────────────────────────────────────────────────────────
+// Types — kept compatible with previous callers
+// ─────────────────────────────────────────────────────────────────────
 
 export type BracketStatus = 'PENDING' | 'LIVE' | 'COMPLETED' | 'CANCELLED' | string;
 
@@ -32,6 +27,8 @@ export type BracketMatch = {
   side2Id?: string | null;
   winnerId?: string | null;
   winnerSide?: 1 | 2 | number | null;
+  forfeitedSide?: 1 | 2 | number | null;
+  forfeitReason?: string | null;
   score?: string | null;
   gamesText?: string | null;
   venueName?: string | null;
@@ -51,21 +48,18 @@ export type KnockoutBracketData = {
 
 type LayoutMatch = BracketMatch & {
   layoutKey: string;
-  index: number;
+  index: number; // 0-based position within its round
 };
 
-type Point = {
-  x: number;
-  y: number;
-};
+// ─────────────────────────────────────────────────────────────────────
+// Layout constants
+// ─────────────────────────────────────────────────────────────────────
 
-const ROW_HEIGHT = 48;
-const SLOT_HEIGHT = 34;
-const PLAYER_WIDTH = 238;
-const ROUND_WIDTH = 172;
-const ROUND_GAP = 74;
-const TOP_OFFSET = 86;
-const BOARD_PADDING = 72;
+const CARD_WIDTH = 252;
+const CARD_HEIGHT = 86;
+const COL_GAP = 56;
+const TOP_OFFSET = 56;
+const BOARD_PADDING = 28;
 
 const STATUS_LABELS: Record<string, string> = {
   PENDING: '待开始',
@@ -77,6 +71,10 @@ const STATUS_LABELS: Record<string, string> = {
   已结束: '已完成',
   已完成: '已完成',
 };
+
+// ─────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────
 
 function nextPowerOfTwo(value: number) {
   let size = 1;
@@ -102,7 +100,7 @@ function defaultRoundLabel(bracketSize: number, roundNo: number) {
   return `${incoming} 强赛`;
 }
 
-function normalizeStatus(status: BracketStatus) {
+function normalizeStatus(status: BracketStatus): 'PENDING' | 'LIVE' | 'COMPLETED' | 'CANCELLED' {
   const text = String(status || 'PENDING').toUpperCase();
   if (text === 'LIVE' || status === '进行中') return 'LIVE';
   if (text === 'COMPLETED' || status === '已结束' || status === '已完成') return 'COMPLETED';
@@ -110,14 +108,14 @@ function normalizeStatus(status: BracketStatus) {
   return 'PENDING';
 }
 
-function statusLabel(status: BracketStatus) {
+function statusText(status: BracketStatus) {
   return STATUS_LABELS[String(status)] ?? STATUS_LABELS[normalizeStatus(status)] ?? '待开始';
 }
 
 function formatTime(value?: string | null) {
-  if (!value) return '待排时间';
+  if (!value) return null;
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '待排时间';
+  if (Number.isNaN(date.getTime())) return null;
   return date.toLocaleString('zh-CN', {
     month: '2-digit',
     day: '2-digit',
@@ -126,11 +124,13 @@ function formatTime(value?: string | null) {
   });
 }
 
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
+function rowHeightFor(bracketSize: number) {
+  if (bracketSize <= 8) return 112;
+  if (bracketSize <= 16) return 100;
+  return 84;
 }
 
-function buildPlaceholderMatches(roundCount: number, bracketSize: number) {
+function buildPlaceholderMatches(roundCount: number, bracketSize: number): LayoutMatch[] {
   const matches: LayoutMatch[] = [];
   for (let roundNo = 1; roundNo <= roundCount; roundNo += 1) {
     const count = bracketSize / 2 ** roundNo;
@@ -148,9 +148,19 @@ function buildPlaceholderMatches(roundCount: number, bracketSize: number) {
   return matches;
 }
 
-function getPositionId(position: number) {
-  return `bye-position-${position}`;
+function parseScores(text?: string | null): { a?: number; b?: number } {
+  if (!text) return {};
+  // Accept "21:14", "21:14 / 21:18" — take last game
+  const last = text.split(/[/,]/).map((s) => s.trim()).filter(Boolean).pop();
+  if (!last) return {};
+  const match = last.match(/^(\d+)\s*[:：-]\s*(\d+)/);
+  if (!match) return {};
+  return { a: Number(match[1]), b: Number(match[2]) };
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Main
+// ─────────────────────────────────────────────────────────────────────
 
 export function KnockoutBracket({
   data,
@@ -159,6 +169,7 @@ export function KnockoutBracket({
   data: KnockoutBracketData;
   allowAdminSwap?: boolean;
 }) {
+  // Slots = ordered participants padded to next power of two with byes
   const baseSlots = useMemo(() => {
     const ordered = [...data.participants].sort((a, b) => a.position - b.position);
     const minSize = Math.max(
@@ -167,12 +178,11 @@ export function KnockoutBracket({
     );
     const bracketSize = nextPowerOfTwo(minSize);
     const slotMap = new Map(ordered.map((slot) => [slot.position, slot]));
-
     return Array.from({ length: bracketSize }, (_, index) => {
       const position = index + 1;
       return (
         slotMap.get(position) ?? {
-          id: getPositionId(position),
+          id: `bye-position-${position}`,
           position,
           name: '— 轮空 —',
           isBye: true,
@@ -182,27 +192,30 @@ export function KnockoutBracket({
   }, [data.matches, data.participants]);
 
   const [slots, setSlots] = useState(baseSlots);
-  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [hoveredParticipantId, setHoveredParticipantId] = useState<string | null>(null);
   const [selectedMatch, setSelectedMatch] = useState<LayoutMatch | null>(null);
-  const [scale, setScale] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [draggingPan, setDraggingPan] = useState<{ pointerId: number; origin: Point; pan: Point } | null>(null);
-  const [viewMode, setViewMode] = useState<'tree' | 'rounds'>('tree');
+  const [viewMode, setViewMode] = useState<'tree' | 'rounds'>('rounds');
   const [activeRound, setActiveRound] = useState(1);
   const [adminMode, setAdminMode] = useState(false);
-  const [draggedSlot, setDraggedSlot] = useState<number | null>(null);
-  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const treeRef = useRef<HTMLDivElement | null>(null);
+
+  // Reset slots when underlying data changes
+  useEffect(() => {
+    setSlots(baseSlots);
+  }, [baseSlots]);
+
+  // Switch default view based on viewport once on mount
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.matchMedia('(min-width: 768px)').matches) {
+      setViewMode('tree');
+    }
+  }, []);
 
   const bracketSize = slots.length;
   const roundCount = roundCountFor(bracketSize);
-  const boardHeight = TOP_OFFSET + bracketSize * ROW_HEIGHT + BOARD_PADDING;
-  const resultX = (roundNo: number) => PLAYER_WIDTH + 60 + (roundNo - 1) * (ROUND_WIDTH + ROUND_GAP);
-  const sourceX = (roundNo: number) => (roundNo === 1 ? PLAYER_WIDTH : resultX(roundNo - 1) + ROUND_WIDTH);
-  const boardWidth = resultX(roundCount) + ROUND_WIDTH + BOARD_PADDING;
-
-  const participantById = useMemo(() => {
-    return new Map(slots.map((slot) => [slot.id, slot]));
-  }, [slots]);
+  const rowHeight = rowHeightFor(bracketSize);
+  const totalH = TOP_OFFSET + (bracketSize / 2) * rowHeight + BOARD_PADDING;
+  const colStride = CARD_WIDTH + COL_GAP;
 
   const matches = useMemo(() => {
     const placeholders = buildPlaceholderMatches(roundCount, bracketSize);
@@ -210,18 +223,14 @@ export function KnockoutBracket({
     for (const match of data.matches) {
       const index = Math.max(0, match.matchNo - 1);
       const key = `${match.roundNo}-${index}`;
-      byKey.set(key, {
-        ...match,
-        index,
-        layoutKey: key,
-      });
+      byKey.set(key, { ...match, index, layoutKey: key });
     }
     return [...byKey.values()].sort((a, b) => a.roundNo - b.roundNo || a.index - b.index);
   }, [bracketSize, data.matches, roundCount]);
 
-  const matchByRoundIndex = useMemo(() => {
-    return new Map(matches.map((match) => [match.layoutKey, match]));
-  }, [matches]);
+  const matchByKey = useMemo(() => new Map(matches.map((m) => [m.layoutKey, m])), [matches]);
+
+  const participantById = useMemo(() => new Map(slots.map((slot) => [slot.id, slot])), [slots]);
 
   const slotIndexById = useMemo(() => {
     const map = new Map<string, number>();
@@ -229,112 +238,49 @@ export function KnockoutBracket({
     return map;
   }, [slots]);
 
+  // ── Find the path of matches a participant is on, given the slot they started in
   const highlightedKeys = useMemo(() => {
-    if (!hoveredId) return new Set<string>();
-    const slotIndex = slotIndexById.get(hoveredId);
+    if (!hoveredParticipantId) return new Set<string>();
+    const slotIndex = slotIndexById.get(hoveredParticipantId);
     if (slotIndex === undefined) return new Set<string>();
-
     const keys = new Set<string>();
-    for (let roundNo = 1; roundNo <= roundCount; roundNo += 1) {
-      const index = Math.floor(slotIndex / 2 ** roundNo);
-      const match = matchByRoundIndex.get(`${roundNo}-${index}`);
-      if (match) {
-        keys.add(match.layoutKey);
-        keys.add(match.id);
-      }
+    for (let r = 1; r <= roundCount; r += 1) {
+      const idx = Math.floor(slotIndex / 2 ** r);
+      keys.add(`${r}-${idx}`);
     }
     return keys;
-  }, [hoveredId, matchByRoundIndex, roundCount, slotIndexById]);
+  }, [hoveredParticipantId, roundCount, slotIndexById]);
 
-  function yForSlot(index: number) {
-    return TOP_OFFSET + index * ROW_HEIGHT + ROW_HEIGHT / 2;
-  }
-
-  function yForMatch(roundNo: number, index: number) {
-    const groupSize = 2 ** roundNo;
-    return TOP_OFFSET + (index * groupSize + groupSize / 2 - 0.5) * ROW_HEIGHT;
-  }
-
-  function yForSource(roundNo: number, sourceIndex: number) {
-    return roundNo === 1 ? yForSlot(sourceIndex) : yForMatch(roundNo - 1, sourceIndex);
-  }
-
-  const linePaths = matches.map((match) => {
-    const roundNo = match.roundNo;
-    const groupSize = 2 ** roundNo;
-    const firstSlotIndex = match.index * groupSize;
-    const upperY = yForSource(roundNo, match.index * 2);
-    const lowerY = yForSource(roundNo, match.index * 2 + 1);
-    const centerY = yForMatch(roundNo, match.index);
-    const startX = sourceX(roundNo);
-    const endX = resultX(roundNo) - 14;
-    const jointX = Math.round(startX + (endX - startX) * 0.46);
-    const side1Slot = roundNo === 1 ? slots[firstSlotIndex] : null;
-    const side2Slot = roundNo === 1 ? slots[firstSlotIndex + 1] : null;
-    const hasFirstRoundBye =
-      roundNo === 1 &&
-      Boolean(side1Slot?.isBye) !== Boolean(side2Slot?.isBye);
-
-    const path = hasFirstRoundBye
-      ? `M ${startX} ${side1Slot?.isBye ? lowerY : upperY} H ${endX}`
-      : `M ${startX} ${upperY} H ${jointX} M ${startX} ${lowerY} H ${jointX} M ${jointX} ${upperY} V ${lowerY} M ${jointX} ${centerY} H ${endX}`;
-
-    return {
-      key: match.layoutKey,
-      match,
-      path,
-    };
-  });
-
-  function matchSide(match: BracketMatch, side: 1 | 2) {
+  function sideFor(match: BracketMatch, side: 1 | 2): BracketParticipant | null {
     if (match.roundNo === 1) {
-      const slot = slots[(match.matchNo - 1) * 2 + (side === 1 ? 0 : 1)];
-      return slot ?? null;
+      return slots[(match.matchNo - 1) * 2 + (side === 1 ? 0 : 1)] ?? null;
     }
     const id = side === 1 ? match.side1Id : match.side2Id;
     return id ? participantById.get(id) ?? null : null;
   }
 
-  function winnerFor(match: BracketMatch) {
+  function winnerFor(match: BracketMatch): BracketParticipant | null {
     if (match.winnerId) return participantById.get(match.winnerId) ?? null;
-    if (match.winnerSide === 1 || match.winnerSide === 2) return matchSide(match, match.winnerSide);
+    if (match.winnerSide === 1 || match.winnerSide === 2) return sideFor(match, match.winnerSide);
     return null;
   }
 
-  function handleWheel(event: React.WheelEvent<HTMLDivElement>) {
-    event.preventDefault();
-    const delta = event.deltaY > 0 ? -0.08 : 0.08;
-    setScale((current) => clamp(Number((current + delta).toFixed(2)), 0.65, 1.55));
+  // ── Position helpers (tree view)
+  function xForRound(roundNo: number) {
+    return (roundNo - 1) * colStride;
+  }
+  function yForMatch(roundNo: number, index: number) {
+    const pitch = rowHeight * 2 ** (roundNo - 1);
+    return TOP_OFFSET + index * pitch + pitch / 2 - CARD_HEIGHT / 2;
   }
 
-  function startPan(event: React.PointerEvent<HTMLDivElement>) {
-    const target = event.target as HTMLElement;
-    if (target.closest('button') || target.closest('[draggable="true"]')) return;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    setDraggingPan({
-      pointerId: event.pointerId,
-      origin: { x: event.clientX, y: event.clientY },
-      pan,
-    });
-  }
+  // ── Stats for header
+  const totalMatches = matches.filter((m) => !m.id.startsWith('placeholder-')).length;
+  const liveCount = matches.filter((m) => normalizeStatus(m.status) === 'LIVE').length;
+  const completedCount = matches.filter((m) => normalizeStatus(m.status) === 'COMPLETED').length;
 
-  function movePan(event: React.PointerEvent<HTMLDivElement>) {
-    if (!draggingPan || draggingPan.pointerId !== event.pointerId) return;
-    setPan({
-      x: draggingPan.pan.x + event.clientX - draggingPan.origin.x,
-      y: draggingPan.pan.y + event.clientY - draggingPan.origin.y,
-    });
-  }
-
-  function stopPan(event: React.PointerEvent<HTMLDivElement>) {
-    if (draggingPan?.pointerId === event.pointerId) setDraggingPan(null);
-  }
-
-  function resetView() {
-    setScale(1);
-    setPan({ x: 0, y: 0 });
-  }
-
+  // ── Admin swap
+  const [draggedSlot, setDraggedSlot] = useState<number | null>(null);
   function swapSlots(targetIndex: number) {
     if (draggedSlot === null || draggedSlot === targetIndex || !adminMode) return;
     setSlots((current) => {
@@ -345,317 +291,598 @@ export function KnockoutBracket({
     setDraggedSlot(null);
   }
 
-  const activeMatches = matches.filter((match) => match.roundNo === activeRound);
-
   return (
-    <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
-        <div className="min-w-0">
-          <h2 className="truncate text-lg font-black text-slate-950">{data.title}</h2>
-          {data.subtitle && <p className="mt-1 truncate text-xs font-semibold text-slate-500">{data.subtitle}</p>}
+    <section className="overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-sm">
+      {/* ── Header ───────────────────────────────────────────── */}
+      <header className="border-b border-blue-100 bg-gradient-to-r from-[#052163] via-[#0a5dd1] to-[#03205c] px-4 py-4 text-white sm:px-6">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="truncate text-base font-black tracking-wide sm:text-lg">{data.title}</h2>
+            {data.subtitle ? (
+              <p className="mt-1 truncate text-[11px] font-semibold text-blue-100/85 sm:text-xs">
+                {data.subtitle}
+              </p>
+            ) : null}
+          </div>
+          <div className="flex items-center gap-1.5 text-[11px] font-bold text-blue-100/90 sm:text-xs">
+            <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 backdrop-blur">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-300" />
+              {totalMatches} 场比赛
+            </span>
+            {liveCount > 0 ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-red-500/85 px-2.5 py-1 text-white">
+                <span className="bracket-live-pulse h-1.5 w-1.5 rounded-full bg-white" />
+                {liveCount} 进行中
+              </span>
+            ) : null}
+            {completedCount > 0 ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1">
+                <span className="h-1.5 w-1.5 rounded-full bg-amber-300" />
+                {completedCount} 已完成
+              </span>
+            ) : null}
+          </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            className={`inline-flex h-9 items-center gap-2 rounded-lg border px-3 text-xs font-black transition ${
-              viewMode === 'tree'
-                ? 'border-slate-900 bg-slate-950 text-white'
-                : 'border-slate-200 bg-white text-slate-700 hover:border-slate-400'
-            }`}
-            onClick={() => setViewMode('tree')}
-          >
-            <EyeOutlined />
-            树形
-          </button>
-          <button
-            type="button"
-            className={`inline-flex h-9 items-center gap-2 rounded-lg border px-3 text-xs font-black transition ${
-              viewMode === 'rounds'
-                ? 'border-slate-900 bg-slate-950 text-white'
-                : 'border-slate-200 bg-white text-slate-700 hover:border-slate-400'
-            }`}
-            onClick={() => setViewMode('rounds')}
-          >
-            <FullscreenOutlined />
-            轮次
-          </button>
-          {allowAdminSwap && (
+
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <div className="inline-flex rounded-lg bg-white/10 p-0.5 backdrop-blur">
+            {(
+              [
+                { key: 'rounds', label: '轮次列表' },
+                { key: 'tree', label: '树形对阵' },
+              ] as const
+            ).map((tab) => {
+              const active = viewMode === tab.key;
+              return (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setViewMode(tab.key)}
+                  className={`h-7 rounded-md px-3 text-[11px] font-black transition sm:h-8 sm:text-xs ${
+                    active
+                      ? 'bg-white text-[#03205c] shadow-sm'
+                      : 'text-blue-50/85 hover:text-white'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {allowAdminSwap ? (
             <button
               type="button"
-              className={`inline-flex h-9 items-center gap-2 rounded-lg border px-3 text-xs font-black transition ${
+              onClick={() => setAdminMode((v) => !v)}
+              className={`h-7 rounded-md px-3 text-[11px] font-black transition sm:h-8 sm:text-xs ${
                 adminMode
-                  ? 'border-amber-500 bg-amber-50 text-amber-700'
-                  : 'border-slate-200 bg-white text-slate-700 hover:border-slate-400'
+                  ? 'bg-amber-300 text-[#03205c]'
+                  : 'bg-white/10 text-blue-50/85 hover:bg-white/15 hover:text-white'
               }`}
-              onClick={() => setAdminMode((current) => !current)}
             >
-              <SwapOutlined />
-              管理微调
+              {adminMode ? '退出微调' : '管理微调'}
             </button>
-          )}
-          <button
-            type="button"
-            aria-label="缩小"
-            className="grid h-9 w-9 place-items-center rounded-lg border border-slate-200 bg-white text-slate-700 hover:border-slate-400"
-            onClick={() => setScale((current) => clamp(Number((current - 0.1).toFixed(2)), 0.65, 1.55))}
-          >
-            <ZoomOutOutlined />
-          </button>
-          <span className="w-12 text-center text-xs font-black text-slate-500">{Math.round(scale * 100)}%</span>
-          <button
-            type="button"
-            aria-label="放大"
-            className="grid h-9 w-9 place-items-center rounded-lg border border-slate-200 bg-white text-slate-700 hover:border-slate-400"
-            onClick={() => setScale((current) => clamp(Number((current + 0.1).toFixed(2)), 0.65, 1.55))}
-          >
-            <ZoomInOutlined />
-          </button>
-          <button
-            type="button"
-            aria-label="重置视图"
-            className="grid h-9 w-9 place-items-center rounded-lg border border-slate-200 bg-white text-slate-700 hover:border-slate-400"
-            onClick={resetView}
-          >
-            <DragOutlined />
-          </button>
+          ) : null}
         </div>
-      </div>
+      </header>
 
+      {/* ── Body ─────────────────────────────────────────────── */}
       {viewMode === 'tree' ? (
-        <div
-          ref={viewportRef}
-          className="relative h-[620px] cursor-grab overflow-hidden bg-[#fbfcff] active:cursor-grabbing md:h-[720px]"
-          onWheel={handleWheel}
-          onPointerDown={startPan}
-          onPointerMove={movePan}
-          onPointerUp={stopPan}
-          onPointerCancel={stopPan}
-        >
-          <div
-            className="absolute left-0 top-0"
-            style={{
-              width: boardWidth,
-              height: boardHeight,
-              transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})`,
-              transformOrigin: '0 0',
-            }}
-          >
-            <div className="absolute left-0 top-5 flex h-10 items-center text-xs font-black uppercase tracking-[0.14em] text-slate-500">
-              首轮签位
-            </div>
-            {Array.from({ length: roundCount }, (_, index) => {
-              const roundNo = index + 1;
-              return (
-                <div
-                  key={roundNo}
-                  className="absolute top-5 flex h-10 items-center justify-center rounded-lg border border-slate-200 bg-white px-4 text-sm font-black text-slate-950 shadow-sm"
-                  style={{ left: resultX(roundNo), width: ROUND_WIDTH }}
-                >
-                  {defaultRoundLabel(bracketSize, roundNo)}
-                </div>
-              );
-            })}
-
-            <svg className="absolute inset-0" width={boardWidth} height={boardHeight} aria-hidden>
-              {linePaths.map(({ key, match, path }) => {
-                const highlighted = highlightedKeys.has(key) || highlightedKeys.has(match.id);
-                return (
-                  <path
-                    key={key}
-                    d={path}
-                    fill="none"
-                    stroke={highlighted ? '#ef4444' : '#111827'}
-                    strokeLinecap="square"
-                    strokeWidth={highlighted ? 2.5 : 1.4}
-                    vectorEffect="non-scaling-stroke"
-                  />
-                );
-              })}
-            </svg>
-
-            {slots.map((slot, index) => {
-              const highlighted = hoveredId === slot.id;
-              return (
-                <div
-                  key={`${slot.id}-${index}`}
-                  className={`absolute grid items-center rounded-lg border bg-white shadow-sm transition ${
-                    slot.isBye
-                      ? 'border-dashed border-slate-200 text-slate-400'
-                      : highlighted
-                        ? 'border-red-400 ring-2 ring-red-100'
-                        : 'border-slate-200 text-slate-950 hover:border-slate-400'
-                  } ${adminMode && !slot.isBye ? 'cursor-grab active:cursor-grabbing' : ''}`}
-                  style={{
-                    left: 0,
-                    top: yForSlot(index) - SLOT_HEIGHT / 2,
-                    width: PLAYER_WIDTH,
-                    height: SLOT_HEIGHT,
-                    gridTemplateColumns: '48px 1fr',
-                  }}
-                  draggable={adminMode && !slot.isBye}
-                  onDragStart={() => setDraggedSlot(index)}
-                  onDragOver={(event) => event.preventDefault()}
-                  onDrop={() => swapSlots(index)}
-                  onMouseEnter={() => !slot.isBye && setHoveredId(slot.id)}
-                  onMouseLeave={() => setHoveredId(null)}
-                >
-                  <span className="border-r border-slate-100 text-center font-mono text-xs font-black text-slate-500">
-                    {index + 1}
-                  </span>
-                  <span className="min-w-0 truncate px-3 text-sm font-bold">
-                    {slot.name}
-                    {slot.seed && (
-                      <sup className="ml-1 text-[10px] font-black text-slate-400">({slot.seed})</sup>
-                    )}
-                  </span>
-                </div>
-              );
-            })}
-
-            {matches.map((match) => {
-              const normalized = normalizeStatus(match.status);
-              const winner = winnerFor(match);
-              const highlighted = highlightedKeys.has(match.layoutKey) || highlightedKeys.has(match.id);
-              const isLive = normalized === 'LIVE';
-              const isCompleted = normalized === 'COMPLETED';
-              const cardTone = isLive
-                ? 'border-red-500 bg-red-50 text-red-700 bracket-live-pulse'
-                : isCompleted
-                  ? 'border-slate-300 bg-slate-100 text-slate-500'
-                  : 'border-slate-900 bg-white text-slate-950';
-
-              return (
-                <button
-                  key={match.layoutKey}
-                  type="button"
-                  className={`absolute rounded-lg border px-3 py-1.5 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${cardTone} ${
-                    highlighted ? 'ring-2 ring-red-100' : ''
-                  }`}
-                  style={{
-                    left: resultX(match.roundNo),
-                    top: yForMatch(match.roundNo, match.index) - 19,
-                    width: ROUND_WIDTH,
-                    minHeight: 38,
-                  }}
-                  onClick={() => setSelectedMatch(match)}
-                >
-                  <span className="flex items-center justify-between gap-2 text-[11px] font-black">
-                    <span>第 {match.matchNo} 场</span>
-                    <span>{statusLabel(match.status)}</span>
-                  </span>
-                  <span className={`mt-0.5 block truncate text-sm ${isLive ? 'font-black' : 'font-bold'}`}>
-                    {isCompleted && winner ? winner.name : match.roundLabel ?? defaultRoundLabel(bracketSize, match.roundNo)}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
+        <TreeView
+          treeRef={treeRef}
+          totalH={totalH}
+          roundCount={roundCount}
+          bracketSize={bracketSize}
+          matches={matches}
+          matchByKey={matchByKey}
+          colStride={colStride}
+          xForRound={xForRound}
+          yForMatch={yForMatch}
+          sideFor={sideFor}
+          winnerFor={winnerFor}
+          highlightedKeys={highlightedKeys}
+          onHoverParticipant={setHoveredParticipantId}
+          onOpenMatch={(m) => setSelectedMatch(m)}
+          adminMode={adminMode}
+          slots={slots}
+          slotIndexById={slotIndexById}
+          onDragSlot={setDraggedSlot}
+          onDropSlot={swapSlots}
+        />
       ) : (
-        <div className="bg-[#fbfcff] p-4">
-          <div className="mb-4 flex gap-2 overflow-x-auto pb-1">
-            {Array.from({ length: roundCount }, (_, index) => {
-              const roundNo = index + 1;
-              return (
-                <button
-                  type="button"
-                  key={roundNo}
-                  className={`h-9 shrink-0 rounded-lg border px-4 text-xs font-black ${
-                    activeRound === roundNo
-                      ? 'border-slate-950 bg-slate-950 text-white'
-                      : 'border-slate-200 bg-white text-slate-700'
-                  }`}
-                  onClick={() => setActiveRound(roundNo)}
-                >
-                  {defaultRoundLabel(bracketSize, roundNo)}
-                </button>
-              );
-            })}
-          </div>
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {activeMatches.map((match) => (
-              <RoundMatchCard
-                key={match.layoutKey}
-                match={match}
-                label={defaultRoundLabel(bracketSize, match.roundNo)}
-                side1={matchSide(match, 1)}
-                side2={matchSide(match, 2)}
-                winner={winnerFor(match)}
-                onOpen={() => setSelectedMatch(match)}
-              />
-            ))}
-          </div>
-        </div>
+        <RoundsView
+          roundCount={roundCount}
+          bracketSize={bracketSize}
+          matches={matches}
+          activeRound={activeRound}
+          onChangeRound={setActiveRound}
+          sideFor={sideFor}
+          winnerFor={winnerFor}
+          onOpenMatch={(m) => setSelectedMatch(m)}
+          onHoverParticipant={setHoveredParticipantId}
+          highlightedKeys={highlightedKeys}
+        />
       )}
 
-      {selectedMatch && (
+      {selectedMatch ? (
         <MatchDetailModal
           match={selectedMatch}
-          label={defaultRoundLabel(bracketSize, selectedMatch.roundNo)}
-          side1={matchSide(selectedMatch, 1)}
-          side2={matchSide(selectedMatch, 2)}
+          label={selectedMatch.roundLabel ?? defaultRoundLabel(bracketSize, selectedMatch.roundNo)}
+          side1={sideFor(selectedMatch, 1)}
+          side2={sideFor(selectedMatch, 2)}
           winner={winnerFor(selectedMatch)}
           onClose={() => setSelectedMatch(null)}
         />
-      )}
+      ) : null}
     </section>
   );
 }
 
-function RoundMatchCard({
+// ─────────────────────────────────────────────────────────────────────
+// Tree view (desktop-first, horizontally scrollable)
+// ─────────────────────────────────────────────────────────────────────
+
+function TreeView({
+  treeRef,
+  totalH,
+  roundCount,
+  bracketSize,
+  matches,
+  matchByKey,
+  colStride,
+  xForRound,
+  yForMatch,
+  sideFor,
+  winnerFor,
+  highlightedKeys,
+  onHoverParticipant,
+  onOpenMatch,
+  adminMode,
+  slots,
+  slotIndexById,
+  onDragSlot,
+  onDropSlot,
+}: {
+  treeRef: React.RefObject<HTMLDivElement | null>;
+  totalH: number;
+  roundCount: number;
+  bracketSize: number;
+  matches: LayoutMatch[];
+  matchByKey: Map<string, LayoutMatch>;
+  colStride: number;
+  xForRound: (r: number) => number;
+  yForMatch: (r: number, i: number) => number;
+  sideFor: (match: BracketMatch, side: 1 | 2) => BracketParticipant | null;
+  winnerFor: (match: BracketMatch) => BracketParticipant | null;
+  highlightedKeys: Set<string>;
+  onHoverParticipant: (id: string | null) => void;
+  onOpenMatch: (m: LayoutMatch) => void;
+  adminMode: boolean;
+  slots: BracketParticipant[];
+  slotIndexById: Map<string, number>;
+  onDragSlot: (idx: number | null) => void;
+  onDropSlot: (targetIdx: number) => void;
+}) {
+  const boardW = roundCount * colStride - (COL_GAP - BOARD_PADDING * 2);
+
+  // Build SVG connectors round-by-round
+  const connectors: { key: string; d: string; highlight: boolean }[] = [];
+  for (let r = 2; r <= roundCount; r += 1) {
+    const colMatches = matches.filter((m) => m.roundNo === r);
+    for (const m of colMatches) {
+      const parentA = matchByKey.get(`${r - 1}-${m.index * 2}`);
+      const parentB = matchByKey.get(`${r - 1}-${m.index * 2 + 1}`);
+      if (!parentA || !parentB) continue;
+      const startX = xForRound(r - 1) + CARD_WIDTH;
+      const endX = xForRound(r);
+      const midX = startX + (endX - startX) / 2;
+      const yA = yForMatch(r - 1, parentA.index) + CARD_HEIGHT / 2;
+      const yB = yForMatch(r - 1, parentB.index) + CARD_HEIGHT / 2;
+      const yMid = yForMatch(r, m.index) + CARD_HEIGHT / 2;
+      const radius = 10;
+      // Two horizontal stubs from parents → bend → vertical to mid → horizontal to child
+      const d = [
+        `M ${startX} ${yA}`,
+        `L ${midX - radius} ${yA}`,
+        `Q ${midX} ${yA} ${midX} ${yA + (yA < yMid ? radius : -radius)}`,
+        `L ${midX} ${yMid - (yMid > yA ? 0 : 0)}`,
+        `M ${startX} ${yB}`,
+        `L ${midX - radius} ${yB}`,
+        `Q ${midX} ${yB} ${midX} ${yB + (yB < yMid ? radius : -radius)}`,
+        `L ${midX} ${yMid}`,
+        `L ${endX} ${yMid}`,
+      ].join(' ');
+      const highlight = highlightedKeys.has(m.layoutKey) || highlightedKeys.has(`${r - 1}-${m.index * 2}`) || highlightedKeys.has(`${r - 1}-${m.index * 2 + 1}`);
+      connectors.push({ key: `c-${r}-${m.index}`, d, highlight });
+    }
+  }
+
+  return (
+    <div
+      ref={treeRef}
+      className="relative overflow-x-auto overflow-y-auto bg-[radial-gradient(circle_at_top,#f5f8ff,#eef3fb_60%,#e5edf8)] [scrollbar-width:thin]"
+      style={{ maxHeight: 720 }}
+    >
+      <div className="relative" style={{ width: boardW, height: totalH, padding: BOARD_PADDING }}>
+        {/* Round header chips */}
+        {Array.from({ length: roundCount }, (_, i) => {
+          const r = i + 1;
+          const count = bracketSize / 2 ** r;
+          return (
+            <div
+              key={r}
+              className="absolute flex h-9 items-center justify-center gap-2 rounded-lg border border-blue-100 bg-white/95 px-3 text-xs font-black text-[#03205c] shadow-sm backdrop-blur"
+              style={{ left: xForRound(r) + BOARD_PADDING, top: 8, width: CARD_WIDTH }}
+            >
+              <span>{defaultRoundLabel(bracketSize, r)}</span>
+              <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-black text-blue-700">
+                {count}
+              </span>
+            </div>
+          );
+        })}
+
+        {/* Connectors */}
+        <svg
+          className="pointer-events-none absolute"
+          style={{ left: BOARD_PADDING, top: BOARD_PADDING, width: boardW, height: totalH }}
+          aria-hidden
+        >
+          {connectors.map((c) => (
+            <path
+              key={c.key}
+              d={c.d}
+              fill="none"
+              stroke={c.highlight ? '#f59e0b' : '#cbd5e1'}
+              strokeWidth={c.highlight ? 2.4 : 1.4}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              vectorEffect="non-scaling-stroke"
+            />
+          ))}
+        </svg>
+
+        {/* Match cards */}
+        {matches.map((m) => {
+          const side1 = sideFor(m, 1);
+          const side2 = sideFor(m, 2);
+          const winner = winnerFor(m);
+          const highlighted = highlightedKeys.has(m.layoutKey);
+          return (
+            <div
+              key={m.layoutKey}
+              className="absolute"
+              style={{
+                left: xForRound(m.roundNo) + BOARD_PADDING,
+                top: yForMatch(m.roundNo, m.index) + BOARD_PADDING,
+                width: CARD_WIDTH,
+                height: CARD_HEIGHT,
+              }}
+            >
+              <MatchCard
+                match={m}
+                side1={side1}
+                side2={side2}
+                winner={winner}
+                highlight={highlighted}
+                onOpen={() => onOpenMatch(m)}
+                onHoverParticipant={onHoverParticipant}
+                adminMode={adminMode && m.roundNo === 1}
+                slotIndex1={side1 ? slotIndexById.get(side1.id) ?? null : null}
+                slotIndex2={side2 ? slotIndexById.get(side2.id) ?? null : null}
+                onDragSlot={onDragSlot}
+                onDropSlot={onDropSlot}
+              />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Rounds view (mobile-first list)
+// ─────────────────────────────────────────────────────────────────────
+
+function RoundsView({
+  roundCount,
+  bracketSize,
+  matches,
+  activeRound,
+  onChangeRound,
+  sideFor,
+  winnerFor,
+  onOpenMatch,
+  onHoverParticipant,
+  highlightedKeys,
+}: {
+  roundCount: number;
+  bracketSize: number;
+  matches: LayoutMatch[];
+  activeRound: number;
+  onChangeRound: (r: number) => void;
+  sideFor: (match: BracketMatch, side: 1 | 2) => BracketParticipant | null;
+  winnerFor: (match: BracketMatch) => BracketParticipant | null;
+  onOpenMatch: (m: LayoutMatch) => void;
+  onHoverParticipant: (id: string | null) => void;
+  highlightedKeys: Set<string>;
+}) {
+  const activeMatches = matches.filter((m) => m.roundNo === activeRound);
+
+  return (
+    <div className="bg-[#f7f9fd] px-4 py-4 sm:px-6 sm:py-5">
+      <div className="-mx-1 mb-4 flex gap-1.5 overflow-x-auto px-1 pb-1 [scrollbar-width:thin]">
+        {Array.from({ length: roundCount }, (_, i) => {
+          const r = i + 1;
+          const count = bracketSize / 2 ** r;
+          const active = activeRound === r;
+          return (
+            <button
+              key={r}
+              type="button"
+              onClick={() => onChangeRound(r)}
+              className={`inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-3 text-xs font-black transition ${
+                active
+                  ? 'border-[#0a5dd1] bg-[#0a5dd1] text-white shadow-sm'
+                  : 'border-blue-100 bg-white text-slate-600 hover:border-blue-300 hover:text-[#0a5dd1]'
+              }`}
+            >
+              <span>{defaultRoundLabel(bracketSize, r)}</span>
+              <span
+                className={`rounded-full px-1.5 text-[10px] ${
+                  active ? 'bg-white/20 text-white' : 'bg-blue-50 text-blue-700'
+                }`}
+              >
+                {count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        {activeMatches.map((m) => (
+          <MatchCard
+            key={m.layoutKey}
+            match={m}
+            side1={sideFor(m, 1)}
+            side2={sideFor(m, 2)}
+            winner={winnerFor(m)}
+            highlight={highlightedKeys.has(m.layoutKey)}
+            variant="list"
+            onOpen={() => onOpenMatch(m)}
+            onHoverParticipant={onHoverParticipant}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Match card
+// ─────────────────────────────────────────────────────────────────────
+
+function MatchCard({
   match,
-  label,
   side1,
   side2,
   winner,
+  highlight,
+  variant = 'tree',
   onOpen,
+  onHoverParticipant,
+  adminMode = false,
+  slotIndex1 = null,
+  slotIndex2 = null,
+  onDragSlot,
+  onDropSlot,
 }: {
   match: LayoutMatch;
-  label: string;
   side1: BracketParticipant | null;
   side2: BracketParticipant | null;
   winner: BracketParticipant | null;
+  highlight: boolean;
+  variant?: 'tree' | 'list';
   onOpen: () => void;
+  onHoverParticipant: (id: string | null) => void;
+  adminMode?: boolean;
+  slotIndex1?: number | null;
+  slotIndex2?: number | null;
+  onDragSlot?: (idx: number | null) => void;
+  onDropSlot?: (targetIdx: number) => void;
 }) {
-  const normalized = normalizeStatus(match.status);
+  const status = normalizeStatus(match.status);
+  const isLive = status === 'LIVE';
+  const isDone = status === 'COMPLETED';
+  const isPending = status === 'PENDING';
+  const forfeitedSide = match.forfeitedSide === 1 || match.forfeitedSide === 2 ? match.forfeitedSide : null;
+  const isForfeit = forfeitedSide !== null;
+  const scores = parseScores(match.gamesText || match.score);
+  const isPlaceholder = match.id.startsWith('placeholder-');
+  const time = formatTime(match.scheduledAt);
+  const venueName = match.venueName?.trim();
+
+  const tone = isForfeit
+    ? 'border-red-200 bg-red-50/40'
+    : isLive
+      ? 'border-red-200 bg-red-50/40 ring-1 ring-red-100'
+      : isDone
+        ? 'border-amber-200 bg-amber-50/40'
+        : 'border-blue-100 bg-white';
+
   return (
     <button
       type="button"
-      className="rounded-lg border border-slate-200 bg-white p-4 text-left shadow-sm transition hover:border-slate-400 hover:shadow-md"
       onClick={onOpen}
+      className={`group relative flex h-full w-full flex-col rounded-xl border text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${tone} ${
+        highlight ? 'ring-2 ring-amber-300 ring-offset-1 ring-offset-white' : ''
+      } ${isPlaceholder ? 'opacity-65' : ''}`}
     >
-      <div className="flex items-center justify-between gap-3">
-        <strong className="text-sm text-slate-950">{label} · 第 {match.matchNo} 场</strong>
-        <span className={`text-xs font-black ${normalized === 'LIVE' ? 'text-red-600' : 'text-slate-500'}`}>
-          {statusLabel(match.status)}
+      {/* Top row: round label + status */}
+      <div className="flex items-center justify-between gap-2 border-b border-black/5 px-3 py-1.5">
+        <span className="truncate text-[10px] font-black uppercase tracking-wider text-slate-400">
+          第 {match.matchNo} 场
+        </span>
+        <span
+          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-black ${
+            isForfeit
+              ? 'bg-red-100 text-red-700'
+              : isLive
+                ? 'bg-red-500 text-white'
+                : isDone
+                  ? 'bg-amber-100 text-amber-700'
+                  : 'bg-slate-100 text-slate-500'
+          }`}
+        >
+          {isLive && !isForfeit ? <span className="bracket-live-pulse h-1.5 w-1.5 rounded-full bg-white" /> : null}
+          {isForfeit ? '弃权' : statusText(match.status)}
         </span>
       </div>
-      <div className="mt-3 space-y-2">
-        <ParticipantLine participant={side1} winner={winner?.id === side1?.id} />
-        <ParticipantLine participant={side2} winner={winner?.id === side2?.id} />
+
+      {/* Sides */}
+      <div className="flex flex-1 flex-col gap-1 p-1">
+        <SideRow
+          participant={side1}
+          score={isForfeit ? undefined : scores.a}
+          isWinner={winner?.id === side1?.id && !!winner}
+          dim={!!winner && winner.id !== side1?.id}
+          forfeited={forfeitedSide === 1}
+          walkover={isForfeit && forfeitedSide !== 1}
+          onHover={onHoverParticipant}
+          adminMode={adminMode}
+          slotIndex={slotIndex1}
+          onDragSlot={onDragSlot}
+          onDropSlot={onDropSlot}
+        />
+        <SideRow
+          participant={side2}
+          score={isForfeit ? undefined : scores.b}
+          isWinner={winner?.id === side2?.id && !!winner}
+          dim={!!winner && winner.id !== side2?.id}
+          forfeited={forfeitedSide === 2}
+          walkover={isForfeit && forfeitedSide !== 2}
+          onHover={onHoverParticipant}
+          adminMode={adminMode}
+          slotIndex={slotIndex2}
+          onDragSlot={onDragSlot}
+          onDropSlot={onDropSlot}
+        />
       </div>
-      <p className="mt-3 text-xs font-semibold text-slate-500">比分：{match.gamesText || match.score || '-'}</p>
+
+      {/* Footer (only in list variant or when meta exists) */}
+      {(variant === 'list' && (venueName || time)) || (variant === 'tree' && false) ? (
+        <div className="flex items-center justify-between gap-2 border-t border-black/5 px-3 py-1.5 text-[10px] font-bold text-slate-500">
+          <span className="truncate">{venueName ?? '待排场地'}</span>
+          <span>{time ?? '待排时间'}</span>
+        </div>
+      ) : null}
     </button>
   );
 }
 
-function ParticipantLine({
+function SideRow({
   participant,
-  winner,
+  score,
+  isWinner,
+  dim,
+  forfeited = false,
+  walkover = false,
+  onHover,
+  adminMode,
+  slotIndex,
+  onDragSlot,
+  onDropSlot,
 }: {
   participant: BracketParticipant | null;
-  winner: boolean;
+  score?: number;
+  isWinner: boolean;
+  dim: boolean;
+  forfeited?: boolean;
+  walkover?: boolean;
+  onHover: (id: string | null) => void;
+  adminMode: boolean;
+  slotIndex: number | null;
+  onDragSlot?: (idx: number | null) => void;
+  onDropSlot?: (targetIdx: number) => void;
 }) {
+  const bye = !participant || participant.isBye;
+  const draggable = adminMode && !bye && slotIndex !== null;
+
   return (
-    <div className="flex items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2 text-sm">
-      <span className={`truncate ${winner ? 'font-black text-slate-950' : 'font-semibold text-slate-600'}`}>
-        {participant?.name ?? '待定'}
-        {participant?.seed && <sup className="ml-1 text-[10px] text-slate-400">({participant.seed})</sup>}
+    <div
+      className={`flex flex-1 items-center justify-between gap-2 rounded-md px-2.5 py-1.5 ${
+        forfeited
+          ? 'bg-red-50/70 line-through decoration-red-300/70'
+          : isWinner
+            ? 'bg-amber-50/70'
+            : 'bg-slate-50/60'
+      } ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}`}
+      draggable={draggable}
+      onDragStart={() => draggable && onDragSlot?.(slotIndex)}
+      onDragOver={(event) => {
+        if (draggable) event.preventDefault();
+      }}
+      onDrop={() => {
+        if (draggable && slotIndex !== null) onDropSlot?.(slotIndex);
+      }}
+      onMouseEnter={() => participant && !bye && onHover(participant.id)}
+      onMouseLeave={() => onHover(null)}
+    >
+      <span className="flex min-w-0 items-center gap-1.5">
+        {participant?.seed ? (
+          <span className="inline-flex h-5 min-w-5 items-center justify-center rounded bg-[#03205c] px-1 text-[10px] font-black text-white">
+            {participant.seed}
+          </span>
+        ) : null}
+        <span
+          className={`truncate text-sm ${
+            bye
+              ? 'font-semibold italic text-slate-300'
+              : forfeited
+                ? 'font-semibold text-red-500'
+                : isWinner
+                  ? 'font-black text-[#03205c]'
+                  : dim
+                    ? 'font-semibold text-slate-400'
+                    : 'font-bold text-slate-700'
+          }`}
+        >
+          {participant?.name ?? '待定'}
+        </span>
       </span>
-      {winner && <span className="text-xs font-black text-amber-600">胜</span>}
+      <span className="flex items-center gap-1.5">
+        {forfeited ? (
+          <span className="rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-black text-red-700 no-underline">
+            弃权
+          </span>
+        ) : walkover ? (
+          <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-black text-amber-700">
+            晋级
+          </span>
+        ) : isWinner ? (
+          <svg viewBox="0 0 20 20" className="h-3.5 w-3.5 text-amber-500" fill="currentColor" aria-hidden>
+            <path d="M16.7 5.3a1 1 0 0 1 0 1.4l-7.5 7.5a1 1 0 0 1-1.4 0L3.3 9.7a1 1 0 0 1 1.4-1.4l3.8 3.8 6.8-6.8a1 1 0 0 1 1.4 0z" />
+          </svg>
+        ) : null}
+        {typeof score === 'number' ? (
+          <span
+            className={`tabular-nums text-sm ${
+              isWinner ? 'font-black text-[#03205c]' : 'font-bold text-slate-500'
+            }`}
+          >
+            {score}
+          </span>
+        ) : null}
+      </span>
     </div>
   );
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Modal
+// ─────────────────────────────────────────────────────────────────────
 
 function MatchDetailModal({
   match,
@@ -672,66 +899,205 @@ function MatchDetailModal({
   winner: BracketParticipant | null;
   onClose: () => void;
 }) {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [onClose]);
+
+  const status = normalizeStatus(match.status);
+  const isLive = status === 'LIVE';
+
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/45 px-4" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-[#02133b]/55 backdrop-blur-sm p-3 sm:p-6"
+      onClick={onClose}
+    >
       <div
-        className="w-full max-w-lg rounded-lg bg-white p-5 shadow-2xl"
+        className="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <p className="text-xs font-black uppercase tracking-[0.16em] text-slate-400">{label}</p>
-            <h3 className="mt-1 text-xl font-black text-slate-950">第 {match.matchNo} 场比赛详情</h3>
+        <header className="flex items-start justify-between gap-3 bg-gradient-to-r from-[#052163] via-[#0a5dd1] to-[#03205c] px-5 py-4 text-white">
+          <div className="min-w-0">
+            <p className="text-[11px] font-black uppercase tracking-[0.16em] text-blue-100/85">
+              {label}
+            </p>
+            <h3 className="mt-1 text-lg font-black">第 {match.matchNo} 场比赛详情</h3>
           </div>
           <button
             type="button"
             aria-label="关闭"
-            className="grid h-9 w-9 place-items-center rounded-lg border border-slate-200 text-slate-600 hover:border-slate-400"
             onClick={onClose}
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-white/30 text-white transition hover:bg-white/10"
           >
-            <CloseOutlined />
+            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.4">
+              <path strokeLinecap="round" d="M6 6l12 12M18 6L6 18" />
+            </svg>
           </button>
-        </div>
+        </header>
 
-        <div className="mt-5 grid gap-3">
-          <ParticipantLine participant={side1} winner={winner?.id === side1?.id} />
-          <ParticipantLine participant={side2} winner={winner?.id === side2?.id} />
-        </div>
-
-        <dl className="mt-5 grid gap-3 text-sm sm:grid-cols-2">
-          <DetailItem label="状态" value={statusLabel(match.status)} strong={normalizeStatus(match.status) === 'LIVE'} />
-          <DetailItem label="比分" value={match.gamesText || match.score || '-'} />
-          <DetailItem label="场地" value={match.venueName || '待排场地'} />
-          <DetailItem label="时间" value={formatTime(match.scheduledAt)} />
-          <DetailItem label="裁判" value={match.refereeName || '待分配'} />
-          <DetailItem label="胜方" value={winner?.name || '待定'} strong={Boolean(winner)} />
-        </dl>
-
-        {match.detailLines?.length ? (
-          <div className="mt-5 rounded-lg bg-slate-50 p-3">
-            {match.detailLines.map((line) => (
-              <p key={line} className="text-sm font-semibold text-slate-600">{line}</p>
-            ))}
+        <div className="space-y-4 px-5 py-5">
+          <div className="flex flex-col gap-2 rounded-xl border border-blue-100 bg-blue-50/30 p-2">
+            <ModalSide
+              participant={side1}
+              winner={!!winner && winner.id === side1?.id}
+              score={match.forfeitedSide ? undefined : parseScores(match.gamesText || match.score).a}
+              forfeited={match.forfeitedSide === 1}
+            />
+            <ModalSide
+              participant={side2}
+              winner={!!winner && winner.id === side2?.id}
+              score={match.forfeitedSide ? undefined : parseScores(match.gamesText || match.score).b}
+              forfeited={match.forfeitedSide === 2}
+            />
           </div>
-        ) : null}
+
+          <dl className="grid grid-cols-2 gap-2.5 text-sm">
+            <ModalFact
+              label="状态"
+              value={match.forfeitedSide ? '弃权' : statusText(match.status)}
+              highlight={isLive || !!match.forfeitedSide}
+              highlightTone="red"
+            />
+            <ModalFact
+              label="比分"
+              value={match.forfeitedSide ? 'WO' : match.gamesText || match.score || '—'}
+              mono
+            />
+            <ModalFact label="场地" value={match.venueName || '待排场地'} />
+            <ModalFact label="时间" value={formatTime(match.scheduledAt) ?? '待排时间'} />
+            <ModalFact label="裁判" value={match.refereeName || '待分配'} />
+            <ModalFact label="胜方" value={winner?.name || '待定'} highlight={!!winner} highlightTone="amber" />
+          </dl>
+
+          {match.forfeitedSide ? (
+            <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3">
+              <svg viewBox="0 0 20 20" fill="currentColor" className="mt-0.5 h-4 w-4 shrink-0 text-red-500" aria-hidden>
+                <path fillRule="evenodd" d="M10 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zM9 7a1 1 0 1 1 2 0v4a1 1 0 1 1-2 0V7zm1 7a1 1 0 1 1 0 2 1 1 0 0 1 0-2z" clipRule="evenodd" />
+              </svg>
+              <div className="min-w-0">
+                <p className="text-xs font-black text-red-700">
+                  {match.forfeitedSide === 1 ? side1?.name : side2?.name} 弃权
+                </p>
+                {match.forfeitReason ? (
+                  <p className="mt-0.5 text-xs font-semibold text-red-600/80">{match.forfeitReason}</p>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
+          {match.detailLines?.length ? (
+            <div className="rounded-xl bg-blue-50/60 p-3">
+              <p className="text-[10px] font-black uppercase tracking-wider text-blue-700/70">子场次明细</p>
+              <div className="mt-2 space-y-1.5">
+                {match.detailLines.map((line) => (
+                  <p key={line} className="text-xs font-semibold text-slate-600">
+                    {line}
+                  </p>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
       </div>
     </div>
   );
 }
 
-function DetailItem({
+function ModalSide({
+  participant,
+  winner,
+  score,
+  forfeited = false,
+}: {
+  participant: BracketParticipant | null;
+  winner: boolean;
+  score?: number;
+  forfeited?: boolean;
+}) {
+  const bye = !participant || participant.isBye;
+  return (
+    <div
+      className={`flex items-center justify-between gap-3 rounded-lg px-4 py-3 ${
+        forfeited ? 'bg-red-50/80' : winner ? 'bg-amber-50/80' : 'bg-white'
+      }`}
+    >
+      <span className="flex min-w-0 items-center gap-2">
+        {participant?.seed ? (
+          <span className="inline-flex h-5 min-w-5 items-center justify-center rounded bg-[#03205c] px-1 text-[10px] font-black text-white">
+            {participant.seed}
+          </span>
+        ) : null}
+        <span className="min-w-0">
+          <span
+            className={`block truncate text-sm ${
+              bye
+                ? 'italic text-slate-300'
+                : forfeited
+                  ? 'font-semibold text-red-500 line-through decoration-red-300'
+                  : winner
+                    ? 'font-black text-[#03205c]'
+                    : 'font-bold text-slate-700'
+            }`}
+          >
+            {participant?.name ?? '待定'}
+          </span>
+          {participant?.affiliation ? (
+            <span className="block truncate text-[11px] font-semibold text-slate-400">
+              {participant.affiliation}
+            </span>
+          ) : null}
+        </span>
+      </span>
+      <span className="flex items-center gap-2">
+        {forfeited ? (
+          <span className="inline-flex h-5 items-center rounded bg-red-500 px-1.5 text-[10px] font-black text-white">
+            弃权
+          </span>
+        ) : winner ? (
+          <span className="inline-flex h-5 items-center rounded bg-amber-400 px-1.5 text-[10px] font-black text-white">
+            {score === undefined ? '晋级' : '胜'}
+          </span>
+        ) : null}
+        {typeof score === 'number' ? (
+          <span className={`text-lg tabular-nums ${winner ? 'font-black text-[#03205c]' : 'font-bold text-slate-500'}`}>
+            {score}
+          </span>
+        ) : null}
+      </span>
+    </div>
+  );
+}
+
+function ModalFact({
   label,
   value,
-  strong = false,
+  highlight = false,
+  highlightTone = 'amber',
+  mono = false,
 }: {
   label: string;
   value: string;
-  strong?: boolean;
+  highlight?: boolean;
+  highlightTone?: 'amber' | 'red';
+  mono?: boolean;
 }) {
+  const toneClass = highlight
+    ? highlightTone === 'red'
+      ? 'text-red-600'
+      : 'text-amber-700'
+    : 'text-slate-800';
   return (
-    <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
-      <dt className="text-xs font-black text-slate-400">{label}</dt>
-      <dd className={`mt-1 truncate ${strong ? 'font-black text-red-600' : 'font-bold text-slate-800'}`}>
+    <div className="rounded-lg border border-blue-100 bg-blue-50/40 px-3 py-2">
+      <dt className="text-[10px] font-black uppercase tracking-wider text-slate-400">{label}</dt>
+      <dd className={`mt-0.5 truncate text-sm font-black ${toneClass} ${mono ? 'tabular-nums' : ''}`}>
         {value}
       </dd>
     </div>

@@ -10,6 +10,12 @@ datasource db {
 enum Role {
   ADMIN
   REFEREE
+  PLAYER
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
 }
 
 enum Gender {
@@ -65,6 +71,7 @@ enum MatchEventType {
   WARNING
   YELLOW_CARD
   SERVE_CHANGE
+  FORFEIT
 }
 
 enum RegistrationStatus {
@@ -100,16 +107,47 @@ enum DrawSlotSourceType {
   MANUAL_SWAP
 }
 
+model InviteCode {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  role        Role
+  maxUses     Int
+  usedUses    Int      @default(0)
+  expiresAt   DateTime?
+  isEnabled   Boolean  @default(true)
+  remark      String?  @db.VarChar(255)
+  users       User[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([role])
+  @@index([isEnabled])
+  @@index([expiresAt])
+}
+
 model User {
   id                String             @id @default(cuid())
   username          String             @unique
-  password          String
+  email             String             @unique
+  passwordHash      String             @map("password")
   role              Role
+  status            UserStatus         @default(ACTIVE)
+  failedAttempts    Int                @default(0) @map("failedLoginCount")
+  lockedUntil       DateTime?
+  emailVerifiedAt   DateTime?
+  mustChangePassword Boolean           @default(false)
+  inviteCodeId      String?
+  inviteCode        InviteCode?        @relation(fields: [inviteCodeId], references: [id], onDelete: SetNull)
+  competitionRegistrations CompetitionRegistration[]
   matches           Match[]
   drawOperationLogs DrawOperationLog[] @relation("drawOperationLogOperator")
   drawSeedSettings  DrawSeedSetting[]  @relation("drawSeedSettingCreator")
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
+
+  @@index([role])
+  @@index([status])
+  @@index([inviteCodeId])
 }
 
 model Announcement {
@@ -153,6 +191,7 @@ model Tournament {
   name                  String
   edition               Int
   subtitle              String?
+  organizer             String?
   coverImageUrl         String?
   location              String?
   projectText           String?
@@ -161,12 +200,22 @@ model Tournament {
   registrationEndDate   DateTime?
   status                TournamentStatus @default(REGISTRATION_NOT_STARTED)
   rules                 String?          @db.Text
+  description           String?          @db.Text
+  registrationNotice    String?          @db.Text
+  maxRegistrationEvents Int              @default(2)
+  allowCrossEventRegistration Boolean    @default(true)
+  needsRegistrationReview Boolean        @default(true)
+  defaultMatchMinutes   Int              @default(45)
+  breakMinutes          Int              @default(10)
+  dailyStartTime        String           @default("09:00") @db.VarChar(5)
+  dailyEndTime          String           @default("18:00") @db.VarChar(5)
   isPublished           Boolean          @default(false)
   showOnHome            Boolean          @default(false)
   startDate             DateTime
   endDate               DateTime
   isArchived            Boolean          @default(false)
   events                Event[]
+  competitionRegistrations CompetitionRegistration[]
   venues                Venue[]
   teamCompetitions      TeamCompetition[]
   createdAt             DateTime         @default(now())
@@ -186,6 +235,7 @@ model Event {
   drawLocked         Boolean            @default(false)
   drawGeneratedAt    DateTime?
   registrations      Registration[]
+  competitionRegistrationItems CompetitionRegistrationEventItem[]
   matches            Match[]
   drawBrackets       DrawBracket[]
   drawSeedSettings   DrawSeedSetting[]
@@ -198,6 +248,8 @@ model Registration {
   id               String             @id @default(cuid())
   eventId          String
   event            Event              @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  competitionRegistrationId String?
+  competitionRegistration CompetitionRegistration? @relation(fields: [competitionRegistrationId], references: [id], onDelete: SetNull)
   player1Id        String
   player1          Player             @relation("registrationPlayer1", fields: [player1Id], references: [id])
   player2Id        String?
@@ -223,10 +275,51 @@ model Registration {
   updatedAt        DateTime           @updatedAt
 
   @@unique([eventId, player1Id, player2Id])
+  @@index([competitionRegistrationId])
   @@index([eventId])
   @@index([eventId, studentId])
   @@index([eventId, status])
   @@index([status])
+}
+
+model CompetitionRegistration {
+  id             String             @id @default(cuid())
+  competitionId  String
+  competition    Tournament         @relation(fields: [competitionId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  studentId      String
+  name           String
+  gender         Gender
+  contact        String?
+  remark         String?            @db.Text
+  status         RegistrationStatus @default(PENDING)
+  rejectReason   String?
+  reviewedAt     DateTime?
+  reviewedById   String?
+  eventItems     CompetitionRegistrationEventItem[]
+  registrations  Registration[]
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  @@unique([competitionId, userId])
+  @@index([competitionId, status])
+  @@index([userId])
+  @@index([studentId])
+}
+
+model CompetitionRegistrationEventItem {
+  id                         String                  @id @default(cuid())
+  competitionRegistrationId  String
+  competitionRegistration    CompetitionRegistration @relation(fields: [competitionRegistrationId], references: [id], onDelete: Cascade)
+  eventId                    String
+  event                      Event                   @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  partnerName                String?
+  partnerStudentId           String?
+  createdAt                  DateTime                @default(now())
+
+  @@unique([competitionRegistrationId, eventId])
+  @@index([eventId])
 }
 
 model TeamCompetition {
@@ -362,6 +455,8 @@ model Match {
   durationMinutes       Int                  @default(45)
   status                MatchStatus          @default(PENDING)
   winnerSide            Int?
+  forfeitedSide         Int?
+  forfeitReason         String?              @db.VarChar(191)
   games                 Game[]
   events                MatchEvent[]
   createdAt             DateTime             @default(now())

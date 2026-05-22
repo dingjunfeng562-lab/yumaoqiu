@@ -4,8 +4,8 @@ import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { Alert, Button, Spin, Tag, message } from 'antd';
-import { ArrowLeftOutlined, ReloadOutlined, UndoOutlined } from '@ant-design/icons';
+import { Alert, Button, Input, Modal, Spin, Tag, message } from 'antd';
+import { ArrowLeftOutlined, CloseCircleOutlined, ReloadOutlined, UndoOutlined } from '@ant-design/icons';
 import { io, type Socket } from 'socket.io-client';
 import { apiFetch } from '@/lib/api';
 
@@ -35,6 +35,8 @@ type ScoreState = {
   id: string;
   status: 'PENDING' | 'LIVE' | 'COMPLETED';
   winnerSide?: number | null;
+  forfeitedSide?: number | null;
+  forfeitReason?: string | null;
   round: string;
   matchNo: number;
   event: {
@@ -69,6 +71,7 @@ const eventLabels: Record<string, string> = {
   WARNING: '警告',
   YELLOW_CARD: '黄牌',
   SERVE_CHANGE: '发球切换',
+  FORFEIT: '弃权',
 };
 
 function sideName(side?: { name: string } | null) {
@@ -84,6 +87,8 @@ export default function RefereeScoringPage() {
   const [loading, setLoading] = useState(false);
   const [busyAction, setBusyAction] = useState('');
   const [socketStatus, setSocketStatus] = useState<'连接中' | '已连接' | '已断开'>('连接中');
+  const [forfeitTarget, setForfeitTarget] = useState<1 | 2 | null>(null);
+  const [forfeitReason, setForfeitReason] = useState('选手未到场弃权');
 
   const currentGame = score?.currentGame ?? score?.games.at(-1) ?? null;
   const disabled = !score || score.status === 'COMPLETED' || busyAction !== '';
@@ -157,7 +162,10 @@ export default function RefereeScoringPage() {
         <div className="max-w-md rounded-2xl border border-white/10 bg-white/10 p-6 text-center backdrop-blur">
           <h1 className="text-2xl font-black">裁判记分</h1>
           <p className="mt-3 text-sm text-blue-100">请使用裁判账号登录后操作比分。</p>
-          <Link href="/login" className="mt-6 inline-flex h-11 items-center rounded-xl bg-blue-500 px-6 font-black">
+          <Link
+            href={`/login?redirect=${encodeURIComponent(`/referee/matches/${matchId}`)}`}
+            className="mt-6 inline-flex h-11 items-center rounded-xl bg-blue-500 px-6 font-black"
+          >
             去登录
           </Link>
         </div>
@@ -170,7 +178,7 @@ export default function RefereeScoringPage() {
       <div className="mx-auto max-w-5xl space-y-4">
         <header className="rounded-2xl border border-blue-100 bg-white p-4 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <Link href="/referee" className="inline-flex items-center gap-2 text-sm font-bold text-blue-700">
+            <Link href="/referee/my-matches" className="inline-flex items-center gap-2 text-sm font-bold text-blue-700">
               <ArrowLeftOutlined /> 返回场次
             </Link>
             <div className="flex items-center gap-2">
@@ -197,9 +205,101 @@ export default function RefereeScoringPage() {
           </div>
         </header>
 
-        {score.status === 'COMPLETED' && (
-          <Alert type="success" showIcon message={`本场已结束，胜方：${winnerName}`} />
-        )}
+        {score.status === 'COMPLETED' && score.forfeitedSide ? (
+          <Alert
+            type="warning"
+            showIcon
+            message={`选手 ${score.forfeitedSide} 弃权,胜方:${winnerName}`}
+            description={score.forfeitReason ?? '选手未到场弃权'}
+          />
+        ) : score.status === 'COMPLETED' ? (
+          <Alert type="success" showIcon message={`本场已结束,胜方:${winnerName}`} />
+        ) : null}
+
+        {score.status !== 'COMPLETED' ? (
+          <section className="rounded-2xl border border-amber-200 bg-amber-50/60 p-4 shadow-sm">
+            <div className="flex flex-wrap items-start gap-3 sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <p className="flex items-center gap-2 text-sm font-black text-amber-800">
+                  <CloseCircleOutlined /> 选手到场确认
+                </p>
+                <p className="mt-1 text-xs font-semibold text-amber-700/85">
+                  若任一方未在规定时间内到场,可以判定弃权,另一方直接晋级,本场会在对阵表里标记"弃权"。
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  danger
+                  icon={<CloseCircleOutlined />}
+                  disabled={!score.side1 || !!busyAction}
+                  onClick={() => {
+                    setForfeitReason('选手未到场弃权');
+                    setForfeitTarget(1);
+                  }}
+                >
+                  {sideName(score.side1)} 弃权
+                </Button>
+                <Button
+                  danger
+                  icon={<CloseCircleOutlined />}
+                  disabled={!score.side2 || !!busyAction}
+                  onClick={() => {
+                    setForfeitReason('选手未到场弃权');
+                    setForfeitTarget(2);
+                  }}
+                >
+                  {sideName(score.side2)} 弃权
+                </Button>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
+        <Modal
+          open={forfeitTarget !== null}
+          title="判定弃权"
+          okText="确认弃权"
+          okButtonProps={{ danger: true, loading: busyAction === `/matches/${matchId}/forfeit` }}
+          cancelText="取消"
+          onCancel={() => setForfeitTarget(null)}
+          onOk={async () => {
+            if (forfeitTarget === null) return;
+            await postAction(`/matches/${matchId}/forfeit`, {
+              side: forfeitTarget,
+              reason: forfeitReason.trim() || '选手未到场弃权',
+            });
+            setForfeitTarget(null);
+          }}
+        >
+          {forfeitTarget !== null ? (
+            <div className="space-y-3">
+              <p className="text-sm">
+                确认将{' '}
+                <strong className="text-red-600">
+                  {sideName(forfeitTarget === 1 ? score.side1 : score.side2)}
+                </strong>{' '}
+                判定为弃权,胜方为{' '}
+                <strong className="text-blue-700">
+                  {sideName(forfeitTarget === 1 ? score.side2 : score.side1)}
+                </strong>
+                。
+              </p>
+              <Input.TextArea
+                rows={2}
+                value={forfeitReason}
+                onChange={(e) => setForfeitReason(e.target.value)}
+                placeholder="弃权原因(可选,默认:选手未到场弃权)"
+                maxLength={120}
+                showCount
+              />
+              <Alert
+                type="info"
+                showIcon
+                message="本场会立即结束并标记为已完成,胜方在对阵表中自动晋级。"
+              />
+            </div>
+          ) : null}
+        </Modal>
 
         <section className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_140px_1fr]">
           {[1, 2].map((side) => {

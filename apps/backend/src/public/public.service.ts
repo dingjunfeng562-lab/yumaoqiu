@@ -89,6 +89,8 @@ export class PublicService {
         startDate: tournament.startDate.toISOString(),
         endDate: tournament.endDate.toISOString(),
         projects: this.projectLabels(tournament),
+        formatText: tournament.formatText,
+        description: tournament.description ?? tournament.rules,
         location: tournament.location || '待公布',
         registeredCount,
         teamCompetitionCount,
@@ -574,15 +576,21 @@ export class PublicService {
         side2Id: match.side2Id,
         winnerSide: match.winnerSide,
         winnerId: match.winnerSide === 1 ? match.side1Id : match.winnerSide === 2 ? match.side2Id : null,
+        forfeitedSide: match.forfeitedSide ?? null,
+        forfeitReason: match.forfeitReason ?? null,
         venueName: match.venue?.name ?? '待排场地',
         refereeName: match.referee?.username ?? null,
         scheduledAt: match.scheduledAt?.toISOString?.() ?? null,
-        score: match.games.length
-          ? `${match.games.at(-1)?.side1Score ?? 0}:${match.games.at(-1)?.side2Score ?? 0}`
-          : '0:0',
-        gamesText: match.games.length
-          ? match.games.map((game: any) => `${game.side1Score}:${game.side2Score}`).join(' / ')
-          : '-',
+        score: match.forfeitedSide
+          ? '弃权'
+          : match.games.length
+            ? `${match.games.at(-1)?.side1Score ?? 0}:${match.games.at(-1)?.side2Score ?? 0}`
+            : '0:0',
+        gamesText: match.forfeitedSide
+          ? `选手 ${match.forfeitedSide} 弃权`
+          : match.games.length
+            ? match.games.map((game: any) => `${game.side1Score}:${game.side2Score}`).join(' / ')
+            : '-',
       })),
     };
   }
@@ -654,6 +662,8 @@ export class PublicService {
       winnerName: match.winnerSide
         ? this.sideName(match.winnerSide === 1 ? match.side1Id : match.side2Id, registrationMap)
         : null,
+      forfeitedSide: match.forfeitedSide ?? null,
+      forfeitReason: match.forfeitReason ?? null,
       updatedAt: match.updatedAt?.toISOString?.() ?? null,
     };
   }

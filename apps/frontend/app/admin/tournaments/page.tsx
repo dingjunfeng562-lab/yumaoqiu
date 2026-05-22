@@ -1,57 +1,145 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import {
-  Table,
   Button,
-  Modal,
+  Card,
+  Checkbox,
+  DatePicker,
   Form,
   Input,
-  DatePicker,
-  Space,
+  InputNumber,
+  Modal,
   Popconfirm,
-  Typography,
-  Tag,
+  Radio,
+  Space,
   Switch,
-  Select,
+  Table,
+  Tag,
+  TimePicker,
+  Typography,
   Upload,
   message,
 } from 'antd';
 import type { UploadFile, UploadProps } from 'antd';
-import { PlusOutlined, EditOutlined, DeleteOutlined, InboxOutlined, UploadOutlined } from '@ant-design/icons';
+import {
+  ArrowDownOutlined,
+  ArrowUpOutlined,
+  DeleteOutlined,
+  EditOutlined,
+  InboxOutlined,
+  PlusOutlined,
+  UploadOutlined,
+} from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
-import dayjs from 'dayjs';
+import dayjs, { Dayjs } from 'dayjs';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL!;
 const API_ORIGIN = API_BASE.replace(/\/api$/, '');
 
+const EVENT_OPTIONS = [
+  { label: '男单', value: 'MENS_SINGLES' },
+  { label: '女单', value: 'WOMENS_SINGLES' },
+  { label: '男双', value: 'MENS_DOUBLES' },
+  { label: '女双', value: 'WOMENS_DOUBLES' },
+  { label: '混双', value: 'MIXED_DOUBLES' },
+] as const;
+
+const EVENT_LABELS = Object.fromEntries(EVENT_OPTIONS.map((item) => [item.value, item.label]));
+const DEFAULT_EVENT_ORDER = EVENT_OPTIONS.map((item) => item.value);
+
 const STATUS_LABELS: Record<string, { label: string; color: string }> = {
-  REGISTRATION_NOT_STARTED: { label: '报名未开始', color: 'default' },
+  REGISTRATION_NOT_STARTED: { label: '筹备中', color: 'default' },
   REGISTRATION_OPEN: { label: '报名中', color: 'orange' },
-  REGISTRATION_CLOSED: { label: '报名已结束', color: 'red' },
-  ONGOING: { label: '比赛进行中', color: 'green' },
+  REGISTRATION_CLOSED: { label: '抽签中', color: 'purple' },
+  ONGOING: { label: '比赛中', color: 'green' },
   FINISHED: { label: '已结束', color: 'blue' },
 };
+
+type EventType = (typeof EVENT_OPTIONS)[number]['value'];
 
 interface Tournament {
   id: string;
   name: string;
   edition: number;
+  organizer?: string | null;
   subtitle?: string | null;
   coverImageUrl?: string | null;
   location?: string | null;
   projectText?: string | null;
-  formatText?: string | null;
   registrationStartDate?: string | null;
   registrationEndDate?: string | null;
+  description?: string | null;
+  registrationNotice?: string | null;
+  maxRegistrationEvents: number;
+  allowCrossEventRegistration: boolean;
+  needsRegistrationReview: boolean;
+  defaultMatchMinutes: number;
+  breakMinutes: number;
+  dailyStartTime: string;
+  dailyEndTime: string;
   status: string;
-  rules?: string | null;
-  showOnHome: boolean;
   startDate: string;
   endDate: string;
   isArchived: boolean;
+  showOnHome: boolean;
+  events: Array<{ id: string; type: EventType }>;
+  venues: Array<{ id: string; name: string; isActive: boolean; sortOrder: number }>;
+  teamCompetitions: Array<{
+    id: string;
+    winThreshold: number;
+    items: Array<{ eventType: EventType; sortOrder: number }>;
+  }>;
   _count?: { events: number };
+}
+
+type TournamentFormValues = {
+  name: string;
+  organizer: string;
+  subtitle?: string;
+  coverImageUrl?: string;
+  showOnHome?: boolean;
+  startDate: Dayjs;
+  endDate: Dayjs;
+  description?: string;
+  eventTypes: EventType[];
+  includeTeamCompetition: boolean;
+  teamWinThreshold: 2 | 3;
+  teamEventTypes: EventType[];
+  maxRegistrationEvents: number;
+  allowCrossEventRegistration: boolean;
+  registrationStartDate: Dayjs;
+  registrationEndDate: Dayjs;
+  needsRegistrationReview: boolean;
+  registrationNotice?: string;
+  venueNames: Array<{ name: string }>;
+  defaultMatchMinutes: number;
+  breakMinutes: number;
+  dailyTimes: [Dayjs, Dayjs];
+};
+
+function eventLabel(type: EventType) {
+  return EVENT_LABELS[type] ?? type;
+}
+
+function sortEventTypes(types: EventType[]) {
+  return [...types].sort((a, b) => DEFAULT_EVENT_ORDER.indexOf(a) - DEFAULT_EVENT_ORDER.indexOf(b));
+}
+
+function statusLabel(status: string) {
+  return STATUS_LABELS[status] ?? { label: status, color: 'default' };
+}
+
+function disabledPastDate(current: Dayjs) {
+  return current && current < dayjs().startOf('day');
+}
+
+function moveItem<T>(items: T[], from: number, to: number) {
+  const next = [...items];
+  const [item] = next.splice(from, 1);
+  next.splice(to, 0, item);
+  return next;
 }
 
 export default function TournamentsPage() {
@@ -62,9 +150,21 @@ export default function TournamentsPage() {
   const [loading, setLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Tournament | null>(null);
-  const [form] = Form.useForm();
+  const [form] = Form.useForm<TournamentFormValues>();
   const [submitting, setSubmitting] = useState(false);
   const [coverFileList, setCoverFileList] = useState<UploadFile[]>([]);
+
+  const eventTypes = Form.useWatch('eventTypes', form) ?? [];
+  const includeTeamCompetition = Form.useWatch('includeTeamCompetition', form);
+  const teamWinThreshold = Form.useWatch('teamWinThreshold', form) ?? 2;
+  const teamEventTypes = Form.useWatch('teamEventTypes', form) ?? [];
+  const allowCrossEventRegistration = Form.useWatch('allowCrossEventRegistration', form);
+  const startDate = Form.useWatch('startDate', form);
+
+  const availableTeamOptions = useMemo(
+    () => EVENT_OPTIONS.filter((item) => eventTypes.includes(item.value)),
+    [eventTypes],
+  );
 
   const fetchTournaments = useCallback(async () => {
     if (!token) return;
@@ -72,66 +172,110 @@ export default function TournamentsPage() {
     try {
       const data = await apiFetch<Tournament[]>('/tournaments', { token });
       setTournaments(data);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '加载赛事失败');
     } finally {
       setLoading(false);
     }
   }, [token]);
 
   useEffect(() => {
-    if (!token) return;
-    let alive = true;
-    async function load() {
-      const data = await apiFetch<Tournament[]>('/tournaments', { token });
-      if (!alive) return;
-      setTournaments(data);
-    }
-    load().catch((e) => message.error(e instanceof Error ? e.message : '加载赛事失败'));
-    return () => {
-      alive = false;
-    };
-  }, [token]);
+    fetchTournaments();
+  }, [fetchTournaments]);
 
-  const openCreate = () => {
+  useEffect(() => {
+    if (allowCrossEventRegistration === false) {
+      form.setFieldValue('maxRegistrationEvents', 1);
+    }
+  }, [allowCrossEventRegistration, form]);
+
+  useEffect(() => {
+    const selected = sortEventTypes(teamEventTypes.filter((type) => eventTypes.includes(type)));
+    if (selected.length !== teamEventTypes.length) {
+      form.setFieldValue('teamEventTypes', selected);
+    }
+  }, [eventTypes, form, teamEventTypes]);
+
+  useEffect(() => {
+    const requiredCount = teamWinThreshold === 3 ? 5 : 3;
+    if (includeTeamCompetition && teamWinThreshold === 3 && eventTypes.length === 5 && teamEventTypes.length !== 5) {
+      form.setFieldValue('teamEventTypes', sortEventTypes(eventTypes));
+    }
+    if (includeTeamCompetition && teamEventTypes.length > requiredCount) {
+      form.setFieldValue('teamEventTypes', teamEventTypes.slice(0, requiredCount));
+    }
+  }, [eventTypes, form, includeTeamCompetition, teamEventTypes, teamWinThreshold]);
+
+  const openCreate = useCallback(() => {
     setEditing(null);
     setCoverFileList([]);
     form.resetFields();
     form.setFieldsValue({
-      status: 'REGISTRATION_NOT_STARTED',
-      showOnHome: false,
+      showOnHome: true,
+      eventTypes: ['MENS_SINGLES', 'WOMENS_SINGLES'],
+      includeTeamCompetition: false,
+      teamWinThreshold: 2,
+      teamEventTypes: [],
+      maxRegistrationEvents: 2,
+      allowCrossEventRegistration: true,
+      needsRegistrationReview: true,
+      venueNames: [{ name: '1 号场' }],
+      defaultMatchMinutes: 45,
+      breakMinutes: 10,
+      dailyTimes: [dayjs('09:00', 'HH:mm'), dayjs('18:00', 'HH:mm')],
     });
     setModalOpen(true);
-  };
+  }, [form]);
 
-  const openEdit = (t: Tournament) => {
-    setEditing(t);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('create') === '1') openCreate();
+  }, [openCreate]);
+
+  const openEdit = (tournament: Tournament) => {
+    setEditing(tournament);
     setCoverFileList(
-      t.coverImageUrl
+      tournament.coverImageUrl
         ? [
             {
-              uid: t.coverImageUrl,
+              uid: tournament.coverImageUrl,
               name: '当前封面',
               status: 'done',
-              url: `${API_ORIGIN}${t.coverImageUrl}`,
+              url: `${API_ORIGIN}${tournament.coverImageUrl}`,
             },
           ]
         : [],
     );
+
+    const teamCompetition = tournament.teamCompetitions[0];
     form.setFieldsValue({
-      name: t.name,
-      edition: t.edition,
-      subtitle: t.subtitle,
-      coverImageUrl: t.coverImageUrl,
-      location: t.location,
-      projectText: t.projectText,
-      formatText: t.formatText,
-      registrationDates:
-        t.registrationStartDate && t.registrationEndDate
-          ? [dayjs(t.registrationStartDate), dayjs(t.registrationEndDate)]
-          : undefined,
-      status: t.status,
-      rules: t.rules,
-      showOnHome: t.showOnHome,
-      dates: [dayjs(t.startDate), dayjs(t.endDate)],
+      name: tournament.name,
+      organizer: tournament.organizer ?? '',
+      subtitle: tournament.subtitle ?? undefined,
+      coverImageUrl: tournament.coverImageUrl ?? undefined,
+      showOnHome: tournament.showOnHome,
+      startDate: dayjs(tournament.startDate),
+      endDate: dayjs(tournament.endDate),
+      description: tournament.description ?? undefined,
+      eventTypes: sortEventTypes(tournament.events.map((event) => event.type)),
+      includeTeamCompetition: Boolean(teamCompetition),
+      teamWinThreshold: (teamCompetition?.winThreshold as 2 | 3 | undefined) ?? 2,
+      teamEventTypes: sortEventTypes(teamCompetition?.items.map((item) => item.eventType) ?? []),
+      maxRegistrationEvents: tournament.allowCrossEventRegistration ? tournament.maxRegistrationEvents : 1,
+      allowCrossEventRegistration: tournament.allowCrossEventRegistration,
+      registrationStartDate: tournament.registrationStartDate ? dayjs(tournament.registrationStartDate) : undefined,
+      registrationEndDate: tournament.registrationEndDate ? dayjs(tournament.registrationEndDate) : undefined,
+      needsRegistrationReview: tournament.needsRegistrationReview,
+      registrationNotice: tournament.registrationNotice ?? undefined,
+      venueNames: tournament.venues.length
+        ? tournament.venues.filter((venue) => venue.isActive).map((venue) => ({ name: venue.name }))
+        : [{ name: '1 号场' }],
+      defaultMatchMinutes: tournament.defaultMatchMinutes,
+      breakMinutes: tournament.breakMinutes,
+      dailyTimes: [
+        dayjs(tournament.dailyStartTime || '09:00', 'HH:mm'),
+        dayjs(tournament.dailyEndTime || '18:00', 'HH:mm'),
+      ],
     });
     setModalOpen(true);
   };
@@ -139,10 +283,18 @@ export default function TournamentsPage() {
   const uploadProps: UploadProps = {
     action: `${API_BASE}/tournaments/upload-cover`,
     name: 'file',
+    accept: 'image/jpeg,image/png',
     listType: 'picture-card',
     maxCount: 1,
     fileList: coverFileList,
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    beforeUpload(file) {
+      const isValidType = file.type === 'image/jpeg' || file.type === 'image/png';
+      if (!isValidType) message.error('仅支持 jpg / png 图片');
+      const isSmallEnough = file.size / 1024 / 1024 < 2;
+      if (!isSmallEnough) message.error('图片需小于 2MB');
+      return isValidType && isSmallEnough;
+    },
     onChange(info) {
       setCoverFileList(info.fileList);
       if (info.file.status === 'done') {
@@ -152,9 +304,7 @@ export default function TournamentsPage() {
           message.success('封面上传成功');
         }
       }
-      if (info.file.status === 'error') {
-        message.error('封面上传失败');
-      }
+      if (info.file.status === 'error') message.error('封面上传失败');
     },
     onRemove() {
       form.setFieldValue('coverImageUrl', undefined);
@@ -162,26 +312,39 @@ export default function TournamentsPage() {
     },
   };
 
-  const handleSubmit = async () => {
-    const values = await form.validateFields();
-    const [startDate, endDate] = values.dates;
-    const registrationDates = values.registrationDates;
+  async function submitValues(values: TournamentFormValues) {
+    const venueNames = values.venueNames.map((item) => item.name?.trim()).filter(Boolean);
     const payload = {
-      name: values.name,
-      edition: Number(values.edition),
-      subtitle: values.subtitle,
+      name: values.name.trim(),
+      organizer: values.organizer.trim(),
+      subtitle: values.subtitle?.trim() || undefined,
       coverImageUrl: values.coverImageUrl,
-      location: values.location,
-      projectText: values.projectText,
-      formatText: values.formatText,
-      registrationStartDate: registrationDates?.[0]?.toISOString(),
-      registrationEndDate: registrationDates?.[1]?.toISOString(),
-      status: values.status,
-      rules: values.rules,
       showOnHome: Boolean(values.showOnHome),
-      startDate: startDate.toISOString(),
-      endDate: endDate.toISOString(),
+      startDate: values.startDate.startOf('day').toISOString(),
+      endDate: values.endDate.endOf('day').toISOString(),
+      description: values.description?.trim() || undefined,
+      rules: values.description?.trim() || undefined,
+      eventTypes: values.eventTypes,
+      includeTeamCompetition: Boolean(values.includeTeamCompetition),
+      teamWinThreshold: values.includeTeamCompetition ? values.teamWinThreshold : undefined,
+      teamEventTypes: values.includeTeamCompetition ? values.teamEventTypes : [],
+      maxRegistrationEvents: values.allowCrossEventRegistration ? Number(values.maxRegistrationEvents) : 1,
+      allowCrossEventRegistration: Boolean(values.allowCrossEventRegistration),
+      registrationStartDate: values.registrationStartDate.toISOString(),
+      registrationEndDate: values.registrationEndDate.toISOString(),
+      needsRegistrationReview: Boolean(values.needsRegistrationReview),
+      registrationNotice: values.registrationNotice?.trim() || undefined,
+      venueNames,
+      defaultMatchMinutes: Number(values.defaultMatchMinutes),
+      breakMinutes: Number(values.breakMinutes),
+      dailyStartTime: values.dailyTimes[0].format('HH:mm'),
+      dailyEndTime: values.dailyTimes[1].format('HH:mm'),
+      projectText: values.eventTypes.map(eventLabel).join(' / '),
+      formatText: values.includeTeamCompetition
+        ? `单项赛 + 团体赛（${values.teamWinThreshold === 3 ? '5 项 3 胜' : '3 项 2 胜'}）`
+        : '单项赛',
     };
+
     setSubmitting(true);
     try {
       if (editing) {
@@ -190,86 +353,117 @@ export default function TournamentsPage() {
           body: JSON.stringify(payload),
           token,
         });
-        message.success('已更新');
+        message.success('赛事已更新');
       } else {
         await apiFetch('/tournaments', { method: 'POST', body: JSON.stringify(payload), token });
-        message.success('已创建');
+        message.success('赛事已创建');
       }
       setModalOpen(false);
-      fetchTournaments();
-    } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : '操作失败');
+      await fetchTournaments();
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  const handleSubmit = async () => {
+    try {
+      const values = await form.validateFields();
+      if (editing) {
+        Modal.confirm({
+          title: '确认修改赛事配置？',
+          content: '如果赛事已经开始报名或已抽签，修改单项、报名上限、团体赛或场地可能影响已有数据。',
+          okText: '确认修改',
+          cancelText: '取消',
+          onOk: () => submitValues(values).catch((error) => {
+            message.error(error instanceof Error ? error.message : '操作失败');
+          }),
+        });
+        return;
+      }
+      await submitValues(values);
+    } catch (error) {
+      if (error instanceof Error) message.error(error.message);
     }
   };
 
   const handleDelete = async (id: string) => {
     try {
       await apiFetch(`/tournaments/${id}`, { method: 'DELETE', token });
-      message.success('已删除');
+      message.success('赛事已删除');
       fetchTournaments();
-    } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : '删除失败');
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '删除失败');
     }
   };
 
   const handleArchive = async (id: string) => {
     try {
       await apiFetch(`/tournaments/${id}/archive`, { method: 'PATCH', token });
-      message.success('已归档');
+      message.success('赛事已归档');
       fetchTournaments();
-    } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : '归档失败');
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '归档失败');
     }
   };
 
   const columns = [
-    { title: '届次', dataIndex: 'edition', key: 'edition', width: 80, render: (v: number) => `第${v}届` },
+    { title: '届次', dataIndex: 'edition', key: 'edition', width: 80, render: (value: number) => `第 ${value} 届` },
     {
-      title: '比赛标题',
+      title: '赛事',
       key: 'name',
-      render: (_: unknown, r: Tournament) => (
+      render: (_: unknown, record: Tournament) => (
         <Space direction="vertical" size={0}>
-          <Typography.Text strong>{r.name}</Typography.Text>
-          <Typography.Text type="secondary">{r.subtitle || '-'}</Typography.Text>
+          <Typography.Text strong>{record.name}</Typography.Text>
+          <Typography.Text type="secondary">{record.organizer || '-'}</Typography.Text>
         </Space>
       ),
     },
     {
       title: '时间',
       key: 'dates',
-      render: (_: unknown, r: Tournament) =>
-        `${dayjs(r.startDate).format('YYYY/MM/DD')} — ${dayjs(r.endDate).format('YYYY/MM/DD')}`,
+      render: (_: unknown, record: Tournament) =>
+        `${dayjs(record.startDate).format('YYYY/MM/DD')} - ${dayjs(record.endDate).format('YYYY/MM/DD')}`,
     },
-    { title: '项目', dataIndex: 'projectText', key: 'projectText', render: (v: string) => v || '-' },
+    {
+      title: '项目',
+      key: 'events',
+      render: (_: unknown, record: Tournament) => record.events.map((event) => eventLabel(event.type)).join(' / ') || '-',
+    },
     {
       title: '状态',
       key: 'status',
-      render: (_: unknown, r: Tournament) => (
-        <Space>
-          <Tag color={STATUS_LABELS[r.status]?.color}>{STATUS_LABELS[r.status]?.label || r.status}</Tag>
-          {r.showOnHome && <Tag color="gold">首页展示</Tag>}
-          {r.isArchived && <Tag>已归档</Tag>}
-        </Space>
-      ),
+      render: (_: unknown, record: Tournament) => {
+        const meta = statusLabel(record.status);
+        return (
+          <Space>
+            <Tag color={meta.color}>{meta.label}</Tag>
+            {record.showOnHome && <Tag color="gold">首页展示</Tag>}
+            {record.isArchived && <Tag>已归档</Tag>}
+          </Space>
+        );
+      },
     },
-    { title: '单项数', key: 'events', render: (_: unknown, r: Tournament) => r._count?.events ?? 0 },
+    { title: '场地', key: 'venues', render: (_: unknown, record: Tournament) => record.venues.filter((venue) => venue.isActive).length },
     {
       title: '操作',
       key: 'actions',
+      width: 240,
       render: (_: unknown, record: Tournament) => (
         <Space>
           <Button icon={<EditOutlined />} size="small" onClick={() => openEdit(record)} disabled={record.isArchived}>
             编辑
           </Button>
           {!record.isArchived && (
-            <Popconfirm title="归档后不可编辑，确认？" onConfirm={() => handleArchive(record.id)}>
-              <Button icon={<InboxOutlined />} size="small">归档</Button>
+            <Popconfirm title="归档后不建议继续编辑，确认归档？" onConfirm={() => handleArchive(record.id)}>
+              <Button icon={<InboxOutlined />} size="small">
+                归档
+              </Button>
             </Popconfirm>
           )}
           <Popconfirm title="确认删除？此操作不可恢复" onConfirm={() => handleDelete(record.id)}>
-            <Button icon={<DeleteOutlined />} size="small" danger>删除</Button>
+            <Button icon={<DeleteOutlined />} size="small" danger>
+              删除
+            </Button>
           </Popconfirm>
         </Space>
       ),
@@ -280,10 +474,14 @@ export default function TournamentsPage() {
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16, alignItems: 'center' }}>
         <div>
-          <Typography.Title level={4} style={{ margin: 0 }}>赛事管理</Typography.Title>
-          <Typography.Text type="secondary">配置首页展示比赛、封面图和报名状态</Typography.Text>
+          <Typography.Title level={4} style={{ margin: 0 }}>
+            赛事配置
+          </Typography.Title>
+          <Typography.Text type="secondary">创建赛事，并一次配置单项、报名规则、团体赛和场地参数。</Typography.Text>
         </div>
-        <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建赛事</Button>
+        <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+          新建赛事
+        </Button>
       </div>
 
       <Table rowKey="id" columns={columns} dataSource={tournaments} loading={loading} pagination={false} />
@@ -296,60 +494,221 @@ export default function TournamentsPage() {
         confirmLoading={submitting}
         okText="保存"
         cancelText="取消"
-        width={760}
+        width={980}
+        destroyOnHidden
       >
         <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
-          <Form.Item name="coverImageUrl" hidden>
-            <Input />
-          </Form.Item>
-          <Form.Item label="比赛封面图">
-            <Upload {...uploadProps}>
-              {coverFileList.length >= 1 ? null : (
-                <button type="button" style={{ border: 0, background: 'none' }}>
-                  <UploadOutlined />
-                  <div style={{ marginTop: 8 }}>上传封面</div>
-                </button>
+          <Card title="基础信息" size="small" style={{ marginBottom: 16 }}>
+            <Form.Item name="coverImageUrl" hidden>
+              <Input />
+            </Form.Item>
+            <Form.Item
+              name="name"
+              label="赛事名称"
+              rules={[
+                { required: true, whitespace: true, message: '请输入赛事名称' },
+                { min: 2, max: 30, message: '赛事名称长度需为 2-30 字' },
+              ]}
+            >
+              <Input placeholder="羽你相遇，新火相传" maxLength={30} showCount />
+            </Form.Item>
+            <Form.Item name="organizer" label="主办单位" rules={[{ required: true, whitespace: true, message: '请输入主办单位' }]}>
+              <Input placeholder="XX 大学羽毛球协会" />
+            </Form.Item>
+            <Space style={{ display: 'flex' }} align="start">
+              <Form.Item
+                name="startDate"
+                label="赛事开始日期"
+                rules={[{ required: true, message: '请选择赛事开始日期' }]}
+                style={{ flex: 1 }}
+              >
+                <DatePicker style={{ width: '100%' }} disabledDate={disabledPastDate} />
+              </Form.Item>
+              <Form.Item
+                name="endDate"
+                label="赛事结束日期"
+                dependencies={['startDate']}
+                rules={[
+                  { required: true, message: '请选择赛事结束日期' },
+                  ({ getFieldValue }) => ({
+                    validator(_, value: Dayjs) {
+                      const start = getFieldValue('startDate');
+                      if (!value || !start || value.isSame(start, 'day') || value.isAfter(start, 'day')) return Promise.resolve();
+                      return Promise.reject(new Error('赛事结束日期必须不早于开始日期'));
+                    },
+                  }),
+                ]}
+                style={{ flex: 1 }}
+              >
+                <DatePicker style={{ width: '100%' }} disabledDate={(current) => disabledPastDate(current) || (startDate && current.isBefore(startDate, 'day'))} />
+              </Form.Item>
+            </Space>
+            <Form.Item label="赛事 LOGO / 封面图">
+              <Upload {...uploadProps}>
+                {coverFileList.length >= 1 ? null : (
+                  <button type="button" style={{ border: 0, background: 'none' }}>
+                    <UploadOutlined />
+                    <div style={{ marginTop: 8 }}>上传封面</div>
+                  </button>
+                )}
+              </Upload>
+            </Form.Item>
+            <Form.Item name="description" label="赛事简介">
+              <Input.TextArea rows={5} placeholder="显示在公开页，可填写赛事背景、参赛对象、奖励设置等内容。" />
+            </Form.Item>
+            <Form.Item name="showOnHome" label="首页展示" valuePropName="checked">
+              <Switch checkedChildren="展示" unCheckedChildren="不展示" />
+            </Form.Item>
+          </Card>
+
+          <Card title="赛事内容设置" size="small" style={{ marginBottom: 16 }}>
+            <Form.Item name="eventTypes" label="包含的单项" rules={[{ required: true, message: '请至少选择一个单项' }]}>
+              <Checkbox.Group options={EVENT_OPTIONS as unknown as Array<{ label: string; value: string }>} />
+            </Form.Item>
+            <Form.Item name="includeTeamCompetition" label="是否包含团体赛" valuePropName="checked">
+              <Switch checkedChildren="是" unCheckedChildren="否" />
+            </Form.Item>
+            {includeTeamCompetition && (
+              <>
+                <Form.Item name="teamWinThreshold" label="团体赛胜场规则" rules={[{ required: true }]}>
+                  <Radio.Group
+                    options={[
+                      { label: '3 项 2 胜', value: 2 },
+                      { label: '5 项 3 胜', value: 3 },
+                    ]}
+                  />
+                </Form.Item>
+                <Form.Item
+                  name="teamEventTypes"
+                  label="团体赛包含的单项"
+                  rules={[
+                    {
+                      validator(_, value: EventType[]) {
+                        const requiredCount = teamWinThreshold === 3 ? 5 : 3;
+                        if (value?.length === requiredCount) return Promise.resolve();
+                        return Promise.reject(new Error(`请选择 ${requiredCount} 个团体赛单项`));
+                      },
+                    },
+                  ]}
+                >
+                  <Checkbox.Group options={availableTeamOptions as unknown as Array<{ label: string; value: string }>} />
+                </Form.Item>
+                <Form.Item label="团体赛单项出场顺序">
+                  <Space direction="vertical" style={{ width: '100%' }}>
+                    {teamEventTypes.map((type, index) => (
+                      <Space key={type}>
+                        <Tag>{index + 1}</Tag>
+                        <Typography.Text style={{ width: 80 }}>{eventLabel(type)}</Typography.Text>
+                        <Button
+                          icon={<ArrowUpOutlined />}
+                          size="small"
+                          disabled={index === 0}
+                          onClick={() => form.setFieldValue('teamEventTypes', moveItem(teamEventTypes, index, index - 1))}
+                        />
+                        <Button
+                          icon={<ArrowDownOutlined />}
+                          size="small"
+                          disabled={index === teamEventTypes.length - 1}
+                          onClick={() => form.setFieldValue('teamEventTypes', moveItem(teamEventTypes, index, index + 1))}
+                        />
+                      </Space>
+                    ))}
+                  </Space>
+                </Form.Item>
+              </>
+            )}
+            <Space style={{ display: 'flex' }} align="start">
+              <Form.Item name="allowCrossEventRegistration" label="是否允许跨项目报名" valuePropName="checked" style={{ flex: 1 }}>
+                <Switch checkedChildren="允许" unCheckedChildren="不允许" />
+              </Form.Item>
+              <Form.Item name="maxRegistrationEvents" label="每人最多报名项目数" rules={[{ required: true }]} style={{ flex: 1 }}>
+                <InputNumber min={1} max={5} disabled={allowCrossEventRegistration === false} style={{ width: '100%' }} />
+              </Form.Item>
+            </Space>
+          </Card>
+
+          <Card title="报名设置" size="small" style={{ marginBottom: 16 }}>
+            <Space style={{ display: 'flex' }} align="start">
+              <Form.Item name="registrationStartDate" label="报名开始时间" rules={[{ required: true, message: '请选择报名开始时间' }]} style={{ flex: 1 }}>
+                <DatePicker showTime style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item
+                name="registrationEndDate"
+                label="报名截止时间"
+                dependencies={['registrationStartDate', 'startDate']}
+                rules={[
+                  { required: true, message: '请选择报名截止时间' },
+                  ({ getFieldValue }) => ({
+                    validator(_, value: Dayjs) {
+                      const registerStart = getFieldValue('registrationStartDate');
+                      const competitionStart = getFieldValue('startDate');
+                      if (!value) return Promise.resolve();
+                      if (registerStart && !value.isAfter(registerStart)) return Promise.reject(new Error('报名截止时间必须晚于报名开始时间'));
+                      if (competitionStart && !value.isBefore(competitionStart)) return Promise.reject(new Error('报名截止时间必须早于赛事开始日期'));
+                      return Promise.resolve();
+                    },
+                  }),
+                ]}
+                style={{ flex: 1 }}
+              >
+                <DatePicker showTime style={{ width: '100%' }} />
+              </Form.Item>
+            </Space>
+            <Form.Item name="needsRegistrationReview" label="是否需要审核" valuePropName="checked">
+              <Switch checkedChildren="是" unCheckedChildren="否" />
+            </Form.Item>
+            <Form.Item name="registrationNotice" label="报名说明">
+              <Input.TextArea rows={5} placeholder="显示在前台报名页顶部，可填写报名要求、材料说明或联系方式。" />
+            </Form.Item>
+          </Card>
+
+          <Card title="场地与时间" size="small">
+            <Form.List
+              name="venueNames"
+              rules={[
+                {
+                  validator(_, value) {
+                    if (value?.some((item: { name?: string }) => item?.name?.trim())) return Promise.resolve();
+                    return Promise.reject(new Error('请至少填写一个比赛场地'));
+                  },
+                },
+              ]}
+            >
+              {(fields, { add, remove }, { errors }) => (
+                <>
+                  {fields.map((field) => (
+                    <Space key={field.key} align="baseline" style={{ display: 'flex' }}>
+                      <Form.Item
+                        {...field}
+                        name={[field.name, 'name']}
+                        label={field.name === 0 ? '比赛场地' : ''}
+                        rules={[{ required: true, whitespace: true, message: '请输入场地名称' }]}
+                        style={{ flex: 1 }}
+                      >
+                        <Input placeholder="1 号场" />
+                      </Form.Item>
+                      <Button icon={<DeleteOutlined />} onClick={() => remove(field.name)} disabled={fields.length <= 1} />
+                    </Space>
+                  ))}
+                  <Button type="dashed" icon={<PlusOutlined />} onClick={() => add({ name: `${fields.length + 1} 号场` })}>
+                    添加场地
+                  </Button>
+                  <Form.ErrorList errors={errors} />
+                </>
               )}
-            </Upload>
-          </Form.Item>
-          <Form.Item name="showOnHome" label="首页展示" valuePropName="checked">
-            <Switch checkedChildren="展示" unCheckedChildren="不展示" />
-          </Form.Item>
-          <Form.Item name="name" label="比赛标题" rules={[{ required: true, message: '请输入比赛标题' }]}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="subtitle" label="比赛副标题">
-            <Input placeholder="如：2026年校园羽毛球单打赛正式开启" />
-          </Form.Item>
-          <Form.Item name="edition" label="届次" rules={[{ required: true, message: '请输入届次' }]}>
-            <Input type="number" min={1} />
-          </Form.Item>
-          <Form.Item name="dates" label="比赛时间" rules={[{ required: true, message: '请选择比赛时间' }]}>
-            <DatePicker.RangePicker style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item name="registrationDates" label="报名时间">
-            <DatePicker.RangePicker style={{ width: '100%' }} showTime />
-          </Form.Item>
-          <Form.Item name="status" label="比赛状态" rules={[{ required: true, message: '请选择状态' }]}>
-            <Select
-              options={Object.entries(STATUS_LABELS).map(([value, item]) => ({
-                value,
-                label: item.label,
-              }))}
-            />
-          </Form.Item>
-          <Form.Item name="location" label="比赛地点">
-            <Input />
-          </Form.Item>
-          <Form.Item name="projectText" label="比赛项目">
-            <Input placeholder="如：男子单打 / 女子单打" />
-          </Form.Item>
-          <Form.Item name="formatText" label="比赛形式">
-            <Input placeholder="如：单打淘汰赛" />
-          </Form.Item>
-          <Form.Item name="rules" label="比赛规则 / 公告内容">
-            <Input.TextArea rows={4} placeholder="每行一条，首页公告区会读取这里的内容" />
-          </Form.Item>
+            </Form.List>
+            <Space style={{ display: 'flex', marginTop: 16 }} align="start">
+              <Form.Item name="defaultMatchMinutes" label="每场预估时长（分钟）" rules={[{ required: true }]} style={{ flex: 1 }}>
+                <InputNumber min={15} max={180} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="breakMinutes" label="场地间隔时间（分钟）" rules={[{ required: true }]} style={{ flex: 1 }}>
+                <InputNumber min={0} max={60} style={{ width: '100%' }} />
+              </Form.Item>
+            </Space>
+            <Form.Item name="dailyTimes" label="每日比赛时段" rules={[{ required: true, message: '请选择每日比赛时段' }]}>
+              <TimePicker.RangePicker format="HH:mm" style={{ width: '100%' }} />
+            </Form.Item>
+          </Card>
         </Form>
       </Modal>
     </div>

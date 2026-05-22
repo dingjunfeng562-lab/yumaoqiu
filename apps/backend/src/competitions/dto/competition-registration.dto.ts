@@ -1,31 +1,46 @@
-import { IsIn, IsOptional, IsString, MinLength } from 'class-validator';
+import { Type } from 'class-transformer';
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsIn, IsOptional, IsString, MinLength, ValidateNested } from 'class-validator';
 
-export class SubmitCompetitionRegistrationDto {
+export class CompetitionRegistrationEventItemDto {
   @IsString()
   @MinLength(1)
-  name: string;
+  eventId: string;
 
+  @IsOptional()
+  @IsString()
+  partnerName?: string;
+
+  @IsOptional()
+  @IsString()
+  partnerStudentId?: string;
+}
+
+export class SubmitCompetitionRegistrationDto {
   @IsString()
   @MinLength(1)
   studentId: string;
 
   @IsString()
   @MinLength(1)
-  className: string;
-
-  @IsString()
-  @MinLength(1)
-  phone: string;
+  name: string;
 
   @IsIn(['MALE', 'FEMALE', '男', '女'])
   gender: 'MALE' | 'FEMALE' | '男' | '女';
 
-  @IsIn(['MENS_SINGLES', 'WOMENS_SINGLES', '男子单打', '女子单打'])
-  eventName: 'MENS_SINGLES' | 'WOMENS_SINGLES' | '男子单打' | '女子单打';
+  @IsOptional()
+  @IsString()
+  contact?: string;
 
   @IsOptional()
   @IsString()
   remark?: string;
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(2)
+  @ValidateNested({ each: true })
+  @Type(() => CompetitionRegistrationEventItemDto)
+  items: CompetitionRegistrationEventItemDto[];
 }
 
 export class RejectRegistrationDto {

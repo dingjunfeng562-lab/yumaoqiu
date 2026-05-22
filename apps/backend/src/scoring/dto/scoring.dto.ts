@@ -23,3 +23,12 @@ export class LogMatchEventDto {
   @IsString()
   note?: string;
 }
+
+export class ForfeitMatchDto {
+  @IsIn([1, 2])
+  side: 1 | 2;
+
+  @IsOptional()
+  @IsString()
+  reason?: string;
+}

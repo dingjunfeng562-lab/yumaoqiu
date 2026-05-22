@@ -183,6 +183,17 @@ function demoBracket(): KnockoutBracketData {
       { id: 'demo-r1-2', roundNo: 1, matchNo: 2, status: 'LIVE', score: '18:16', gamesText: '18:16' },
       { id: 'demo-r1-3', roundNo: 1, matchNo: 3, status: 'COMPLETED', winnerSide: 1, score: '轮空', gamesText: '轮空晋级' },
       { id: 'demo-r1-4', roundNo: 1, matchNo: 4, status: 'PENDING' },
+      {
+        id: 'demo-r1-5',
+        roundNo: 1,
+        matchNo: 5,
+        status: 'COMPLETED',
+        winnerSide: 1,
+        forfeitedSide: 2,
+        forfeitReason: '选手未到场弃权',
+        score: 'WO',
+        gamesText: '— 弃权 —',
+      },
       { id: 'demo-r2-1', roundNo: 2, matchNo: 1, status: 'PENDING' },
       { id: 'demo-r3-1', roundNo: 3, matchNo: 1, status: 'PENDING' },
       { id: 'demo-r4-1', roundNo: 4, matchNo: 1, status: 'PENDING' },
@@ -206,24 +217,36 @@ export default async function BracketPage() {
       description="横向展开的淘汰赛签表，支持查看轮次、比赛详情、实时状态与选手晋级路径。"
     >
       {brackets.length ? (
-        <div className="space-y-6">
+        <div className="space-y-5 sm:space-y-6">
           {brackets.map((bracket) => (
             <KnockoutBracket key={bracket.id} data={bracket} />
           ))}
         </div>
       ) : (
-        <div className="space-y-6">
-          <div className="rounded-lg border border-blue-100 bg-white p-8 shadow-sm">
-            <h2 className="text-xl font-black">对阵表等待抽签生成</h2>
-            <p className="mt-2 text-sm font-semibold text-slate-500">
-              后台完成报名和抽签后，可在这里浏览公开对阵。
-            </p>
-            <Link
-              href="/admin/draws"
-              className="mt-5 inline-flex h-11 items-center rounded-lg bg-blue-600 px-5 text-sm font-black text-white"
-            >
-              进入抽签后台
-            </Link>
+        <div className="space-y-5 sm:space-y-6">
+          <div className="overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-sm">
+            <div className="flex flex-col gap-4 px-5 py-6 sm:flex-row sm:items-center sm:justify-between sm:px-7 sm:py-7">
+              <div className="flex items-start gap-4">
+                <div className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-[#0a5dd1] to-[#03205c] text-white shadow-md">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-6 w-6">
+                    <path strokeLinecap="round" d="M4 6h6v4H4zM4 14h6v4H4zM14 4h6v6h-6zM14 14h6v6h-6z" />
+                    <path strokeLinecap="round" d="M10 8h4M10 16h4M17 10v4" />
+                  </svg>
+                </div>
+                <div>
+                  <h2 className="text-lg font-black text-slate-900 sm:text-xl">对阵表等待抽签生成</h2>
+                  <p className="mt-1 text-sm font-semibold text-slate-500">
+                    后台完成报名和抽签后,这里会自动展示完整的淘汰赛签表与实时比分。下面是签表样式预览。
+                  </p>
+                </div>
+              </div>
+              <Link
+                href="/admin/draws"
+                className="inline-flex h-10 shrink-0 items-center justify-center rounded-lg bg-[#0a5dd1] px-5 text-sm font-black text-white shadow-sm transition hover:bg-[#0a4fb0]"
+              >
+                进入抽签后台 →
+              </Link>
+            </div>
           </div>
           <KnockoutBracket data={demoBracket()} allowAdminSwap />
         </div>

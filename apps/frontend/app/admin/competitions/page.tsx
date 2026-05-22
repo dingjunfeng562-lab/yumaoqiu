@@ -9,6 +9,7 @@ import {
   EditOutlined,
   EyeOutlined,
   PauseCircleOutlined,
+  PlusOutlined,
   PlayCircleOutlined,
   TeamOutlined,
 } from '@ant-design/icons';
@@ -174,9 +175,14 @@ export default function AdminCompetitionsPage() {
             管理赛事发布状态，并按赛事进入独立的报名审核和参赛选手列表。
           </Typography.Text>
         </div>
-        <Button icon={<EyeOutlined />} onClick={() => router.push('/competitions')}>
+        <Space>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/admin/tournaments?create=1')}>
+            新建赛事
+          </Button>
+          <Button icon={<EyeOutlined />} onClick={() => router.push('/competitions')}>
           查看前台赛事
-        </Button>
+          </Button>
+        </Space>
       </div>
       <Table
         rowKey="id"

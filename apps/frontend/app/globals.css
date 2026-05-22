@@ -31,6 +31,483 @@ a {
   text-decoration: none;
 }
 
+.register-page {
+  --primary: #0a4d3c;
+  --primary-dark: #063528;
+  --accent: #c9a961;
+  --text: #1a2e2a;
+  --text-soft: #5c6b68;
+  --text-muted: #94a3a0;
+  --border: #e5e9e7;
+  --border-soft: #f0f3f1;
+  --bg: #f4f7f6;
+  --card-bg: #ffffff;
+  position: relative;
+  display: flex;
+  min-height: 100vh;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--bg);
+  padding: 40px 20px;
+  color: var(--text);
+}
+
+.register-page__grid {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background-image:
+    linear-gradient(rgba(10, 77, 60, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(10, 77, 60, 0.03) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.register-page__glow {
+  pointer-events: none;
+  position: absolute;
+  z-index: 0;
+  border-radius: 999px;
+}
+
+.register-page__glow--top {
+  top: -120px;
+  left: -120px;
+  width: 400px;
+  height: 400px;
+  background: radial-gradient(rgba(10, 77, 60, 0.06), transparent 70%);
+}
+
+.register-page__glow--bottom {
+  right: -100px;
+  bottom: -150px;
+  width: 500px;
+  height: 500px;
+  background: radial-gradient(rgba(201, 169, 97, 0.08), transparent 70%);
+}
+
+.register-card {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 460px;
+  border: 1px solid rgba(229, 233, 231, 0.6);
+  border-radius: 16px;
+  background: var(--card-bg);
+  padding: 40px 40px 32px;
+  box-shadow:
+    0 1px 2px rgba(15, 30, 25, 0.04),
+    0 12px 40px -8px rgba(15, 30, 25, 0.08),
+    0 24px 80px -20px rgba(15, 30, 25, 0.1);
+}
+
+.register-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-bottom: 28px;
+}
+
+.register-brand__mark {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 999px;
+  color: var(--primary);
+}
+
+.register-brand__svg {
+  width: 28px;
+  height: 28px;
+}
+
+.register-brand__name {
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+}
+
+.register-hero {
+  margin-bottom: 32px;
+  text-align: center;
+}
+
+.register-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  background: rgba(10, 77, 60, 0.06);
+  padding: 6px 12px;
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+}
+
+.register-badge__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--primary);
+}
+
+.register-title {
+  margin-top: 16px;
+  color: var(--text);
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+.register-subtitle {
+  margin-top: 10px;
+  color: var(--text-soft);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.register-alert {
+  margin-bottom: 20px;
+  border-radius: 10px;
+}
+
+.register-form .ant-form-item {
+  margin-bottom: 16px;
+}
+
+.register-form .ant-form-item-extra {
+  min-height: auto;
+  padding-top: 0;
+}
+
+.register-form .ant-form-item-explain,
+.register-form .ant-form-item-extra,
+.register-form .ant-input-affix-wrapper,
+.register-form .ant-input,
+.register-form .ant-btn {
+  font-family: inherit;
+}
+
+.register-form .ant-form-item-label {
+  padding-bottom: 6px;
+}
+
+.register-form .ant-form-item-label > label {
+  display: block;
+  height: auto;
+}
+
+.register-label-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.register-label-row__text {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.register-label-row__hint {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.register-field-tip {
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.register-input.ant-input,
+.register-input.ant-input-affix-wrapper {
+  height: 44px;
+  border-color: var(--border);
+  border-radius: 8px;
+  padding-inline: 14px;
+  color: var(--text);
+  box-shadow: none;
+}
+
+.register-input.ant-input {
+  padding-block: 0;
+}
+
+.register-input.ant-input-affix-wrapper .ant-input {
+  padding-inline: 0;
+}
+
+.register-input.ant-input:hover,
+.register-input.ant-input-affix-wrapper:hover {
+  border-color: #c5cecb;
+}
+
+.register-input.ant-input:focus,
+.register-input.ant-input-affix-wrapper:focus,
+.register-input.ant-input-affix-wrapper-focused {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(10, 77, 60, 0.08);
+}
+
+.register-input.ant-input::placeholder,
+.register-input.ant-input-affix-wrapper .ant-input::placeholder {
+  color: #b8c2bf;
+}
+
+.register-input--mono.ant-input {
+  letter-spacing: 0.02em;
+}
+
+.register-form .ant-input-password-icon {
+  color: var(--text-muted);
+}
+
+.register-form .ant-input-password-icon:hover {
+  color: var(--text-soft);
+}
+
+.register-strength {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 2px;
+}
+
+.register-strength__track {
+  flex: 1;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--border-soft);
+}
+
+.register-strength__fill {
+  height: 100%;
+  border-radius: inherit;
+  transition:
+    width 0.2s ease,
+    background-color 0.2s ease;
+}
+
+.register-strength__label {
+  min-width: 30px;
+  text-align: right;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.register-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -8px 0 16px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.register-status__icon {
+  font-size: 11px;
+}
+
+.register-status--checking {
+  color: var(--text-soft);
+}
+
+.register-status--valid {
+  color: #047857;
+}
+
+.register-status--invalid {
+  color: #b91c1c;
+}
+
+.register-submit-wrap {
+  margin-top: 20px;
+}
+
+.register-submit-button.ant-btn {
+  width: 100%;
+  height: 46px;
+  border: none;
+  border-radius: 8px;
+  background: var(--primary);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  box-shadow: none;
+}
+
+.register-submit-button.ant-btn:not(:disabled):not(.ant-btn-loading):hover,
+.register-submit-button.ant-btn:not(:disabled):not(.ant-btn-loading):focus-visible {
+  background: var(--primary-dark) !important;
+  color: #fff !important;
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px -6px rgba(10, 77, 60, 0.4);
+}
+
+.register-submit-button.ant-btn[disabled],
+.register-submit-button.ant-btn.ant-btn-loading {
+  transform: none;
+}
+
+.register-submit-button__icon {
+  transition: transform 0.2s ease;
+}
+
+.register-submit-button.ant-btn:not(:disabled):not(.ant-btn-loading):hover .register-submit-button__icon,
+.register-submit-button.ant-btn:not(:disabled):not(.ant-btn-loading):focus-visible .register-submit-button__icon {
+  transform: translateX(3px);
+}
+
+.register-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 24px;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 24px;
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.register-footer__link {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.register-footer__link:hover {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+/* ===== Login page specifics (shares register-* tokens) ===== */
+.login-card {
+  max-width: 440px;
+}
+
+.login-card .register-hero {
+  margin-bottom: 20px;
+}
+
+.login-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin-bottom: 22px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--border-soft);
+}
+
+.login-tab {
+  position: relative;
+  height: 36px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition:
+    background-color 0.18s ease,
+    color 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.login-tab:hover:not(.login-tab--active) {
+  color: var(--text);
+}
+
+.login-tab--active {
+  background: #ffffff;
+  color: var(--primary);
+  box-shadow:
+    0 1px 2px rgba(15, 30, 25, 0.06),
+    0 4px 12px -4px rgba(10, 77, 60, 0.18);
+}
+
+.login-tab--active::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 5px;
+  width: 18px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--accent);
+  transform: translateX(-50%);
+}
+
+.login-alert {
+  margin-bottom: 16px;
+}
+
+.login-form .ant-form-item:last-of-type {
+  margin-bottom: 0;
+}
+
+.login-options {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: -4px 0 16px;
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.login-options .ant-checkbox-wrapper {
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.login-options .ant-checkbox-wrapper:hover .ant-checkbox-inner {
+  border-color: var(--primary);
+}
+
+.login-options .ant-checkbox-checked .ant-checkbox-inner {
+  background-color: var(--primary);
+  border-color: var(--primary);
+}
+
+.login-submit-wrap {
+  margin-top: 4px;
+}
+
+@media (max-width: 480px) {
+  .register-page {
+    padding: 24px 14px;
+  }
+
+  .register-card {
+    border-radius: 12px;
+    padding: 32px 24px 24px;
+  }
+
+  .register-title {
+    font-size: 24px;
+  }
+}
+
 @keyframes page-rise {
   from {
     opacity: 0;

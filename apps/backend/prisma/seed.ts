@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { PrismaClient, Role } from '@prisma/client';
+import { PrismaClient, Role, UserStatus } from '@prisma/client';
 import { PrismaMariaDb } from '@prisma/adapter-mariadb';
 import * as bcrypt from 'bcryptjs';
 
@@ -7,18 +7,28 @@ const adapter = new PrismaMariaDb(process.env.DATABASE_URL!);
 const prisma = new PrismaClient({ adapter });
 
 async function main() {
-  const hashed = await bcrypt.hash('baishuwan082508', 10);
+  const hashed = await bcrypt.hash('Baishuwan082508', 10);
 
   await prisma.user.upsert({
     where: { username: 'baishuwan' },
     update: {
-      password: hashed,
+      username: 'baishuwan',
+      email: 'admin@yzy.local',
+      passwordHash: hashed,
       role: Role.ADMIN,
+      status: UserStatus.ACTIVE,
+      mustChangePassword: false,
+      failedAttempts: 0,
+      lockedUntil: null,
     },
     create: {
       username: 'baishuwan',
-      password: hashed,
+      email: 'admin@yzy.local',
+      passwordHash: hashed,
       role: Role.ADMIN,
+      status: UserStatus.ACTIVE,
+      mustChangePassword: false,
+      failedAttempts: 0,
     },
   });
 
@@ -29,7 +39,7 @@ async function main() {
     },
   });
 
-  console.log('[OK] 默认管理员已强制同步为: baishuwan / baishuwan082508');
+  console.log('[OK] 默认管理员已强制同步为: admin@yzy.local / Baishuwan082508');
 }
 
 main()

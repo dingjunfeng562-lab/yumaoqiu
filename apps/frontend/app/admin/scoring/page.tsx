@@ -34,7 +34,8 @@ interface EventItem {
 
 interface UserItem {
   id: string;
-  username: string;
+  username?: string | null;
+  email?: string | null;
   role: string;
 }
 
@@ -205,10 +206,10 @@ export default function AdminScoringPage() {
                 dataIndex: 'refereeId',
                 render: (value: string | null, row: MatchItem) => (
                   <Select
-                    style={{ width: 180 }}
+                    style={{ width: 220 }}
                     value={value ?? undefined}
                     placeholder="选择裁判"
-                    options={referees.map((item) => ({ value: item.id, label: item.username }))}
+                    options={referees.map((item) => ({ value: item.id, label: item.email || item.username || item.id }))}
                     onChange={(nextRefereeId) => assignReferee(row.id, nextRefereeId)}
                   />
                 ),

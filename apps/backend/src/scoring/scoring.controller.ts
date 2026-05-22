@@ -3,7 +3,7 @@ import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
-import { AssignRefereeDto, LogMatchEventDto, ScorePointDto } from './dto/scoring.dto';
+import { AssignRefereeDto, ForfeitMatchDto, LogMatchEventDto, ScorePointDto } from './dto/scoring.dto';
 import { ScoringGateway } from './scoring.gateway';
 import { ScoringService } from './scoring.service';
 
@@ -58,6 +58,18 @@ export class ScoringController {
   @Post('matches/:id/undo')
   async undoLastPoint(@Param('id') id: string, @Req() req: RequestWithUser) {
     const state = await this.scoringService.undoLastPoint(id, req.user);
+    this.scoringGateway.emitMatchState(id, state);
+    return state;
+  }
+
+  @Roles(Role.ADMIN, Role.REFEREE)
+  @Post('matches/:id/forfeit')
+  async forfeitMatch(
+    @Param('id') id: string,
+    @Body() dto: ForfeitMatchDto,
+    @Req() req: RequestWithUser,
+  ) {
+    const state = await this.scoringService.forfeitMatch(id, dto.side, req.user, dto.reason);
     this.scoringGateway.emitMatchState(id, state);
     return state;
   }

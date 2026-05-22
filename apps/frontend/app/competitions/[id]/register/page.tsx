@@ -1,12 +1,19 @@
 'use client';
 
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
-import { useEffect, useState } from 'react';
-import type { FormEvent, ReactElement } from 'react';
+import { useParams, useRouter } from 'next/navigation';
+import { useEffect, useMemo, useState } from 'react';
+import { useSession } from 'next-auth/react';
 import { PortalFeaturePage } from '@/components/home/PortalFeaturePage';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
+
+type EventOption = {
+  id: string;
+  type: 'MENS_SINGLES' | 'WOMENS_SINGLES' | 'MENS_DOUBLES' | 'WOMENS_DOUBLES' | 'MIXED_DOUBLES';
+  label: string;
+  isDouble: boolean;
+};
 
 type Competition = {
   id: string;
@@ -18,26 +25,49 @@ type Competition = {
   projects?: string[];
   registrationEndTime?: string | null;
   registrationStatus?: string;
+  eventOptions?: EventOption[];
+};
+
+type ExistingRegistration = {
+  id: string;
+  status: 'pending' | 'approved' | 'rejected' | 'removed';
+  statusLabel: string;
+  rejectReason?: string | null;
+  studentId: string;
+  name: string;
+  gender: 'MALE' | 'FEMALE';
+  phone?: string;
+  remark?: string;
+  items: Array<{
+    eventId: string;
+    eventName: string;
+    partnerName?: string | null;
+    partnerStudentId?: string | null;
+  }>;
+};
+
+type ItemState = {
+  eventId: string;
+  partnerName: string;
+  partnerStudentId: string;
 };
 
 type FormState = {
-  name: string;
   studentId: string;
-  className: string;
-  phone: string;
+  name: string;
   gender: 'MALE' | 'FEMALE';
-  eventName: '男子单打' | '女子单打';
+  contact: string;
   remark: string;
+  items: ItemState[];
 };
 
 const initialForm: FormState = {
-  name: '',
   studentId: '',
-  className: '',
-  phone: '',
+  name: '',
   gender: 'MALE',
-  eventName: '男子单打',
+  contact: '',
   remark: '',
+  items: [{ eventId: '', partnerName: '', partnerStudentId: '' }],
 };
 
 function formatDateTime(value?: string | null) {
@@ -62,7 +92,11 @@ function formatDate(value: string) {
 export default function CompetitionRegisterPage() {
   const params = useParams<{ id: string }>();
   const id = params?.id;
+  const router = useRouter();
+  const { data: session, status } = useSession();
+  const token = session?.user?.accessToken;
   const [competition, setCompetition] = useState<Competition | null>(null);
+  const [existing, setExisting] = useState<ExistingRegistration | null>(null);
   const [form, setForm] = useState<FormState>(initialForm);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -70,47 +104,119 @@ export default function CompetitionRegisterPage() {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    if (!id) return;
+    if (status === 'unauthenticated') {
+      router.replace('/login');
+    }
+  }, [router, status]);
+
+  useEffect(() => {
+    if (!id || !token) return;
     let alive = true;
-    async function loadCompetition() {
+    async function loadData() {
       setLoading(true);
+      setError('');
       try {
-        const res = await fetch(`${API_BASE}/competitions/${id}`, { cache: 'no-store' });
-        if (!res.ok) throw new Error('赛事信息加载失败');
-        const data = (await res.json()) as Competition;
-        if (alive) setCompetition(data);
+        const [competitionRes, registrationRes] = await Promise.all([
+          fetch(`${API_BASE}/competitions/${id}`, { cache: 'no-store' }),
+          fetch(`${API_BASE}/competitions/${id}/registration/me`, {
+            cache: 'no-store',
+            headers: { Authorization: `Bearer ${token}` },
+          }),
+        ]);
+        if (!competitionRes.ok) throw new Error('赛事信息加载失败');
+        const competitionData = (await competitionRes.json()) as Competition;
+        const registrationData = registrationRes.ok ? ((await registrationRes.json()) as ExistingRegistration | null) : null;
+        if (!alive) return;
+        setCompetition(competitionData);
+        setExisting(registrationData);
+        if (registrationData) {
+          setForm({
+            studentId: registrationData.studentId,
+            name: registrationData.name,
+            gender: registrationData.gender,
+            contact: registrationData.phone ?? '',
+            remark: registrationData.remark ?? '',
+            items: registrationData.items.length
+              ? registrationData.items.map((item) => ({
+                  eventId: item.eventId,
+                  partnerName: item.partnerName ?? '',
+                  partnerStudentId: item.partnerStudentId ?? '',
+                }))
+              : initialForm.items,
+          });
+        }
       } catch (err) {
         if (alive) setError(err instanceof Error ? err.message : '赛事信息加载失败');
       } finally {
         if (alive) setLoading(false);
       }
     }
-    loadCompetition();
+    loadData();
     return () => {
       alive = false;
     };
-  }, [id]);
+  }, [id, token]);
+
+  const eventOptions = competition?.eventOptions ?? [];
+  const selectedEventIds = useMemo(() => form.items.map((item) => item.eventId).filter(Boolean), [form.items]);
+  const existingLocked = existing?.status === 'pending' || existing?.status === 'approved';
 
   function updateField<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
   }
 
-  async function submitRegistration(event: FormEvent<HTMLFormElement>) {
+  function updateItem(index: number, patch: Partial<ItemState>) {
+    setForm((prev) => ({
+      ...prev,
+      items: prev.items.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item)),
+    }));
+  }
+
+  function addItem() {
+    setForm((prev) => ({
+      ...prev,
+      items: [...prev.items, { eventId: '', partnerName: '', partnerStudentId: '' }],
+    }));
+  }
+
+  function removeItem(index: number) {
+    setForm((prev) => ({
+      ...prev,
+      items: prev.items.filter((_, itemIndex) => itemIndex !== index),
+    }));
+  }
+
+  async function submitRegistration(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!id) return;
+    if (!id || !token) return;
     setSubmitting(true);
     setMessage('');
     setError('');
     try {
+      const payload = {
+        studentId: form.studentId,
+        name: form.name,
+        gender: form.gender,
+        contact: form.contact,
+        remark: form.remark,
+        items: form.items.map((item) => ({
+          eventId: item.eventId,
+          partnerName: item.partnerName || undefined,
+          partnerStudentId: item.partnerStudentId || undefined,
+        })),
+      };
       const res = await fetch(`${API_BASE}/competitions/${id}/register`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(payload),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.message ?? '报名提交失败');
-      setMessage(data.message ?? '报名已提交，请等待管理员审核。审核通过后，你的信息将显示在参赛选手列表中。');
-      setForm(initialForm);
+      setMessage(data.message ?? '报名已提交，请等待管理员审核。');
+      setExisting(data.registration ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : '报名提交失败');
     } finally {
@@ -125,7 +231,7 @@ export default function CompetitionRegisterPage() {
       activeHref="/competitions"
       eyebrow="Registration"
       title="赛事报名"
-      description="请确认赛事信息后提交报名。提交后会进入管理员审核列表，审核通过前不会出现在参赛选手列表中。"
+      description="登录后的普通用户可提交一次报名，待审核或已通过状态下不能重复提交，被驳回后可修改并重新提交。"
     >
       <div className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
         <section className="rounded-lg border border-blue-100 bg-white p-6 shadow-sm">
@@ -145,6 +251,7 @@ export default function CompetitionRegisterPage() {
               <Info label="比赛项目" value={projects?.join(' / ') || '项目待公布'} />
               <Info label="报名截止时间" value={formatDateTime(competition.registrationEndTime)} />
               <Info label="报名状态" value={competition.registrationStatus || '待公布'} />
+              {existing ? <Info label="我的报名状态" value={existing.statusLabel} /> : null}
             </div>
           ) : (
             <p className="text-sm font-semibold text-red-500">{error || '赛事不存在'}</p>
@@ -158,51 +265,107 @@ export default function CompetitionRegisterPage() {
               {message}
             </div>
           )}
+          {existing?.rejectReason ? (
+            <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-700">
+              驳回原因：{existing.rejectReason}
+            </div>
+          ) : null}
           {error && !loading && (
             <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-600">
               {error}
             </div>
           )}
-          <form className="mt-5 grid gap-4 md:grid-cols-2" onSubmit={submitRegistration}>
-            <Field label="姓名">
-              <input required value={form.name} onChange={(event) => updateField('name', event.target.value)} />
-            </Field>
-            <Field label="学号">
-              <input required value={form.studentId} onChange={(event) => updateField('studentId', event.target.value)} />
-            </Field>
-            <Field label="班级">
-              <input required value={form.className} onChange={(event) => updateField('className', event.target.value)} />
-            </Field>
-            <Field label="联系电话">
-              <input required value={form.phone} onChange={(event) => updateField('phone', event.target.value)} />
-            </Field>
-            <Field label="性别">
-              <select value={form.gender} onChange={(event) => updateField('gender', event.target.value as FormState['gender'])}>
-                <option value="MALE">男</option>
-                <option value="FEMALE">女</option>
-              </select>
-            </Field>
-            <Field label="参赛项目">
-              <select value={form.eventName} onChange={(event) => updateField('eventName', event.target.value as FormState['eventName'])}>
-                <option value="男子单打">男子单打</option>
-                <option value="女子单打">女子单打</option>
-              </select>
-            </Field>
-            <Field label="备注" wide>
-              <textarea
-                rows={4}
-                value={form.remark}
-                onChange={(event) => updateField('remark', event.target.value)}
-                placeholder="可填写特殊说明，非必填"
-              />
-            </Field>
-            <div className="md:col-span-2">
+          <form className="mt-5 grid gap-4" onSubmit={submitRegistration}>
+            <div className="grid gap-4 md:grid-cols-2">
+              <Field label="学号">
+                <input required disabled={existingLocked} value={form.studentId} onChange={(event) => updateField('studentId', event.target.value)} />
+              </Field>
+              <Field label="姓名">
+                <input required disabled={existingLocked} value={form.name} onChange={(event) => updateField('name', event.target.value)} />
+              </Field>
+              <Field label="性别">
+                <select disabled={existingLocked} value={form.gender} onChange={(event) => updateField('gender', event.target.value as FormState['gender'])}>
+                  <option value="MALE">男</option>
+                  <option value="FEMALE">女</option>
+                </select>
+              </Field>
+              <Field label="联系方式">
+                <input value={form.contact} onChange={(event) => updateField('contact', event.target.value)} />
+              </Field>
+              <Field label="备注" wide>
+                <textarea rows={3} value={form.remark} onChange={(event) => updateField('remark', event.target.value)} placeholder="可填写特殊说明，非必填" />
+              </Field>
+            </div>
+
+            <div className="space-y-4 rounded-lg border border-blue-100 bg-blue-50/40 p-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-black text-slate-900">报名项目</h3>
+                <button
+                  type="button"
+                  onClick={addItem}
+                  disabled={form.items.length >= 2 || existingLocked}
+                  className="inline-flex h-9 items-center rounded-lg border border-blue-200 px-3 text-sm font-black text-blue-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                >
+                  新增项目
+                </button>
+              </div>
+              {form.items.map((item, index) => {
+                const selectedOption = eventOptions.find((option) => option.id === item.eventId);
+                return (
+                  <div key={`${index}-${item.eventId}`} className="grid gap-4 rounded-lg border border-white bg-white p-4 md:grid-cols-2">
+                    <Field label={`项目 ${index + 1}`}>
+                      <select
+                        required
+                        disabled={existingLocked}
+                        value={item.eventId}
+                        onChange={(event) => updateItem(index, { eventId: event.target.value, partnerName: '', partnerStudentId: '' })}
+                      >
+                        <option value="">请选择项目</option>
+                        {eventOptions.map((option) => (
+                          <option
+                            key={option.id}
+                            value={option.id}
+                            disabled={selectedEventIds.includes(option.id) && option.id !== item.eventId}
+                          >
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                    <div className="flex items-end justify-end">
+                      {form.items.length > 1 ? (
+                        <button
+                          type="button"
+                          onClick={() => removeItem(index)}
+                          disabled={existingLocked}
+                          className="inline-flex h-10 items-center rounded-lg border border-red-200 px-3 text-sm font-black text-red-600 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                        >
+                          删除该项目
+                        </button>
+                      ) : null}
+                    </div>
+                    {selectedOption?.isDouble ? (
+                      <>
+                        <Field label="搭档姓名">
+                          <input required disabled={existingLocked} value={item.partnerName} onChange={(event) => updateItem(index, { partnerName: event.target.value })} />
+                        </Field>
+                        <Field label="搭档学号">
+                          <input required disabled={existingLocked} value={item.partnerStudentId} onChange={(event) => updateItem(index, { partnerStudentId: event.target.value })} />
+                        </Field>
+                      </>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div>
               <button
                 type="submit"
-                disabled={submitting || !competition}
+                disabled={submitting || !competition || existingLocked}
                 className="inline-flex h-11 w-full items-center justify-center rounded-lg bg-blue-700 px-5 text-sm font-black text-white shadow-sm transition hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-slate-300 md:w-auto"
               >
-                {submitting ? '提交中...' : '提交报名'}
+                {existing?.status === 'rejected' ? (submitting ? '重新提交中...' : '重新提交报名') : submitting ? '提交中...' : '提交报名'}
               </button>
             </div>
           </form>
@@ -228,7 +391,7 @@ function Field({
 }: {
   label: string;
   wide?: boolean;
-  children: ReactElement;
+  children: React.ReactNode;
 }) {
   return (
     <label className={`block text-sm font-bold text-slate-700 ${wide ? 'md:col-span-2' : ''}`}>

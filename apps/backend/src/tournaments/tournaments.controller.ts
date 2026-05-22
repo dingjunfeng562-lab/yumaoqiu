@@ -31,9 +31,9 @@ export class TournamentsController {
   @UseInterceptors(
     FileInterceptor('file', {
       fileFilter: (_req: unknown, file: any, cb: (error: Error | null, acceptFile: boolean) => void) => {
-        cb(null, /^image\/(png|jpe?g|webp|gif|svg\+xml)$/.test(file.mimetype));
+        cb(null, /^image\/(png|jpe?g)$/.test(file.mimetype));
       },
-      limits: { fileSize: 5 * 1024 * 1024 },
+      limits: { fileSize: 2 * 1024 * 1024 },
     }),
   )
   uploadCover(@UploadedFile() file: any) {

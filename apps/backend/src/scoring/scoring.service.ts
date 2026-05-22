@@ -89,6 +89,8 @@ export class ScoringService {
       id: match.id,
       status: match.status,
       winnerSide: match.winnerSide,
+      forfeitedSide: match.forfeitedSide,
+      forfeitReason: match.forfeitReason,
       round: match.round,
       roundNo: match.roundNo,
       matchNo: match.matchNo,
@@ -292,6 +294,42 @@ export class ScoringService {
     await this.prisma.matchEvent.create({
       data: { matchId, type, side, note },
     });
+    return this.getMatchState(matchId, user);
+  }
+
+  async forfeitMatch(matchId: string, forfeitedSide: 1 | 2, user: AuthUser, reason?: string) {
+    await this.ensureMatchAccess(matchId, user);
+    const match = await this.ensurePlayableMatch(matchId);
+    if (match.status === MatchStatus.COMPLETED || match.status === MatchStatus.CANCELLED) {
+      throw new BadRequestException('场次已结束,无法再判定弃权');
+    }
+
+    const winnerSide: 1 | 2 = forfeitedSide === 1 ? 2 : 1;
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.match.update({
+        where: { id: matchId },
+        data: {
+          status: MatchStatus.COMPLETED,
+          winnerSide,
+          forfeitedSide,
+          forfeitReason: reason?.trim() || '选手未到场弃权',
+        },
+      });
+
+      await tx.matchEvent.create({
+        data: {
+          matchId,
+          type: MatchEventType.FORFEIT,
+          side: forfeitedSide,
+          note: reason?.trim() || '选手未到场弃权',
+        },
+      });
+
+      await this.advanceSingleEliminationWinner(tx, match, winnerSide);
+      await this.teamCompetitionsService.updateTeamMatchAggregate(tx, matchId);
+    });
+
     return this.getMatchState(matchId, user);
   }
 

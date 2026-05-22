@@ -9,7 +9,8 @@ import { RejectRegistrationDto } from './dto/competition-registration.dto';
 type AuthRequest = {
   user?: {
     id?: string;
-    username?: string;
+    username?: string | null;
+    email?: string | null;
   };
 };
 
@@ -48,15 +49,15 @@ export class AdminCompetitionsController {
     return this.competitionsService.listAdminPlayers(id, eventName, search);
   }
 
-  @Patch('registrations/:registrationId/approve')
+  @Patch('competition-registrations/:registrationId/approve')
   approveRegistration(@Param('registrationId') registrationId: string, @Req() req: AuthRequest) {
     return this.competitionsService.approveRegistration(
       registrationId,
-      req.user?.username ?? req.user?.id,
+      req.user?.id,
     );
   }
 
-  @Patch('registrations/:registrationId/reject')
+  @Patch('competition-registrations/:registrationId/reject')
   rejectRegistration(
     @Param('registrationId') registrationId: string,
     @Req() req: AuthRequest,
@@ -64,16 +65,16 @@ export class AdminCompetitionsController {
   ) {
     return this.competitionsService.rejectRegistration(
       registrationId,
-      req.user?.username ?? req.user?.id,
+      req.user?.id,
       dto.rejectReason,
     );
   }
 
-  @Patch('registrations/:registrationId/remove')
+  @Patch('competition-registrations/:registrationId/remove')
   removeRegistration(@Param('registrationId') registrationId: string, @Req() req: AuthRequest) {
     return this.competitionsService.removeRegistration(
       registrationId,
-      req.user?.username ?? req.user?.id,
+      req.user?.id,
     );
   }
 }

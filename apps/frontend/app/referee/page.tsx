@@ -72,7 +72,7 @@ export default function RefereeMatchesPage() {
           <h1 className="text-2xl font-black">裁判端</h1>
           <p className="mt-3 text-sm text-blue-100">请使用裁判账号登录后查看分配场次。</p>
           <Link
-            href="/login"
+            href={`/login?redirect=${encodeURIComponent('/referee/my-matches')}`}
             className="mt-6 inline-flex h-11 items-center justify-center rounded-xl bg-blue-500 px-6 text-sm font-black text-white"
           >
             去登录
@@ -95,7 +95,7 @@ export default function RefereeMatchesPage() {
             <Button icon={<ReloadOutlined />} onClick={loadMatches} loading={loading}>
               刷新
             </Button>
-            <Button icon={<LogoutOutlined />} onClick={() => signOut({ callbackUrl: '/login' })}>
+            <Button icon={<LogoutOutlined />} onClick={() => signOut({ callbackUrl: '/' })}>
               退出
             </Button>
           </div>
