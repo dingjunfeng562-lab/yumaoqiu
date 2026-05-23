@@ -641,10 +641,19 @@ export class CompetitionsService {
   }
 
   private ensureRegistrationWindow(competition: CompetitionWithRelations) {
-    if (competition.status !== TournamentStatus.REGISTRATION_OPEN) {
-      throw new BadRequestException('当前赛事暂未开放报名。');
+    if (
+      competition.status === TournamentStatus.FINISHED ||
+      competition.status === TournamentStatus.ONGOING
+    ) {
+      throw new BadRequestException('赛事已开始或已结束，无法报名。');
     }
     const now = new Date();
+    if (competition.endDate && competition.endDate < now) {
+      throw new BadRequestException('赛事已结束，无法报名。');
+    }
+    if (competition.startDate && competition.startDate <= now) {
+      throw new BadRequestException('赛事已开始，无法报名。');
+    }
     if (competition.registrationStartDate && competition.registrationStartDate > now) {
       throw new BadRequestException('报名尚未开始。');
     }
@@ -888,8 +897,11 @@ export class CompetitionsService {
 
   private registrationStatusText(competition: CompetitionWithRelations) {
     const now = new Date();
-    if (competition.status !== TournamentStatus.REGISTRATION_OPEN) {
-      return TOURNAMENT_STATUS_LABELS[competition.status];
+    if (competition.status === TournamentStatus.FINISHED || competition.endDate < now) {
+      return '已结束';
+    }
+    if (competition.status === TournamentStatus.ONGOING || competition.startDate <= now) {
+      return '比赛进行中';
     }
     if (competition.registrationStartDate && competition.registrationStartDate > now) {
       return '报名未开始';
@@ -897,7 +909,10 @@ export class CompetitionsService {
     if (competition.registrationEndDate && competition.registrationEndDate < now) {
       return '报名已截止';
     }
-    return '报名中';
+    if (competition.registrationStartDate || competition.registrationEndDate) {
+      return '报名中';
+    }
+    return TOURNAMENT_STATUS_LABELS[competition.status];
   }
 
   private normalizeEventType(value: string): EventType {

@@ -17,6 +17,7 @@ type GameScore = {
   gameNo: number;
   side1Score: number;
   side2Score: number;
+  server?: number | null;
   winnerSide?: number | null;
 };
 
@@ -336,33 +337,64 @@ export default function RefereeScoringPage() {
           ) : null}
         </Modal>
 
-        <section className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_140px_1fr]">
-          {[1, 2].map((side) => {
-            const isSide1 = side === 1;
-            const sideData = isSide1 ? score.side1 : score.side2;
-            const sideScore = isSide1 ? currentGame?.side1Score ?? 0 : currentGame?.side2Score ?? 0;
-            const gameWins = isSide1 ? score.side1Games : score.side2Games;
-            const wonMatch = score.winnerSide === side;
-            return (
-              <article
-                key={side}
-                className={`rounded-3xl border p-5 shadow-sm ${
-                  wonMatch ? 'border-amber-200 bg-amber-50' : 'border-blue-100 bg-white'
-                }`}
-              >
-                <div className="flex min-h-24 flex-col justify-between">
-                  <div>
-                    <p className="text-xs font-bold text-slate-400">SIDE {side}</p>
-                    <h2 className="mt-2 text-2xl font-black leading-tight">{sideName(sideData)}</h2>
-                    <p className="mt-1 text-sm text-slate-500">{sideData?.affiliation ?? ' '}</p>
-                  </div>
-                  <p className="mt-4 text-sm font-bold text-blue-700">已胜局数：{gameWins}</p>
-                </div>
+        <section className="rounded-3xl border border-blue-100 bg-white p-3 shadow-sm sm:p-5">
+          <div className="flex items-center justify-between gap-2 rounded-2xl bg-blue-50/80 px-3 py-2 text-blue-800 sm:px-4 sm:py-3">
+            <div className="flex items-baseline gap-2">
+              <span className="text-xs font-bold uppercase tracking-wider text-blue-500">当前局</span>
+              <span className="text-xl font-black sm:text-2xl">第 {currentGame?.gameNo ?? 1} 局</span>
+            </div>
+            <div className="flex items-baseline gap-2">
+              <span className="text-xs font-bold uppercase tracking-wider text-blue-500">总局分</span>
+              <span className="text-xl font-black sm:text-2xl">
+                {score.side1Games}<span className="px-1 text-blue-400">:</span>{score.side2Games}
+              </span>
+            </div>
+          </div>
 
-                <div className="mt-5 text-center">
-                  <strong className="block text-[5.5rem] font-black leading-none text-blue-700 sm:text-[7rem]">
-                    {sideScore}
-                  </strong>
+          <div className="mt-3 grid grid-cols-2 gap-2 sm:gap-4">
+            {[1, 2].map((side) => {
+              const isSide1 = side === 1;
+              const sideData = isSide1 ? score.side1 : score.side2;
+              const sideScore = isSide1 ? currentGame?.side1Score ?? 0 : currentGame?.side2Score ?? 0;
+              const gameWins = isSide1 ? score.side1Games : score.side2Games;
+              const wonMatch = score.winnerSide === side;
+              const isServer = currentGame?.server === side;
+              return (
+                <article
+                  key={side}
+                  className={`relative flex flex-col rounded-2xl border p-3 shadow-sm sm:p-4 ${
+                    wonMatch
+                      ? 'border-amber-300 bg-amber-50'
+                      : isServer
+                        ? 'border-blue-400 bg-blue-50/40'
+                        : 'border-blue-100 bg-white'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-1">
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">SIDE {side}</p>
+                      <h2 className="mt-0.5 truncate text-base font-black leading-tight sm:text-xl">
+                        {sideName(sideData)}
+                      </h2>
+                      <p className="mt-0.5 truncate text-[11px] text-slate-500 sm:text-xs">
+                        {sideData?.affiliation ?? ' '}
+                      </p>
+                    </div>
+                    {isServer ? (
+                      <span className="shrink-0 rounded-full bg-blue-600 px-2 py-0.5 text-[10px] font-black text-white shadow-sm">
+                        发球
+                      </span>
+                    ) : null}
+                  </div>
+
+                  <div className="mt-2 text-center">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">本局比分</p>
+                    <strong className="mt-0.5 block text-[4.5rem] font-black leading-none text-blue-700 sm:text-[6rem]">
+                      {sideScore}
+                    </strong>
+                    <p className="mt-1 text-xs font-bold text-blue-700">已胜局数 {gameWins}</p>
+                  </div>
+
                   <Button
                     type="primary"
                     size="large"
@@ -370,45 +402,39 @@ export default function RefereeScoringPage() {
                     disabled={disabled}
                     loading={busyAction === `/matches/${matchId}/point-${side}`}
                     onClick={() => postAction(`/matches/${matchId}/point`, { side })}
-                    style={{ height: 60, borderRadius: 16, fontWeight: 900, fontSize: 20 }}
+                    style={{ height: 56, borderRadius: 14, fontWeight: 900, fontSize: 22, marginTop: 12 }}
                   >
                     +1
                   </Button>
-                </div>
-              </article>
-            );
-          })}
+                </article>
+              );
+            })}
+          </div>
 
-          <aside className="order-first rounded-3xl border border-blue-100 bg-white p-4 text-center shadow-sm md:order-none">
-            <p className="text-xs font-bold text-slate-400">当前局</p>
-            <strong className="mt-2 block text-4xl font-black text-slate-950">
-              第 {currentGame?.gameNo ?? 1} 局
-            </strong>
-            <div className="mt-4 rounded-2xl bg-blue-50 p-3">
-              <p className="text-xs font-bold text-blue-500">局分</p>
-              <p className="mt-1 text-3xl font-black text-blue-700">{score.side1Games} : {score.side2Games}</p>
-            </div>
-            <div className="mt-4 space-y-2">
-              <Button
-                type="primary"
-                block
-                disabled={score.status !== 'PENDING'}
-                onClick={() => postAction(`/matches/${matchId}/start`)}
-              >
-                开始比赛
-              </Button>
-              <Button
-                block
-                danger
-                icon={<UndoOutlined />}
-                disabled={!score.events.some((event) => event.type === 'POINT')}
-                loading={busyAction === `/matches/${matchId}/undo`}
-                onClick={() => postAction(`/matches/${matchId}/undo`)}
-              >
-                撤销上一分
-              </Button>
-            </div>
-          </aside>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <Button
+              type="primary"
+              size="large"
+              block
+              disabled={score.status !== 'PENDING'}
+              onClick={() => postAction(`/matches/${matchId}/start`)}
+              style={{ height: 48, borderRadius: 12, fontWeight: 800 }}
+            >
+              开始比赛
+            </Button>
+            <Button
+              size="large"
+              block
+              danger
+              icon={<UndoOutlined />}
+              disabled={!score.events.some((event) => event.type === 'POINT')}
+              loading={busyAction === `/matches/${matchId}/undo`}
+              onClick={() => postAction(`/matches/${matchId}/undo`)}
+              style={{ height: 48, borderRadius: 12, fontWeight: 800 }}
+            >
+              撤销上一分
+            </Button>
+          </div>
         </section>
 
         <section className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_1fr]">
@@ -429,14 +455,12 @@ export default function RefereeScoringPage() {
 
           <div className="rounded-2xl border border-blue-100 bg-white p-4 shadow-sm">
             <h2 className="text-lg font-black">过程记录</h2>
+            <p className="mt-2 text-xs text-slate-500">发球方根据每分胜负自动切换，无需手动调整。</p>
             <div className="mt-3 grid grid-cols-2 gap-2">
               <Button onClick={() => postAction(`/matches/${matchId}/events`, { type: 'TIMEOUT' })}>普通暂停</Button>
               <Button onClick={() => postAction(`/matches/${matchId}/events`, { type: 'MEDICAL_TIMEOUT' })}>医疗暂停</Button>
               <Button onClick={() => postAction(`/matches/${matchId}/events`, { type: 'WARNING' })}>警告</Button>
               <Button onClick={() => postAction(`/matches/${matchId}/events`, { type: 'YELLOW_CARD' })}>黄牌</Button>
-              <Button className="col-span-2" onClick={() => postAction(`/matches/${matchId}/events`, { type: 'SERVE_CHANGE' })}>
-                发球方切换
-              </Button>
             </div>
             <div className="mt-4 max-h-52 space-y-2 overflow-auto">
               {score.events.map((event) => (

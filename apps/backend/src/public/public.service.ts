@@ -27,6 +27,22 @@ const TOURNAMENT_STATUS_LABELS: Record<TournamentStatus, '报名中' | '即将�
   FINISHED: '已结束',
 };
 
+function deriveTournamentDisplayStatus(tournament: {
+  status: TournamentStatus;
+  startDate: Date;
+  endDate: Date;
+  registrationStartDate: Date | null;
+  registrationEndDate: Date | null;
+}): '报名中' | '即将开始' | '进行中' | '已结束' {
+  const now = new Date();
+  if (tournament.status === 'FINISHED' || tournament.endDate < now) return '已结束';
+  if (tournament.status === 'ONGOING' || tournament.startDate <= now) return '进行中';
+  if (tournament.registrationStartDate && tournament.registrationStartDate > now) return '即将开始';
+  if (tournament.registrationEndDate && tournament.registrationEndDate < now) return '即将开始';
+  if (tournament.registrationStartDate || tournament.registrationEndDate) return '报名中';
+  return TOURNAMENT_STATUS_LABELS[tournament.status];
+}
+
 const FORMAT_LABELS: Record<string, string> = {
   SINGLE_ELIMINATION: '单淘汰制',
   GROUP_PLUS_KNOCKOUT: '小组赛+淘汰',
@@ -84,7 +100,7 @@ export class PublicService {
         id: tournament.id,
         title: tournament.name,
         subtitle: tournament.subtitle,
-        status: TOURNAMENT_STATUS_LABELS[tournament.status],
+        status: deriveTournamentDisplayStatus(tournament),
         rawStatus: tournament.status,
         startDate: tournament.startDate.toISOString(),
         endDate: tournament.endDate.toISOString(),
@@ -352,7 +368,7 @@ export class PublicService {
         subtitle: competition.subtitle,
         location: competition.location,
         status: competition.status,
-        statusLabel: TOURNAMENT_STATUS_LABELS[competition.status],
+        statusLabel: deriveTournamentDisplayStatus(competition),
         startDate: competition.startDate.toISOString(),
         endDate: competition.endDate.toISOString(),
         projectText: competition.projectText,
@@ -510,7 +526,7 @@ export class PublicService {
           startDate: tournament.startDate.toISOString(),
           endDate: tournament.endDate.toISOString(),
           status: tournament.status,
-          statusLabel: TOURNAMENT_STATUS_LABELS[tournament.status],
+          statusLabel: deriveTournamentDisplayStatus(tournament),
           isArchived: tournament.isArchived,
           stats: {
             events: events.length,

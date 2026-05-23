@@ -8,12 +8,26 @@ import { PortalFeaturePage } from '@/components/home/PortalFeaturePage';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 
+type EventType = 'MENS_SINGLES' | 'WOMENS_SINGLES' | 'MENS_DOUBLES' | 'WOMENS_DOUBLES' | 'MIXED_DOUBLES';
+
 type EventOption = {
   id: string;
-  type: 'MENS_SINGLES' | 'WOMENS_SINGLES' | 'MENS_DOUBLES' | 'WOMENS_DOUBLES' | 'MIXED_DOUBLES';
+  type: EventType;
   label: string;
   isDouble: boolean;
 };
+
+const DOUBLE_EVENT_TYPES: ReadonlySet<EventType> = new Set([
+  'MENS_DOUBLES',
+  'WOMENS_DOUBLES',
+  'MIXED_DOUBLES',
+]);
+
+function isDoubleOption(option: EventOption | undefined): boolean {
+  if (!option) return false;
+  if (typeof option.isDouble === 'boolean') return option.isDouble;
+  return DOUBLE_EVENT_TYPES.has(option.type);
+}
 
 type Competition = {
   id: string;
@@ -327,6 +341,7 @@ export default function CompetitionRegisterPage() {
               </div>
               {form.items.map((item, index) => {
                 const selectedOption = eventOptions.find((option) => option.id === item.eventId);
+                const isDouble = isDoubleOption(selectedOption);
                 return (
                   <div key={`${index}-${item.eventId}`} className="grid gap-4 rounded-lg border border-white bg-white p-4 md:grid-cols-2">
                     <Field label={`项目 ${index + 1}`}>
@@ -360,15 +375,38 @@ export default function CompetitionRegisterPage() {
                         </button>
                       ) : null}
                     </div>
-                    {selectedOption?.isDouble ? (
-                      <>
-                        <Field label="搭档姓名">
-                          <input required disabled={existingLocked} value={item.partnerName} onChange={(event) => updateItem(index, { partnerName: event.target.value })} />
-                        </Field>
-                        <Field label="搭档学号">
-                          <input required disabled={existingLocked} value={item.partnerStudentId} onChange={(event) => updateItem(index, { partnerStudentId: event.target.value })} />
-                        </Field>
-                      </>
+                    {selectedOption ? (
+                      isDouble ? (
+                        <div className="md:col-span-2 rounded-lg border border-blue-200 bg-blue-50/60 p-3">
+                          <p className="mb-3 text-sm font-black text-blue-800">
+                            双打项目 · 请填写搭档信息（共 2 人参赛）
+                          </p>
+                          <div className="grid gap-4 md:grid-cols-2">
+                            <Field label="搭档姓名">
+                              <input
+                                required
+                                disabled={existingLocked}
+                                value={item.partnerName}
+                                onChange={(event) => updateItem(index, { partnerName: event.target.value })}
+                                placeholder="请填写搭档姓名"
+                              />
+                            </Field>
+                            <Field label="搭档学号">
+                              <input
+                                required
+                                disabled={existingLocked}
+                                value={item.partnerStudentId}
+                                onChange={(event) => updateItem(index, { partnerStudentId: event.target.value })}
+                                placeholder="请填写搭档学号"
+                              />
+                            </Field>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="md:col-span-2 text-xs font-bold text-slate-500">
+                          单打项目 · 仅需填写本人信息
+                        </p>
+                      )
                     ) : null}
                   </div>
                 );

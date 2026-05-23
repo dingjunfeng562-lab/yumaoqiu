@@ -158,8 +158,8 @@ export class ScoringService {
         where: { id: currentGame.id },
         data:
           side === 1
-            ? { side1Score: { increment: 1 } }
-            : { side2Score: { increment: 1 } },
+            ? { side1Score: { increment: 1 }, server: side }
+            : { side2Score: { increment: 1 }, server: side },
       });
       let game = updatedGame;
       const gameWinner = this.resolveGameWinner(
@@ -209,10 +209,11 @@ export class ScoringService {
       await this.teamCompetitionsService.updateTeamMatchAggregate(tx, matchId);
 
       if (gameWinner) {
+        // 羽毛球规则：上一局胜方在新一局先发球
         await tx.game.upsert({
           where: { matchId_gameNo: { matchId, gameNo: game.gameNo + 1 } },
-          update: {},
-          create: { matchId, gameNo: game.gameNo + 1 },
+          update: { server: gameWinner },
+          create: { matchId, gameNo: game.gameNo + 1, server: gameWinner },
         });
       }
     });
@@ -248,6 +249,29 @@ export class ScoringService {
       const nextSide1Score = Math.max(0, game.side1Score - (lastPoint.side === 1 ? 1 : 0));
       const nextSide2Score = Math.max(0, game.side2Score - (lastPoint.side === 2 ? 1 : 0));
 
+      // 回滚发球方：本局上一分的得分方就是当时的发球方；
+      // 若没有更早的得分（即撤销的是本局第一分），则恢复为本局初始发球方
+      // （第 1 局无初始发球方，第 N 局为第 N-1 局胜方）。
+      const previousPoint = await tx.matchEvent.findFirst({
+        where: {
+          matchId,
+          type: MatchEventType.POINT,
+          undoneAt: null,
+          gameNo: lastPoint.gameNo,
+          id: { not: lastPoint.id },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      let restoredServer: number | null = null;
+      if (previousPoint?.side) {
+        restoredServer = previousPoint.side;
+      } else if (lastPoint.gameNo > 1) {
+        const prevGame = await tx.game.findUnique({
+          where: { matchId_gameNo: { matchId, gameNo: lastPoint.gameNo - 1 } },
+        });
+        restoredServer = prevGame?.winnerSide ?? null;
+      }
+
       const updatedGame = await tx.game.update({
         where: { id: game.id },
         data: {
@@ -255,6 +279,7 @@ export class ScoringService {
           side2Score: nextSide2Score,
           winnerSide: null,
           completedAt: null,
+          server: restoredServer,
         },
       });
 
