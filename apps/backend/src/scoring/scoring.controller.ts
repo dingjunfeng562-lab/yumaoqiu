@@ -75,6 +75,18 @@ export class ScoringController {
   }
 
   @Roles(Role.ADMIN, Role.REFEREE)
+  @Post('matches/:id/forfeit-both')
+  async forfeitBoth(
+    @Param('id') id: string,
+    @Body() body: { reason?: string },
+    @Req() req: RequestWithUser,
+  ) {
+    const state = await this.scoringService.forfeitBothSides(id, req.user, body?.reason);
+    this.scoringGateway.emitMatchState(id, state);
+    return state;
+  }
+
+  @Roles(Role.ADMIN, Role.REFEREE)
   @Post('matches/:id/events')
   async logEvent(
     @Param('id') id: string,
@@ -92,7 +104,7 @@ export class ScoringController {
     return state;
   }
 
-  @Roles(Role.ADMIN)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   @Patch('matches/:id/referee')
   async assignReferee(@Param('id') id: string, @Body() dto: AssignRefereeDto) {
     const state = await this.scoringService.assignReferee(id, dto.refereeId);

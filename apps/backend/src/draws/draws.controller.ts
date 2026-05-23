@@ -36,7 +36,7 @@ type AuthRequest = {
 };
 
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.ADMIN)
+@Roles(Role.ADMIN, Role.SUPER_ADMIN)
 @Controller()
 export class DrawsController {
   constructor(private drawsService: DrawsService) {}

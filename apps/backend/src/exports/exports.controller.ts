@@ -7,7 +7,7 @@ import { RolesGuard } from '../auth/roles.guard';
 import { ExportsService } from './exports.service';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.ADMIN)
+@Roles(Role.ADMIN, Role.SUPER_ADMIN)
 @Controller('exports')
 export class ExportsController {
   constructor(private exportsService: ExportsService) {}

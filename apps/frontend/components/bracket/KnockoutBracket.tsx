@@ -39,6 +39,7 @@ export type BracketMatch = {
 
 export type KnockoutBracketData = {
   id: string;
+  tournamentId?: string;
   title: string;
   subtitle?: string;
   generatedAt?: string | null;
@@ -125,9 +126,9 @@ function formatTime(value?: string | null) {
 }
 
 function rowHeightFor(bracketSize: number) {
-  if (bracketSize <= 8) return 112;
-  if (bracketSize <= 16) return 100;
-  return 84;
+  if (bracketSize <= 8) return 134;
+  if (bracketSize <= 16) return 122;
+  return 110;
 }
 
 function buildPlaceholderMatches(roundCount: number, bracketSize: number): LayoutMatch[] {
@@ -641,7 +642,7 @@ function RoundsView({
         })}
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {activeMatches.map((m) => (
           <MatchCard
             key={m.layoutKey}
@@ -698,7 +699,8 @@ function MatchCard({
   const isDone = status === 'COMPLETED';
   const isPending = status === 'PENDING';
   const forfeitedSide = match.forfeitedSide === 1 || match.forfeitedSide === 2 ? match.forfeitedSide : null;
-  const isForfeit = forfeitedSide !== null;
+  const bothForfeited = match.forfeitedSide === 0;
+  const isForfeit = forfeitedSide !== null || bothForfeited;
   const scores = parseScores(match.gamesText || match.score);
   const isPlaceholder = match.id.startsWith('placeholder-');
   const time = formatTime(match.scheduledAt);
@@ -737,7 +739,7 @@ function MatchCard({
           }`}
         >
           {isLive && !isForfeit ? <span className="bracket-live-pulse h-1.5 w-1.5 rounded-full bg-white" /> : null}
-          {isForfeit ? '弃权' : statusText(match.status)}
+          {bothForfeited ? '双方弃权' : isForfeit ? '弃权' : statusText(match.status)}
         </span>
       </div>
 
@@ -748,8 +750,8 @@ function MatchCard({
           score={isForfeit ? undefined : scores.a}
           isWinner={winner?.id === side1?.id && !!winner}
           dim={!!winner && winner.id !== side1?.id}
-          forfeited={forfeitedSide === 1}
-          walkover={isForfeit && forfeitedSide !== 1}
+          forfeited={forfeitedSide === 1 || bothForfeited}
+          walkover={forfeitedSide === 2}
           onHover={onHoverParticipant}
           adminMode={adminMode}
           slotIndex={slotIndex1}
@@ -761,8 +763,8 @@ function MatchCard({
           score={isForfeit ? undefined : scores.b}
           isWinner={winner?.id === side2?.id && !!winner}
           dim={!!winner && winner.id !== side2?.id}
-          forfeited={forfeitedSide === 2}
-          walkover={isForfeit && forfeitedSide !== 2}
+          forfeited={forfeitedSide === 2 || bothForfeited}
+          walkover={forfeitedSide === 1}
           onHover={onHoverParticipant}
           adminMode={adminMode}
           slotIndex={slotIndex2}

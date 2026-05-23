@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import {
+  Alert,
   Button,
   Card,
   Checkbox,
@@ -83,7 +84,13 @@ interface Tournament {
   startDate: string;
   endDate: string;
   isArchived: boolean;
+  isPublished: boolean;
   showOnHome: boolean;
+  approvalStatus: 'PENDING' | 'APPROVED' | 'REJECTED';
+  submittedById?: string | null;
+  approvedById?: string | null;
+  approvedAt?: string | null;
+  rejectReason?: string | null;
   events: Array<{ id: string; type: EventType }>;
   venues: Array<{ id: string; name: string; isActive: boolean; sortOrder: number }>;
   teamCompetitions: Array<{
@@ -142,9 +149,42 @@ function moveItem<T>(items: T[], from: number, to: number) {
   return next;
 }
 
+const SUPER_ADMIN_ROLE = 'SUPER_ADMIN';
+
+const APPROVAL_META: Record<
+  'PENDING' | 'APPROVED' | 'REJECTED',
+  { label: string; color: string }
+> = {
+  PENDING: { label: '待总管理员审核', color: 'gold' },
+  APPROVED: { label: '已通过审核', color: 'green' },
+  REJECTED: { label: '已驳回', color: 'red' },
+};
+
 export default function TournamentsPage() {
   const { data: session } = useSession();
   const token = session?.user?.accessToken as string | undefined;
+  const sessionRole = (session?.user as { role?: string } | undefined)?.role;
+
+  // Pull the live role from /auth/me so a promotion to SUPER_ADMIN takes
+  // effect immediately even if the cached session JWT still shows ADMIN.
+  const [liveRole, setLiveRole] = useState<string | undefined>(sessionRole);
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    apiFetch<{ role?: string }>('/auth/me', { token })
+      .then((me) => {
+        if (!cancelled && me?.role) setLiveRole(me.role);
+      })
+      .catch(() => {
+        /* fall back to session role */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  const role = liveRole ?? sessionRole;
+  const isSuperAdmin = role === SUPER_ADMIN_ROLE;
 
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
   const [loading, setLoading] = useState(false);
@@ -153,6 +193,9 @@ export default function TournamentsPage() {
   const [form] = Form.useForm<TournamentFormValues>();
   const [submitting, setSubmitting] = useState(false);
   const [coverFileList, setCoverFileList] = useState<UploadFile[]>([]);
+  const [reviewTarget, setReviewTarget] = useState<Tournament | null>(null);
+  const [reviewReason, setReviewReason] = useState('');
+  const [reviewBusy, setReviewBusy] = useState(false);
 
   const eventTypes = Form.useWatch('eventTypes', form) ?? [];
   const includeTeamCompetition = Form.useWatch('includeTeamCompetition', form);
@@ -406,8 +449,50 @@ export default function TournamentsPage() {
     }
   };
 
+  const handleApprove = async (record: Tournament) => {
+    if (!isSuperAdmin) {
+      message.error('仅总管理员可审核赛事');
+      return;
+    }
+    try {
+      await apiFetch(`/tournaments/${record.id}/approve`, { method: 'POST', token });
+      message.success(`已通过审核:${record.name}`);
+      fetchTournaments();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '审核失败');
+    }
+  };
+
+  const openReject = (record: Tournament) => {
+    if (!isSuperAdmin) {
+      message.error('仅总管理员可审核赛事');
+      return;
+    }
+    setReviewTarget(record);
+    setReviewReason('');
+  };
+
+  const handleReject = async () => {
+    if (!reviewTarget) return;
+    setReviewBusy(true);
+    try {
+      await apiFetch(`/tournaments/${reviewTarget.id}/reject`, {
+        method: 'POST',
+        token,
+        body: JSON.stringify({ reason: reviewReason.trim() || '未通过审核' }),
+      });
+      message.success(`已驳回:${reviewTarget.name}`);
+      setReviewTarget(null);
+      setReviewReason('');
+      fetchTournaments();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '驳回失败');
+    } finally {
+      setReviewBusy(false);
+    }
+  };
+
   const columns = [
-    { title: '届次', dataIndex: 'edition', key: 'edition', width: 80, render: (value: number) => `第 ${value} 届` },
     {
       title: '赛事',
       key: 'name',
@@ -443,13 +528,43 @@ export default function TournamentsPage() {
         );
       },
     },
+    {
+      title: '审核',
+      key: 'approval',
+      width: 160,
+      render: (_: unknown, record: Tournament) => {
+        const meta = APPROVAL_META[record.approvalStatus] ?? APPROVAL_META.PENDING;
+        return (
+          <Space direction="vertical" size={2}>
+            <Tag color={meta.color}>{meta.label}</Tag>
+            {record.approvalStatus === 'REJECTED' && record.rejectReason ? (
+              <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                {record.rejectReason}
+              </Typography.Text>
+            ) : null}
+          </Space>
+        );
+      },
+    },
     { title: '场地', key: 'venues', render: (_: unknown, record: Tournament) => record.venues.filter((venue) => venue.isActive).length },
     {
       title: '操作',
       key: 'actions',
-      width: 240,
+      width: 320,
       render: (_: unknown, record: Tournament) => (
-        <Space>
+        <Space wrap>
+          {isSuperAdmin && record.approvalStatus !== 'APPROVED' && !record.isArchived ? (
+            <>
+              <Popconfirm title="确认通过审核?通过后将自动公开赛事" onConfirm={() => handleApprove(record)}>
+                <Button type="primary" size="small">
+                  通过审核
+                </Button>
+              </Popconfirm>
+              <Button danger size="small" onClick={() => openReject(record)}>
+                驳回
+              </Button>
+            </>
+          ) : null}
           <Button icon={<EditOutlined />} size="small" onClick={() => openEdit(record)} disabled={record.isArchived}>
             编辑
           </Button>
@@ -470,6 +585,8 @@ export default function TournamentsPage() {
     },
   ];
 
+  const pendingCount = tournaments.filter((t) => t.approvalStatus === 'PENDING' && !t.isArchived).length;
+
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16, alignItems: 'center' }}>
@@ -477,12 +594,32 @@ export default function TournamentsPage() {
           <Typography.Title level={4} style={{ margin: 0 }}>
             赛事配置
           </Typography.Title>
-          <Typography.Text type="secondary">创建赛事，并一次配置单项、报名规则、团体赛和场地参数。</Typography.Text>
+          <Typography.Text type="secondary">
+            创建赛事,新建后须由<strong>总管理员</strong>审核通过,赛事才会向公众发布。
+          </Typography.Text>
         </div>
         <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
           新建赛事
         </Button>
       </div>
+
+      {pendingCount > 0 ? (
+        <Alert
+          type={isSuperAdmin ? 'warning' : 'info'}
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={
+            isSuperAdmin
+              ? `有 ${pendingCount} 个赛事等待你审核`
+              : `已提交 ${pendingCount} 个赛事,等待总管理员审核`
+          }
+          description={
+            isSuperAdmin
+              ? '点击表格中"通过审核"或"驳回"即可处理。通过后赛事会自动对公众发布。'
+              : '审核通过前,该赛事不会在前台赛事列表中显示。'
+          }
+        />
+      ) : null}
 
       <Table rowKey="id" columns={columns} dataSource={tournaments} loading={loading} pagination={false} />
 
@@ -710,6 +847,28 @@ export default function TournamentsPage() {
             </Form.Item>
           </Card>
         </Form>
+      </Modal>
+
+      <Modal
+        title={reviewTarget ? `驳回赛事 · ${reviewTarget.name}` : '驳回赛事'}
+        open={reviewTarget !== null}
+        onCancel={() => setReviewTarget(null)}
+        onOk={handleReject}
+        okText="确认驳回"
+        okButtonProps={{ danger: true, loading: reviewBusy }}
+        cancelText="取消"
+      >
+        <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+          驳回后赛事将无法对公众发布。请填写驳回原因,方便提交者修改后再申请。
+        </Typography.Paragraph>
+        <Input.TextArea
+          rows={3}
+          maxLength={200}
+          showCount
+          value={reviewReason}
+          onChange={(event) => setReviewReason(event.target.value)}
+          placeholder="例如:报名截止时间设置不合理 / 缺少场地信息..."
+        />
       </Modal>
     </div>
   );

@@ -12,7 +12,7 @@ import {
 import { SchedulingService } from './scheduling.service';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.ADMIN)
+@Roles(Role.ADMIN, Role.SUPER_ADMIN)
 @Controller()
 export class SchedulingController {
   constructor(private schedulingService: SchedulingService) {}

@@ -53,7 +53,7 @@ export class PublicService {
 
   async getLobby() {
     const tournaments = await this.prisma.tournament.findMany({
-      where: { isArchived: false, isPublished: true },
+      where: { isArchived: false, isPublished: true, approvalStatus: 'APPROVED' },
       include: {
         events: {
           include: {
@@ -119,12 +119,12 @@ export class PublicService {
     const publicAnnouncements = await this.announcementsService.findPublished(4);
     const competition =
       (await this.prisma.tournament.findFirst({
-        where: { showOnHome: true, isArchived: false, isPublished: true },
+        where: { showOnHome: true, isArchived: false, isPublished: true, approvalStatus: 'APPROVED' },
         include: { events: true },
         orderBy: [{ updatedAt: 'desc' }],
       })) ??
       (await this.prisma.tournament.findFirst({
-        where: { isArchived: false, isPublished: true },
+        where: { isArchived: false, isPublished: true, approvalStatus: 'APPROVED' },
         include: { events: true },
         orderBy: [{ edition: 'desc' }],
       }));
@@ -227,12 +227,12 @@ export class PublicService {
   async getScreen() {
     const competition =
       (await this.prisma.tournament.findFirst({
-        where: { showOnHome: true, isArchived: false, isPublished: true },
+        where: { showOnHome: true, isArchived: false, isPublished: true, approvalStatus: 'APPROVED' },
         include: { events: true, venues: true },
         orderBy: [{ updatedAt: 'desc' }],
       })) ??
       (await this.prisma.tournament.findFirst({
-        where: { isArchived: false, isPublished: true },
+        where: { isArchived: false, isPublished: true, approvalStatus: 'APPROVED' },
         include: { events: true, venues: true },
         orderBy: [{ edition: 'desc' }],
       }));
@@ -409,6 +409,7 @@ export class PublicService {
         tournament: {
           isPublished: true,
           isArchived: false,
+          approvalStatus: 'APPROVED',
         },
         matches: { some: { roundNo: { gt: 0 } } },
       },
@@ -562,8 +563,9 @@ export class PublicService {
 
     return {
       id: event.id,
+      tournamentId: event.tournament.id,
       title: `${event.tournament.name} · ${EVENT_TYPE_LABELS[event.type] ?? event.type}`,
-      subtitle: `第 ${event.tournament.edition} 届 · ${FORMAT_LABELS[event.format] ?? event.format} · ${participants.filter((item: any) => !item.isBye).length} 个签位`,
+      subtitle: `${FORMAT_LABELS[event.format] ?? event.format} · ${participants.filter((item: any) => !item.isBye).length} 个签位`,
       generatedAt: event.drawGeneratedAt?.toISOString?.() ?? null,
       participants,
       matches: event.matches.map((match: any) => ({

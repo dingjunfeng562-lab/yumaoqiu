@@ -103,7 +103,7 @@ function teamCompetitionToBracket(competition: TeamCompetition): KnockoutBracket
   return {
     id: competition.id,
     title: `${competition.tournamentName} · ${competition.name}`,
-    subtitle: `第 ${competition.tournamentEdition} 届 · 团体淘汰赛 · 抢 ${competition.winThreshold} 胜`,
+    subtitle: `团体淘汰赛 · 抢 ${competition.winThreshold} 胜`,
     participants,
     matches: competition.teamMatches.map((match) => ({
       id: match.id,
@@ -193,6 +193,16 @@ function demoBracket(): KnockoutBracketData {
         forfeitReason: '选手未到场弃权',
         score: 'WO',
         gamesText: '— 弃权 —',
+      },
+      {
+        id: 'demo-r1-6',
+        roundNo: 1,
+        matchNo: 6,
+        status: 'CANCELLED',
+        forfeitedSide: 0,
+        forfeitReason: '双方均未到场,本场作废',
+        score: '—',
+        gamesText: '双方弃权,本场作废',
       },
       { id: 'demo-r2-1', roundNo: 2, matchNo: 1, status: 'PENDING' },
       { id: 'demo-r3-1', roundNo: 3, matchNo: 1, status: 'PENDING' },

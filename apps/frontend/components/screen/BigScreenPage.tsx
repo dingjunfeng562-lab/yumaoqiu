@@ -175,7 +175,7 @@ export function BigScreenPage({ initialData }: { initialData: ScreenData }) {
             <div className="min-w-0">
               <p className="text-xs font-black uppercase tracking-[0.18em] text-cyan-200">Live Scoreboard</p>
               <h1 className="truncate text-2xl font-black leading-tight sm:text-4xl">
-                第{data.competition.edition}届 {data.competition.name}
+                {data.competition.name}
               </h1>
               <p className="mt-1 truncate text-sm font-semibold text-white/58">
                 {data.competition.location ?? '地点待公布'} · {dateRange} · {data.competition.statusLabel}

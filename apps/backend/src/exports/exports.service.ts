@@ -53,7 +53,7 @@ export class ExportsService {
           include: {
             registrations: {
               where: { status: RegistrationStatus.APPROVED },
-              include: { player1: true, player2: true },
+              include: { player1: true, player2: true, competitionRegistration: true },
               orderBy: [{ groupName: 'asc' }, { isSeed: 'desc' }, { seedRank: 'asc' }, { createdAt: 'asc' }],
             },
             matches: {
@@ -76,7 +76,7 @@ export class ExportsService {
     const label = kind === 'schedule' ? '赛程表' : kind === 'results' ? '成绩册' : '报名表';
 
     return {
-      filename: `第${tournament.edition}届-${tournament.name}-${label}.xls`,
+      filename: `${tournament.name}-${label}.xls`,
       content: this.toWorkbookXml(worksheets),
     };
   }
@@ -90,7 +90,6 @@ export class ExportsService {
   private scheduleWorksheet(tournament: any): Worksheet {
     const rows: CellValue[][] = [
       [
-        '届次',
         '赛事',
         '项目',
         '轮次',
@@ -108,7 +107,6 @@ export class ExportsService {
       const registrationMap = this.registrationMap(event.registrations);
       for (const match of event.matches) {
         rows.push([
-          tournament.edition,
           tournament.name,
           EVENT_TYPE_LABELS[event.type] ?? event.type,
           match.round,
@@ -123,20 +121,19 @@ export class ExportsService {
       }
     }
 
-    if (rows.length === 1) rows.push(['', tournament.name, '', '', '', '', '', '暂无赛程', '', '', '']);
+    if (rows.length === 1) rows.push([tournament.name, '', '', '', '', '', '暂无赛程', '', '', '']);
     return { name: '赛程表', rows };
   }
 
   private resultsWorksheet(tournament: any): Worksheet {
     const rows: CellValue[][] = [
-      ['届次', '赛事', '项目', '轮次', '场次', '对阵', '局分', '胜方', '状态', '场地', '更新时间'],
+      ['赛事', '项目', '轮次', '场次', '对阵', '局分', '胜方', '状态', '场地', '更新时间'],
     ];
 
     for (const event of tournament.events) {
       const registrationMap = this.registrationMap(event.registrations);
       for (const match of event.matches) {
         rows.push([
-          tournament.edition,
           tournament.name,
           EVENT_TYPE_LABELS[event.type] ?? event.type,
           match.round,
@@ -153,19 +150,18 @@ export class ExportsService {
       }
     }
 
-    if (rows.length === 1) rows.push(['', tournament.name, '', '', '', '暂无成绩', '', '', '', '', '']);
+    if (rows.length === 1) rows.push([tournament.name, '', '', '', '暂无成绩', '', '', '', '', '']);
     return { name: '成绩明细', rows };
   }
 
   private standingsWorksheet(tournament: any): Worksheet {
     const rows: CellValue[][] = [
-      ['届次', '赛事', '项目', '名次', '参赛方', '院系/班级', '场次', '胜场', '负场', '小分差'],
+      ['赛事', '项目', '名次', '参赛方', '院系/班级', '场次', '胜场', '负场', '小分差'],
     ];
 
     for (const event of tournament.events) {
       for (const row of this.eventStandings(event)) {
         rows.push([
-          tournament.edition,
           tournament.name,
           EVENT_TYPE_LABELS[event.type] ?? event.type,
           row.rank,
@@ -179,17 +175,17 @@ export class ExportsService {
       }
     }
 
-    if (rows.length === 1) rows.push(['', tournament.name, '', '', '暂无名次', '', '', '', '', '']);
+    if (rows.length === 1) rows.push([tournament.name, '', '', '暂无名次', '', '', '', '', '']);
     return { name: '名次汇总', rows };
   }
 
   private registrationsWorksheet(tournament: any): Worksheet {
     const rows: CellValue[][] = [
       [
-        '届次',
         '赛事',
         '项目',
         '参赛方',
+        '学校',
         '选手1',
         '性别1',
         '院系/班级1',
@@ -207,11 +203,16 @@ export class ExportsService {
 
     for (const event of tournament.events) {
       for (const registration of event.registrations) {
+        const school =
+          registration.competitionRegistration?.school ??
+          registration.className ??
+          registration.player1.affiliation ??
+          '';
         rows.push([
-          tournament.edition,
           tournament.name,
           EVENT_TYPE_LABELS[event.type] ?? event.type,
           this.registrationName(registration),
+          school,
           registration.player1.name,
           GENDER_LABELS[registration.player1.gender] ?? registration.player1.gender,
           registration.player1.affiliation,
@@ -228,7 +229,7 @@ export class ExportsService {
       }
     }
 
-    if (rows.length === 1) rows.push(['', tournament.name, '', '暂无报名', '', '', '', '', '', '', '', '', '', '', '', '']);
+    if (rows.length === 1) rows.push([tournament.name, '', '暂无报名', '', '', '', '', '', '', '', '', '', '', '', '', '']);
     return { name: '报名表', rows };
   }
 

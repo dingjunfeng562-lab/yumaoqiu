@@ -18,6 +18,7 @@ type Player = {
   email: string;
   name: string;
   studentId: string;
+  school?: string;
   className: string;
   phone: string;
   genderLabel: string;
@@ -89,11 +90,17 @@ export default function AdminCompetitionPlayersPage() {
 
   const columns = [
     { title: '邮箱', dataIndex: 'email', key: 'email' },
-    { title: '姓名', dataIndex: 'name', key: 'name' },
-    { title: '学号', dataIndex: 'studentId', key: 'studentId' },
-    { title: '班级/学号', dataIndex: 'className', key: 'className' },
-    { title: '联系电话', dataIndex: 'phone', key: 'phone' },
-    { title: '性别', dataIndex: 'genderLabel', key: 'genderLabel', width: 80 },
+    { title: '姓名', dataIndex: 'name', key: 'name', width: 110 },
+    { title: '学号', dataIndex: 'studentId', key: 'studentId', width: 140 },
+    {
+      title: '学校',
+      dataIndex: 'school',
+      key: 'school',
+      render: (value: string | undefined, record: Player) =>
+        value || record.className || <Typography.Text type="secondary">未填写</Typography.Text>,
+    },
+    { title: '联系电话', dataIndex: 'phone', key: 'phone', width: 140 },
+    { title: '性别', dataIndex: 'genderLabel', key: 'genderLabel', width: 70 },
     {
       title: '参赛项目',
       dataIndex: 'eventName',
@@ -150,9 +157,9 @@ export default function AdminCompetitionPlayersPage() {
           />
           <Input.Search
             allowClear
-            placeholder="搜索邮箱、姓名、学号"
+            placeholder="搜索邮箱、姓名、学号、学校"
             onSearch={setSearch}
-            style={{ width: 240 }}
+            style={{ width: 260 }}
           />
           <Button icon={<DownloadOutlined />} onClick={() => message.info('导出按钮已预留，可在后续接入 Excel 导出。')}>
             导出

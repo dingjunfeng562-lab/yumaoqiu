@@ -6,12 +6,9 @@ class LockedCredentialsSignin extends CredentialsSignin {
   code = 'locked';
 }
 
-async function refreshAccessToken(token: {
-  refreshToken?: string;
-  accessTokenExpiresAt?: number;
-  [key: string]: unknown;
-}) {
-  if (!token.refreshToken) {
+async function refreshAccessToken(token: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const refreshToken = token.refreshToken as string | undefined;
+  if (!refreshToken) {
     return { ...token, authError: 'RefreshAccessTokenError' };
   }
 
@@ -19,12 +16,24 @@ async function refreshAccessToken(token: {
     const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/auth/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refreshToken: token.refreshToken }),
+      body: JSON.stringify({ refreshToken }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       throw new Error(data?.message ?? 'refresh failed');
     }
+
+    // Pull the freshest user fields off the refresh response so server-side
+    // role / status changes (e.g. an admin getting promoted to super admin)
+    // propagate into the next session tick without forcing the user to
+    // log out and back in.
+    const fresh = (data.user ?? {}) as {
+      role?: string;
+      status?: string;
+      mustChangePassword?: boolean;
+      username?: string;
+      email?: string;
+    };
 
     return {
       ...token,
@@ -32,6 +41,11 @@ async function refreshAccessToken(token: {
       refreshToken: data.refresh_token,
       accessTokenExpiresAt: new Date(data.accessTokenExpiresAt).getTime(),
       refreshTokenExpiresAt: new Date(data.refreshTokenExpiresAt).getTime(),
+      role: fresh.role ?? token.role,
+      status: fresh.status ?? token.status,
+      mustChangePassword: fresh.mustChangePassword ?? token.mustChangePassword,
+      username: fresh.username ?? token.username,
+      email: fresh.email ?? token.email,
       authError: undefined,
     };
   } catch {

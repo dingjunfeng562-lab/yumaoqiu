@@ -168,7 +168,7 @@ export default function AdminScoringPage() {
           <Select
             style={{ width: 260 }}
             value={selectedTournamentId}
-            options={tournaments.map((item) => ({ value: item.id, label: `第${item.edition}届 ${item.name}` }))}
+            options={tournaments.map((item) => ({ value: item.id, label: item.name }))}
             onChange={setSelectedTournamentId}
             placeholder="选择赛事"
           />

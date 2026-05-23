@@ -92,7 +92,7 @@ export class CompetitionsService {
 
   async listPublicCompetitions() {
     const competitions = await this.prisma.tournament.findMany({
-      where: { isArchived: false, isPublished: true },
+      where: { isArchived: false, isPublished: true, approvalStatus: 'APPROVED' },
       include: {
         events: {
           include: {
@@ -230,6 +230,7 @@ export class CompetitionsService {
             studentId: dto.studentId.trim(),
             name: dto.name.trim(),
             gender,
+            school: dto.school.trim(),
             contact: dto.contact?.trim() || null,
             remark: dto.remark?.trim() || null,
             status: nextStatus,
@@ -266,6 +267,7 @@ export class CompetitionsService {
           studentId: dto.studentId.trim(),
           name: dto.name.trim(),
           gender,
+          school: dto.school.trim(),
           contact: dto.contact?.trim() || null,
           remark: dto.remark?.trim() || null,
           status: nextStatus,
@@ -297,6 +299,31 @@ export class CompetitionsService {
       message: competition.needsRegistrationReview ? '报名已提交，请等待管理员审核。' : '报名已提交并自动通过。',
       registration: this.toCompetitionRegistrationView(registration),
     };
+  }
+
+  async listMyRegistrations(userId: string) {
+    if (!userId) return [];
+    const registrations = await this.prisma.competitionRegistration.findMany({
+      where: { userId },
+      include: {
+        user: true,
+        competition: true,
+        eventItems: { include: { event: true } },
+      },
+      orderBy: [{ createdAt: 'desc' }],
+    });
+    return registrations.map((registration) => ({
+      ...this.toCompetitionRegistrationView(registration),
+      competition: {
+        id: registration.competition.id,
+        name: registration.competition.name,
+        title: registration.competition.name,
+        startDate: registration.competition.startDate.toISOString(),
+        endDate: registration.competition.endDate.toISOString(),
+        location: registration.competition.location,
+        coverImage: registration.competition.coverImageUrl,
+      },
+    }));
   }
 
   async listPublicPlayers(competitionId: string) {
@@ -334,6 +361,8 @@ export class CompetitionsService {
       ...this.toCompetitionView(competition, true),
       isArchived: competition.isArchived,
       isPublished: competition.isPublished,
+      approvalStatus: competition.approvalStatus,
+      rejectReason: competition.rejectReason,
       counts: {
         all: competition.competitionRegistrations.length,
         pending: competition.competitionRegistrations.filter((item) => item.status === RegistrationStatus.PENDING)
@@ -349,7 +378,10 @@ export class CompetitionsService {
   }
 
   async publishCompetition(id: string) {
-    await this.findCompetition(id, true);
+    const existing = await this.findCompetition(id, true);
+    if (existing.approvalStatus !== 'APPROVED') {
+      throw new BadRequestException('赛事尚未通过总管理员审核,无法发布');
+    }
     const competition = await this.prisma.tournament.update({
       where: { id },
       data: {
@@ -644,6 +676,7 @@ export class CompetitionsService {
                 { studentId: { contains: search } },
                 { className: { contains: search } },
                 { competitionRegistration: { user: { email: { contains: search } } } },
+                { competitionRegistration: { school: { contains: search } } },
                 { player1: { name: { contains: search } } },
                 { player1: { affiliation: { contains: search } } },
               ],
@@ -669,12 +702,13 @@ export class CompetitionsService {
     registration: CompetitionRegistrationWithRelations,
     reviewedById: string | null,
   ) {
+    const schoolName = registration.school?.trim() || '未填写学校';
     for (const item of registration.eventItems) {
       const primaryPlayer = await tx.player.create({
         data: {
           name: registration.name,
           gender: registration.gender,
-          affiliation: registration.studentId,
+          affiliation: schoolName,
           contact: registration.contact,
           notes: registration.remark,
         },
@@ -686,7 +720,8 @@ export class CompetitionsService {
           data: {
             name: item.partnerName,
             gender: this.resolvePartnerGender(item.event.type, registration.gender),
-            affiliation: item.partnerStudentId?.trim() || '未填写学号',
+            // Partner shares the same school as primary registrant.
+            affiliation: schoolName,
             contact: null,
             notes: null,
           },
@@ -702,7 +737,7 @@ export class CompetitionsService {
           player2Id: secondaryPlayerId,
           name: secondaryPlayerId && item.partnerName ? `${registration.name} / ${item.partnerName}` : registration.name,
           studentId: registration.studentId,
-          className: registration.studentId,
+          className: schoolName,
           phone: registration.contact,
           gender: registration.gender,
           eventName: EVENT_TYPE_LABELS[item.event.type],
@@ -766,6 +801,7 @@ export class CompetitionsService {
       name: registration.name,
       gender: registration.gender,
       genderLabel: registration.gender === Gender.MALE ? '男' : '女',
+      school: registration.school ?? '',
       contact: registration.contact ?? '',
       phone: registration.contact ?? '',
       remark: registration.remark ?? '',
@@ -791,6 +827,11 @@ export class CompetitionsService {
 
   private toRegistrationView(registration: RegistrationWithRelations) {
     const gender = registration.gender ?? registration.player1.gender;
+    const school =
+      registration.competitionRegistration?.school ??
+      registration.className ??
+      registration.player1.affiliation ??
+      '';
     return {
       id: registration.id,
       competitionRegistrationId: registration.competitionRegistrationId,
@@ -799,6 +840,7 @@ export class CompetitionsService {
       email: registration.competitionRegistration?.user.email ?? '',
       name: registration.name ?? registration.player1.name,
       studentId: registration.studentId ?? '',
+      school,
       className: registration.className ?? registration.player1.affiliation,
       phone: registration.phone ?? registration.player1.contact ?? '',
       gender,

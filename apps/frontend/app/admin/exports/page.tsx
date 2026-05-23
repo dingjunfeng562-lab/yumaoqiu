@@ -122,7 +122,7 @@ export default function AdminExportsPage() {
             placeholder="选择赛事"
             options={tournaments.map((item) => ({
               value: item.id,
-              label: `第${item.edition}届 ${item.name}`,
+              label: item.name,
             }))}
             onChange={setSelectedTournamentId}
           />
@@ -165,7 +165,6 @@ export default function AdminExportsPage() {
           dataSource={tournaments}
           pagination={{ pageSize: 8 }}
           columns={[
-            { title: '届次', dataIndex: 'edition', render: (value: number) => `第${value}届`, width: 100 },
             { title: '赛事', dataIndex: 'name' },
             {
               title: '时间',

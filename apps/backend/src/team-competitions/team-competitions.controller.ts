@@ -29,7 +29,7 @@ import {
 import { TeamCompetitionsService } from './team-competitions.service';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.ADMIN)
+@Roles(Role.ADMIN, Role.SUPER_ADMIN)
 @Controller('team-competitions')
 export class TeamCompetitionsController {
   constructor(private readonly teamCompetitionsService: TeamCompetitionsService) {}

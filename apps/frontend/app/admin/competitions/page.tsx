@@ -26,6 +26,8 @@ type Competition = {
   registrationStatus: string;
   isArchived: boolean;
   isPublished: boolean;
+  approvalStatus?: 'PENDING' | 'APPROVED' | 'REJECTED';
+  rejectReason?: string | null;
   counts: {
     all: number;
     pending: number;
@@ -105,12 +107,17 @@ export default function AdminCompetitionsPage() {
     {
       title: '状态',
       key: 'status',
-      width: 180,
+      width: 200,
       render: (_: unknown, record: Competition) => (
         <Space direction="vertical" size={4}>
           <Tag color={record.isPublished && !record.isArchived ? 'blue' : 'default'}>
             {record.isArchived ? '已归档' : record.isPublished ? record.statusLabel : '未发布'}
           </Tag>
+          {record.approvalStatus === 'PENDING' ? (
+            <Tag color="gold">待总管理员审核</Tag>
+          ) : record.approvalStatus === 'REJECTED' ? (
+            <Tag color="red">审核驳回</Tag>
+          ) : null}
           <Tag color={record.registrationStatus === '报名中' ? 'green' : 'orange'}>
             {record.registrationStatus}
           </Tag>
@@ -141,8 +148,17 @@ export default function AdminCompetitionsPage() {
           <Popconfirm
             title={record.isPublished ? '确认下架该赛事？' : '确认发布该赛事？'}
             onConfirm={() => togglePublication(record)}
+            disabled={!record.isPublished && record.approvalStatus !== 'APPROVED'}
           >
-            <Button icon={record.isPublished ? <PauseCircleOutlined /> : <PlayCircleOutlined />}>
+            <Button
+              icon={record.isPublished ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
+              disabled={!record.isPublished && record.approvalStatus !== 'APPROVED'}
+              title={
+                !record.isPublished && record.approvalStatus !== 'APPROVED'
+                  ? '需要总管理员审核通过后才能发布'
+                  : undefined
+              }
+            >
               {record.isPublished ? '下架' : '发布'}
             </Button>
           </Popconfirm>

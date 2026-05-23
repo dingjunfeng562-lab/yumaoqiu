@@ -36,6 +36,7 @@ type ExistingRegistration = {
   studentId: string;
   name: string;
   gender: 'MALE' | 'FEMALE';
+  school?: string | null;
   phone?: string;
   remark?: string;
   items: Array<{
@@ -56,6 +57,7 @@ type FormState = {
   studentId: string;
   name: string;
   gender: 'MALE' | 'FEMALE';
+  school: string;
   contact: string;
   remark: string;
   items: ItemState[];
@@ -65,6 +67,7 @@ const initialForm: FormState = {
   studentId: '',
   name: '',
   gender: 'MALE',
+  school: '',
   contact: '',
   remark: '',
   items: [{ eventId: '', partnerName: '', partnerStudentId: '' }],
@@ -134,6 +137,7 @@ export default function CompetitionRegisterPage() {
             studentId: registrationData.studentId,
             name: registrationData.name,
             gender: registrationData.gender,
+            school: registrationData.school ?? '',
             contact: registrationData.phone ?? '',
             remark: registrationData.remark ?? '',
             items: registrationData.items.length
@@ -197,6 +201,7 @@ export default function CompetitionRegisterPage() {
         studentId: form.studentId,
         name: form.name,
         gender: form.gender,
+        school: form.school.trim(),
         contact: form.contact,
         remark: form.remark,
         items: form.items.map((item) => ({
@@ -288,6 +293,17 @@ export default function CompetitionRegisterPage() {
                   <option value="MALE">男</option>
                   <option value="FEMALE">女</option>
                 </select>
+              </Field>
+              <Field label="学校(完整名称)" wide>
+                <input
+                  required
+                  minLength={2}
+                  maxLength={120}
+                  disabled={existingLocked}
+                  value={form.school}
+                  onChange={(event) => updateField('school', event.target.value)}
+                  placeholder="例如:武汉大学、华中科技大学经济学院"
+                />
               </Field>
               <Field label="联系方式">
                 <input value={form.contact} onChange={(event) => updateField('contact', event.target.value)} />

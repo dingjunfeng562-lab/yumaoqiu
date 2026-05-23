@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { PortalFeaturePage } from '@/components/home/PortalFeaturePage';
+import { KnockoutBracket, type KnockoutBracketData } from '@/components/bracket/KnockoutBracket';
 
 export const dynamic = 'force-dynamic';
 
@@ -75,10 +76,22 @@ async function getCompetition(id: string): Promise<CompetitionDetail | null> {
   }
 }
 
+async function getBrackets(tournamentId: string): Promise<KnockoutBracketData[]> {
+  try {
+    const res = await fetch(`${API_BASE}/public/brackets`, { cache: 'no-store' });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { brackets: KnockoutBracketData[] };
+    return (data.brackets ?? []).filter((bracket) => bracket.tournamentId === tournamentId);
+  } catch {
+    return [];
+  }
+}
+
 export default async function CompetitionDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const competition = await getCompetition(id);
   if (!competition) notFound();
+  const brackets = await getBrackets(competition.id);
 
   const projects =
     competition.eventOptions?.map((event) => event.label) ??
@@ -197,7 +210,7 @@ export default async function CompetitionDetailPage({ params }: { params: Promis
             )}
           </section>
 
-          <section className="space-y-3 rounded-xl border border-blue-100 bg-white p-6 shadow-sm">
+          <section className="space-y-3 rounded-xl border border-blue-100 bg-white p-5 shadow-sm sm:p-6">
             <Link
               href={`/competitions/${competition.id}/register`}
               className="inline-flex h-11 w-full items-center justify-center rounded-lg bg-amber-400 text-sm font-black text-white shadow-sm transition hover:bg-amber-500"
@@ -210,6 +223,14 @@ export default async function CompetitionDetailPage({ params }: { params: Promis
             >
               查看选手
             </Link>
+            {brackets.length ? (
+              <a
+                href="#brackets"
+                className="inline-flex h-11 w-full items-center justify-center rounded-lg border border-blue-200 text-sm font-black text-blue-700 transition hover:bg-blue-50"
+              >
+                查看对阵表
+              </a>
+            ) : null}
             <Link
               href="/competitions"
               className="inline-flex h-11 w-full items-center justify-center rounded-lg text-sm font-semibold text-slate-500 transition hover:text-blue-700"
@@ -219,6 +240,29 @@ export default async function CompetitionDetailPage({ params }: { params: Promis
           </section>
         </aside>
       </div>
+
+      {/* Embedded brackets — surface entry from competition detail */}
+      <section id="brackets" className="mt-6 space-y-4 sm:mt-8 sm:space-y-5">
+        <div className="flex items-baseline justify-between gap-3">
+          <div>
+            <p className="text-xs font-black uppercase tracking-[0.16em] text-blue-700/70">Bracket</p>
+            <h2 className="mt-1 text-xl font-black text-slate-900 sm:text-2xl">对阵表</h2>
+          </div>
+          <span className="text-xs font-semibold text-slate-400">
+            {brackets.length ? `共 ${brackets.length} 个项目` : ''}
+          </span>
+        </div>
+        {brackets.length ? (
+          brackets.map((bracket) => <KnockoutBracket key={bracket.id} data={bracket} />)
+        ) : (
+          <div className="rounded-xl border border-dashed border-blue-200 bg-white px-5 py-8 text-center shadow-sm sm:py-10">
+            <p className="text-sm font-black text-slate-700">对阵表尚未公布</p>
+            <p className="mt-1 text-xs font-semibold text-slate-500">
+              报名截止并完成抽签后,这里会自动展示完整的淘汰赛签表。
+            </p>
+          </div>
+        )}
+      </section>
     </PortalFeaturePage>
   );
 }

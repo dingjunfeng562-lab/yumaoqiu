@@ -9,7 +9,6 @@ const navItems = [
   { label: '首页', href: '/' },
   { label: '赛事列表', href: '/competitions' },
   { label: '赛程安排', href: '/schedule' },
-  { label: '对阵表', href: '/bracket' },
   { label: '成绩排行', href: '/ranking' },
   { label: '通知公告', href: '/notice' },
 ];
@@ -17,7 +16,14 @@ const navItems = [
 export function Header({ activeHref = '/' }: { activeHref?: string }) {
   const { data: session, status } = useSession();
   const role = session?.user?.role;
-  const roleHref = role === 'ADMIN' ? '/admin' : role === 'REFEREE' ? '/referee/my-matches' : '/';
+  const roleHref =
+    role === 'ADMIN' || role === 'SUPER_ADMIN'
+      ? '/admin'
+      : role === 'REFEREE'
+        ? '/referee/my-matches'
+        : role === 'PLAYER'
+          ? '/my-registrations'
+          : '/';
   const [menuOpen, setMenuOpen] = useState(false);
 
   // Lock body scroll while menu is open + close on Escape

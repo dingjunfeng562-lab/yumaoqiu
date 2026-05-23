@@ -333,6 +333,59 @@ export class ScoringService {
     return this.getMatchState(matchId, user);
   }
 
+  async forfeitBothSides(matchId: string, user: AuthUser, reason?: string) {
+    await this.ensureMatchAccess(matchId, user);
+    const match = await this.ensurePlayableMatch(matchId);
+    if (match.status === MatchStatus.COMPLETED || match.status === MatchStatus.CANCELLED) {
+      throw new BadRequestException('场次已结束,无法再判定弃权');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      // Mark this match as cancelled. forfeitedSide = 0 sentinel = "both sides forfeited"
+      await tx.match.update({
+        where: { id: matchId },
+        data: {
+          status: MatchStatus.CANCELLED,
+          winnerSide: null,
+          forfeitedSide: 0,
+          forfeitReason: reason?.trim() || '双方均未到场,本场作废',
+        },
+      });
+
+      await tx.matchEvent.create({
+        data: {
+          matchId,
+          type: MatchEventType.FORFEIT,
+          side: null,
+          note: reason?.trim() || '双方均弃权,本场作废',
+        },
+      });
+
+      // Propagate the "bye" to the next round: clear the corresponding slot
+      // on the next match so the bracket renders it as a 轮空.
+      if (match.eventId) {
+        const nextMatch = await tx.match.findFirst({
+          where: {
+            eventId: match.eventId,
+            roundNo: match.roundNo + 1,
+            matchNo: Math.ceil(match.matchNo / 2),
+          },
+        });
+        if (nextMatch) {
+          const targetSide = match.matchNo % 2 === 1 ? 'side1Id' : 'side2Id';
+          await tx.match.update({
+            where: { id: nextMatch.id },
+            data: { [targetSide]: null },
+          });
+        }
+      }
+
+      await this.teamCompetitionsService.updateTeamMatchAggregate(tx, matchId);
+    });
+
+    return this.getMatchState(matchId, user);
+  }
+
   async assignReferee(matchId: string, refereeId: string) {
     const referee = await this.prisma.user.findUnique({ where: { id: refereeId } });
     if (!referee || referee.role !== Role.REFEREE) {

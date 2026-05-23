@@ -2,9 +2,14 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { auth } from '@/auth';
 
+function isAdminRole(role?: string | null) {
+  return role === 'ADMIN' || role === 'SUPER_ADMIN';
+}
+
 function destinationForRole(role?: string | null) {
   if (role === 'REFEREE') return '/referee/my-matches';
-  if (role === 'ADMIN') return '/admin';
+  if (isAdminRole(role)) return '/admin';
+  if (role === 'PLAYER') return '/my-registrations';
   return '/';
 }
 
@@ -23,19 +28,26 @@ export default async function proxy(req: NextRequest) {
   const isLoggedIn = !!session && !hasInvalidSession;
   const isAdminRoute = req.nextUrl.pathname.startsWith('/admin');
   const isRefereeRoute = req.nextUrl.pathname.startsWith('/referee');
+  const isMyRegistrationsRoute = req.nextUrl.pathname.startsWith('/my-registrations');
   const isRegisterRoute = /\/competitions\/[^/]+\/register$/.test(req.nextUrl.pathname);
   const isLoginPage = req.nextUrl.pathname === '/login';
 
-  if ((isAdminRoute || isRefereeRoute || isRegisterRoute) && (!isLoggedIn || hasInvalidSession)) {
+  if (
+    (isAdminRoute || isRefereeRoute || isRegisterRoute || isMyRegistrationsRoute) &&
+    (!isLoggedIn || hasInvalidSession)
+  ) {
     return loginRedirect(req);
   }
-  if (isAdminRoute && session?.user?.role !== 'ADMIN') {
+  if (isAdminRoute && !isAdminRole(session?.user?.role)) {
     return NextResponse.redirect(new URL('/forbidden', req.url));
   }
   if (isRefereeRoute && session?.user?.role !== 'REFEREE') {
     return NextResponse.redirect(new URL('/forbidden', req.url));
   }
   if (isRegisterRoute && session?.user?.role !== 'PLAYER') {
+    return NextResponse.redirect(new URL('/forbidden', req.url));
+  }
+  if (isMyRegistrationsRoute && session?.user?.role !== 'PLAYER') {
     return NextResponse.redirect(new URL('/forbidden', req.url));
   }
   if (isLoginPage && isLoggedIn && !hasInvalidSession) {
@@ -45,5 +57,11 @@ export default async function proxy(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/admin/:path*', '/referee/:path*', '/competitions/:path*/register', '/login'],
+  matcher: [
+    '/admin/:path*',
+    '/referee/:path*',
+    '/my-registrations/:path*',
+    '/competitions/:path*/register',
+    '/login',
+  ],
 };

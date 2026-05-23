@@ -15,7 +15,7 @@ type AuthRequest = {
 };
 
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.ADMIN)
+@Roles(Role.ADMIN, Role.SUPER_ADMIN)
 @Controller('admin')
 export class AdminCompetitionsController {
   constructor(private competitionsService: CompetitionsService) {}

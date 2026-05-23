@@ -27,6 +27,10 @@ export class SubmitCompetitionRegistrationDto {
   @IsIn(['MALE', 'FEMALE', '男', '女'])
   gender: 'MALE' | 'FEMALE' | '男' | '女';
 
+  @IsString()
+  @MinLength(2, { message: '学校名称至少 2 个字符' })
+  school: string;
+
   @IsOptional()
   @IsString()
   contact?: string;

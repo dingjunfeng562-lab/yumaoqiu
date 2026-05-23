@@ -113,7 +113,7 @@ export default function RefereeMatchesPage() {
                   <div>
                     <h2 className="text-lg font-black text-slate-950">{match.eventTypeLabel} 第 {match.matchNo} 场</h2>
                     <p className="mt-1 text-xs font-semibold text-slate-500">
-                      第{match.tournament.edition}届 {match.tournament.name} · {match.round}
+                      {match.tournament.name} · {match.round}
                     </p>
                   </div>
                   <Tag color={statusMeta[match.status].color}>{statusMeta[match.status].label}</Tag>

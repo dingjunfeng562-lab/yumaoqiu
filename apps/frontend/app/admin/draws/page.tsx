@@ -612,7 +612,7 @@ export default function DrawsPage() {
               placeholder="选择赛事"
               value={selectedTournamentId || undefined}
               onChange={setSelectedTournamentId}
-              options={tournaments.map((t) => ({ value: t.id, label: `第${t.edition}届 ${t.name}` }))}
+              options={tournaments.map((t) => ({ value: t.id, label: t.name }))}
             />
           </Col>
           <Col xs={24} md={10}>

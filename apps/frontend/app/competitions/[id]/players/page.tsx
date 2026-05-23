@@ -16,7 +16,11 @@ type Competition = {
 type Player = {
   id: string;
   name: string;
-  className: string;
+  studentId?: string;
+  school?: string;
+  className?: string;
+  phone?: string;
+  genderLabel?: string;
   eventName: string;
   createdAt: string;
   statusLabel: string;
@@ -155,24 +159,30 @@ function PlayerGroup({ title, players }: { title: string; players: Player[] }) {
       </div>
       {players.length ? (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[620px] text-left text-sm">
+          <table className="w-full min-w-[840px] text-left text-sm">
             <thead className="bg-white text-xs font-black uppercase text-slate-500">
               <tr>
-                <th className="px-5 py-3">姓名</th>
-                <th className="px-5 py-3">班级/学号</th>
-                <th className="px-5 py-3">参赛项目</th>
-                <th className="px-5 py-3">报名时间</th>
-                <th className="px-5 py-3">审核状态</th>
+                <th className="px-4 py-3">姓名</th>
+                <th className="px-4 py-3">性别</th>
+                <th className="px-4 py-3">学校</th>
+                <th className="px-4 py-3">学号</th>
+                <th className="px-4 py-3">联系方式</th>
+                <th className="px-4 py-3">参赛项目</th>
+                <th className="px-4 py-3">报名时间</th>
+                <th className="px-4 py-3">审核状态</th>
               </tr>
             </thead>
             <tbody>
               {players.map((player) => (
                 <tr key={player.id} className="border-t border-blue-50">
-                  <td className="px-5 py-4 font-bold text-slate-900">{player.name}</td>
-                  <td className="px-5 py-4 text-slate-600">{player.className}</td>
-                  <td className="px-5 py-4 text-slate-600">{player.eventName}</td>
-                  <td className="px-5 py-4 text-slate-600">{formatDateTime(player.createdAt)}</td>
-                  <td className="px-5 py-4">
+                  <td className="px-4 py-4 font-bold text-slate-900">{player.name}</td>
+                  <td className="px-4 py-4 text-slate-600">{player.genderLabel ?? '-'}</td>
+                  <td className="px-4 py-4 font-semibold text-slate-700">{player.school || player.className || '-'}</td>
+                  <td className="px-4 py-4 text-slate-600">{player.studentId || '-'}</td>
+                  <td className="px-4 py-4 text-slate-600">{player.phone || '-'}</td>
+                  <td className="px-4 py-4 text-slate-600">{player.eventName}</td>
+                  <td className="px-4 py-4 text-slate-600">{formatDateTime(player.createdAt)}</td>
+                  <td className="px-4 py-4">
                     <span className="rounded-full bg-green-50 px-3 py-1 text-xs font-black text-green-700">
                       {player.statusLabel}
                     </span>

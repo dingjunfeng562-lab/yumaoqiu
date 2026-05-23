@@ -91,6 +91,19 @@ export function HeroLanding() {
               查看赛事
             </Link>
           </div>
+
+          <a
+            href="mailto:wulibigger@foxmail.com"
+            className="landing-actions mt-10 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-4 py-1.5 text-xs font-semibold text-blue-100/85 backdrop-blur transition duration-300 hover:border-amber-300/50 hover:bg-white/10 hover:text-amber-200 sm:text-sm"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16v12H4z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 7l8 6 8-6" />
+            </svg>
+            <span className="font-bold tracking-wide">联系方式</span>
+            <span className="text-white/40">·</span>
+            <span className="font-mono tracking-wide">wulibigger@foxmail.com</span>
+          </a>
         </div>
       </div>
     </section>

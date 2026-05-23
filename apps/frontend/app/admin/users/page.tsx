@@ -6,35 +6,47 @@ import { Button, Card, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag
 import { DeleteOutlined, PlusOutlined, ReloadOutlined, LockOutlined, StopOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 
+type UserRole = 'SUPER_ADMIN' | 'ADMIN' | 'REFEREE' | 'PLAYER';
+
 type UserItem = {
   id: string;
   username: string | null;
   email: string | null;
   name: string;
-  role: 'ADMIN' | 'REFEREE' | 'PLAYER';
+  role: UserRole;
   status: 'ACTIVE' | 'DISABLED';
   inviteCode: string | null;
   registrationStatus: 'PENDING' | 'APPROVED' | 'REJECTED' | 'REMOVED' | null;
   createdAt: string;
 };
 
+type CreatableRole = 'ADMIN' | 'REFEREE' | 'PLAYER';
+
 type CreatedUserPayload = {
   username: string;
   email: string;
   password: string;
-  role: 'ADMIN' | 'REFEREE';
+  role: CreatableRole;
 };
 
-const roleLabels: Record<UserItem['role'], string> = {
+const roleLabels: Record<UserRole, string> = {
+  SUPER_ADMIN: '总管理员',
   ADMIN: '管理员',
   REFEREE: '裁判',
-  PLAYER: '普通用户',
+  PLAYER: '选手',
 };
 
-const roleColors: Record<UserItem['role'], string> = {
+const roleColors: Record<UserRole, string> = {
+  SUPER_ADMIN: 'magenta',
   ADMIN: 'blue',
   REFEREE: 'green',
   PLAYER: 'gold',
+};
+
+const ROLE_CREATE_ENDPOINT: Record<CreatableRole, string> = {
+  ADMIN: '/auth/users/admin',
+  REFEREE: '/auth/users/referee',
+  PLAYER: '/auth/users/player',
 };
 
 const statusLabels: Record<UserItem['status'], string> = {
@@ -80,13 +92,18 @@ export default function AdminUsersPage() {
 
   async function createUser(values: CreatedUserPayload) {
     if (!token) return;
+    const endpoint = ROLE_CREATE_ENDPOINT[values.role];
+    if (!endpoint) {
+      message.error('未知的角色类型');
+      return;
+    }
     try {
-      await apiFetch(values.role === 'ADMIN' ? '/auth/users/admin' : '/auth/users/referee', {
+      await apiFetch(endpoint, {
         method: 'POST',
         token,
         body: JSON.stringify({ username: values.username, email: values.email, password: values.password }),
       });
-      message.success('账号已创建');
+      message.success(`已创建${roleLabels[values.role]}账号`);
       setOpen(false);
       form.resetFields();
       await loadUsers();
@@ -144,11 +161,13 @@ export default function AdminUsersPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
         <div>
           <Typography.Title level={3} style={{ margin: 0 }}>用户管理</Typography.Title>
-          <Typography.Text type="secondary">管理管理员、裁判与普通用户，支持账号状态切换和临时密码重置。</Typography.Text>
+          <Typography.Text type="secondary">
+            管理 <strong>总管理员 / 管理员 / 裁判 / 选手</strong> 四类账号,支持状态切换和临时密码重置。
+          </Typography.Text>
         </div>
         <Space>
           <Button icon={<ReloadOutlined />} onClick={loadUsers} loading={loading}>刷新</Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>新建后台账号</Button>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>新建账号</Button>
         </Space>
       </div>
 
@@ -228,13 +247,14 @@ export default function AdminUsersPage() {
         />
       </Card>
 
-      <Modal title="新建后台账号" open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} destroyOnHidden>
+      <Modal title="新建账号" open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} destroyOnHidden>
         <Form form={form} layout="vertical" onFinish={createUser} initialValues={{ role: 'REFEREE' }}>
-          <Form.Item name="role" label="角色" rules={[{ required: true }]}>
+          <Form.Item name="role" label="角色" rules={[{ required: true }]} extra="总管理员账号无法在此创建,如有需要请直接修改数据库。">
             <Select
               options={[
-                { value: 'REFEREE', label: '裁判' },
-                { value: 'ADMIN', label: '管理员' },
+                { value: 'ADMIN', label: '管理员 · 可新建/编辑赛事,需总管理员审核' },
+                { value: 'REFEREE', label: '裁判 · 仅可记分,无后台权限' },
+                { value: 'PLAYER', label: '选手 · 仅可查看本人报名信息' },
               ]}
             />
           </Form.Item>

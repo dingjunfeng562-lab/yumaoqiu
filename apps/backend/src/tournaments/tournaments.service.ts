@@ -1,7 +1,31 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { EventType, Format, Prisma, ScoringMode, ScoringRule } from '@prisma/client';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import {
+  EventType,
+  Format,
+  Prisma,
+  Role,
+  ScoringMode,
+  ScoringRule,
+  TournamentApprovalStatus,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateTournamentDto, UpdateTournamentDto } from './dto/tournament.dto';
+
+export type AuthUser = {
+  id: string;
+  username?: string | null;
+  role?: Role | null;
+};
+
+function isSuperAdmin(user?: AuthUser | null) {
+  return user?.role === Role.SUPER_ADMIN;
+}
 
 const EVENT_TYPE_LABELS: Record<EventType, string> = {
   MENS_SINGLES: '男子单打',
@@ -19,10 +43,13 @@ type TournamentDetail = Prisma.TournamentGetPayload<{
 export class TournamentsService {
   constructor(private prisma: PrismaService) {}
 
-  async create(dto: CreateTournamentDto) {
+  async create(dto: CreateTournamentDto, user?: AuthUser) {
     this.validateTournamentInput(dto);
+    const superAdmin = isSuperAdmin(user);
     return this.prisma.$transaction(async (tx) => {
-      if (dto.showOnHome) {
+      // showOnHome is reserved for already-approved tournaments — a brand-new
+      // pending submission shouldn't take over the home feature card.
+      if (dto.showOnHome && superAdmin) {
         await tx.tournament.updateMany({ data: { showOnHome: false } });
       }
 
@@ -31,7 +58,16 @@ export class TournamentsService {
         data: {
           ...(this.toTournamentData(dto) as Prisma.TournamentUncheckedCreateInput),
           edition,
-          isPublished: true,
+          // Auto-approve when the super admin creates it; otherwise the new
+          // tournament is queued for review and stays hidden until approval.
+          approvalStatus: superAdmin
+            ? TournamentApprovalStatus.APPROVED
+            : TournamentApprovalStatus.PENDING,
+          submittedById: user?.id ?? null,
+          approvedById: superAdmin ? user?.id ?? null : null,
+          approvedAt: superAdmin ? new Date() : null,
+          isPublished: superAdmin,
+          showOnHome: superAdmin ? Boolean(dto.showOnHome) : false,
         },
       });
 
@@ -43,6 +79,46 @@ export class TournamentsService {
         where: { id: tournament.id },
         include: this.detailInclude(),
       });
+    });
+  }
+
+  async approve(id: string, approver: AuthUser) {
+    if (!isSuperAdmin(approver)) {
+      throw new ForbiddenException('仅总管理员可审核赛事');
+    }
+    const tournament = await this.findOne(id);
+    if (tournament.approvalStatus === TournamentApprovalStatus.APPROVED) {
+      throw new BadRequestException('该赛事已通过审核');
+    }
+    return this.prisma.tournament.update({
+      where: { id },
+      data: {
+        approvalStatus: TournamentApprovalStatus.APPROVED,
+        approvedById: approver.id,
+        approvedAt: new Date(),
+        rejectReason: null,
+        isPublished: true,
+      },
+      include: this.detailInclude(),
+    });
+  }
+
+  async reject(id: string, approver: AuthUser, reason?: string) {
+    if (!isSuperAdmin(approver)) {
+      throw new ForbiddenException('仅总管理员可审核赛事');
+    }
+    await this.findOne(id);
+    return this.prisma.tournament.update({
+      where: { id },
+      data: {
+        approvalStatus: TournamentApprovalStatus.REJECTED,
+        approvedById: approver.id,
+        approvedAt: new Date(),
+        rejectReason: reason?.trim() || '未通过审核',
+        isPublished: false,
+        showOnHome: false,
+      },
+      include: this.detailInclude(),
     });
   }
 
@@ -74,11 +150,14 @@ export class TournamentsService {
         });
       }
 
+      // Only an APPROVED tournament can be published / shown on home.
+      const isApproved = current.approvalStatus === TournamentApprovalStatus.APPROVED;
       await tx.tournament.update({
         where: { id },
         data: {
           ...(this.toTournamentData(dto) as Prisma.TournamentUncheckedUpdateInput),
-          ...(dto.showOnHome ? { isPublished: true } : {}),
+          ...(dto.showOnHome && isApproved ? { isPublished: true } : {}),
+          ...(dto.showOnHome && !isApproved ? { showOnHome: false } : {}),
         },
       });
 

@@ -135,7 +135,7 @@ export default function TeamCompetitionsPage() {
           placeholder="按赛事筛选"
           value={selectedTournamentId || undefined}
           onChange={setSelectedTournamentId}
-          options={tournaments.map((item) => ({ value: item.id, label: `第${item.edition}届 ${item.name}` }))}
+          options={tournaments.map((item) => ({ value: item.id, label: item.name }))}
         />
       </Card>
 
@@ -150,7 +150,7 @@ export default function TeamCompetitionsPage() {
             render: (_, row: TeamCompetition) => (
               <Space direction="vertical" size={0}>
                 <Typography.Text strong>{row.name}</Typography.Text>
-                <Typography.Text type="secondary">第{row.tournament.edition}届 {row.tournament.name}</Typography.Text>
+                <Typography.Text type="secondary">{row.tournament.name}</Typography.Text>
               </Space>
             ),
           },
@@ -188,7 +188,7 @@ export default function TeamCompetitionsPage() {
       >
         <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
           <Form.Item name="tournamentId" label="所属赛事" rules={[{ required: true, message: '请选择赛事' }]}>
-            <Select options={tournaments.map((item) => ({ value: item.id, label: `第${item.edition}届 ${item.name}` }))} />
+            <Select options={tournaments.map((item) => ({ value: item.id, label: item.name }))} />
           </Form.Item>
           <Form.Item name="name" label="团体赛名称" rules={[{ required: true, message: '请输入名称' }]}>
             <Input placeholder="例如：学院团体赛" />

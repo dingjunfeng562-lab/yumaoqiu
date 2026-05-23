@@ -275,6 +275,10 @@ export class AuthService {
     return this.createManagedUser(Role.REFEREE, username, email, password);
   }
 
+  async createPlayer(username: string, email: string, password: string) {
+    return this.createManagedUser(Role.PLAYER, username, email, password);
+  }
+
   async changePassword(userId: string, currentPassword: string, newPassword: string) {
     this.assertValidPassword(newPassword);
     const user = await this.prisma.user.findUnique({ where: { id: userId } });

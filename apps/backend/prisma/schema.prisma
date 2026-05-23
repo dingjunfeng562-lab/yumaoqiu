@@ -8,6 +8,7 @@ datasource db {
 }
 
 enum Role {
+  SUPER_ADMIN
   ADMIN
   REFEREE
   PLAYER
@@ -61,6 +62,12 @@ enum MatchStatus {
   LIVE
   COMPLETED
   CANCELLED
+}
+
+enum TournamentApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }
 
 enum MatchEventType {
@@ -189,7 +196,7 @@ model Player {
 model Tournament {
   id                    String           @id @default(cuid())
   name                  String
-  edition               Int
+  edition               Int              @default(1)
   subtitle              String?
   organizer             String?
   coverImageUrl         String?
@@ -214,12 +221,19 @@ model Tournament {
   startDate             DateTime
   endDate               DateTime
   isArchived            Boolean          @default(false)
+  approvalStatus        TournamentApprovalStatus @default(PENDING)
+  submittedById         String?
+  approvedById          String?
+  approvedAt            DateTime?
+  rejectReason          String?          @db.VarChar(500)
   events                Event[]
   competitionRegistrations CompetitionRegistration[]
   venues                Venue[]
   teamCompetitions      TeamCompetition[]
   createdAt             DateTime         @default(now())
   updatedAt             DateTime         @updatedAt
+
+  @@index([approvalStatus, isPublished])
 }
 
 model Event {
@@ -291,6 +305,7 @@ model CompetitionRegistration {
   studentId      String
   name           String
   gender         Gender
+  school         String?            @db.VarChar(191)
   contact        String?
   remark         String?            @db.Text
   status         RegistrationStatus @default(PENDING)

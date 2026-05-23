@@ -75,70 +75,77 @@ export class AuthController {
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN)
+  @Roles(Role.SUPER_ADMIN)
   @Post('users/admin')
   createAdmin(@Body() dto: CreateUserDto) {
     return this.authService.createAdmin(dto.username, dto.email, dto.password);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN)
+  @Roles(Role.SUPER_ADMIN)
   @Post('users/referee')
   createReferee(@Body() dto: CreateUserDto) {
     return this.authService.createReferee(dto.username, dto.email, dto.password);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN)
+  @Roles(Role.SUPER_ADMIN)
+  @Post('users/player')
+  createPlayer(@Body() dto: CreateUserDto) {
+    return this.authService.createPlayer(dto.username, dto.email, dto.password);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.SUPER_ADMIN)
   @Post('users/:id/reset-password')
   resetUserPassword(@Param('id') id: string) {
     return this.authService.resetUserPassword(id);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN)
+  @Roles(Role.SUPER_ADMIN)
   @Patch('users/:id/status')
   updateUserStatus(@Param('id') id: string, @Body() dto: UpdateUserStatusDto) {
     return this.authService.updateUserStatus(id, dto);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN)
+  @Roles(Role.SUPER_ADMIN)
   @Get('users')
   listUsers() {
     return this.authService.listUsers();
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN)
+  @Roles(Role.SUPER_ADMIN)
   @Delete('users/:id')
   deleteUser(@Param('id') id: string) {
     return this.authService.deleteUser(id);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN)
+  @Roles(Role.SUPER_ADMIN)
   @Get('invite-codes')
   listInviteCodes() {
     return this.authService.listInviteCodes();
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN)
+  @Roles(Role.SUPER_ADMIN)
   @Post('invite-codes')
   createInviteCode(@Body() dto: CreateInviteCodeDto) {
     return this.authService.createInviteCode(dto);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN)
+  @Roles(Role.SUPER_ADMIN)
   @Patch('invite-codes/:id')
   updateInviteCode(@Param('id') id: string, @Body('isEnabled') isEnabled: boolean) {
     return this.authService.updateInviteCode(id, Boolean(isEnabled));
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN)
+  @Roles(Role.SUPER_ADMIN)
   @Delete('invite-codes/:id')
   deleteInviteCode(@Param('id') id: string) {
     return this.authService.deleteInviteCode(id);

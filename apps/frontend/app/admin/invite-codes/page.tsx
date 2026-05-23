@@ -6,10 +6,12 @@ import { Button, Card, Form, Input, Modal, Popconfirm, Select, Space, Switch, Ta
 import { DeleteOutlined, PlusOutlined, ReloadOutlined, CopyOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 
+type InviteRole = 'SUPER_ADMIN' | 'ADMIN' | 'REFEREE' | 'PLAYER';
+
 type InviteCodeItem = {
   id: string;
   code: string;
-  role: 'ADMIN' | 'REFEREE' | 'PLAYER';
+  role: InviteRole;
   maxUses: number;
   usedUses: number;
   expiresAt?: string | null;
@@ -19,16 +21,24 @@ type InviteCodeItem = {
 };
 
 type CreateInviteCodePayload = {
-  role: 'ADMIN' | 'REFEREE' | 'PLAYER';
+  role: InviteRole;
   maxUses: number;
   expiresAt?: string;
   remark?: string;
 };
 
-const roleLabels: Record<InviteCodeItem['role'], string> = {
-  ADMIN: '总管理员',
+const roleLabels: Record<InviteRole, string> = {
+  SUPER_ADMIN: '总管理员',
+  ADMIN: '管理员',
   REFEREE: '裁判',
-  PLAYER: '普通用户',
+  PLAYER: '选手',
+};
+
+const roleColors: Record<InviteRole, string> = {
+  SUPER_ADMIN: 'magenta',
+  ADMIN: 'blue',
+  REFEREE: 'green',
+  PLAYER: 'gold',
 };
 
 export default function InviteCodesPage() {
@@ -127,7 +137,7 @@ export default function InviteCodesPage() {
             {
               title: '角色',
               dataIndex: 'role',
-              render: (role: InviteCodeItem['role']) => <Tag color={role === 'PLAYER' ? 'gold' : role === 'REFEREE' ? 'green' : 'blue'}>{roleLabels[role]}</Tag>,
+              render: (role: InviteRole) => <Tag color={roleColors[role]}>{roleLabels[role]}</Tag>,
             },
             {
               title: '已用/总数',
@@ -172,12 +182,17 @@ export default function InviteCodesPage() {
 
       <Modal title="生成邀请码" open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} destroyOnHidden>
         <Form form={form} layout="vertical" onFinish={createInviteCode} initialValues={{ role: 'PLAYER', maxUses: 1 }}>
-          <Form.Item name="role" label="角色" rules={[{ required: true }]}>
+          <Form.Item
+            name="role"
+            label="角色"
+            rules={[{ required: true }]}
+            extra="总管理员账号不通过邀请码发放,请直接在数据库标记。"
+          >
             <Select
               options={[
-                { value: 'PLAYER', label: '普通用户' },
+                { value: 'PLAYER', label: '选手' },
                 { value: 'REFEREE', label: '裁判' },
-                { value: 'ADMIN', label: '总管理员' },
+                { value: 'ADMIN', label: '管理员' },
               ]}
             />
           </Form.Item>

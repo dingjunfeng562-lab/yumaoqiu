@@ -3,10 +3,10 @@
 export const dynamic = 'force-dynamic';
 
 import Image from 'next/image';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { signOut, useSession } from 'next-auth/react';
-import { Layout, Menu, Button, Typography, Dropdown, Avatar, Modal, Form, Input, message } from 'antd';
+import { Badge, Layout, Menu, Button, Typography, Dropdown, Avatar, Modal, Form, Input, message } from 'antd';
 import {
   DashboardOutlined,
   UserOutlined,
@@ -23,14 +23,20 @@ import {
   LockOutlined,
   NotificationOutlined,
   KeyOutlined,
+  AuditOutlined,
 } from '@ant-design/icons';
+import { apiFetch } from '@/lib/api';
 
 const { Header, Sider, Content } = Layout;
 
-const menuItems = [
+type MenuItem = { key: string; icon: React.ReactNode; label: string; superOnly?: boolean };
+
+const baseMenuItems: MenuItem[] = [
   { key: '/admin', icon: <DashboardOutlined />, label: '仪表板' },
-  { key: '/admin/users', icon: <TeamOutlined />, label: '用户管理' },
-  { key: '/admin/invite-codes', icon: <KeyOutlined />, label: '邀请码管理' },
+  // Only the super admin can manage users / invite codes / approvals.
+  { key: '/admin/users', icon: <TeamOutlined />, label: '用户管理', superOnly: true },
+  { key: '/admin/invite-codes', icon: <KeyOutlined />, label: '邀请码管理', superOnly: true },
+  { key: '/admin/approvals', icon: <AuditOutlined />, label: '赛事审核', superOnly: true },
   { key: '/admin/players', icon: <UserOutlined />, label: '选手管理' },
   { key: '/admin/tournaments', icon: <TrophyOutlined />, label: '赛事配置' },
   { key: '/admin/competitions', icon: <TrophyOutlined />, label: '赛事管理' },
@@ -51,9 +57,81 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const pathname = usePathname();
   const router = useRouter();
   const { data: session } = useSession();
+  const token = session?.user?.accessToken as string | undefined;
+  const sessionRole = (session?.user as { role?: string } | undefined)?.role;
 
-  const selectedKey = menuItems.find((m) => pathname.startsWith(m.key) && m.key !== '/admin')
-    ? menuItems.find((m) => pathname.startsWith(m.key) && m.key !== '/admin')!.key
+  // The session JWT can be stale (issued before a server-side role change).
+  // Always re-fetch the current role from /auth/me on mount so SUPER_ADMIN
+  // promotions show up without forcing the user to log out and back in.
+  const [liveRole, setLiveRole] = useState<string | undefined>(sessionRole);
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    apiFetch<{ role?: string }>('/auth/me', { token })
+      .then((me) => {
+        if (!cancelled && me?.role) setLiveRole(me.role);
+      })
+      .catch(() => {
+        /* fall back to session role */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  const role = liveRole ?? sessionRole;
+  const isSuperAdmin = role === 'SUPER_ADMIN';
+
+  const [pendingApprovalCount, setPendingApprovalCount] = useState(0);
+
+  useEffect(() => {
+    if (!token || !isSuperAdmin) return;
+    let cancelled = false;
+    async function loadPending() {
+      try {
+        const list = await apiFetch<Array<{ approvalStatus: string; isArchived: boolean }>>('/tournaments', { token });
+        if (cancelled) return;
+        const pending = list.filter((t) => t.approvalStatus === 'PENDING' && !t.isArchived).length;
+        setPendingApprovalCount(pending);
+      } catch {
+        if (!cancelled) setPendingApprovalCount(0);
+      }
+    }
+    loadPending();
+    const id = window.setInterval(loadPending, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [token, pathname, isSuperAdmin]);
+
+  const visibleMenuItems = baseMenuItems.filter((item) => !item.superOnly || isSuperAdmin);
+
+  const menuItems = visibleMenuItems.map((item) => {
+    if (item.key !== '/admin/approvals') {
+      return { key: item.key, icon: item.icon, label: item.label };
+    }
+    return {
+      key: item.key,
+      icon: item.icon,
+      label: (
+        <span style={{ display: 'inline-flex', alignItems: 'center', color: '#ffffff' }}>
+          <span>{item.label}</span>
+          {pendingApprovalCount > 0 ? (
+            <Badge
+              count={pendingApprovalCount}
+              color="#ff4d4f"
+              size="small"
+              style={{ marginLeft: 8, boxShadow: 'none' }}
+            />
+          ) : null}
+        </span>
+      ),
+    };
+  });
+
+  const selectedKey = baseMenuItems.find((m) => pathname.startsWith(m.key) && m.key !== '/admin')
+    ? baseMenuItems.find((m) => pathname.startsWith(m.key) && m.key !== '/admin')!.key
     : pathname === '/admin'
       ? '/admin'
       : '';

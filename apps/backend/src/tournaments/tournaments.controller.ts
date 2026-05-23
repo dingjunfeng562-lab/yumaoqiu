@@ -6,6 +6,7 @@ import {
   Delete,
   Body,
   Param,
+  Req,
   UseGuards,
   UploadedFile,
   UseInterceptors,
@@ -21,8 +22,12 @@ import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { Role } from '@prisma/client';
 
+type AuthedRequest = {
+  user: { id: string; username?: string | null; role: Role };
+};
+
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.ADMIN)
+@Roles(Role.ADMIN, Role.SUPER_ADMIN)
 @Controller('tournaments')
 export class TournamentsController {
   constructor(private tournamentsService: TournamentsService) {}
@@ -50,8 +55,22 @@ export class TournamentsController {
   }
 
   @Post()
-  create(@Body() dto: CreateTournamentDto) {
-    return this.tournamentsService.create(dto);
+  create(@Body() dto: CreateTournamentDto, @Req() req: AuthedRequest) {
+    return this.tournamentsService.create(dto, req.user);
+  }
+
+  @Post(':id/approve')
+  approve(@Param('id') id: string, @Req() req: AuthedRequest) {
+    return this.tournamentsService.approve(id, req.user);
+  }
+
+  @Post(':id/reject')
+  reject(
+    @Param('id') id: string,
+    @Body() body: { reason?: string },
+    @Req() req: AuthedRequest,
+  ) {
+    return this.tournamentsService.reject(id, req.user, body?.reason);
   }
 
   @Get()

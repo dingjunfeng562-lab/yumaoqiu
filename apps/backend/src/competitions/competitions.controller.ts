@@ -18,6 +18,14 @@ export class CompetitionsController {
     return this.competitionsService.listPublicCompetitions();
   }
 
+  // Must be declared BEFORE the `:id` route so Nest matches "/me/registrations"
+  // verbatim instead of treating "me" as an id parameter.
+  @UseGuards(JwtAuthGuard)
+  @Get('me/registrations')
+  listMyRegistrations(@Req() req: AuthRequest) {
+    return this.competitionsService.listMyRegistrations(req.user?.id ?? '');
+  }
+
   @Get(':id')
   getCompetition(@Param('id') id: string) {
     return this.competitionsService.getPublicCompetition(id);

@@ -31,7 +31,8 @@ const jetbrainsMono = JetBrains_Mono({
 
 function destinationForRole(role?: string | null) {
   if (role === 'REFEREE') return '/referee/my-matches';
-  if (role === 'ADMIN') return '/admin';
+  if (role === 'ADMIN' || role === 'SUPER_ADMIN') return '/admin';
+  if (role === 'PLAYER') return '/my-registrations';
   return '/';
 }
 

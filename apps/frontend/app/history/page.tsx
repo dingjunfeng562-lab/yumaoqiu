@@ -109,7 +109,7 @@ export default async function HistoryPage() {
               <article key={tournament.id} className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                   <div>
-                    <p className="text-sm font-black text-blue-600">第{tournament.edition}届 · {tournament.statusLabel}</p>
+                    <p className="text-sm font-black text-blue-600">{tournament.statusLabel}</p>
                     <h2 className="mt-1 text-2xl font-black">{tournament.name}</h2>
                     <p className="mt-2 text-sm font-semibold text-slate-500">
                       {formatDate(tournament.startDate)} - {formatDate(tournament.endDate)} · {tournament.location ?? '地点待公布'}

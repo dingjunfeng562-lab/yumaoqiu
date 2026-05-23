@@ -170,7 +170,7 @@ export default function EventsPage() {
             placeholder="选择赛事"
             value={selectedTournamentId || undefined}
             onChange={setSelectedTournamentId}
-            options={tournaments.map((t) => ({ value: t.id, label: `第${t.edition}届 ${t.name}` }))}
+            options={tournaments.map((t) => ({ value: t.id, label: t.name }))}
           />
           <Button type="primary" icon={<PlusOutlined />} onClick={openCreate} disabled={!selectedTournamentId}>
             添加单项
@@ -193,7 +193,7 @@ export default function EventsPage() {
           {!editing && (
             <Form.Item name="tournamentId" label="所属赛事" rules={[{ required: true }]}>
               <Select
-                options={tournaments.map((t) => ({ value: t.id, label: `第${t.edition}届 ${t.name}` }))}
+                options={tournaments.map((t) => ({ value: t.id, label: t.name }))}
               />
             </Form.Item>
           )}
