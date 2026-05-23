@@ -4,7 +4,6 @@ import { Suspense, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { getSession, signIn } from 'next-auth/react';
-import { JetBrains_Mono, Manrope } from 'next/font/google';
 import { ArrowRightOutlined, EyeInvisibleOutlined, EyeOutlined } from '@ant-design/icons';
 import { Alert, Button, Checkbox, ConfigProvider, Form, Input } from 'antd';
 
@@ -19,15 +18,8 @@ type FormValues = {
 const usernamePattern = /^[A-Za-z][A-Za-z0-9_]{3,19}$/;
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-const manrope = Manrope({
-  subsets: ['latin'],
-  weight: ['400', '500', '600', '700', '800'],
-});
-
-const jetbrainsMono = JetBrains_Mono({
-  subsets: ['latin'],
-  weight: ['500', '600'],
-});
+const manrope = { className: 'font-sans' };
+const jetbrainsMono = { className: 'font-mono' };
 
 function destinationForRole(role?: string | null) {
   if (role === 'REFEREE') return '/referee/my-matches';

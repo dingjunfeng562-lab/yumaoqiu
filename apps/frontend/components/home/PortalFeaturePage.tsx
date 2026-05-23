@@ -21,7 +21,7 @@ export function PortalFeaturePage({
     <main className="min-h-screen bg-[#f5f8ff] text-slate-950">
       <Header activeHref={activeHref} />
       <section className="relative overflow-hidden bg-[#04163f] px-4 py-9 text-white sm:px-6 sm:py-12 lg:px-8 lg:py-14">
-        <div className="absolute inset-0 bg-[linear-gradient(135deg,rgba(2,11,39,0.98),rgba(4,50,123,0.88)_48%,rgba(2,12,42,0.98))]" />
+        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(135deg,rgba(2,11,39,0.98),rgba(4,50,123,0.88)_48%,rgba(2,12,42,0.98))]" />
         <Image
           src="/generated/shuttlecock-glow.svg"
           alt=""

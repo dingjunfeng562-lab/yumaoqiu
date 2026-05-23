@@ -117,7 +117,7 @@ export default async function CompetitionDetailPage({ params }: { params: Promis
               className="relative aspect-[16/9] bg-cover bg-center sm:aspect-[16/8]"
               style={{ backgroundImage: `url("${cover}")` }}
             >
-              <div className="absolute inset-0 bg-gradient-to-t from-[#02133b]/85 via-[#02133b]/35 to-transparent" />
+              <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-[#02133b]/85 via-[#02133b]/35 to-transparent" />
               <div className="absolute left-4 top-4 flex flex-wrap gap-2 sm:left-5 sm:top-5">
                 <span className="rounded-full bg-white/95 px-2.5 py-0.5 text-[11px] font-black text-blue-700 shadow-sm sm:px-3 sm:py-1 sm:text-xs">
                   {competition.registrationStatus ?? competition.statusLabel ?? '报名状态待定'}

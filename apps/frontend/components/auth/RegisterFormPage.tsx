@@ -3,7 +3,6 @@
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { JetBrains_Mono, Manrope } from 'next/font/google';
 import {
   ArrowRightOutlined,
   EyeInvisibleOutlined,
@@ -50,15 +49,8 @@ const strengthLabels = ['—', '太弱', '较弱', '一般', '良好', '强'] as
 const strengthColors = ['#E5E9E7', '#B91C1C', '#D97706', '#CA8A04', '#0A4D3C', '#047857'] as const;
 const strengthWidths = ['0%', '20%', '40%', '60%', '80%', '100%'] as const;
 
-const manrope = Manrope({
-  subsets: ['latin'],
-  weight: ['400', '500', '600', '700', '800'],
-});
-
-const jetbrainsMono = JetBrains_Mono({
-  subsets: ['latin'],
-  weight: ['500', '600'],
-});
+const manrope = { className: 'font-sans' };
+const jetbrainsMono = { className: 'font-mono' };
 
 function passwordStrength(password: string): StrengthLevel {
   if (!password) {

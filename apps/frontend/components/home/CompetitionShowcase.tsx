@@ -53,17 +53,22 @@ export function CompetitionShowcase({ competitions }: { competitions: PlatformCo
             {competitions.map((competition) => (
               <article
                 key={competition.id}
-                className="group overflow-hidden rounded-lg border border-blue-100 bg-white shadow-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-lg"
+                className="group relative overflow-hidden rounded-lg border border-blue-100 bg-white shadow-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-lg"
               >
+                <Link
+                  href={`/competitions/${competition.id}`}
+                  aria-label={`查看 ${competition.title} 赛事详情`}
+                  className="absolute inset-0 z-10 block rounded-lg"
+                />
                 <div
                   className="relative aspect-[16/9] overflow-hidden bg-cover bg-center"
                   style={{ backgroundImage: `url("${competition.cover}")` }}
                 >
-                  <div className="absolute inset-0 bg-gradient-to-t from-[#02133b]/82 via-[#02133b]/22 to-transparent" />
-                  <span className={`absolute left-4 top-4 rounded-full px-3 py-1 text-xs font-black ring-1 ${statusClass[competition.status] ?? 'bg-white/90 text-blue-700 ring-blue-100'}`}>
+                  <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-[#02133b]/82 via-[#02133b]/22 to-transparent" />
+                  <span className={`pointer-events-none absolute left-4 top-4 rounded-full px-3 py-1 text-xs font-black ring-1 ${statusClass[competition.status] ?? 'bg-white/90 text-blue-700 ring-blue-100'}`}>
                     {competition.status}
                   </span>
-                  <div className="absolute bottom-4 left-4 right-4">
+                  <div className="pointer-events-none absolute bottom-4 left-4 right-4">
                     <h3 className="line-clamp-2 text-xl font-black leading-snug text-white drop-shadow">
                       {competition.title}
                     </h3>
@@ -73,7 +78,7 @@ export function CompetitionShowcase({ competitions }: { competitions: PlatformCo
                   </div>
                 </div>
 
-                <div className="space-y-4 p-5">
+                <div className="relative z-0 space-y-4 p-5">
                   <div className="rounded-lg border border-blue-50 bg-blue-50/60 p-4">
                     <p className="text-xs font-black text-blue-700">比赛形式简介</p>
                     <p className="mt-2 line-clamp-2 text-sm font-semibold leading-6 text-slate-700">
@@ -101,12 +106,12 @@ export function CompetitionShowcase({ competitions }: { competitions: PlatformCo
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3 border-t border-blue-50 pt-4">
+                  <div className="relative z-20 grid grid-cols-2 gap-3 border-t border-blue-50 pt-4">
                     <Link
                       href={`/competitions/${competition.id}/players`}
                       className="inline-flex h-10 items-center justify-center rounded-lg border border-blue-200 text-sm font-black text-blue-700 transition duration-300 hover:border-blue-500 hover:bg-blue-50"
                     >
-                      查看比赛
+                      查看报名人数
                     </Link>
                     <Link
                       href={`/competitions/${competition.id}/register`}

@@ -61,46 +61,41 @@ export default async function CompetitionsPage() {
             return (
               <article
                 key={competition.id}
-                className="group flex flex-col overflow-hidden rounded-lg border border-blue-100 bg-white shadow-sm transition hover:-translate-y-0.5 hover:border-blue-300 hover:shadow-md"
+                className="group relative flex flex-col overflow-hidden rounded-lg border border-blue-100 bg-white shadow-sm transition hover:-translate-y-0.5 hover:border-blue-300 hover:shadow-md"
               >
                 <Link
                   href={`/competitions/${competition.id}`}
-                  className="block"
+                  className="absolute inset-0 z-10 block rounded-lg"
                   aria-label={`查看 ${competition.title} 详情`}
-                >
+                />
+                <div className="block">
                   <div
                     className="relative aspect-[16/9] bg-cover bg-center"
                     style={{ backgroundImage: `url("${normalizeCover(competition.coverImage)}")` }}
                   >
-                    <div className="absolute inset-0 bg-gradient-to-t from-[#02133b]/80 to-transparent" />
-                    <span className="absolute left-4 top-4 rounded-full bg-white/90 px-3 py-1 text-xs font-black text-blue-700">
+                    <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-[#02133b]/80 to-transparent" />
+                    <span className="pointer-events-none absolute left-4 top-4 rounded-full bg-white/90 px-3 py-1 text-xs font-black text-blue-700">
                       {competition.registrationStatus ?? competition.statusLabel ?? '报名状态待定'}
                     </span>
-                    <span className="absolute right-4 top-4 inline-flex items-center gap-1 rounded-full bg-blue-700/85 px-3 py-1 text-xs font-black text-white opacity-0 transition group-hover:opacity-100">
+                    <span className="pointer-events-none absolute right-4 top-4 inline-flex items-center gap-1 rounded-full bg-blue-700/85 px-3 py-1 text-xs font-black text-white opacity-0 transition group-hover:opacity-100">
                       查看详情 →
                     </span>
-                    <h2 className="absolute bottom-4 left-4 right-4 line-clamp-2 text-xl font-black text-white">
+                    <h2 className="pointer-events-none absolute bottom-4 left-4 right-4 line-clamp-2 text-xl font-black text-white">
                       {competition.title}
                     </h2>
                   </div>
-                </Link>
+                </div>
                 <div className="flex flex-1 flex-col gap-3 p-5 text-sm font-semibold text-slate-600">
-                  <Link
-                    href={`/competitions/${competition.id}`}
-                    className="block space-y-2 text-slate-600 transition hover:text-blue-700"
-                  >
+                  <div className="space-y-2 text-slate-600 transition group-hover:text-blue-700">
                     <p>{formatDate(competition.startDate)} - {formatDate(competition.endDate)}</p>
                     <p>{competition.location || '地点待公布'}</p>
                     <p>{projects?.join(' / ') || '项目待公布'}</p>
                     <p className="text-xs text-slate-500">已通过审核选手：{competition.registeredCount ?? 0} 人</p>
-                  </Link>
-                  <Link
-                    href={`/competitions/${competition.id}`}
-                    className="inline-flex items-center gap-1 text-xs font-black text-blue-700 transition hover:gap-2"
-                  >
+                  </div>
+                  <span className="inline-flex items-center gap-1 text-xs font-black text-blue-700 transition group-hover:gap-2">
                     查看赛事详情 →
-                  </Link>
-                  <div className="mt-auto flex gap-3 border-t border-blue-50 pt-4">
+                  </span>
+                  <div className="relative z-20 mt-auto flex gap-3 border-t border-blue-50 pt-4">
                     <Link
                       href={`/competitions/${competition.id}/register`}
                       className="inline-flex h-10 flex-1 items-center justify-center rounded-lg bg-amber-400 text-sm font-black text-white shadow-sm transition hover:bg-amber-500"
