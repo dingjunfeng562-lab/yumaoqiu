@@ -53,22 +53,28 @@ function LoginContent() {
   const onFinish = async (values: FormValues) => {
     setLoading(true);
     setError('');
-    const res = await signIn('credentials', {
-      loginType,
-      identifier: values.identifier.trim(),
-      password: values.password,
-      rememberMe: values.remember ? 'true' : 'false',
-      redirect: false,
-    });
-    setLoading(false);
 
-    if (res?.error) {
-      setError((res as { code?: string }).code === 'locked' ? '账号已锁定,请稍后再试' : '账号或密码错误');
-      return;
+    try {
+      const res = await signIn('credentials', {
+        loginType,
+        identifier: values.identifier.trim(),
+        password: values.password,
+        rememberMe: values.remember ? 'true' : 'false',
+        redirect: false,
+      });
+
+      if (res?.error) {
+        setError((res as { code?: string }).code === 'locked' ? '账号已锁定,请稍后再试' : '账号或密码错误');
+        return;
+      }
+
+      const session = await getSession();
+      router.replace(safeRedirect(searchParams.get('redirect')) ?? destinationForRole(session?.user?.role));
+    } catch {
+      setError('登录服务暂时不可用,请稍后重试');
+    } finally {
+      setLoading(false);
     }
-
-    const session = await getSession();
-    router.replace(safeRedirect(searchParams.get('redirect')) ?? destinationForRole(session?.user?.role));
   };
 
   return (

@@ -7,7 +7,7 @@ export function HeroLanding() {
   return (
     <section
       id="intro"
-      className="relative isolate flex min-h-[calc(100vh-72px)] overflow-hidden bg-[#04163f] bg-cover bg-center"
+      className="relative isolate flex min-h-screen overflow-hidden bg-[#04163f] bg-cover bg-center"
       style={{ backgroundImage: "url('/generated/hero-bg.svg')" }}
     >
       <div className="pointer-events-none absolute inset-0 z-0 bg-[radial-gradient(circle_at_50%_22%,rgba(67,198,255,0.34),transparent_34%),linear-gradient(135deg,rgba(2,11,39,0.98),rgba(4,50,123,0.88)_48%,rgba(2,12,42,0.98))]" />
