@@ -45,9 +45,9 @@ async function main() {
         where: { username: 'baishuwan' },
         update: {
             username: 'baishuwan',
-            email: 'admin@yzy.local',
+            email: '2385362680@qq.com',
             passwordHash: hashed,
-            role: client_1.Role.ADMIN,
+            role: client_1.Role.SUPER_ADMIN,
             status: client_1.UserStatus.ACTIVE,
             mustChangePassword: false,
             failedAttempts: 0,
@@ -55,9 +55,9 @@ async function main() {
         },
         create: {
             username: 'baishuwan',
-            email: 'admin@yzy.local',
+            email: '2385362680@qq.com',
             passwordHash: hashed,
-            role: client_1.Role.ADMIN,
+            role: client_1.Role.SUPER_ADMIN,
             status: client_1.UserStatus.ACTIVE,
             mustChangePassword: false,
             failedAttempts: 0,
@@ -69,7 +69,7 @@ async function main() {
             role: client_1.Role.ADMIN,
         },
     });
-    console.log('[OK] 默认管理员已强制同步为: admin@yzy.local / Baishuwan082508');
+    console.log('[OK] 默认管理员已强制同步为: 2385362680@qq.com / Baishuwan082508');
 }
 main()
     .catch(console.error)

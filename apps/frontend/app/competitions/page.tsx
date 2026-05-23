@@ -95,18 +95,24 @@ export default async function CompetitionsPage() {
                   <span className="inline-flex items-center gap-1 text-xs font-black text-blue-700 transition group-hover:gap-2">
                     查看赛事详情 →
                   </span>
-                  <div className="relative z-20 mt-auto flex gap-3 border-t border-blue-50 pt-4">
+                  <div className="relative z-20 mt-auto flex flex-col gap-2 border-t border-blue-50 pt-4 sm:flex-row sm:gap-3">
                     <Link
                       href={`/competitions/${competition.id}/register`}
-                      className="inline-flex h-10 flex-1 items-center justify-center rounded-lg bg-amber-400 text-sm font-black text-white shadow-sm transition hover:bg-amber-500"
+                      className="tappable inline-flex h-11 min-h-[44px] flex-1 items-center justify-center rounded-lg bg-amber-400 text-sm font-black text-white shadow-sm transition hover:bg-amber-500"
                     >
                       立即报名
                     </Link>
                     <Link
                       href={`/competitions/${competition.id}/players`}
-                      className="inline-flex h-10 flex-1 items-center justify-center rounded-lg border border-blue-200 text-sm font-black text-blue-700 transition hover:bg-blue-50"
+                      className="tappable inline-flex h-11 min-h-[44px] flex-1 items-center justify-center rounded-lg border border-blue-200 text-sm font-black text-blue-700 transition hover:bg-blue-50"
                     >
                       查看选手
+                    </Link>
+                    <Link
+                      href={`/competitions/${competition.id}`}
+                      className="tappable inline-flex h-11 min-h-[44px] flex-1 items-center justify-center rounded-lg border border-blue-200 text-sm font-black text-blue-700 transition hover:bg-blue-50 sm:hidden"
+                    >
+                      对阵表
                     </Link>
                   </div>
                 </div>

@@ -172,8 +172,17 @@ export default function ApprovalsPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
-        <div>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'flex-start',
+          marginBottom: 16,
+          gap: 12,
+          flexWrap: 'wrap',
+        }}
+      >
+        <div style={{ flex: '1 1 220px', minWidth: 0 }}>
           <Typography.Title level={4} style={{ margin: 0 }}>
             赛事审核
           </Typography.Title>
@@ -213,6 +222,7 @@ export default function ApprovalsPage() {
       )}
 
       <Segmented
+        block
         style={{ marginBottom: 16 }}
         value={filter}
         onChange={(value) => setFilter(value as ApprovalStatus | 'ALL')}
@@ -271,9 +281,21 @@ export default function ApprovalsPage() {
               record.venues?.filter((v) => v.isActive).map((v) => v.name).join('、') || '未设置场地';
 
             return (
-              <Card key={record.id} style={{ borderColor: record.approvalStatus === 'PENDING' ? '#faad14' : undefined }}>
-                <div style={{ display: 'flex', gap: 16, justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap' }}>
-                  <div style={{ flex: 1, minWidth: 280 }}>
+              <Card
+                key={record.id}
+                style={{ borderColor: record.approvalStatus === 'PENDING' ? '#faad14' : undefined }}
+                styles={{ body: { padding: 16 } }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    gap: 16,
+                    justifyContent: 'space-between',
+                    alignItems: 'flex-start',
+                    flexWrap: 'wrap',
+                  }}
+                >
+                  <div style={{ flex: '1 1 240px', minWidth: 0 }}>
                     <Space size={8} wrap>
                       <Tag color={meta.color}>{meta.label}</Tag>
                       {record.isPublished ? <Tag color="blue">已公开</Tag> : null}
@@ -326,17 +348,23 @@ export default function ApprovalsPage() {
                   </div>
 
                   {isSuperAdmin && record.approvalStatus !== 'APPROVED' && !record.isArchived ? (
-                    <Space direction="vertical" size={8} style={{ minWidth: 160 }}>
+                    <Space
+                      direction="vertical"
+                      size={8}
+                      style={{ width: '100%', minWidth: 160, flex: '1 1 100%' }}
+                      className="approval-actions"
+                    >
                       <Popconfirm
                         title="确认通过审核?通过后将自动公开赛事"
                         onConfirm={() => handleApprove(record)}
                       >
-                        <Button type="primary" icon={<CheckCircleOutlined />} block>
+                        <Button type="primary" size="large" icon={<CheckCircleOutlined />} block>
                           通过审核
                         </Button>
                       </Popconfirm>
                       <Button
                         danger
+                        size="large"
                         icon={<CloseCircleOutlined />}
                         block
                         onClick={() => {

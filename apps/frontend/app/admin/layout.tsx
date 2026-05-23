@@ -6,7 +6,20 @@ import Image from 'next/image';
 import { useEffect, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { signOut, useSession } from 'next-auth/react';
-import { Badge, Layout, Menu, Button, Typography, Dropdown, Avatar, Modal, Form, Input, message } from 'antd';
+import {
+  Badge,
+  Layout,
+  Menu,
+  Button,
+  Typography,
+  Dropdown,
+  Avatar,
+  Modal,
+  Form,
+  Input,
+  Drawer,
+  message,
+} from 'antd';
 import {
   DashboardOutlined,
   UserOutlined,
@@ -24,10 +37,12 @@ import {
   NotificationOutlined,
   KeyOutlined,
   AuditOutlined,
+  MenuOutlined,
 } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 
 const { Header, Sider, Content } = Layout;
+const MOBILE_QUERY = '(max-width: 1023px)';
 
 type MenuItem = { key: string; icon: React.ReactNode; label: string; superOnly?: boolean };
 
@@ -53,10 +68,28 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const [collapsed, setCollapsed] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [passwordSubmitting, setPasswordSubmitting] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [passwordForm] = Form.useForm();
   const pathname = usePathname();
   const router = useRouter();
   const { data: session } = useSession();
+
+  // Track viewport width to switch between Sider (desktop) and Drawer (mobile)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mql = window.matchMedia(MOBILE_QUERY);
+    const apply = () => setIsMobile(mql.matches);
+    apply();
+    mql.addEventListener('change', apply);
+    return () => mql.removeEventListener('change', apply);
+  }, []);
+
+  // Close mobile drawer whenever the route changes
+  useEffect(() => {
+    setMobileDrawerOpen(false);
+  }, [pathname]);
+
   const token = session?.user?.accessToken as string | undefined;
   const sessionRole = (session?.user as { role?: string } | undefined)?.role;
 
@@ -168,78 +201,142 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     }
   }
 
+  const brandRow = (collapsedMode = false) => (
+    <div
+      style={{
+        height: 64,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 8,
+        color: '#fff',
+        fontWeight: 'bold',
+        fontSize: collapsedMode ? 12 : 16,
+        padding: '0 8px',
+      }}
+    >
+      <Image
+        src="/logo.png"
+        alt="羽动云赛"
+        width={1536}
+        height={1024}
+        style={{ width: collapsedMode ? 34 : 42, height: collapsedMode ? 24 : 28, objectFit: 'contain' }}
+      />
+      {!collapsedMode && <span>羽动云赛</span>}
+    </div>
+  );
+
+  const navMenu = (
+    <Menu
+      theme="dark"
+      mode="inline"
+      selectedKeys={[selectedKey]}
+      items={menuItems}
+      onClick={({ key }) => {
+        router.push(String(key));
+        setMobileDrawerOpen(false);
+      }}
+    />
+  );
+
   return (
     <Layout style={{ minHeight: '100vh' }}>
-      <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} theme="dark">
-        <div
-          style={{
-            height: 64,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 8,
-            color: '#fff',
-            fontWeight: 'bold',
-            fontSize: collapsed ? 12 : 16,
-            padding: '0 8px',
-          }}
-        >
-          <Image
-            src="/logo.png"
-            alt="羽动云赛"
-            width={1536}
-            height={1024}
-            style={{ width: collapsed ? 34 : 42, height: collapsed ? 24 : 28, objectFit: 'contain' }}
-          />
-          {!collapsed && <span>羽动云赛</span>}
-        </div>
-        <Menu
-          theme="dark"
-          mode="inline"
-          selectedKeys={[selectedKey]}
-          items={menuItems}
-          onClick={({ key }) => router.push(key)}
-        />
-      </Sider>
+      {!isMobile && (
+        <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} theme="dark">
+          {brandRow(collapsed)}
+          {navMenu}
+        </Sider>
+      )}
+
+      {/* Mobile slide-in drawer instead of the persistent Sider */}
+      <Drawer
+        placement="left"
+        width={260}
+        open={isMobile && mobileDrawerOpen}
+        onClose={() => setMobileDrawerOpen(false)}
+        styles={{
+          body: { padding: 0, background: '#001529' },
+          header: { display: 'none' },
+        }}
+        rootClassName="admin-mobile-drawer"
+      >
+        {brandRow(false)}
+        {navMenu}
+      </Drawer>
+
       <Layout>
         <Header
           style={{
             background: '#fff',
-            padding: '0 24px',
+            padding: isMobile ? '0 12px' : '0 24px',
             display: 'flex',
             alignItems: 'center',
-            justifyContent: 'flex-end',
+            justifyContent: 'space-between',
+            gap: 8,
             boxShadow: '0 1px 4px rgba(0,21,41,.08)',
+            position: 'sticky',
+            top: 0,
+            zIndex: 20,
           }}
         >
-          <Button icon={<HomeOutlined />} onClick={() => router.push('/')}>
-            返回首页
-          </Button>
-          <Dropdown
-            menu={{
-              items: [
-                {
-                  key: 'change-password',
-                  icon: <LockOutlined />,
-                  label: '修改密码',
-                  onClick: () => setPasswordOpen(true),
-                },
-                {
-                  key: 'logout',
-                  icon: <LogoutOutlined />,
-                  label: '退出登录',
-                  onClick: () => signOut({ callbackUrl: '/' }),
-                },
-              ],
-            }}
-          >
-            <Button type="text" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Avatar size="small" icon={<UserOutlined />} />
-              <Typography.Text>{session?.user?.name}</Typography.Text>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+            {isMobile && (
+              <Button
+                type="text"
+                icon={<MenuOutlined style={{ fontSize: 20 }} />}
+                aria-label="打开后台菜单"
+                onClick={() => setMobileDrawerOpen(true)}
+                style={{ height: 44, width: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+              />
+            )}
+            {isMobile && (
+              <Typography.Text strong style={{ fontSize: 15 }}>
+                后台
+              </Typography.Text>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Button
+              icon={<HomeOutlined />}
+              onClick={() => router.push('/')}
+              style={isMobile ? { height: 40, paddingInline: 10 } : undefined}
+            >
+              {isMobile ? '' : '返回首页'}
             </Button>
-          </Dropdown>
+            <Dropdown
+              menu={{
+                items: [
+                  {
+                    key: 'change-password',
+                    icon: <LockOutlined />,
+                    label: '修改密码',
+                    onClick: () => setPasswordOpen(true),
+                  },
+                  {
+                    key: 'logout',
+                    icon: <LogoutOutlined />,
+                    label: '退出登录',
+                    onClick: () => signOut({ callbackUrl: '/' }),
+                  },
+                ],
+              }}
+            >
+              <Button type="text" style={{ display: 'flex', alignItems: 'center', gap: 6, height: 40 }}>
+                <Avatar size="small" icon={<UserOutlined />} />
+                {!isMobile && <Typography.Text>{session?.user?.name}</Typography.Text>}
+              </Button>
+            </Dropdown>
+          </div>
         </Header>
-        <Content style={{ margin: 24, padding: 24, background: '#fff', borderRadius: 8 }}>
+        <Content
+          style={{
+            margin: isMobile ? 8 : 24,
+            padding: isMobile ? 12 : 24,
+            background: '#fff',
+            borderRadius: 8,
+          }}
+        >
           {children}
         </Content>
         <Modal

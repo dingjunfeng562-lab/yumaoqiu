@@ -238,10 +238,10 @@ export default function CompetitionRegisterPage() {
       title="赛事报名"
       description="登录后的普通用户可提交一次报名，待审核或已通过状态下不能重复提交，被驳回后可修改并重新提交。"
     >
-      <div className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
-        <section className="rounded-lg border border-blue-100 bg-white p-6 shadow-sm">
-          <div className="mb-5 flex items-center justify-between gap-3">
-            <h2 className="text-xl font-black text-slate-950">当前赛事</h2>
+      <div className="grid gap-4 sm:gap-6 lg:grid-cols-[0.9fr_1.1fr]">
+        <section className="rounded-lg border border-blue-100 bg-white p-4 shadow-sm sm:p-6">
+          <div className="mb-4 flex items-center justify-between gap-3 sm:mb-5">
+            <h2 className="text-lg font-black text-slate-950 sm:text-xl">当前赛事</h2>
             <Link href="/competitions" className="text-sm font-bold text-blue-700">
               返回赛事列表
             </Link>
@@ -263,8 +263,8 @@ export default function CompetitionRegisterPage() {
           )}
         </section>
 
-        <section className="rounded-lg border border-blue-100 bg-white p-6 shadow-sm">
-          <h2 className="text-xl font-black text-slate-950">报名表单</h2>
+        <section className="rounded-lg border border-blue-100 bg-white p-4 shadow-sm sm:p-6">
+          <h2 className="text-lg font-black text-slate-950 sm:text-xl">报名表单</h2>
           {message && (
             <div className="mt-4 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm font-bold text-green-700">
               {message}
@@ -320,7 +320,7 @@ export default function CompetitionRegisterPage() {
                   type="button"
                   onClick={addItem}
                   disabled={form.items.length >= 2 || existingLocked}
-                  className="inline-flex h-9 items-center rounded-lg border border-blue-200 px-3 text-sm font-black text-blue-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                  className="tappable inline-flex h-10 min-h-[44px] items-center rounded-lg border border-blue-200 px-3 text-sm font-black text-blue-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
                 >
                   新增项目
                 </button>
@@ -354,7 +354,7 @@ export default function CompetitionRegisterPage() {
                           type="button"
                           onClick={() => removeItem(index)}
                           disabled={existingLocked}
-                          className="inline-flex h-10 items-center rounded-lg border border-red-200 px-3 text-sm font-black text-red-600 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                          className="tappable inline-flex h-11 min-h-[44px] w-full items-center justify-center rounded-lg border border-red-200 px-3 text-sm font-black text-red-600 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400 md:w-auto"
                         >
                           删除该项目
                         </button>
@@ -375,11 +375,11 @@ export default function CompetitionRegisterPage() {
               })}
             </div>
 
-            <div>
+            <div className="pt-1">
               <button
                 type="submit"
                 disabled={submitting || !competition || existingLocked}
-                className="inline-flex h-11 w-full items-center justify-center rounded-lg bg-blue-700 px-5 text-sm font-black text-white shadow-sm transition hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-slate-300 md:w-auto"
+                className="tappable inline-flex h-12 min-h-[44px] w-full items-center justify-center rounded-lg bg-blue-700 px-5 text-base font-black text-white shadow-sm transition hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-slate-300 md:h-11 md:w-auto md:text-sm"
               >
                 {existing?.status === 'rejected' ? (submitting ? '重新提交中...' : '重新提交报名') : submitting ? '提交中...' : '提交报名'}
               </button>

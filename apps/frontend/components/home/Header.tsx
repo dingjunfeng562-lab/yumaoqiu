@@ -90,10 +90,12 @@ export function Header({ activeHref = '/' }: { activeHref?: string }) {
         <div className="flex shrink-0 items-center gap-2 sm:gap-2.5">
           {status === 'authenticated' ? (
             <>
+              {/* Mobile already has a "我的"/"后台" entry in the bottom nav,
+                  so hide the redundant "个人中心" CTA below lg. */}
               <Link
                 href={roleHref}
                 onClick={closeMenu}
-                className="inline-flex h-9 items-center whitespace-nowrap rounded-lg bg-gradient-to-r from-amber-400 to-amber-300 px-3 text-xs font-bold text-[#03205c] shadow-[0_6px_18px_rgba(245,158,11,0.4)] transition duration-300 hover:scale-105 sm:h-10 sm:px-4 sm:text-sm"
+                className="hidden h-10 items-center whitespace-nowrap rounded-lg bg-gradient-to-r from-amber-400 to-amber-300 px-4 text-sm font-bold text-[#03205c] shadow-[0_6px_18px_rgba(245,158,11,0.4)] transition duration-300 hover:scale-105 lg:inline-flex"
               >
                 个人中心
               </Link>
@@ -109,7 +111,7 @@ export function Header({ activeHref = '/' }: { activeHref?: string }) {
             <Link
               href="/login"
               onClick={closeMenu}
-              className="inline-flex h-9 items-center rounded-lg border border-white/60 px-3 text-xs font-bold text-white transition duration-300 hover:bg-white/10 sm:h-10 sm:px-4 sm:text-sm"
+              className="tappable inline-flex h-10 min-h-[44px] items-center rounded-lg border border-white/60 px-3 text-xs font-bold text-white transition duration-300 hover:bg-white/10 sm:px-4 sm:text-sm"
             >
               登录
             </Link>
@@ -122,7 +124,7 @@ export function Header({ activeHref = '/' }: { activeHref?: string }) {
             aria-expanded={menuOpen}
             aria-controls="mobile-nav"
             onClick={() => setMenuOpen((open) => !open)}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-white/40 text-white transition hover:bg-white/10 sm:h-10 sm:w-10 lg:hidden"
+            className="tappable inline-flex h-10 min-h-[44px] w-10 min-w-[44px] items-center justify-center rounded-lg border border-white/40 text-white transition hover:bg-white/10 lg:hidden"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" className="h-5 w-5">
               {menuOpen ? (

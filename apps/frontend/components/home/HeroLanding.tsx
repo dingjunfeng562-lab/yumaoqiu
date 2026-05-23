@@ -44,49 +44,49 @@ export function HeroLanding() {
         <span className="landing-particle left-[84%] top-[72%] animation-delay-900" />
       </div>
 
-      <div className="relative z-10 mx-auto flex w-full max-w-[1440px] items-center justify-center px-6 py-16 lg:px-8">
-        <div className="mx-auto flex max-w-5xl flex-col items-center text-center">
-          <div className="landing-logo mb-8 flex items-center gap-4 rounded-3xl border border-white/20 bg-white/10 px-5 py-3 shadow-[0_18px_48px_rgba(15,118,255,0.24)] backdrop-blur-xl">
+      <div className="relative z-10 mx-auto flex w-full max-w-[1440px] items-center justify-center px-4 py-10 sm:px-6 sm:py-16 lg:px-8">
+        <div className="mx-auto flex w-full max-w-5xl flex-col items-center text-center">
+          <div className="landing-logo mb-6 flex items-center gap-3 rounded-2xl border border-white/20 bg-white/10 px-4 py-2.5 shadow-[0_18px_48px_rgba(15,118,255,0.24)] backdrop-blur-xl sm:mb-8 sm:gap-4 sm:rounded-3xl sm:px-5 sm:py-3">
             <Image
               src="/logo.png"
               alt="羽动云赛 Logo"
               width={1536}
               height={1024}
               priority
-              className="h-14 w-20 shrink-0 object-contain sm:h-16 sm:w-24"
+              className="h-10 w-14 shrink-0 object-contain sm:h-16 sm:w-24"
             />
             <div className="text-left">
               <p className="text-sm font-black tracking-wide text-white sm:text-base">羽动云赛</p>
-              <p className="mt-1 text-xs font-semibold text-blue-100/85">羽毛球赛事管理平台</p>
+              <p className="mt-0.5 text-[11px] font-semibold text-blue-100/85 sm:mt-1 sm:text-xs">羽毛球赛事管理平台</p>
             </div>
           </div>
 
-          <p className="mb-5 inline-flex rounded-full border border-cyan-200/30 bg-cyan-100/10 px-4 py-1.5 text-xs font-bold uppercase tracking-[0.2em] text-cyan-100 backdrop-blur">
-            Badminton Event Management Platform
+          <p className="mb-4 inline-flex max-w-full rounded-full border border-cyan-200/30 bg-cyan-100/10 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-100 backdrop-blur sm:mb-5 sm:px-4 sm:py-1.5 sm:text-xs sm:tracking-[0.2em]">
+            <span className="truncate">Badminton Event Management Platform</span>
           </p>
 
           <h1
             aria-label={title}
-            className="landing-title-gradient landing-title-reveal max-w-none break-keep text-center text-[clamp(1.55rem,8vw,6.5rem)] font-black leading-[1.05] whitespace-nowrap"
+            className="landing-title-gradient landing-title-reveal max-w-full break-keep text-center text-[clamp(2.4rem,13vw,6.5rem)] font-black leading-[1.05] whitespace-nowrap"
           >
             {title}
           </h1>
 
-          <p className="landing-subtitle mt-7 max-w-3xl text-base leading-8 text-blue-50/86 sm:text-lg lg:text-xl">
-            <span className="mb-2 block text-lg font-black text-amber-200 sm:text-xl">羽毛球赛事管理平台</span>
+          <p className="landing-subtitle mt-5 max-w-3xl text-sm leading-7 text-blue-50/86 sm:mt-7 sm:text-lg sm:leading-8 lg:text-xl">
+            <span className="mb-1.5 block text-base font-black text-amber-200 sm:mb-2 sm:text-xl">羽毛球赛事管理平台</span>
             报名、赛程、对阵、成绩，一站式管理羽毛球赛事。
           </p>
 
-          <div className="landing-actions mt-9 flex flex-wrap justify-center gap-4">
+          <div className="landing-actions mt-7 flex w-full flex-col items-stretch justify-center gap-3 px-2 sm:mt-9 sm:w-auto sm:flex-row sm:flex-wrap sm:gap-4 sm:px-0">
             <Link
               href="/login"
-              className="inline-flex h-12 min-w-36 items-center justify-center rounded-full bg-gradient-to-r from-orange-400 to-amber-300 px-8 text-sm font-black text-white shadow-[0_12px_28px_rgba(245,158,11,0.34)] transition duration-300 hover:scale-105"
+              className="tappable inline-flex h-12 min-h-[44px] w-full items-center justify-center rounded-full bg-gradient-to-r from-orange-400 to-amber-300 px-8 text-sm font-black text-white shadow-[0_12px_28px_rgba(245,158,11,0.34)] transition duration-300 hover:scale-105 sm:w-auto sm:min-w-36"
             >
               进入系统
             </Link>
             <Link
               href="/competitions"
-              className="inline-flex h-12 min-w-36 items-center justify-center rounded-full border border-white/60 bg-white/10 px-8 text-sm font-black text-white shadow-[0_12px_30px_rgba(20,184,255,0.15)] backdrop-blur transition duration-300 hover:scale-105 hover:bg-white/18"
+              className="tappable inline-flex h-12 min-h-[44px] w-full items-center justify-center rounded-full border border-white/60 bg-white/10 px-8 text-sm font-black text-white shadow-[0_12px_30px_rgba(20,184,255,0.15)] backdrop-blur transition duration-300 hover:scale-105 hover:bg-white/18 sm:w-auto sm:min-w-36"
             >
               查看赛事
             </Link>
@@ -94,15 +94,15 @@ export function HeroLanding() {
 
           <a
             href="mailto:wulibigger@foxmail.com"
-            className="landing-actions mt-10 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-4 py-1.5 text-xs font-semibold text-blue-100/85 backdrop-blur transition duration-300 hover:border-amber-300/50 hover:bg-white/10 hover:text-amber-200 sm:text-sm"
+            className="landing-actions mt-8 inline-flex max-w-full flex-wrap items-center justify-center gap-x-2 gap-y-1 rounded-2xl border border-white/15 bg-white/5 px-3 py-1.5 text-[11px] font-semibold text-blue-100/85 backdrop-blur transition duration-300 hover:border-amber-300/50 hover:bg-white/10 hover:text-amber-200 sm:mt-10 sm:rounded-full sm:px-4 sm:text-sm"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
               <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16v12H4z" />
               <path strokeLinecap="round" strokeLinejoin="round" d="M4 7l8 6 8-6" />
             </svg>
             <span className="font-bold tracking-wide">联系方式</span>
-            <span className="text-white/40">·</span>
-            <span className="font-mono tracking-wide">wulibigger@foxmail.com</span>
+            <span className="hidden text-white/40 sm:inline">·</span>
+            <span className="break-all font-mono tracking-wide">wulibigger@foxmail.com</span>
           </a>
         </div>
       </div>
