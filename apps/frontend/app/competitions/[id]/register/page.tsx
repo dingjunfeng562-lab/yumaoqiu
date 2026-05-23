@@ -87,6 +87,12 @@ const initialForm: FormState = {
   items: [{ eventId: '', partnerName: '', partnerStudentId: '' }],
 };
 
+async function parseJsonSafe<T>(res: Response): Promise<T | null> {
+  const text = await res.text();
+  if (!text) return null;
+  return JSON.parse(text) as T;
+}
+
 function formatDateTime(value?: string | null) {
   if (!value) return '待公布';
   const date = new Date(value);
@@ -141,8 +147,10 @@ export default function CompetitionRegisterPage() {
           }),
         ]);
         if (!competitionRes.ok) throw new Error('赛事信息加载失败');
-        const competitionData = (await competitionRes.json()) as Competition;
-        const registrationData = registrationRes.ok ? ((await registrationRes.json()) as ExistingRegistration | null) : null;
+        const competitionData = (await parseJsonSafe<Competition>(competitionRes)) as Competition;
+        const registrationData = registrationRes.ok
+          ? await parseJsonSafe<ExistingRegistration>(registrationRes)
+          : null;
         if (!alive) return;
         setCompetition(competitionData);
         setExisting(registrationData);
