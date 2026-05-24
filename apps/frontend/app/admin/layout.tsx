@@ -60,7 +60,7 @@ const baseMenuItems: MenuItem[] = [
   { key: '/admin/draws', icon: <BranchesOutlined />, label: '抽签编排' },
   { key: '/admin/scheduling', icon: <CalendarOutlined />, label: '场地排程' },
   { key: '/admin/scoring', icon: <FieldTimeOutlined />, label: '裁判分配' },
-  { key: '/admin/announcements', icon: <NotificationOutlined />, label: '公告管理' },
+  { key: '/admin/announcements', icon: <NotificationOutlined />, label: '公告管理', superOnly: true },
   { key: '/admin/exports', icon: <DownloadOutlined />, label: '数据导出' },
 ];
 

@@ -161,6 +161,17 @@ model Announcement {
   id          String    @id @default(cuid())
   title       String    @db.VarChar(120)
   content     String    @db.Text
+  displayMode String    @default("popup") @db.VarChar(24)
+  scope       String    @default("global") @db.VarChar(24)
+  frequency   String    @default("every_visit") @db.VarChar(24)
+  status      String    @default("draft") @db.VarChar(24)
+  startAt     DateTime  @default(now())
+  endAt       DateTime?
+  closable    Boolean   @default(true)
+  primaryButtonText String? @db.VarChar(40)
+  primaryButtonLink String? @db.VarChar(255)
+  secondaryButtonText String? @db.VarChar(40)
+  priority    Int       @default(0)
   type        String    @default("公告") @db.VarChar(24)
   isPublished Boolean   @default(false)
   isPinned    Boolean   @default(false)
@@ -174,6 +185,8 @@ model Announcement {
   updatedAt   DateTime  @updatedAt
 
   @@index([isPublished, isPinned, sortOrder])
+  @@index([status, displayMode, scope, startAt])
+  @@index([priority])
   @@index([publishedAt])
   @@index([expiresAt])
 }

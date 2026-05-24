@@ -3,12 +3,23 @@
 import { useEffect } from 'react';
 import { SessionProvider, signOut, useSession } from 'next-auth/react';
 import { AntdRegistry } from '@ant-design/nextjs-registry';
+import { GlobalAnnouncementModal } from '@/components/GlobalAnnouncementModal';
+import type { ActiveAnnouncement } from '@/components/GlobalAnnouncementModal';
 
-export function Providers({ children }: { children: React.ReactNode }) {
+export function Providers({
+  children,
+  initialAnnouncement,
+}: {
+  children: React.ReactNode;
+  initialAnnouncement?: ActiveAnnouncement | null;
+}) {
   return (
     <SessionProvider>
       <SessionExpiryHandler />
-      <AntdRegistry>{children}</AntdRegistry>
+      <AntdRegistry>
+        {children}
+        <GlobalAnnouncementModal initialAnnouncement={initialAnnouncement} />
+      </AntdRegistry>
     </SessionProvider>
   );
 }
