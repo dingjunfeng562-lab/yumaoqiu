@@ -21,9 +21,11 @@ import {
   FreezeDrawDto,
   GenerateDrawDto,
   GetDrawLogsQueryDto,
+  PublishDrawDto,
   RedrawDrawDto,
   SwapDrawSlotsDto,
   UnfreezeDrawDto,
+  UnpublishDrawDto,
   UpdateRegistrationDto,
   UpdateSeedsDto,
 } from './dto/draw.dto';
@@ -84,8 +86,17 @@ export class DrawsController {
   }
 
   @Post('events/:eventId/draw')
-  generateDraw(@Param('eventId') eventId: string, @Body() dto: GenerateDrawDto) {
-    return this.drawsService.generateDraw(eventId, dto);
+  generateDraw(
+    @Param('eventId') eventId: string,
+    @Body() dto: GenerateDrawDto,
+    @Req() req: AuthRequest,
+  ) {
+    return this.drawsService.generateDraw(
+      eventId,
+      dto,
+      req.user?.id ?? '',
+      req.user?.username ?? req.user?.id ?? null,
+    );
   }
 
   @Post('events/:eventId/draw/execute')
@@ -134,6 +145,34 @@ export class DrawsController {
     @Req() req: AuthRequest,
   ) {
     return this.drawsService.unfreezeDraw(
+      eventId,
+      dto.drawId,
+      req.user?.id ?? '',
+      req.user?.username ?? req.user?.id ?? null,
+    );
+  }
+
+  @Post('events/:eventId/draw/publish')
+  publishDraw(
+    @Param('eventId') eventId: string,
+    @Body() dto: PublishDrawDto,
+    @Req() req: AuthRequest,
+  ) {
+    return this.drawsService.publishDraw(
+      eventId,
+      dto.drawId,
+      req.user?.id ?? '',
+      req.user?.username ?? req.user?.id ?? null,
+    );
+  }
+
+  @Post('events/:eventId/draw/unpublish')
+  unpublishDraw(
+    @Param('eventId') eventId: string,
+    @Body() dto: UnpublishDrawDto,
+    @Req() req: AuthRequest,
+  ) {
+    return this.drawsService.unpublishDraw(
       eventId,
       dto.drawId,
       req.user?.id ?? '',

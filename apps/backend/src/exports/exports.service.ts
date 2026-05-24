@@ -18,6 +18,66 @@ type StandingRow = {
   gameDiff: number;
 };
 
+type ExportRegistration = {
+  id: string;
+  createdAt: Date;
+  className: string | null;
+  groupName: string | null;
+  isSeed: boolean;
+  seedRank: number | null;
+  player1: {
+    name: string;
+    gender: string;
+    affiliation: string;
+    contact: string | null;
+  };
+  player2: {
+    name: string;
+    gender: string;
+    affiliation: string;
+    contact: string | null;
+  } | null;
+  competitionRegistration: {
+    school: string | null;
+  } | null;
+};
+
+type ExportMatch = {
+  round: string | number | null;
+  matchNo: number | null;
+  scheduledAt: Date | null;
+  status: string;
+  durationMinutes: number;
+  side1Id: string | null;
+  side2Id: string | null;
+  winnerSide: number | null;
+  updatedAt: Date;
+  venue: {
+    name: string;
+  } | null;
+  referee: {
+    username: string | null;
+  } | null;
+  games: Array<{
+    gameNo: number;
+    side1Score: number;
+    side2Score: number;
+  }>;
+};
+
+type ExportEvent = {
+  type: string;
+  registrations: ExportRegistration[];
+  matches: ExportMatch[];
+};
+
+type ExportTournament = {
+  name: string;
+  startDate: Date;
+  endDate: Date;
+  events: ExportEvent[];
+};
+
 const EVENT_TYPE_LABELS: Record<string, string> = {
   MENS_SINGLES: '男子单打',
   WOMENS_SINGLES: '女子单打',
@@ -46,48 +106,175 @@ export class ExportsService {
       throw new BadRequestException('导出类型必须是 schedule、results 或 registrations');
     }
 
-    const tournament = await this.prisma.tournament.findUnique({
-      where: { id: tournamentId },
-      include: {
-        events: {
-          include: {
-            registrations: {
-              where: { status: RegistrationStatus.APPROVED },
-              include: { player1: true, player2: true, competitionRegistration: true },
-              orderBy: [{ groupName: 'asc' }, { isSeed: 'desc' }, { seedRank: 'asc' }, { createdAt: 'asc' }],
-            },
-            matches: {
-              include: {
-                venue: true,
-                referee: { select: { username: true } },
-                games: { orderBy: { gameNo: 'asc' } },
-              },
-              orderBy: [{ scheduledAt: 'asc' }, { roundNo: 'asc' }, { matchNo: 'asc' }],
-            },
-          },
-          orderBy: { type: 'asc' },
-        },
-      },
-    });
-
+    const tournament = await this.findTournamentForExport(tournamentId, kind);
     if (!tournament) throw new NotFoundException('赛事不存在');
 
     const worksheets = this.buildWorksheets(tournament, kind);
-    const label = kind === 'schedule' ? '赛程表' : kind === 'results' ? '成绩册' : '报名表';
+    const label = this.exportLabel(kind);
 
     return {
-      filename: `${tournament.name}-${label}.xls`,
+      filename: this.exportFilename(tournament.name, label),
       content: this.toWorkbookXml(worksheets),
     };
   }
 
-  private buildWorksheets(tournament: any, kind: ExportKind): Worksheet[] {
+  private async findTournamentForExport(tournamentId: string, kind: ExportKind): Promise<ExportTournament | null> {
+    const baseSelect = {
+      name: true,
+      startDate: true,
+      endDate: true,
+    } as const;
+
+    if (kind === 'registrations') {
+      return this.prisma.tournament.findUnique({
+        where: { id: tournamentId },
+        select: {
+          ...baseSelect,
+          events: {
+            orderBy: { type: 'asc' },
+            select: {
+              type: true,
+              registrations: {
+                where: { status: RegistrationStatus.APPROVED },
+                orderBy: [{ groupName: 'asc' }, { isSeed: 'desc' }, { seedRank: 'asc' }, { createdAt: 'asc' }],
+                select: {
+                  id: true,
+                  createdAt: true,
+                  className: true,
+                  groupName: true,
+                  isSeed: true,
+                  seedRank: true,
+                  player1: {
+                    select: {
+                      name: true,
+                      gender: true,
+                      affiliation: true,
+                      contact: true,
+                    },
+                  },
+                  player2: {
+                    select: {
+                      name: true,
+                      gender: true,
+                      affiliation: true,
+                      contact: true,
+                    },
+                  },
+                  competitionRegistration: {
+                    select: {
+                      school: true,
+                    },
+                  },
+                },
+              },
+              matches: {
+                select: {
+                  round: true,
+                  matchNo: true,
+                  scheduledAt: true,
+                  status: true,
+                  durationMinutes: true,
+                  side1Id: true,
+                  side2Id: true,
+                  winnerSide: true,
+                  updatedAt: true,
+                  venue: { select: { name: true } },
+                  referee: { select: { username: true } },
+                  games: {
+                    orderBy: { gameNo: 'asc' },
+                    select: {
+                      gameNo: true,
+                      side1Score: true,
+                      side2Score: true,
+                    },
+                  },
+                },
+                orderBy: [{ scheduledAt: 'asc' }, { roundNo: 'asc' }, { matchNo: 'asc' }],
+              },
+            },
+          },
+        },
+      }) as Promise<ExportTournament | null>;
+    }
+
+    return this.prisma.tournament.findUnique({
+      where: { id: tournamentId },
+      select: {
+        ...baseSelect,
+        events: {
+          orderBy: { type: 'asc' },
+          select: {
+            type: true,
+            registrations: {
+              where: { status: RegistrationStatus.APPROVED },
+              orderBy: [{ groupName: 'asc' }, { isSeed: 'desc' }, { seedRank: 'asc' }, { createdAt: 'asc' }],
+              select: {
+                id: true,
+                createdAt: true,
+                className: true,
+                groupName: true,
+                isSeed: true,
+                seedRank: true,
+                player1: {
+                  select: {
+                    name: true,
+                    gender: true,
+                    affiliation: true,
+                    contact: true,
+                  },
+                },
+                player2: {
+                  select: {
+                    name: true,
+                    gender: true,
+                    affiliation: true,
+                    contact: true,
+                  },
+                },
+                competitionRegistration: {
+                  select: {
+                    school: true,
+                  },
+                },
+              },
+            },
+            matches: {
+              orderBy: [{ scheduledAt: 'asc' }, { roundNo: 'asc' }, { matchNo: 'asc' }],
+              select: {
+                round: true,
+                matchNo: true,
+                scheduledAt: true,
+                status: true,
+                durationMinutes: true,
+                side1Id: true,
+                side2Id: true,
+                winnerSide: true,
+                updatedAt: true,
+                venue: { select: { name: true } },
+                referee: { select: { username: true } },
+                games: {
+                  orderBy: { gameNo: 'asc' },
+                  select: {
+                    gameNo: true,
+                    side1Score: true,
+                    side2Score: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    }) as Promise<ExportTournament | null>;
+  }
+
+  private buildWorksheets(tournament: ExportTournament, kind: ExportKind): Worksheet[] {
     if (kind === 'schedule') return [this.scheduleWorksheet(tournament)];
     if (kind === 'registrations') return [this.registrationsWorksheet(tournament)];
     return [this.resultsWorksheet(tournament), this.standingsWorksheet(tournament)];
   }
 
-  private scheduleWorksheet(tournament: any): Worksheet {
+  private scheduleWorksheet(tournament: ExportTournament): Worksheet {
     const rows: CellValue[][] = [
       [
         '赛事',
@@ -125,7 +312,7 @@ export class ExportsService {
     return { name: '赛程表', rows };
   }
 
-  private resultsWorksheet(tournament: any): Worksheet {
+  private resultsWorksheet(tournament: ExportTournament): Worksheet {
     const rows: CellValue[][] = [
       ['赛事', '项目', '轮次', '场次', '对阵', '局分', '胜方', '状态', '场地', '更新时间'],
     ];
@@ -154,7 +341,7 @@ export class ExportsService {
     return { name: '成绩明细', rows };
   }
 
-  private standingsWorksheet(tournament: any): Worksheet {
+  private standingsWorksheet(tournament: ExportTournament): Worksheet {
     const rows: CellValue[][] = [
       ['赛事', '项目', '名次', '参赛方', '院系/班级', '场次', '胜场', '负场', '小分差'],
     ];
@@ -179,7 +366,7 @@ export class ExportsService {
     return { name: '名次汇总', rows };
   }
 
-  private registrationsWorksheet(tournament: any): Worksheet {
+  private registrationsWorksheet(tournament: ExportTournament): Worksheet {
     const rows: CellValue[][] = [
       [
         '赛事',
@@ -233,29 +420,51 @@ export class ExportsService {
     return { name: '报名表', rows };
   }
 
-  private registrationMap(registrations: any[]) {
+  private exportLabel(kind: ExportKind) {
+    return kind === 'schedule' ? '赛程表' : kind === 'results' ? '成绩册' : '报名表';
+  }
+
+  private exportFilename(tournamentName: string, label: string) {
+    const safeName = this.sanitizeFilenamePart(tournamentName) || '赛事';
+    return `${safeName}-${this.formatFileDate(new Date())}-${label}.xls`;
+  }
+
+  private formatFileDate(value: Date | string) {
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return 'unknown-date';
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}${month}${day}`;
+  }
+
+  private sanitizeFilenamePart(value: string) {
+    return value.trim().replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, ' ');
+  }
+
+  private registrationMap(registrations: ExportRegistration[]) {
     return new Map(registrations.map((registration) => [registration.id, registration]));
   }
 
-  private sideName(id: string | null, registrationMap: Map<string, any>) {
+  private sideName(id: string | null, registrationMap: Map<string, ExportRegistration>) {
     if (!id) return '待定';
     const registration = registrationMap.get(id);
     return registration ? this.registrationName(registration) : '待定';
   }
 
-  private registrationName(registration: any) {
+  private registrationName(registration: ExportRegistration) {
     return registration.player2
       ? `${registration.player1.name} / ${registration.player2.name}`
       : registration.player1.name;
   }
 
-  private gamesText(games: any[]) {
+  private gamesText(games: ExportMatch['games']) {
     if (!games.length) return '-';
     return games.map((game) => `${game.side1Score}:${game.side2Score}`).join(' / ');
   }
 
-  private eventStandings(event: any) {
-    const rows: StandingRow[] = event.registrations.map((registration: any) => ({
+  private eventStandings(event: ExportEvent) {
+    const rows: StandingRow[] = event.registrations.map((registration) => ({
       id: registration.id,
       name: this.registrationName(registration),
       affiliation: registration.player2

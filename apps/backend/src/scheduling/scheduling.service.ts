@@ -55,6 +55,11 @@ type BusyInterval = {
   end: number;
 };
 
+type DailyWindow = {
+  startMinutes: number;
+  endMinutes: number;
+};
+
 @Injectable()
 export class SchedulingService {
   constructor(private prisma: PrismaService) {}
@@ -125,10 +130,31 @@ export class SchedulingService {
   }
 
   async autoSchedule(dto: AutoScheduleDto) {
+    const tournament = await this.prisma.tournament.findUnique({
+      where: { id: dto.tournamentId },
+      select: {
+        defaultMatchMinutes: true,
+        breakMinutes: true,
+        dailyStartTime: true,
+        dailyEndTime: true,
+        startDate: true,
+        endDate: true,
+      },
+    });
+    if (!tournament) throw new NotFoundException('赛事不存在');
+
     const startAt = new Date(dto.startAt);
     if (Number.isNaN(startAt.getTime())) throw new BadRequestException('开始时间无效');
-    const matchMinutes = dto.matchMinutes ?? 45;
-    const breakMinutes = dto.breakMinutes ?? 10;
+    const matchMinutes = dto.matchMinutes ?? tournament.defaultMatchMinutes;
+    const breakMinutes = dto.breakMinutes ?? tournament.breakMinutes;
+    const dailyWindow = this.parseDailyWindow(tournament.dailyStartTime, tournament.dailyEndTime);
+    if (dailyWindow.endMinutes - dailyWindow.startMinutes < matchMinutes) {
+      throw new BadRequestException('每日比赛时段不足以安排一场比赛');
+    }
+    const earliestScheduleStart = Math.max(
+      startAt.getTime(),
+      this.withMinutesOfDay(tournament.startDate, dailyWindow.startMinutes).getTime(),
+    );
 
     const venueWhere: Prisma.VenueWhereInput = {
       tournamentId: dto.tournamentId,
@@ -140,6 +166,9 @@ export class SchedulingService {
       orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
     });
     if (!venues.length) throw new BadRequestException('请先维护至少一个可用场地');
+    if (dto.venueIds?.length && venues.length !== new Set(dto.venueIds).size) {
+      throw new BadRequestException('所选场地必须来自当前赛事且处于启用状态');
+    }
 
     const scopeMatches = await this.prisma.match.findMany({
       where: {
@@ -223,9 +252,11 @@ export class SchedulingService {
         venue,
         startTime: this.findEarliestStart(
           venue.id,
-          startAt.getTime(),
+          earliestScheduleStart,
           matchMinutes,
           breakMinutes,
+          dailyWindow,
+          tournament.endDate,
           playerIds,
           venueBusy,
           playerBusy,
@@ -289,8 +320,8 @@ export class SchedulingService {
 
     if (dto.venueId) {
       const venue = await this.prisma.venue.findUnique({ where: { id: dto.venueId } });
-      if (!venue || (match.eventId && match.event && venue.tournamentId !== match.event.tournamentId)) {
-        throw new BadRequestException('请选择当前赛事下的场地');
+      if (!venue || !venue.isActive || (match.eventId && match.event && venue.tournamentId !== match.event.tournamentId)) {
+        throw new BadRequestException('请选择当前赛事下已启用的场地');
       }
     }
 
@@ -440,18 +471,25 @@ export class SchedulingService {
     earliest: number,
     matchMinutes: number,
     breakMinutes: number,
+    dailyWindow: DailyWindow,
+    tournamentEndDate: Date,
     playerIds: string[],
     venueBusy: Map<string, BusyInterval[]>,
     playerBusy: Map<string, BusyInterval[]>,
   ) {
-    let start = earliest;
+    let start = this.normalizeToDailyWindow(earliest, matchMinutes, dailyWindow);
+    const latestEnd = this.endOfDay(tournamentEndDate).getTime();
     while (true) {
+      if (start + matchMinutes * 60 * 1000 > latestEnd) {
+        throw new BadRequestException('赛程已超出赛事结束日期，请增加场地或调整每日比赛时段');
+      }
+
       const venueConflict = this.findOverlap(venueBusy.get(venueId) ?? [], {
         start,
         end: start + (matchMinutes + breakMinutes) * 60 * 1000,
       });
       if (venueConflict) {
-        start = venueConflict.end;
+        start = this.normalizeToDailyWindow(venueConflict.end, matchMinutes, dailyWindow);
         continue;
       }
 
@@ -465,12 +503,55 @@ export class SchedulingService {
           }),
         );
       if (playerConflict) {
-        start = playerConflict.end;
+        start = this.normalizeToDailyWindow(playerConflict.end, matchMinutes, dailyWindow);
         continue;
       }
 
       return start;
     }
+  }
+
+  private parseDailyWindow(startTime: string, endTime: string): DailyWindow {
+    const startMinutes = this.timeToMinutes(startTime);
+    const endMinutes = this.timeToMinutes(endTime);
+    if (endMinutes <= startMinutes) {
+      throw new BadRequestException('每日比赛结束时间必须晚于开始时间');
+    }
+    return { startMinutes, endMinutes };
+  }
+
+  private timeToMinutes(value: string) {
+    const [hour, minute] = value.split(':').map(Number);
+    if (!Number.isInteger(hour) || !Number.isInteger(minute)) {
+      throw new BadRequestException('每日比赛时段设置无效');
+    }
+    return hour * 60 + minute;
+  }
+
+  private normalizeToDailyWindow(timestamp: number, matchMinutes: number, window: DailyWindow) {
+    const date = new Date(timestamp);
+    const minutes = date.getHours() * 60 + date.getMinutes();
+    if (minutes < window.startMinutes) {
+      return this.withMinutesOfDay(date, window.startMinutes).getTime();
+    }
+    if (minutes + matchMinutes > window.endMinutes) {
+      const nextDay = new Date(date);
+      nextDay.setDate(nextDay.getDate() + 1);
+      return this.withMinutesOfDay(nextDay, window.startMinutes).getTime();
+    }
+    return timestamp;
+  }
+
+  private withMinutesOfDay(date: Date, minutes: number) {
+    const next = new Date(date);
+    next.setHours(Math.floor(minutes / 60), minutes % 60, 0, 0);
+    return next;
+  }
+
+  private endOfDay(date: Date) {
+    const end = new Date(date);
+    end.setHours(23, 59, 59, 999);
+    return end;
   }
 
   private findOverlap(intervals: BusyInterval[], target: BusyInterval) {
@@ -492,30 +573,34 @@ export class SchedulingService {
 
   private dependenciesReady<T extends {
     eventId: string | null;
+    round: string;
     roundNo: number;
     matchNo: number;
     status: MatchStatus;
     winnerSide: number | null;
   }>(
-    match: { eventId: string | null; roundNo: number; matchNo: number },
+    match: { eventId: string | null; round?: string | null; roundNo: number; matchNo: number },
     matchMap: Map<string, T>,
   ) {
     if (!match.eventId || match.roundNo <= 1) return true;
-    const dependencies = [
-      matchMap.get(this.matchKey(match.eventId, match.roundNo - 1, match.matchNo * 2 - 1)),
-      matchMap.get(this.matchKey(match.eventId, match.roundNo - 1, match.matchNo * 2)),
-    ];
-    return dependencies.every(
+    const dependencies = this.dependencyMatches(match, matchMap);
+    return dependencies.length === 2 && dependencies.every(
       (dependency) =>
         dependency?.status === MatchStatus.COMPLETED && Boolean(dependency.winnerSide),
     );
   }
 
-  private dependencyMatches<T extends { eventId: string | null; roundNo: number; matchNo: number }>(
-    match: T,
+  private dependencyMatches<T extends { eventId: string | null; round?: string | null; roundNo: number; matchNo: number }>(
+    match: { eventId: string | null; round?: string | null; roundNo: number; matchNo: number },
     matchMap: Map<string, T>,
   ) {
     if (!match.eventId || match.roundNo <= 1) return [];
+    if (match.round === 'BRONZE') {
+      return [
+        matchMap.get(this.matchKey(match.eventId, match.roundNo - 1, 1)),
+        matchMap.get(this.matchKey(match.eventId, match.roundNo - 1, 2)),
+      ].filter((item): item is T => Boolean(item));
+    }
     return [
       matchMap.get(this.matchKey(match.eventId, match.roundNo - 1, match.matchNo * 2 - 1)),
       matchMap.get(this.matchKey(match.eventId, match.roundNo - 1, match.matchNo * 2)),

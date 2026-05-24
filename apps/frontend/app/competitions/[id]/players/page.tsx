@@ -7,10 +7,29 @@ import { PortalFeaturePage } from '@/components/home/PortalFeaturePage';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 
+type EventType = 'MENS_SINGLES' | 'WOMENS_SINGLES' | 'MENS_DOUBLES' | 'WOMENS_DOUBLES' | 'MIXED_DOUBLES';
+type EventGroupKey = 'mensSingles' | 'womensSingles' | 'mensDoubles' | 'womensDoubles' | 'mixedDoubles';
+
+const EVENT_GROUPS: Array<{ type: EventType; key: EventGroupKey; fallbackTitle: string }> = [
+  { type: 'MENS_SINGLES', key: 'mensSingles', fallbackTitle: '男子单打' },
+  { type: 'WOMENS_SINGLES', key: 'womensSingles', fallbackTitle: '女子单打' },
+  { type: 'MENS_DOUBLES', key: 'mensDoubles', fallbackTitle: '男子双打' },
+  { type: 'WOMENS_DOUBLES', key: 'womensDoubles', fallbackTitle: '女子双打' },
+  { type: 'MIXED_DOUBLES', key: 'mixedDoubles', fallbackTitle: '混合双打' },
+];
+
+type EventOption = {
+  id: string;
+  type: EventType;
+  label: string;
+  isDouble: boolean;
+};
+
 type Competition = {
   id: string;
   title: string;
   location?: string | null;
+  eventOptions?: EventOption[];
 };
 
 type Player = {
@@ -28,13 +47,13 @@ type Player = {
 
 type PlayersResponse = {
   players: Player[];
-  groups: {
-    mensSingles: Player[];
-    womensSingles: Player[];
-    mensDoubles: Player[];
-    womensDoubles: Player[];
-    mixedDoubles: Player[];
-  };
+  groups: Record<EventGroupKey, Player[]>;
+};
+
+type VisiblePlayerGroup = {
+  id: string;
+  title: string;
+  players: Player[];
 };
 
 function formatDateTime(value: string) {
@@ -47,6 +66,28 @@ function formatDateTime(value: string) {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+function buildVisibleGroups(competition: Competition | null, data: PlayersResponse | null): VisiblePlayerGroup[] {
+  if (competition?.eventOptions) {
+    return competition.eventOptions
+      .map((option) => {
+        const group = EVENT_GROUPS.find((item) => item.type === option.type);
+        if (!group) return null;
+        return {
+          id: option.id,
+          title: option.label || group.fallbackTitle,
+          players: data?.groups[group.key] ?? [],
+        };
+      })
+      .filter((group): group is VisiblePlayerGroup => Boolean(group));
+  }
+
+  return EVENT_GROUPS.map((group) => ({
+    id: group.type,
+    title: group.fallbackTitle,
+    players: data?.groups[group.key] ?? [],
+  }));
 }
 
 export default function CompetitionPlayersPage() {
@@ -88,7 +129,9 @@ export default function CompetitionPlayersPage() {
     };
   }, [id]);
 
+  const visibleGroups = buildVisibleGroups(competition, data);
   const hasPlayers = Boolean(data?.players.length);
+  const hasVisibleGroups = visibleGroups.length > 0;
 
   return (
     <PortalFeaturePage
@@ -128,13 +171,11 @@ export default function CompetitionPlayersPage() {
         <div className="rounded-lg border border-red-200 bg-red-50 p-8 text-sm font-bold text-red-600">
           {error}
         </div>
-      ) : hasPlayers ? (
+      ) : hasPlayers || hasVisibleGroups ? (
         <div className="grid gap-6 xl:grid-cols-2">
-          <PlayerGroup title="男子单打" players={data?.groups.mensSingles ?? []} />
-          <PlayerGroup title="女子单打" players={data?.groups.womensSingles ?? []} />
-          <PlayerGroup title="男子双打" players={data?.groups.mensDoubles ?? []} />
-          <PlayerGroup title="女子双打" players={data?.groups.womensDoubles ?? []} />
-          <PlayerGroup title="混合双打" players={data?.groups.mixedDoubles ?? []} />
+          {visibleGroups.map((group) => (
+            <PlayerGroup key={group.id} title={group.title} players={group.players} />
+          ))}
         </div>
       ) : (
         <div className="rounded-lg border border-blue-100 bg-white p-10 text-center shadow-sm">

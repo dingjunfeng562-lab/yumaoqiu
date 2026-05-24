@@ -10,7 +10,6 @@ import {
   DatePicker,
   Empty,
   Form,
-  Input,
   InputNumber,
   Modal,
   Select,
@@ -20,8 +19,9 @@ import {
   Typography,
   message,
 } from 'antd';
-import { EditOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import { EditOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
+import { roundCn } from '@/lib/round';
 
 const EVENT_TYPE_LABELS: Record<string, string> = {
   MENS_SINGLES: '男子单打',
@@ -50,6 +50,13 @@ interface Tournament {
   id: string;
   name: string;
   edition: number;
+  startDate: string;
+  endDate: string;
+  defaultMatchMinutes: number;
+  breakMinutes: number;
+  dailyStartTime: string;
+  dailyEndTime: string;
+  venues: Venue[];
 }
 
 interface EventItem {
@@ -115,6 +122,13 @@ function rowConflictClass(row: ScheduleMatch) {
   return '';
 }
 
+function defaultAutoStart(tournament?: Tournament) {
+  if (!tournament) return dayjs().add(1, 'hour');
+  const date = dayjs(tournament.startDate);
+  const [hour, minute] = tournament.dailyStartTime.split(':').map(Number);
+  return date.hour(hour || 0).minute(minute || 0).second(0).millisecond(0);
+}
+
 export default function AdminSchedulingPage() {
   const { data: session } = useSession();
   const token = session?.user?.accessToken;
@@ -124,28 +138,17 @@ export default function AdminSchedulingPage() {
   const [selectedEventId, setSelectedEventId] = useState('');
   const [schedule, setSchedule] = useState<ScheduleData>({ venues: [], matches: [], conflicts: [] });
   const [loading, setLoading] = useState(false);
-  const [venueModalOpen, setVenueModalOpen] = useState(false);
   const [autoModalOpen, setAutoModalOpen] = useState(false);
   const [editingMatch, setEditingMatch] = useState<ScheduleMatch | null>(null);
-  const [venueForm] = Form.useForm();
   const [autoForm] = Form.useForm();
   const [editForm] = Form.useForm();
 
-  const activeVenues = useMemo(() => schedule.venues.filter((venue) => venue.isActive), [schedule.venues]);
-
-  async function loadBase() {
-    if (!token) return;
-    const data = await apiFetch<Tournament[]>('/tournaments', { token });
-    setTournaments(data);
-    if (!selectedTournamentId) setSelectedTournamentId(data[0]?.id ?? '');
-  }
-
-  async function loadEvents(tournamentId: string) {
-    if (!token || !tournamentId) return;
-    const data = await apiFetch<EventItem[]>(`/events?tournamentId=${tournamentId}`, { token });
-    setEvents(data);
-    setSelectedEventId('');
-  }
+  const selectedTournament = useMemo(
+    () => tournaments.find((item) => item.id === selectedTournamentId),
+    [selectedTournamentId, tournaments],
+  );
+  const configuredVenues = selectedTournament?.venues ?? schedule.venues;
+  const activeVenues = useMemo(() => configuredVenues.filter((venue) => venue.isActive), [configuredVenues]);
 
   async function loadSchedule(tournamentId = selectedTournamentId, eventId = selectedEventId) {
     if (!token || !tournamentId) return;
@@ -163,46 +166,56 @@ export default function AdminSchedulingPage() {
   }
 
   useEffect(() => {
-    loadBase().catch((error) => message.error(error instanceof Error ? error.message : '加载赛事失败'));
+    if (!token) return;
+    let cancelled = false;
+    apiFetch<Tournament[]>('/tournaments', { token })
+      .then((data) => {
+        if (cancelled) return;
+        setTournaments(data);
+        setSelectedTournamentId((current) => current || data[0]?.id || '');
+      })
+      .catch((error) => message.error(error instanceof Error ? error.message : '加载赛事失败'));
+    return () => {
+      cancelled = true;
+    };
   }, [token]);
 
   useEffect(() => {
-    if (!selectedTournamentId) return;
-    loadEvents(selectedTournamentId).catch((error) => message.error(error instanceof Error ? error.message : '加载单项失败'));
+    if (!token || !selectedTournamentId) return;
+    let cancelled = false;
+    apiFetch<EventItem[]>(`/events?tournamentId=${selectedTournamentId}`, { token })
+      .then((data) => {
+        if (cancelled) return;
+        setEvents(data);
+        setSelectedEventId('');
+      })
+      .catch((error) => message.error(error instanceof Error ? error.message : '加载单项失败'));
+    return () => {
+      cancelled = true;
+    };
   }, [token, selectedTournamentId]);
 
   useEffect(() => {
-    if (!selectedTournamentId) return;
-    loadSchedule();
-  }, [token, selectedTournamentId, selectedEventId]);
-
-  async function createVenue(values: { name: string; sortOrder?: number }) {
     if (!token || !selectedTournamentId) return;
-    try {
-      await apiFetch(`/tournaments/${selectedTournamentId}/venues`, {
-        method: 'POST',
-        token,
-        body: JSON.stringify(values),
+    let cancelled = false;
+    const query = new URLSearchParams({ tournamentId: selectedTournamentId });
+    if (selectedEventId) query.set('eventId', selectedEventId);
+    Promise.resolve()
+      .then(() => {
+        if (!cancelled) setLoading(true);
+        return apiFetch<ScheduleData>(`/scheduling?${query.toString()}`, { token });
+      })
+      .then((data) => {
+        if (!cancelled) setSchedule(data);
+      })
+      .catch((error) => message.error(error instanceof Error ? error.message : '加载排程失败'))
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
-      message.success('场地已新增');
-      setVenueModalOpen(false);
-      venueForm.resetFields();
-      await loadSchedule();
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '新增场地失败');
-    }
-  }
-
-  async function removeVenue(id: string) {
-    if (!token) return;
-    try {
-      await apiFetch(`/venues/${id}`, { method: 'DELETE', token });
-      message.success('场地已删除或停用');
-      await loadSchedule();
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '删除场地失败');
-    }
-  }
+    return () => {
+      cancelled = true;
+    };
+  }, [token, selectedTournamentId, selectedEventId]);
 
   async function autoSchedule(values: {
     startAt: Dayjs;
@@ -232,6 +245,17 @@ export default function AdminSchedulingPage() {
     } catch (error) {
       message.error(error instanceof Error ? error.message : '自动排程失败');
     }
+  }
+
+  function openAutoSchedule() {
+    autoForm.setFieldsValue({
+      startAt: defaultAutoStart(selectedTournament),
+      matchMinutes: selectedTournament?.defaultMatchMinutes ?? 45,
+      breakMinutes: selectedTournament?.breakMinutes ?? 10,
+      venueIds: undefined,
+      eventTypeOrder: undefined,
+    });
+    setAutoModalOpen(true);
   }
 
   function openEdit(match: ScheduleMatch) {
@@ -285,8 +309,8 @@ export default function AdminSchedulingPage() {
         </div>
         <Space wrap>
           <Button icon={<ReloadOutlined />} onClick={() => loadSchedule()} loading={loading}>刷新</Button>
-          <Button icon={<PlusOutlined />} onClick={() => setVenueModalOpen(true)}>新增场地</Button>
-          <Button type="primary" onClick={() => setAutoModalOpen(true)} disabled={!activeVenues.length}>
+          <Button href="/admin/tournaments">编辑赛程设置</Button>
+          <Button type="primary" onClick={openAutoSchedule} disabled={!activeVenues.length}>
             全部重新自动排程
           </Button>
         </Space>
@@ -314,26 +338,24 @@ export default function AdminSchedulingPage() {
         </Space>
       </Card>
 
-      <Card title="场地列表">
-        {schedule.venues.length ? (
+      <Card title="场地列表（来自赛事设置）">
+        {configuredVenues.length ? (
           <Space wrap>
-            {schedule.venues.map((venue) => (
+            {configuredVenues.map((venue) => (
               <Tag
                 key={venue.id}
                 color={venue.isActive ? 'blue' : 'default'}
-                closable
-                onClose={(event) => {
-                  event.preventDefault();
-                  removeVenue(venue.id);
-                }}
               >
                 {venue.name}{venue.isActive ? '' : '（停用）'}
               </Tag>
             ))}
           </Space>
         ) : (
-          <Empty description="暂无场地，请先新增场地" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+          <Empty description="暂无场地，请先到赛事配置中设置比赛场地" image={Empty.PRESENTED_IMAGE_SIMPLE} />
         )}
+        <Typography.Text type="secondary" style={{ display: 'block', marginTop: 12 }}>
+          自动排程只使用赛事配置中启用的场地；如需调整，请到赛事配置的“场地与时间”中修改。
+        </Typography.Text>
       </Card>
 
       {schedule.conflicts.length > 0 && (
@@ -373,7 +395,7 @@ export default function AdminSchedulingPage() {
             { title: '时间', dataIndex: 'scheduledAt', width: 160, render: formatTime },
             { title: '场地', dataIndex: 'venueName', width: 120, render: (value) => value || '—' },
             { title: '项目', dataIndex: 'eventTypeLabel', width: 120 },
-            { title: '轮次', dataIndex: 'round', width: 90 },
+            { title: '轮次', dataIndex: 'round', width: 90, render: (value: string) => roundCn(value) },
             { title: '场次', dataIndex: 'matchNo', width: 90, render: (value) => `第${value}场` },
             {
               title: '对阵',
@@ -402,23 +424,16 @@ export default function AdminSchedulingPage() {
         />
       </Card>
 
-      <Modal title="新增场地" open={venueModalOpen} onCancel={() => setVenueModalOpen(false)} onOk={() => venueForm.submit()} destroyOnHidden>
-        <Form form={venueForm} layout="vertical" onFinish={createVenue} initialValues={{ sortOrder: schedule.venues.length }}>
-          <Form.Item name="name" label="场地名称" rules={[{ required: true, message: '请输入场地名称' }]}>
-            <Input placeholder="例如：1号场" />
-          </Form.Item>
-          <Form.Item name="sortOrder" label="排序">
-            <InputNumber min={0} style={{ width: '100%' }} />
-          </Form.Item>
-        </Form>
-      </Modal>
-
       <Modal title="自动排程" open={autoModalOpen} onCancel={() => setAutoModalOpen(false)} onOk={() => autoForm.submit()} destroyOnHidden>
         <Form
           form={autoForm}
           layout="vertical"
           onFinish={autoSchedule}
-          initialValues={{ startAt: dayjs().add(1, 'hour'), matchMinutes: 45, breakMinutes: 10 }}
+          initialValues={{
+            startAt: defaultAutoStart(selectedTournament),
+            matchMinutes: selectedTournament?.defaultMatchMinutes ?? 45,
+            breakMinutes: selectedTournament?.breakMinutes ?? 10,
+          }}
         >
           <Form.Item name="startAt" label="开始时间" rules={[{ required: true, message: '请选择开始时间' }]}>
             <DatePicker showTime format="YYYY-MM-DD HH:mm" style={{ width: '100%' }} />

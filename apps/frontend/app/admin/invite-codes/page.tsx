@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useSession } from 'next-auth/react';
-import { Button, Card, Form, Input, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Typography, message } from 'antd';
+import { Button, Card, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Typography, message } from 'antd';
 import { DeleteOutlined, PlusOutlined, ReloadOutlined, CopyOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 
@@ -197,7 +197,7 @@ export default function InviteCodesPage() {
             />
           </Form.Item>
           <Form.Item name="maxUses" label="最大使用次数" rules={[{ required: true, message: '请输入最大使用次数' }]}>
-            <Input type="number" min={1} />
+            <InputNumber min={1} precision={0} style={{ width: '100%' }} />
           </Form.Item>
           <Form.Item name="expiresAt" label="有效期（可选）">
             <Input placeholder="例如 2026-12-31T23:59:59.000Z" />

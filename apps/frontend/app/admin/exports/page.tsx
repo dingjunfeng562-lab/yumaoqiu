@@ -42,6 +42,12 @@ function fileNameFromDisposition(disposition: string | null, fallback: string) {
   return normal ?? fallback;
 }
 
+function exportFallbackName(tournament: Tournament | null, kind: string) {
+  const safeName = (tournament?.name ?? '赛事').trim().replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, ' ');
+  const label = exportKinds.find((item) => item.key === kind)?.title ?? kind;
+  return `${safeName || '赛事'}-${dayjs().format('YYYYMMDD')}-${label}.xls`;
+}
+
 export default function AdminExportsPage() {
   const { data: session } = useSession();
   const token = session?.user?.accessToken;
@@ -70,7 +76,25 @@ export default function AdminExportsPage() {
   }
 
   useEffect(() => {
-    loadTournaments();
+    if (!token) return;
+    let cancelled = false;
+    Promise.resolve()
+      .then(() => {
+        if (!cancelled) setLoading(true);
+        return apiFetch<Tournament[]>('/tournaments', { token });
+      })
+      .then((data) => {
+        if (cancelled) return;
+        setTournaments(data);
+        setSelectedTournamentId((current) => current || data[0]?.id || '');
+      })
+      .catch((error) => message.error(error instanceof Error ? error.message : '加载赛事失败'))
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [token]);
 
   async function download(kind: string) {
@@ -88,7 +112,10 @@ export default function AdminExportsPage() {
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = fileNameFromDisposition(res.headers.get('content-disposition'), `${kind}.xls`);
+      link.download = fileNameFromDisposition(
+        res.headers.get('content-disposition'),
+        exportFallbackName(selectedTournament, kind),
+      );
       document.body.appendChild(link);
       link.click();
       link.remove();

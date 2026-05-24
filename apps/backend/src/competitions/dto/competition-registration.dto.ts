@@ -13,6 +13,10 @@ export class CompetitionRegistrationEventItemDto {
   @IsOptional()
   @IsString()
   partnerStudentId?: string;
+
+  @IsOptional()
+  @IsString()
+  teamName?: string;
 }
 
 export class SubmitCompetitionRegistrationDto {

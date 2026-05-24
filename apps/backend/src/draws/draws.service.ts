@@ -7,6 +7,7 @@ import {
 import {
   DrawFormat,
   DrawOperationType,
+  DrawSlotSourceType,
   DrawStatus,
   Format,
   MatchStatus,
@@ -237,14 +238,17 @@ export class DrawsService {
     });
   }
 
-  async generateDraw(eventId: string, dto: GenerateDrawDto) {
+  async generateDraw(
+    eventId: string,
+    dto: GenerateDrawDto,
+    operatorId: string,
+    operatorName: string | null,
+  ) {
     const event = await this.ensureEvent(eventId);
     if (event.drawLocked && !dto.force) {
       throw new ConflictException('抽签结果已冻结，如需覆盖请使用重新抽签');
     }
 
-    const operatorId = 'system';
-    const operatorName = 'system';
     return this.executeDraw(eventId, operatorId, operatorName, dto.force ?? false);
   }
 
@@ -306,7 +310,7 @@ export class DrawsService {
           version: (latest?.version ?? 0) + 1,
           isCurrent: true,
           format,
-          status: DrawStatus.FROZEN,
+          status: DrawStatus.DRAWN,
           bracketSize,
           entrantCount: registrations.length,
           seedLimit,
@@ -315,7 +319,6 @@ export class DrawsService {
           groupCount: event.groupSize ?? null,
           qualifyPerGroup: event.qualifiersPerGroup ?? null,
           executedAt: new Date(),
-          frozenAt: new Date(),
           createdBy: operatorId,
           updatedBy: operatorId,
         },
@@ -404,7 +407,7 @@ export class DrawsService {
 
       await tx.event.update({
         where: { id: eventId },
-        data: { drawLocked: true, drawGeneratedAt: new Date() },
+        data: { drawLocked: true, drawPublished: false, drawGeneratedAt: new Date() },
       });
 
       await this.drawLogService.create(tx, {
@@ -445,6 +448,24 @@ export class DrawsService {
       const draw = await tx.drawBracket.findUnique({
         where: { id: drawId },
       });
+      const originalDrawStatus = draw?.status;
+      if (draw && draw.status !== DrawStatus.DRAWN) {
+        const event = await tx.event.findUnique({
+          where: { id: eventId },
+          select: { drawPublished: true },
+        });
+        const lockedMatches = await tx.match.count({
+          where: this.lockedPlayableMatchWhere(eventId),
+        });
+        if (draw.status !== DrawStatus.FROZEN || event?.drawPublished || lockedMatches > 0) {
+          throw new ConflictException('褰撳墠绛捐〃涓嶅彲璋冩暣');
+        }
+        await tx.drawBracket.update({
+          where: { id: drawId },
+          data: { status: DrawStatus.DRAWN, frozenAt: null, updatedBy: operatorId },
+        });
+        draw.status = DrawStatus.DRAWN;
+      }
       if (!draw || draw.eventItemId !== eventId) throw new NotFoundException('签表不存在');
       if (draw.status !== DrawStatus.DRAWN) throw new ConflictException('当前签表不可调整');
       if (draw.format !== DrawFormat.single_elim) {
@@ -466,7 +487,7 @@ export class DrawsService {
           seedNoSnapshot: slotB.seedNoSnapshot,
           isSeed: slotB.isSeed,
           isBye: slotB.isBye,
-          sourceType: 'MANUAL_SWAP',
+          sourceType: DrawSlotSourceType.MANUAL_SWAP,
           groupRankCode: slotB.groupRankCode,
         },
       });
@@ -479,7 +500,7 @@ export class DrawsService {
           seedNoSnapshot: slotA.seedNoSnapshot,
           isSeed: slotA.isSeed,
           isBye: slotA.isBye,
-          sourceType: 'MANUAL_SWAP',
+          sourceType: DrawSlotSourceType.MANUAL_SWAP,
           groupRankCode: slotA.groupRankCode,
         },
       });
@@ -498,7 +519,16 @@ export class DrawsService {
         operatorNameSnapshot: operatorName,
         positionA,
         positionB,
-        beforeData: { slotA, slotB } as Prisma.InputJsonValue,
+        beforeData: {
+          slotA: this.drawSlotLogSnapshot(slotA),
+          slotB: this.drawSlotLogSnapshot(slotB),
+          status: originalDrawStatus ?? draw.status,
+        } as Prisma.InputJsonValue,
+        afterData: {
+          status: DrawStatus.DRAWN,
+          slotA: this.drawSlotLogSnapshot(refreshedSlots[positionA - 1]),
+          slotB: this.drawSlotLogSnapshot(refreshedSlots[positionB - 1]),
+        } as Prisma.InputJsonValue,
       });
 
       return tx.drawBracket.findUniqueOrThrow({
@@ -560,10 +590,7 @@ export class DrawsService {
     if (draw.status !== DrawStatus.FROZEN) throw new ConflictException('当前签表尚未冻结');
 
     const lockedMatches = await this.prisma.match.count({
-      where: {
-        eventId,
-        status: { in: [MatchStatus.LIVE, MatchStatus.COMPLETED] },
-      },
+      where: this.lockedPlayableMatchWhere(eventId),
     });
     if (lockedMatches > 0) {
       throw new ConflictException('已有进行中或已结束比赛，暂不允许解冻签表');
@@ -596,6 +623,87 @@ export class DrawsService {
       });
 
       return unfrozen;
+    });
+  }
+
+  async publishDraw(
+    eventId: string,
+    drawId: string,
+    operatorId: string,
+    operatorName: string | null,
+  ) {
+    if (!operatorId) throw new BadRequestException('缺少操作人信息');
+    const draw = await this.prisma.drawBracket.findUnique({ where: { id: drawId } });
+    if (!draw || draw.eventItemId !== eventId) throw new NotFoundException('签表不存在');
+    if (draw.status !== DrawStatus.DRAWN) throw new ConflictException('只有已抽签状态才能发布');
+
+    return this.prisma.$transaction(async (tx) => {
+      const published = await tx.drawBracket.update({
+        where: { id: drawId },
+        data: { status: DrawStatus.FROZEN, frozenAt: new Date(), updatedBy: operatorId },
+      });
+
+      await tx.event.update({
+        where: { id: eventId },
+        data: { drawPublished: true, drawLocked: true },
+      });
+
+      await this.drawLogService.create(tx, {
+        eventItemId: eventId,
+        drawBracketId: drawId,
+        operationType: DrawOperationType.FREEZE,
+        operatorId,
+        operatorNameSnapshot: operatorName,
+        beforeData: { status: draw.status } as Prisma.InputJsonValue,
+        afterData: { status: DrawStatus.FROZEN, drawPublished: true } as Prisma.InputJsonValue,
+        remark: 'PUBLISH',
+      });
+
+      return published;
+    });
+  }
+
+  async unpublishDraw(
+    eventId: string,
+    drawId: string,
+    operatorId: string,
+    operatorName: string | null,
+  ) {
+    if (!operatorId) throw new BadRequestException('缺少操作人信息');
+    const draw = await this.prisma.drawBracket.findUnique({ where: { id: drawId } });
+    if (!draw || draw.eventItemId !== eventId) throw new NotFoundException('签表不存在');
+    if (draw.status !== DrawStatus.FROZEN) throw new ConflictException('只有已发布状态才能取消发布');
+
+    const lockedMatches = await this.prisma.match.count({
+      where: this.lockedPlayableMatchWhere(eventId),
+    });
+    if (lockedMatches > 0) {
+      throw new ConflictException('已有进行中或已结束的比赛，暂不允许取消发布');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const unpublished = await tx.drawBracket.update({
+        where: { id: drawId },
+        data: { status: DrawStatus.DRAWN, frozenAt: null, updatedBy: operatorId },
+      });
+
+      await tx.event.update({
+        where: { id: eventId },
+        data: { drawPublished: false },
+      });
+
+      await this.drawLogService.create(tx, {
+        eventItemId: eventId,
+        drawBracketId: drawId,
+        operationType: DrawOperationType.FREEZE,
+        operatorId,
+        operatorNameSnapshot: operatorName,
+        beforeData: { status: draw.status } as Prisma.InputJsonValue,
+        afterData: { status: DrawStatus.DRAWN, drawPublished: false } as Prisma.InputJsonValue,
+        remark: 'UNPUBLISH',
+      });
+
+      return unpublished;
     });
   }
 
@@ -812,6 +920,7 @@ export class DrawsService {
     await tx.match.deleteMany({ where: { eventId } });
     await tx.registration.updateMany({ where: { eventId }, data: { groupName: null } });
 
+    const entrantCount = slots.filter((slot) => !slot.isBye && slot.entrantId).length;
     const slotEntries = slots.map((slot) => ({
       entrantId: slot.isBye ? null : slot.entrantId,
       isPendingWinner: false,
@@ -849,6 +958,19 @@ export class DrawsService {
       }
       currentSlots = nextSlots;
       roundNo += 1;
+    }
+
+    const finalRoundNo = roundNo - 1;
+    if (entrantCount >= 4 && finalRoundNo > 1) {
+      drafts.push({
+        round: 'BRONZE',
+        roundNo: finalRoundNo,
+        matchNo: 2,
+        side1Id: null,
+        side2Id: null,
+        status: MatchStatus.PENDING,
+        winnerSide: null,
+      });
     }
 
     await this.createMatchDrafts(tx, eventId, drafts);
@@ -924,5 +1046,41 @@ export class DrawsService {
         : maybeRegistration.player1.name;
     }
     return registration.name ?? registration.id;
+  }
+
+  private lockedPlayableMatchWhere(eventId: string): Prisma.MatchWhereInput {
+    return {
+      eventId,
+      OR: [
+        { status: MatchStatus.LIVE },
+        {
+          status: MatchStatus.COMPLETED,
+          side1Id: { not: null },
+          side2Id: { not: null },
+        },
+      ],
+    };
+  }
+
+  private drawSlotLogSnapshot(slot: {
+    position: number;
+    entrantId: string | null;
+    entrantNameSnapshot: string | null;
+    seedNoSnapshot: number | null;
+    isSeed: boolean;
+    isBye: boolean;
+    sourceType: DrawSlotSourceType;
+    groupRankCode: string | null;
+  }) {
+    return {
+      position: slot.position,
+      entrantId: slot.entrantId,
+      entrantNameSnapshot: slot.entrantNameSnapshot,
+      seedNoSnapshot: slot.seedNoSnapshot,
+      isSeed: slot.isSeed,
+      isBye: slot.isBye,
+      sourceType: slot.sourceType,
+      groupRankCode: slot.groupRankCode,
+    };
   }
 }

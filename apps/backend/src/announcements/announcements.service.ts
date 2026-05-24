@@ -55,19 +55,8 @@ export class AnnouncementsService {
   }
 
   async findPublished(limit?: number) {
-    const now = new Date();
     const announcements = await this.prisma.announcement.findMany({
-      where: {
-        isPublished: true,
-        AND: [
-          {
-            OR: [{ publishedAt: null }, { publishedAt: { lte: now } }],
-          },
-          {
-            OR: [{ expiresAt: null }, { expiresAt: { gte: now } }],
-          },
-        ],
-      },
+      where: this.activeAnnouncementWhere(),
       orderBy: [
         { isPinned: 'desc' },
         { sortOrder: 'desc' },
@@ -78,6 +67,23 @@ export class AnnouncementsService {
     });
 
     return announcements.map((announcement) => this.toPublicAnnouncement(announcement));
+  }
+
+  async findActivePopup() {
+    const announcement = await this.prisma.announcement.findFirst({
+      where: {
+        ...this.activeAnnouncementWhere(),
+        showAsPopup: true,
+      },
+      orderBy: [
+        { isPinned: 'desc' },
+        { sortOrder: 'desc' },
+        { publishedAt: 'desc' },
+        { updatedAt: 'desc' },
+      ],
+    });
+
+    return announcement ? this.toPublicAnnouncement(announcement) : null;
   }
 
   private toAnnouncementData(dto: CreateAnnouncementDto | UpdateAnnouncementDto) {
@@ -91,6 +97,21 @@ export class AnnouncementsService {
     return data;
   }
 
+  private activeAnnouncementWhere(): Prisma.AnnouncementWhereInput {
+    const now = new Date();
+    return {
+      isPublished: true,
+      AND: [
+        {
+          OR: [{ publishedAt: null }, { publishedAt: { lte: now } }],
+        },
+        {
+          OR: [{ expiresAt: null }, { expiresAt: { gte: now } }],
+        },
+      ],
+    };
+  }
+
   private toPublicAnnouncement(announcement: Announcement) {
     return {
       id: announcement.id,
@@ -100,6 +121,7 @@ export class AnnouncementsService {
       text: announcement.title,
       date: announcement.type,
       isPinned: announcement.isPinned,
+      showAsPopup: announcement.showAsPopup,
       publishedAt: (announcement.publishedAt ?? announcement.createdAt).toISOString(),
       expiresAt: announcement.expiresAt?.toISOString() ?? null,
       createdAt: announcement.createdAt.toISOString(),

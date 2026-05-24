@@ -1,8 +1,9 @@
 import { Injectable } from '@nestjs/common';
-import { MatchStatus, RegistrationStatus, TournamentStatus } from '@prisma/client';
+import { Format, MatchStatus, RegistrationStatus, TournamentStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TeamCompetitionsService } from '../team-competitions/team-competitions.service';
 import { AnnouncementsService } from '../announcements/announcements.service';
+import { effectiveTournamentStatus } from '../tournaments/tournament-status';
 
 const EVENT_TYPE_LABELS: Record<string, string> = {
   MENS_SINGLES: '男子单打',
@@ -34,13 +35,7 @@ function deriveTournamentDisplayStatus(tournament: {
   registrationStartDate: Date | null;
   registrationEndDate: Date | null;
 }): '报名中' | '即将开始' | '进行中' | '已结束' {
-  const now = new Date();
-  if (tournament.status === 'FINISHED' || tournament.endDate < now) return '已结束';
-  if (tournament.status === 'ONGOING' || tournament.startDate <= now) return '进行中';
-  if (tournament.registrationStartDate && tournament.registrationStartDate > now) return '即将开始';
-  if (tournament.registrationEndDate && tournament.registrationEndDate < now) return '即将开始';
-  if (tournament.registrationStartDate || tournament.registrationEndDate) return '报名中';
-  return TOURNAMENT_STATUS_LABELS[tournament.status];
+  return TOURNAMENT_STATUS_LABELS[effectiveTournamentStatus(tournament)];
 }
 
 const FORMAT_LABELS: Record<string, string> = {
@@ -57,6 +52,11 @@ type StandingRow = {
   wins: number;
   losses: number;
   gameDiff: number;
+};
+
+type RankedStandingRow = StandingRow & {
+  rank: number;
+  displayName: string;
 };
 
 @Injectable()
@@ -419,6 +419,12 @@ export class PublicService {
     };
   }
 
+  async getAnnouncementPopup() {
+    return {
+      announcement: await this.announcementsService.findActivePopup(),
+    };
+  }
+
   async getBrackets() {
     const events = await this.prisma.event.findMany({
       where: {
@@ -427,6 +433,7 @@ export class PublicService {
           isArchived: false,
           approvalStatus: 'APPROVED',
         },
+        drawPublished: true,
         matches: { some: { roundNo: { gt: 0 } } },
       },
       include: {
@@ -455,9 +462,10 @@ export class PublicService {
   }
 
   async getHistory() {
+    const now = new Date();
     const tournaments = await this.prisma.tournament.findMany({
       where: {
-        OR: [{ isArchived: true }, { status: TournamentStatus.FINISHED }],
+        OR: [{ isArchived: true }, { status: TournamentStatus.FINISHED }, { endDate: { lte: now } }],
       },
       include: {
         events: {
@@ -502,6 +510,7 @@ export class PublicService {
             id: event.id,
             type: event.type,
             typeLabel: EVENT_TYPE_LABELS[event.type] ?? event.type,
+            format: event.format,
             registrations: event.registrations.map((registration) => ({
               id: registration.id,
               name: this.registrationName(registration),
@@ -545,6 +554,77 @@ export class PublicService {
     };
   }
 
+  async getRanking() {
+    const tournaments = await this.prisma.tournament.findMany({
+      where: {
+        isPublished: true,
+        approvalStatus: 'APPROVED',
+      },
+      include: {
+        events: {
+          include: {
+            registrations: {
+              where: { status: RegistrationStatus.APPROVED },
+              include: { player1: true, player2: true },
+              orderBy: [{ groupName: 'asc' }, { isSeed: 'desc' }, { seedRank: 'asc' }],
+            },
+            matches: {
+              include: {
+                games: { orderBy: { gameNo: 'asc' } },
+              },
+              orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }],
+            },
+          },
+          orderBy: { type: 'asc' },
+        },
+      },
+      orderBy: [{ startDate: 'desc' }, { edition: 'desc' }],
+    });
+
+    return {
+      tournaments: tournaments.map((tournament) => {
+        const events = tournament.events.map((event) => {
+          const registrationMap = new Map(
+            event.registrations.map((registration) => [registration.id, registration]),
+          );
+          const standings = this.eventStandings(event, registrationMap);
+          const completedMatches = event.matches.filter((match) => match.status === MatchStatus.COMPLETED);
+
+          return {
+            id: event.id,
+            type: event.type,
+            typeLabel: EVENT_TYPE_LABELS[event.type] ?? event.type,
+            format: event.format,
+            registrations: event.registrations.length,
+            matches: event.matches.length,
+            completedMatches: completedMatches.length,
+            standings,
+          };
+        });
+
+        return {
+          id: tournament.id,
+          name: tournament.name,
+          edition: tournament.edition,
+          subtitle: tournament.subtitle,
+          location: tournament.location,
+          startDate: tournament.startDate.toISOString(),
+          endDate: tournament.endDate.toISOString(),
+          status: tournament.status,
+          statusLabel: deriveTournamentDisplayStatus(tournament),
+          stats: {
+            events: events.length,
+            registrations: events.reduce((sum, event) => sum + event.registrations, 0),
+            matches: events.reduce((sum, event) => sum + event.matches, 0),
+            completedMatches: events.reduce((sum, event) => sum + event.completedMatches, 0),
+          },
+          events,
+        };
+      }),
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
   private sideName(id: string | null, map: Map<string, any>) {
     if (!id) return '待定';
     const registration = map.get(id);
@@ -569,13 +649,19 @@ export class PublicService {
           this.bracketParticipant(match.side1Id, index * 2 + 1, registrationMap),
           this.bracketParticipant(match.side2Id, index * 2 + 2, registrationMap),
         ])
-      : event.registrations.map((registration: any, index: number) => ({
-          id: registration.id,
-          position: index + 1,
-          name: this.registrationName(registration),
-          seed: registration.seedRank,
-          isBye: false,
-        }));
+      : event.registrations.map((registration: any, index: number) => {
+          const teamName = registration.teamName?.trim() || null;
+          const members = [registration.player1?.name, registration.player2?.name].filter(Boolean) as string[];
+          return {
+            id: registration.id,
+            position: index + 1,
+            name: teamName || this.registrationName(registration),
+            teamName,
+            members,
+            seed: registration.seedRank,
+            isBye: false,
+          };
+        });
 
     return {
       id: event.id,
@@ -587,7 +673,7 @@ export class PublicService {
       matches: event.matches.map((match: any) => ({
         id: match.id,
         roundNo: match.roundNo,
-        roundLabel: match.round,
+        roundLabel: this.publicRoundLabel(match.round),
         matchNo: match.matchNo,
         status: match.status,
         side1Id: match.side1Id,
@@ -613,6 +699,19 @@ export class PublicService {
     };
   }
 
+  private publicRoundLabel(round: string) {
+    const labels: Record<string, string> = {
+      F: '决赛',
+      SF: '半决赛',
+      QF: '1/4 决赛',
+      R1: '1/8 决赛',
+      R2: '1/16 决赛',
+      R3: '1/32 决赛',
+      BRONZE: '季军赛',
+    };
+    return labels[round] ?? round;
+  }
+
   private bracketParticipant(
     registrationId: string | null,
     position: number,
@@ -627,10 +726,19 @@ export class PublicService {
       };
     }
     const registration = registrationMap.get(registrationId);
+    const teamName = registration?.teamName?.trim() || null;
+    const members = registration
+      ? ([registration.player1?.name, registration.player2?.name].filter(Boolean) as string[])
+      : [];
+    const displayName = registration
+      ? teamName || this.registrationName(registration)
+      : '待定';
     return {
       id: registrationId,
       position,
-      name: registration ? this.registrationName(registration) : '待定',
+      name: displayName,
+      teamName,
+      members,
       seed: registration?.seedRank ?? null,
       isBye: false,
     };
@@ -687,6 +795,13 @@ export class PublicService {
   }
 
   private eventStandings(event: any, registrationMap: Map<string, any>) {
+    if (event.format === Format.SINGLE_ELIMINATION) {
+      return this.singleEliminationStandings(event, registrationMap);
+    }
+    return this.groupStageStandings(event, registrationMap);
+  }
+
+  private baseStandingRows(event: any) {
     const rows: StandingRow[] = event.registrations.map((registration: any) => ({
       id: registration.id,
       name: this.registrationName(registration),
@@ -699,9 +814,14 @@ export class PublicService {
       losses: 0,
       gameDiff: 0,
     }));
+    return rows;
+  }
+
+  private groupStageStandings(event: any, registrationMap: Map<string, any>) {
+    const rows = this.baseStandingRows(event);
     const rowMap = new Map<string, StandingRow>(rows.map((row) => [row.id, row]));
 
-    for (const match of event.matches) {
+    for (const match of event.matches.filter((item: any) => item.roundNo === 0)) {
       if (match.status !== MatchStatus.COMPLETED || !match.winnerSide) continue;
       const side1 = match.side1Id ? rowMap.get(match.side1Id) : null;
       const side2 = match.side2Id ? rowMap.get(match.side2Id) : null;
@@ -729,6 +849,81 @@ export class PublicService {
         ...row,
         displayName: registrationMap.has(row.id) ? row.name : row.name,
       }));
+  }
+
+  private singleEliminationStandings(event: any, registrationMap: Map<string, any>): RankedStandingRow[] {
+    const rows = this.baseStandingRows(event);
+    const rowMap = new Map<string, StandingRow>(rows.map((row) => [row.id, row]));
+    const rankMap = new Map<string, number>();
+    const eliminatedRound = new Map<string, number>();
+
+    for (const match of event.matches) {
+      if (match.status !== MatchStatus.COMPLETED || !match.winnerSide) continue;
+      const side1 = match.side1Id ? rowMap.get(match.side1Id) : null;
+      const side2 = match.side2Id ? rowMap.get(match.side2Id) : null;
+      if (!side1 || !side2) continue;
+
+      side1.played += 1;
+      side2.played += 1;
+      if (match.winnerSide === 1) {
+        side1.wins += 1;
+        side2.losses += 1;
+        eliminatedRound.set(side2.id, match.roundNo);
+      } else {
+        side2.wins += 1;
+        side1.losses += 1;
+        eliminatedRound.set(side1.id, match.roundNo);
+      }
+      for (const game of match.games ?? []) {
+        side1.gameDiff += game.side1Score - game.side2Score;
+        side2.gameDiff += game.side2Score - game.side1Score;
+      }
+    }
+
+    const finalMatch = event.matches.find(
+      (match: any) => match.round === 'F' && match.status === MatchStatus.COMPLETED && match.winnerSide,
+    );
+    if (finalMatch) {
+      const championId = finalMatch.winnerSide === 1 ? finalMatch.side1Id : finalMatch.side2Id;
+      const runnerUpId = finalMatch.winnerSide === 1 ? finalMatch.side2Id : finalMatch.side1Id;
+      if (championId) rankMap.set(championId, 1);
+      if (runnerUpId) rankMap.set(runnerUpId, 2);
+    }
+
+    const bronzeMatch = event.matches.find(
+      (match: any) => match.round === 'BRONZE' && match.status === MatchStatus.COMPLETED && match.winnerSide,
+    );
+    if (bronzeMatch) {
+      const thirdId = bronzeMatch.winnerSide === 1 ? bronzeMatch.side1Id : bronzeMatch.side2Id;
+      const fourthId = bronzeMatch.winnerSide === 1 ? bronzeMatch.side2Id : bronzeMatch.side1Id;
+      if (thirdId) rankMap.set(thirdId, 3);
+      if (fourthId) rankMap.set(fourthId, 4);
+    }
+
+    const ranked = rows
+      .sort((a, b) => {
+        const rankA = rankMap.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+        const rankB = rankMap.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+        return (
+          rankA - rankB ||
+          (eliminatedRound.get(b.id) ?? 0) - (eliminatedRound.get(a.id) ?? 0) ||
+          b.wins - a.wins ||
+          a.losses - b.losses ||
+          a.name.localeCompare(b.name, 'zh-CN')
+        );
+      });
+
+    const fixedRanks = [...rankMap.values()];
+    let fallbackRank = fixedRanks.length ? Math.max(...fixedRanks) + 1 : 1;
+    return ranked.map((row) => {
+      const fixedRank = rankMap.get(row.id);
+      const rank = fixedRank ?? fallbackRank++;
+      return {
+        rank,
+        ...row,
+        displayName: registrationMap.has(row.id) ? row.name : row.name,
+      };
+    });
   }
 
   private projectLabels(tournament: {

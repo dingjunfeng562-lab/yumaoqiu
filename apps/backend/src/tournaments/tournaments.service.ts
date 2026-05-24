@@ -13,9 +13,11 @@ import {
   ScoringMode,
   ScoringRule,
   TournamentApprovalStatus,
+  TournamentStatus,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateTournamentDto, UpdateTournamentDto } from './dto/tournament.dto';
+import { effectiveTournamentStatus } from './tournament-status';
 
 export type AuthUser = {
   id: string;
@@ -75,10 +77,11 @@ export class TournamentsService {
       await this.syncVenues(tx, tournament.id, dto.venueNames);
       await this.syncTeamCompetition(tx, tournament.id, dto);
 
-      return tx.tournament.findUniqueOrThrow({
+      const created = await tx.tournament.findUniqueOrThrow({
         where: { id: tournament.id },
         include: this.detailInclude(),
       });
+      return this.withEffectiveStatus(created);
     });
   }
 
@@ -122,11 +125,12 @@ export class TournamentsService {
     });
   }
 
-  findAll() {
-    return this.prisma.tournament.findMany({
+  async findAll() {
+    const tournaments = await this.prisma.tournament.findMany({
       include: this.listInclude(),
       orderBy: [{ edition: 'desc' }],
     });
+    return tournaments.map((tournament) => this.withEffectiveStatus(tournament));
   }
 
   async findOne(id: string) {
@@ -135,10 +139,14 @@ export class TournamentsService {
       include: this.detailInclude(),
     });
     if (!tournament) throw new NotFoundException(`赛事 ${id} 不存在`);
-    return tournament;
+    return this.withEffectiveStatus(tournament);
   }
 
-  async update(id: string, dto: UpdateTournamentDto) {
+  async update(id: string, dto: UpdateTournamentDto, user?: AuthUser) {
+    if (dto.status !== undefined && !isSuperAdmin(user)) {
+      throw new ForbiddenException('仅总管理员可修改赛事状态');
+    }
+
     const current = await this.findOne(id);
     this.validateTournamentInput(dto, current);
 
@@ -171,10 +179,11 @@ export class TournamentsService {
         await this.syncTeamCompetition(tx, id, dto);
       }
 
-      return tx.tournament.findUniqueOrThrow({
+      const updated = await tx.tournament.findUniqueOrThrow({
         where: { id },
         include: this.detailInclude(),
       });
+      return this.withEffectiveStatus(updated);
     });
   }
 
@@ -421,6 +430,19 @@ export class TournamentsService {
 
   private ensureUnique<T>(items: T[], message: string) {
     if (new Set(items).size !== items.length) throw new BadRequestException(message);
+  }
+
+  private withEffectiveStatus<T extends {
+    status: TournamentStatus;
+    registrationStartDate: Date | null;
+    registrationEndDate: Date | null;
+    startDate: Date;
+    endDate: Date;
+  }>(tournament: T): T {
+    return {
+      ...tournament,
+      status: effectiveTournamentStatus(tournament),
+    };
   }
 
   private listInclude() {

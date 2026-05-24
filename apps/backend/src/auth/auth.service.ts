@@ -7,7 +7,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { Role, UserStatus } from '@prisma/client';
+import { Prisma, Role, UserStatus } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
@@ -70,35 +70,53 @@ export class AuthService {
     }
 
     const passwordHash = await bcrypt.hash(dto.password, 10);
-    const user = await this.prisma.$transaction(async (tx) => {
-      const freshInviteCode = await tx.inviteCode.findUnique({
-        where: { id: inviteCode.id },
+
+    try {
+      const user = await this.prisma.$transaction(async (tx) => {
+        const updatedInviteCode = await tx.inviteCode.updateMany({
+          where: {
+            id: inviteCode.id,
+            isEnabled: true,
+            OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+            usedUses: { lt: inviteCode.maxUses },
+          },
+          data: { usedUses: { increment: 1 } },
+        });
+
+        if (updatedInviteCode.count !== 1) {
+          throw new ConflictException('邀请码已用尽');
+        }
+
+        return tx.user.create({
+          data: {
+            username,
+            email,
+            passwordHash,
+            role: inviteCode.role,
+            inviteCodeId: inviteCode.id,
+          },
+        });
       });
-      if (!freshInviteCode) {
-        throw new BadRequestException('邀请码无效');
+
+      return {
+        message: '注册成功',
+        user: this.serializeUser(user),
+      };
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002' &&
+        Array.isArray(error.meta?.target)
+      ) {
+        if (error.meta.target.includes('username')) {
+          throw new ConflictException('用户名已被占用');
+        }
+        if (error.meta.target.includes('email')) {
+          throw new ConflictException('邮箱已被占用');
+        }
       }
-      this.ensureInviteCodeUsable(freshInviteCode);
-
-      const created = await tx.user.create({
-        data: {
-          username,
-          email,
-          passwordHash,
-          role: freshInviteCode.role,
-          inviteCodeId: freshInviteCode.id,
-        },
-      });
-      await tx.inviteCode.update({
-        where: { id: freshInviteCode.id },
-        data: { usedUses: { increment: 1 } },
-      });
-      return created;
-    });
-
-    return {
-      message: '注册成功',
-      user: this.serializeUser(user),
-    };
+      throw error;
+    }
   }
 
   async login(dto: LoginDto) {

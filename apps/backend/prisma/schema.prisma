@@ -164,6 +164,7 @@ model Announcement {
   type        String    @default("公告") @db.VarChar(24)
   isPublished Boolean   @default(false)
   isPinned    Boolean   @default(false)
+  showAsPopup Boolean   @default(false)
   sortOrder   Int       @default(0)
   publishedAt DateTime?
   expiresAt   DateTime?
@@ -247,6 +248,7 @@ model Event {
   groupSize          Int?
   qualifiersPerGroup Int?
   drawLocked         Boolean            @default(false)
+  drawPublished      Boolean            @default(false)
   drawGeneratedAt    DateTime?
   registrations      Registration[]
   competitionRegistrationItems CompetitionRegistrationEventItem[]
@@ -269,6 +271,7 @@ model Registration {
   player2Id        String?
   player2          Player?            @relation("registrationPlayer2", fields: [player2Id], references: [id])
   name             String?
+  teamName         String?            @db.VarChar(120)
   studentId        String?
   className        String?
   phone            String?
@@ -331,6 +334,7 @@ model CompetitionRegistrationEventItem {
   event                      Event                   @relation(fields: [eventId], references: [id], onDelete: Cascade)
   partnerName                String?
   partnerStudentId           String?
+  teamName                   String?                 @db.VarChar(120)
   createdAt                  DateTime                @default(now())
 
   @@unique([competitionRegistrationId, eventId])

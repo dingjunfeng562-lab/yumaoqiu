@@ -31,6 +31,7 @@ type Announcement = {
   type: string;
   isPublished: boolean;
   isPinned: boolean;
+  showAsPopup: boolean;
   sortOrder: number;
   publishedAt?: string | null;
   expiresAt?: string | null;
@@ -44,6 +45,7 @@ type AnnouncementFormValues = {
   type?: string;
   isPublished?: boolean;
   isPinned?: boolean;
+  showAsPopup?: boolean;
   sortOrder?: number;
   publishedAt?: Dayjs | null;
   expiresAt?: Dayjs | null;
@@ -97,6 +99,7 @@ export default function AdminAnnouncementsPage() {
       type: '公告',
       isPublished: true,
       isPinned: false,
+      showAsPopup: false,
       sortOrder: 0,
       publishedAt: dayjs(),
     });
@@ -111,6 +114,7 @@ export default function AdminAnnouncementsPage() {
       type: record.type,
       isPublished: record.isPublished,
       isPinned: record.isPinned,
+      showAsPopup: record.showAsPopup,
       sortOrder: record.sortOrder,
       publishedAt: record.publishedAt ? dayjs(record.publishedAt) : undefined,
       expiresAt: record.expiresAt ? dayjs(record.expiresAt) : undefined,
@@ -126,6 +130,7 @@ export default function AdminAnnouncementsPage() {
       type: values.type?.trim() || '公告',
       isPublished: Boolean(values.isPublished),
       isPinned: Boolean(values.isPinned),
+      showAsPopup: Boolean(values.showAsPopup),
       sortOrder: Number(values.sortOrder ?? 0),
       publishedAt: serializeDate(values.publishedAt),
       expiresAt: serializeDate(values.expiresAt),
@@ -216,6 +221,7 @@ export default function AdminAnnouncementsPage() {
             {record.isPublished ? '已发布' : '草稿'}
           </Tag>
           {record.isPinned ? <Tag color="gold">置顶</Tag> : null}
+          {record.showAsPopup ? <Tag color="magenta">全站弹窗</Tag> : null}
           {isExpired(record.expiresAt) ? <Tag color="red">已过期</Tag> : null}
         </Space>
       ),
@@ -324,6 +330,9 @@ export default function AdminAnnouncementsPage() {
             </Form.Item>
             <Form.Item name="isPinned" label="置顶" valuePropName="checked">
               <Switch checkedChildren="置顶" unCheckedChildren="普通" />
+            </Form.Item>
+            <Form.Item name="showAsPopup" label="全站弹窗" valuePropName="checked">
+              <Switch checkedChildren="弹窗" unCheckedChildren="关闭" />
             </Form.Item>
           </Space>
           <Form.Item name="publishedAt" label="发布时间">

@@ -84,8 +84,8 @@ export class TournamentsController {
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateTournamentDto) {
-    return this.tournamentsService.update(id, dto);
+  update(@Param('id') id: string, @Body() dto: UpdateTournamentDto, @Req() req: AuthedRequest) {
+    return this.tournamentsService.update(id, dto, req.user);
   }
 
   @Patch(':id/archive')

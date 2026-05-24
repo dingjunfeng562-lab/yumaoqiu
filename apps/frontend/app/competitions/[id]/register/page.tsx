@@ -58,6 +58,7 @@ type ExistingRegistration = {
     eventName: string;
     partnerName?: string | null;
     partnerStudentId?: string | null;
+    teamName?: string | null;
   }>;
 };
 
@@ -65,6 +66,7 @@ type ItemState = {
   eventId: string;
   partnerName: string;
   partnerStudentId: string;
+  teamName: string;
 };
 
 type FormState = {
@@ -84,7 +86,7 @@ const initialForm: FormState = {
   school: '',
   contact: '',
   remark: '',
-  items: [{ eventId: '', partnerName: '', partnerStudentId: '' }],
+  items: [{ eventId: '', partnerName: '', partnerStudentId: '', teamName: '' }],
 };
 
 async function parseJsonSafe<T>(res: Response): Promise<T | null> {
@@ -167,6 +169,7 @@ export default function CompetitionRegisterPage() {
                   eventId: item.eventId,
                   partnerName: item.partnerName ?? '',
                   partnerStudentId: item.partnerStudentId ?? '',
+                  teamName: item.teamName ?? '',
                 }))
               : initialForm.items,
           });
@@ -201,7 +204,7 @@ export default function CompetitionRegisterPage() {
   function addItem() {
     setForm((prev) => ({
       ...prev,
-      items: [...prev.items, { eventId: '', partnerName: '', partnerStudentId: '' }],
+      items: [...prev.items, { eventId: '', partnerName: '', partnerStudentId: '', teamName: '' }],
     }));
   }
 
@@ -230,6 +233,7 @@ export default function CompetitionRegisterPage() {
           eventId: item.eventId,
           partnerName: item.partnerName || undefined,
           partnerStudentId: item.partnerStudentId || undefined,
+          teamName: item.teamName || undefined,
         })),
       };
       const res = await fetch(`${API_BASE}/competitions/${id}/register`, {
@@ -357,7 +361,7 @@ export default function CompetitionRegisterPage() {
                         required
                         disabled={existingLocked}
                         value={item.eventId}
-                        onChange={(event) => updateItem(index, { eventId: event.target.value, partnerName: '', partnerStudentId: '' })}
+                        onChange={(event) => updateItem(index, { eventId: event.target.value, partnerName: '', partnerStudentId: '', teamName: '' })}
                       >
                         <option value="">请选择项目</option>
                         {eventOptions.map((option) => (
@@ -387,9 +391,19 @@ export default function CompetitionRegisterPage() {
                       isDouble ? (
                         <div className="md:col-span-2 rounded-lg border border-blue-200 bg-blue-50/60 p-3">
                           <p className="mb-3 text-sm font-black text-blue-800">
-                            双打项目 · 请填写搭档信息（共 2 人参赛）
+                            双打项目 · 请填写队伍名称与搭档信息（共 2 人参赛）
                           </p>
                           <div className="grid gap-4 md:grid-cols-2">
+                            <Field label="队伍名称" wide>
+                              <input
+                                required
+                                maxLength={60}
+                                disabled={existingLocked}
+                                value={item.teamName}
+                                onChange={(event) => updateItem(index, { teamName: event.target.value })}
+                                placeholder="例如：极速搭档、AOE 战队"
+                              />
+                            </Field>
                             <Field label="搭档姓名">
                               <input
                                 required

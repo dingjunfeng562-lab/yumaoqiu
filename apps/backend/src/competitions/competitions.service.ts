@@ -18,6 +18,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SubmitCompetitionRegistrationDto } from './dto/competition-registration.dto';
+import { effectiveTournamentStatus } from '../tournaments/tournament-status';
 
 const EVENT_TYPE_LABELS: Record<EventType, string> = {
   MENS_SINGLES: '男子单打',
@@ -179,7 +180,7 @@ export class CompetitionsService {
       if (!event) {
         throw new BadRequestException('存在无效的报名项目');
       }
-      this.ensurePartnerFields(event.type, item.partnerName, item.partnerStudentId);
+      this.ensurePartnerFields(event.type, item.partnerName, item.partnerStudentId, item.teamName);
     }
 
     const existing = await this.prisma.competitionRegistration.findUnique({
@@ -242,6 +243,7 @@ export class CompetitionsService {
                 eventId: item.eventId.trim(),
                 partnerName: item.partnerName?.trim() || null,
                 partnerStudentId: item.partnerStudentId?.trim() || null,
+                teamName: item.teamName?.trim() || null,
               })),
             },
           },
@@ -277,6 +279,7 @@ export class CompetitionsService {
               eventId: item.eventId.trim(),
               partnerName: item.partnerName?.trim() || null,
               partnerStudentId: item.partnerStudentId?.trim() || null,
+              teamName: item.teamName?.trim() || null,
             })),
           },
         },
@@ -387,7 +390,6 @@ export class CompetitionsService {
       data: {
         isArchived: false,
         isPublished: true,
-        status: TournamentStatus.REGISTRATION_OPEN,
       },
       include: {
         events: {
@@ -641,23 +643,14 @@ export class CompetitionsService {
   }
 
   private ensureRegistrationWindow(competition: CompetitionWithRelations) {
-    if (
-      competition.status === TournamentStatus.FINISHED ||
-      competition.status === TournamentStatus.ONGOING
-    ) {
+    const status = effectiveTournamentStatus(competition);
+    if (status === TournamentStatus.FINISHED || status === TournamentStatus.ONGOING) {
       throw new BadRequestException('赛事已开始或已结束，无法报名。');
     }
-    const now = new Date();
-    if (competition.endDate && competition.endDate < now) {
-      throw new BadRequestException('赛事已结束，无法报名。');
-    }
-    if (competition.startDate && competition.startDate <= now) {
-      throw new BadRequestException('赛事已开始，无法报名。');
-    }
-    if (competition.registrationStartDate && competition.registrationStartDate > now) {
+    if (status === TournamentStatus.REGISTRATION_NOT_STARTED) {
       throw new BadRequestException('报名尚未开始。');
     }
-    if (competition.registrationEndDate && competition.registrationEndDate < now) {
+    if (status === TournamentStatus.REGISTRATION_CLOSED) {
       throw new BadRequestException('报名已截止。');
     }
   }
@@ -745,6 +738,7 @@ export class CompetitionsService {
           player1Id: primaryPlayer.id,
           player2Id: secondaryPlayerId,
           name: secondaryPlayerId && item.partnerName ? `${registration.name} / ${item.partnerName}` : registration.name,
+          teamName: secondaryPlayerId ? item.teamName?.trim() || null : null,
           studentId: registration.studentId,
           className: schoolName,
           phone: registration.contact,
@@ -760,6 +754,7 @@ export class CompetitionsService {
   }
 
   private toCompetitionView(competition: CompetitionWithRelations, detailed = false) {
+    const status = effectiveTournamentStatus(competition);
     const approvedCount = competition.competitionRegistrations.filter(
       (item) => item.status === RegistrationStatus.APPROVED,
     ).length;
@@ -788,8 +783,9 @@ export class CompetitionsService {
       maxRegistrationEvents: competition.maxRegistrationEvents,
       allowCrossEventRegistration: competition.allowCrossEventRegistration,
       needsRegistrationReview: competition.needsRegistrationReview,
-      status: competition.status,
-      statusLabel: TOURNAMENT_STATUS_LABELS[competition.status],
+      status,
+      rawStatus: competition.status,
+      statusLabel: TOURNAMENT_STATUS_LABELS[status],
       registrationStatus: this.registrationStatusText(competition),
       registrationStartTime: competition.registrationStartDate?.toISOString() ?? null,
       registrationEndTime: competition.registrationEndDate?.toISOString() ?? null,
@@ -821,6 +817,7 @@ export class CompetitionsService {
         eventName: EVENT_TYPE_LABELS[item.event.type],
         partnerName: item.partnerName,
         partnerStudentId: item.partnerStudentId,
+        teamName: item.teamName,
       })),
       eventNames: registration.eventItems.map((item) => EVENT_TYPE_LABELS[item.event.type]),
       eventSummary: registration.eventItems.map((item) => EVENT_TYPE_LABELS[item.event.type]).join(' / '),
@@ -848,6 +845,7 @@ export class CompetitionsService {
       eventId: registration.eventId,
       email: registration.competitionRegistration?.user.email ?? '',
       name: registration.name ?? registration.player1.name,
+      teamName: registration.teamName ?? null,
       studentId: registration.studentId ?? '',
       school,
       className: registration.className ?? registration.player1.affiliation,
@@ -896,23 +894,12 @@ export class CompetitionsService {
   }
 
   private registrationStatusText(competition: CompetitionWithRelations) {
-    const now = new Date();
-    if (competition.status === TournamentStatus.FINISHED || competition.endDate < now) {
-      return '已结束';
-    }
-    if (competition.status === TournamentStatus.ONGOING || competition.startDate <= now) {
-      return '比赛进行中';
-    }
-    if (competition.registrationStartDate && competition.registrationStartDate > now) {
-      return '报名未开始';
-    }
-    if (competition.registrationEndDate && competition.registrationEndDate < now) {
-      return '报名已截止';
-    }
-    if (competition.registrationStartDate || competition.registrationEndDate) {
-      return '报名中';
-    }
-    return TOURNAMENT_STATUS_LABELS[competition.status];
+    const status = effectiveTournamentStatus(competition);
+    if (status === TournamentStatus.FINISHED) return '已结束';
+    if (status === TournamentStatus.ONGOING) return '比赛进行中';
+    if (status === TournamentStatus.REGISTRATION_NOT_STARTED) return '报名未开始';
+    if (status === TournamentStatus.REGISTRATION_CLOSED) return '报名已截止';
+    return '报名中';
   }
 
   private normalizeEventType(value: string): EventType {
@@ -957,12 +944,20 @@ export class CompetitionsService {
     );
   }
 
-  private ensurePartnerFields(eventType: EventType, partnerName?: string, partnerStudentId?: string) {
+  private ensurePartnerFields(
+    eventType: EventType,
+    partnerName?: string,
+    partnerStudentId?: string,
+    teamName?: string,
+  ) {
     if (!this.isDoubleEvent(eventType)) {
       return;
     }
     if (!partnerName?.trim() || !partnerStudentId?.trim()) {
       throw new BadRequestException('双打项目必须填写搭档姓名和学号');
+    }
+    if (!teamName?.trim()) {
+      throw new BadRequestException('双打项目必须填写队伍名称');
     }
   }
 

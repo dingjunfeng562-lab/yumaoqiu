@@ -18,6 +18,7 @@ type RegistrationItem = {
   eventName: string;
   partnerName?: string | null;
   partnerStudentId?: string | null;
+  teamName?: string | null;
 };
 
 type Registration = {
@@ -148,7 +149,9 @@ export default function AdminCompetitionRegistrationsPage() {
           {record.items.map((item) =>
             item.partnerName ? (
               <Typography.Text key={item.id} type="secondary">
-                {item.eventName}：搭档 {item.partnerName}（{item.partnerStudentId || '未填学号'}）
+                {item.eventName}
+                {item.teamName ? ` · 队伍：${item.teamName}` : ''}
+                ：搭档 {item.partnerName}（{item.partnerStudentId || '未填学号'}）
               </Typography.Text>
             ) : null,
           )}

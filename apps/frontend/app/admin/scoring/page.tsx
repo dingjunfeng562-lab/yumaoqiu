@@ -5,6 +5,7 @@ import { useSession } from 'next-auth/react';
 import { Button, Card, Empty, Select, Space, Table, Tag, Typography, message } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
+import { roundCn } from '@/lib/round';
 
 const EVENT_TYPE_LABELS: Record<string, string> = {
   MENS_SINGLES: '男子单打',
@@ -190,7 +191,7 @@ export default function AdminScoringPage() {
             loading={loading}
             pagination={false}
             columns={[
-              { title: '轮次', dataIndex: 'round' },
+              { title: '轮次', dataIndex: 'round', render: (value: string) => roundCn(value) },
               { title: '场次', dataIndex: 'matchNo', render: (value) => `第 ${value} 场` },
               { title: '对阵', render: (_, row: MatchItem) => `${sideName(row.side1)} VS ${sideName(row.side2)}` },
               {

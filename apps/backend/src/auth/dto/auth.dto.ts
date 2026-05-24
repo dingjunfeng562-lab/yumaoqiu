@@ -10,6 +10,7 @@ import {
   Min,
   MinLength,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 
 export const USERNAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]{3,19}$/;
 export const PASSWORD_PATTERN = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[^\s\u4e00-\u9fa5]{8,32}$/;
@@ -88,6 +89,7 @@ export class CreateInviteCodeDto {
   @IsIn(['ADMIN', 'REFEREE', 'PLAYER'])
   role: 'ADMIN' | 'REFEREE' | 'PLAYER';
 
+  @Type(() => Number)
   @IsInt()
   @Min(1)
   maxUses: number;

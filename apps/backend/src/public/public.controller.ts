@@ -30,6 +30,11 @@ export class PublicController {
     return this.publicService.getAnnouncements();
   }
 
+  @Get('announcements/popup')
+  getAnnouncementPopup() {
+    return this.publicService.getAnnouncementPopup();
+  }
+
   @Get('brackets')
   getBrackets() {
     return this.publicService.getBrackets();
@@ -38,5 +43,10 @@ export class PublicController {
   @Get('history')
   getHistory() {
     return this.publicService.getHistory();
+  }
+
+  @Get('ranking')
+  getRanking() {
+    return this.publicService.getRanking();
   }
 }

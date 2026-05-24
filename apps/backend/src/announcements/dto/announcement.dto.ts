@@ -33,6 +33,10 @@ export class CreateAnnouncementDto {
   isPinned?: boolean;
 
   @IsOptional()
+  @IsBoolean()
+  showAsPopup?: boolean;
+
+  @IsOptional()
   @IsInt()
   @Min(0)
   sortOrder?: number;
@@ -70,6 +74,10 @@ export class UpdateAnnouncementDto {
   @IsOptional()
   @IsBoolean()
   isPinned?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  showAsPopup?: boolean;
 
   @IsOptional()
   @IsInt()

@@ -1,239 +1,33 @@
 import Link from 'next/link';
-import { KnockoutBracket, type KnockoutBracketData } from '@/components/bracket/KnockoutBracket';
 import { PortalFeaturePage } from '@/components/home/PortalFeaturePage';
+import type { KnockoutBracketData } from '@/components/bracket/KnockoutBracket';
+import { getBracketList } from './data';
 
 export const dynamic = 'force-dynamic';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
-
-type TeamCompetition = {
-  id: string;
-  tournamentName: string;
-  tournamentEdition: number;
-  name: string;
-  winThreshold: number;
-  teams: Array<{ id: string; name: string; affiliation?: string | null }>;
-  items: Array<{ id: string; eventTypeLabel: string }>;
-  teamMatches: Array<{
-    id: string;
-    round: string;
-    roundNo: number;
-    matchNo: number;
-    status: string;
-    winnerTeamId?: string | null;
-    winnerTeamName?: string | null;
-    team1?: { id: string; name: string; affiliation?: string | null } | null;
-    team2?: { id: string; name: string; affiliation?: string | null } | null;
-    team1Wins: number;
-    team2Wins: number;
-    matches: Array<{
-      id: string;
-      eventTypeLabel?: string | null;
-      gamesText: string;
-      status: string;
-      venueName?: string | null;
-      scheduledAt?: string | null;
-    }>;
-  }>;
-};
-
-async function getPublicBrackets() {
-  try {
-    const res = await fetch(`${API_BASE}/public/brackets`, { cache: 'no-store' });
-    if (!res.ok) return { brackets: [] as KnockoutBracketData[] };
-    return res.json() as Promise<{ brackets: KnockoutBracketData[] }>;
-  } catch {
-    return { brackets: [] as KnockoutBracketData[] };
+function statusCounts(bracket: KnockoutBracketData) {
+  let live = 0;
+  let done = 0;
+  for (const match of bracket.matches) {
+    const s = String(match.status || '').toUpperCase();
+    if (s === 'LIVE' || match.status === '进行中') live += 1;
+    else if (s === 'COMPLETED' || match.status === '已结束' || match.status === '已完成') done += 1;
   }
+  return { total: bracket.matches.length, live, done };
 }
 
-async function getTeamCompetitions() {
-  try {
-    const res = await fetch(`${API_BASE}/public/team-competitions`, { cache: 'no-store' });
-    if (!res.ok) return { teamCompetitions: [] as TeamCompetition[] };
-    return res.json() as Promise<{ teamCompetitions: TeamCompetition[] }>;
-  } catch {
-    return { teamCompetitions: [] as TeamCompetition[] };
-  }
-}
-
-function teamCompetitionToBracket(competition: TeamCompetition): KnockoutBracketData | null {
-  const firstRound = competition.teamMatches
-    .filter((match) => match.roundNo === 1)
-    .sort((a, b) => a.matchNo - b.matchNo);
-
-  const participants = firstRound.length
-    ? firstRound.flatMap((match, index) => [
-        match.team1
-          ? {
-              id: match.team1.id,
-              position: index * 2 + 1,
-              name: match.team1.name,
-              affiliation: match.team1.affiliation,
-            }
-          : {
-              id: `team-bye-${competition.id}-${index * 2 + 1}`,
-              position: index * 2 + 1,
-              name: '— 轮空 —',
-              isBye: true,
-            },
-        match.team2
-          ? {
-              id: match.team2.id,
-              position: index * 2 + 2,
-              name: match.team2.name,
-              affiliation: match.team2.affiliation,
-            }
-          : {
-              id: `team-bye-${competition.id}-${index * 2 + 2}`,
-              position: index * 2 + 2,
-              name: '— 轮空 —',
-              isBye: true,
-            },
-      ])
-    : competition.teams.map((team, index) => ({
-        id: team.id,
-        position: index + 1,
-        name: team.name,
-        affiliation: team.affiliation,
-      }));
-
-  if (participants.length < 2) return null;
-
-  return {
-    id: competition.id,
-    title: `${competition.tournamentName} · ${competition.name}`,
-    subtitle: `团体淘汰赛 · 抢 ${competition.winThreshold} 胜`,
-    participants,
-    matches: competition.teamMatches.map((match) => ({
-      id: match.id,
-      roundNo: match.roundNo,
-      roundLabel: match.round,
-      matchNo: match.matchNo,
-      status: match.status,
-      side1Id: match.team1?.id ?? null,
-      side2Id: match.team2?.id ?? null,
-      winnerId: match.winnerTeamId ?? null,
-      score: `${match.team1Wins}:${match.team2Wins}`,
-      gamesText: `${match.team1Wins}:${match.team2Wins}`,
-      venueName: match.matches.find((item) => item.venueName)?.venueName ?? '待排场地',
-      scheduledAt: match.matches.find((item) => item.scheduledAt)?.scheduledAt ?? null,
-      detailLines: match.matches.map(
-        (item) => `${item.eventTypeLabel || '子场次'} · ${item.gamesText} · ${item.status}`,
-      ),
-    })),
-  };
-}
-
-function demoBracket(): KnockoutBracketData {
-  const names = [
-    '彭 亮',
-    '韦 文',
-    '张三 / 李四',
-    '王 皓',
-    '陈 昊',
-    '— 轮空 —',
-    '林 可',
-    '周 远',
-    '赵 铭',
-    '钱 宇',
-    '孙 晨',
-    '李 然',
-    '吴 越',
-    '郑 嘉',
-    '冯 立',
-    '陈 鹏',
-    '褚 宁',
-    '卫 航',
-    '蒋 一',
-    '沈 云',
-    '韩 博',
-    '杨 舟',
-    '朱 旭',
-    '秦 川',
-    '尤 安',
-    '许 诺',
-    '何 平',
-    '吕 诚',
-    '施 远',
-    '张 弛',
-    '孔 明',
-    '曹 斌',
-  ];
-  const seeds: Record<number, string> = {
-    1: '1',
-    16: '5/8',
-    17: '3/4',
-    32: '2',
-  };
-
-  return {
-    id: 'visual-demo',
-    title: '签表视觉预览',
-    subtitle: '32 签位 · 1/16 决赛至决赛 · 含轮空、种子、状态与路径高亮',
-    participants: names.map((name, index) => ({
-      id: name === '— 轮空 —' ? `demo-bye-${index + 1}` : `demo-player-${index + 1}`,
-      position: index + 1,
-      name,
-      seed: seeds[index + 1],
-      isBye: name === '— 轮空 —',
-    })),
-    matches: [
-      { id: 'demo-r1-1', roundNo: 1, matchNo: 1, status: 'COMPLETED', winnerSide: 1, score: '21:14', gamesText: '21:14 / 21:18' },
-      { id: 'demo-r1-2', roundNo: 1, matchNo: 2, status: 'LIVE', score: '18:16', gamesText: '18:16' },
-      { id: 'demo-r1-3', roundNo: 1, matchNo: 3, status: 'COMPLETED', winnerSide: 1, score: '轮空', gamesText: '轮空晋级' },
-      { id: 'demo-r1-4', roundNo: 1, matchNo: 4, status: 'PENDING' },
-      {
-        id: 'demo-r1-5',
-        roundNo: 1,
-        matchNo: 5,
-        status: 'COMPLETED',
-        winnerSide: 1,
-        forfeitedSide: 2,
-        forfeitReason: '选手未到场弃权',
-        score: 'WO',
-        gamesText: '— 弃权 —',
-      },
-      {
-        id: 'demo-r1-6',
-        roundNo: 1,
-        matchNo: 6,
-        status: 'CANCELLED',
-        forfeitedSide: 0,
-        forfeitReason: '双方均未到场,本场作废',
-        score: '—',
-        gamesText: '双方弃权,本场作废',
-      },
-      { id: 'demo-r2-1', roundNo: 2, matchNo: 1, status: 'PENDING' },
-      { id: 'demo-r3-1', roundNo: 3, matchNo: 1, status: 'PENDING' },
-      { id: 'demo-r4-1', roundNo: 4, matchNo: 1, status: 'PENDING' },
-      { id: 'demo-r5-1', roundNo: 5, matchNo: 1, status: 'PENDING' },
-    ],
-  };
-}
-
-export default async function BracketPage() {
-  const [bracketData, teamData] = await Promise.all([getPublicBrackets(), getTeamCompetitions()]);
-  const teamBrackets = teamData.teamCompetitions
-    .map(teamCompetitionToBracket)
-    .filter((item): item is KnockoutBracketData => Boolean(item));
-  const brackets = [...bracketData.brackets, ...teamBrackets];
+export default async function BracketListPage() {
+  const brackets = await getBracketList();
 
   return (
     <PortalFeaturePage
       activeHref="/bracket"
-      eyebrow="Bracket"
+      eyebrow="对阵"
       title="淘汰赛对阵表"
-      description="横向展开的淘汰赛签表，支持查看轮次、比赛详情、实时状态与选手晋级路径。"
+      description="选择要查看的对阵表。点击卡片进入对阵表的专属页面，可查看完整签表、轮次详情、实时状态与选手晋级路径。"
     >
-      {brackets.length ? (
-        <div className="space-y-5 sm:space-y-6">
-          {brackets.map((bracket) => (
-            <KnockoutBracket key={bracket.id} data={bracket} />
-          ))}
-        </div>
-      ) : (
-        <div className="space-y-5 sm:space-y-6">
+      <div className="space-y-5 sm:space-y-6">
+        {brackets.length === 0 ? (
           <div className="overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-sm">
             <div className="flex flex-col gap-4 px-5 py-6 sm:flex-row sm:items-center sm:justify-between sm:px-7 sm:py-7">
               <div className="flex items-start gap-4">
@@ -246,7 +40,7 @@ export default async function BracketPage() {
                 <div>
                   <h2 className="text-lg font-black text-slate-900 sm:text-xl">对阵表等待抽签生成</h2>
                   <p className="mt-1 text-sm font-semibold text-slate-500">
-                    后台完成报名和抽签后,这里会自动展示完整的淘汰赛签表与实时比分。下面是签表样式预览。
+                    后台完成报名和抽签后，这里会自动列出可查看的对阵表。下方可查看签表样式预览。
                   </p>
                 </div>
               </div>
@@ -258,9 +52,97 @@ export default async function BracketPage() {
               </Link>
             </div>
           </div>
-          <KnockoutBracket data={demoBracket()} allowAdminSwap />
+        ) : null}
+
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {/* Demo card is always present so the visual is browseable even with no data */}
+          <BracketListCard
+            href="/bracket/visual-demo"
+            title="签表视觉预览"
+            subtitle="32 签位 · 1/16 决赛至决赛 · 含轮空、种子、状态与路径高亮"
+            tag="演示"
+            tagTone="amber"
+            stats={{ total: 10, live: 1, done: 4 }}
+          />
+          {brackets.map((bracket) => (
+            <BracketListCard
+              key={bracket.id}
+              href={`/bracket/${encodeURIComponent(bracket.id)}`}
+              title={bracket.title}
+              subtitle={bracket.subtitle}
+              tag={`${bracket.participants.length} 签位`}
+              tagTone="blue"
+              stats={statusCounts(bracket)}
+            />
+          ))}
         </div>
-      )}
+      </div>
     </PortalFeaturePage>
+  );
+}
+
+function BracketListCard({
+  href,
+  title,
+  subtitle,
+  tag,
+  tagTone,
+  stats,
+}: {
+  href: string;
+  title: string;
+  subtitle?: string;
+  tag: string;
+  tagTone: 'amber' | 'blue';
+  stats: { total: number; live: number; done: number };
+}) {
+  const tagClass =
+    tagTone === 'amber'
+      ? 'bg-amber-100 text-amber-700'
+      : 'bg-blue-50 text-blue-700';
+  return (
+    <Link
+      href={href}
+      className="group flex h-full flex-col overflow-hidden rounded-2xl border border-blue-100 bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-[#0a5dd1] hover:shadow-md"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-[#0a5dd1] to-[#03205c] text-white shadow-md">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-5 w-5">
+            <path strokeLinecap="round" d="M4 6h6v4H4zM4 14h6v4H4zM14 4h6v6h-6zM14 14h6v6h-6z" />
+            <path strokeLinecap="round" d="M10 8h4M10 16h4M17 10v4" />
+          </svg>
+        </div>
+        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-black ${tagClass}`}>{tag}</span>
+      </div>
+      <h3 className="mt-3 line-clamp-2 text-base font-black text-slate-900">{title}</h3>
+      {subtitle ? (
+        <p className="mt-1 line-clamp-2 text-xs font-semibold text-slate-500">{subtitle}</p>
+      ) : null}
+
+      <div className="mt-4 flex flex-wrap items-center gap-1.5 text-[11px] font-black">
+        <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-slate-600">
+          <span className="h-1.5 w-1.5 rounded-full bg-slate-400" />
+          {stats.total} 场
+        </span>
+        {stats.live > 0 ? (
+          <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-red-700">
+            <span className="bracket-live-pulse h-1.5 w-1.5 rounded-full bg-red-500" />
+            {stats.live} 直播中
+          </span>
+        ) : null}
+        {stats.done > 0 ? (
+          <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-amber-700">
+            <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+            {stats.done} 已完成
+          </span>
+        ) : null}
+      </div>
+
+      <div className="mt-auto pt-4 text-right">
+        <span className="text-xs font-black text-[#0a5dd1] group-hover:text-orange-500">
+          查看对阵表 →
+        </span>
+      </div>
+    </Link>
   );
 }

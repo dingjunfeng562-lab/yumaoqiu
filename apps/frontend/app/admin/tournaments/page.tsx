@@ -14,6 +14,7 @@ import {
   Modal,
   Popconfirm,
   Radio,
+  Select,
   Space,
   Switch,
   Table,
@@ -57,6 +58,10 @@ const STATUS_LABELS: Record<string, { label: string; color: string }> = {
   ONGOING: { label: '比赛中', color: 'green' },
   FINISHED: { label: '已结束', color: 'blue' },
 };
+const STATUS_OPTIONS = Object.entries(STATUS_LABELS).map(([value, meta]) => ({
+  value,
+  label: meta.label,
+}));
 
 type EventType = (typeof EVENT_OPTIONS)[number]['value'];
 
@@ -107,6 +112,7 @@ type TournamentFormValues = {
   subtitle?: string;
   coverImageUrl?: string;
   showOnHome?: boolean;
+  status?: string;
   startDate: Dayjs;
   endDate: Dayjs;
   description?: string;
@@ -196,6 +202,7 @@ export default function TournamentsPage() {
   const [reviewTarget, setReviewTarget] = useState<Tournament | null>(null);
   const [reviewReason, setReviewReason] = useState('');
   const [reviewBusy, setReviewBusy] = useState(false);
+  const [statusUpdatingId, setStatusUpdatingId] = useState('');
 
   const eventTypes = Form.useWatch('eventTypes', form) ?? [];
   const includeTeamCompetition = Form.useWatch('includeTeamCompetition', form);
@@ -223,8 +230,24 @@ export default function TournamentsPage() {
   }, [token]);
 
   useEffect(() => {
-    fetchTournaments();
-  }, [fetchTournaments]);
+    if (!token) return;
+    let cancelled = false;
+    Promise.resolve()
+      .then(() => {
+        if (!cancelled) setLoading(true);
+        return apiFetch<Tournament[]>('/tournaments', { token });
+      })
+      .then((data) => {
+        if (!cancelled) setTournaments(data);
+      })
+      .catch((error) => message.error(error instanceof Error ? error.message : '加载赛事失败'))
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
 
   useEffect(() => {
     if (allowCrossEventRegistration === false) {
@@ -255,6 +278,7 @@ export default function TournamentsPage() {
     form.resetFields();
     form.setFieldsValue({
       showOnHome: true,
+      status: 'REGISTRATION_NOT_STARTED',
       eventTypes: ['MENS_SINGLES', 'WOMENS_SINGLES'],
       includeTeamCompetition: false,
       teamWinThreshold: 2,
@@ -272,7 +296,9 @@ export default function TournamentsPage() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    if (params.get('create') === '1') openCreate();
+    if (params.get('create') !== '1') return;
+    const timer = window.setTimeout(openCreate, 0);
+    return () => window.clearTimeout(timer);
   }, [openCreate]);
 
   const openEdit = (tournament: Tournament) => {
@@ -297,6 +323,7 @@ export default function TournamentsPage() {
       subtitle: tournament.subtitle ?? undefined,
       coverImageUrl: tournament.coverImageUrl ?? undefined,
       showOnHome: tournament.showOnHome,
+      status: tournament.status,
       startDate: dayjs(tournament.startDate),
       endDate: dayjs(tournament.endDate),
       description: tournament.description ?? undefined,
@@ -363,6 +390,7 @@ export default function TournamentsPage() {
       subtitle: values.subtitle?.trim() || undefined,
       coverImageUrl: values.coverImageUrl,
       showOnHome: Boolean(values.showOnHome),
+      status: isSuperAdmin ? values.status : undefined,
       startDate: values.startDate.startOf('day').toISOString(),
       endDate: values.endDate.endOf('day').toISOString(),
       description: values.description?.trim() || undefined,
@@ -449,6 +477,24 @@ export default function TournamentsPage() {
     }
   };
 
+  const handleStatusChange = async (record: Tournament, status: string) => {
+    if (!isSuperAdmin || status === record.status) return;
+    setStatusUpdatingId(record.id);
+    try {
+      await apiFetch(`/tournaments/${record.id}`, {
+        method: 'PATCH',
+        token,
+        body: JSON.stringify({ status }),
+      });
+      message.success(`赛事状态已更新为${statusLabel(status).label}`);
+      await fetchTournaments();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '更新赛事状态失败');
+    } finally {
+      setStatusUpdatingId('');
+    }
+  };
+
   const handleApprove = async (record: Tournament) => {
     if (!isSuperAdmin) {
       message.error('仅总管理员可审核赛事');
@@ -519,6 +565,21 @@ export default function TournamentsPage() {
       key: 'status',
       render: (_: unknown, record: Tournament) => {
         const meta = statusLabel(record.status);
+        if (isSuperAdmin && !record.isArchived) {
+          return (
+            <Space>
+              <Select
+                size="small"
+                value={record.status}
+                options={STATUS_OPTIONS}
+                style={{ width: 120 }}
+                loading={statusUpdatingId === record.id}
+                onChange={(status) => handleStatusChange(record, status)}
+              />
+              {record.showOnHome && <Tag color="gold">首页展示</Tag>}
+            </Space>
+          );
+        }
         return (
           <Space>
             <Tag color={meta.color}>{meta.label}</Tag>
@@ -696,6 +757,11 @@ export default function TournamentsPage() {
             <Form.Item name="showOnHome" label="首页展示" valuePropName="checked">
               <Switch checkedChildren="展示" unCheckedChildren="不展示" />
             </Form.Item>
+            {isSuperAdmin ? (
+              <Form.Item name="status" label="赛事状态" rules={[{ required: true, message: '请选择赛事状态' }]}>
+                <Select options={STATUS_OPTIONS} />
+              </Form.Item>
+            ) : null}
           </Card>
 
           <Card title="赛事内容设置" size="small" style={{ marginBottom: 16 }}>

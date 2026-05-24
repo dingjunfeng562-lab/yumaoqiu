@@ -93,6 +93,16 @@ export class UnfreezeDrawDto {
   drawId: string;
 }
 
+export class PublishDrawDto {
+  @IsString()
+  drawId: string;
+}
+
+export class UnpublishDrawDto {
+  @IsString()
+  drawId: string;
+}
+
 export class RedrawDrawDto {
   @IsBoolean()
   confirm: boolean;

@@ -6,6 +6,7 @@ import { signOut, useSession } from 'next-auth/react';
 import { Button, Empty, Spin, Tag, message } from 'antd';
 import { LogoutOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
+import { roundCn } from '@/lib/round';
 
 type MatchSummary = {
   id: string;
@@ -113,7 +114,7 @@ export default function RefereeMatchesPage() {
                   <div>
                     <h2 className="text-lg font-black text-slate-950">{match.eventTypeLabel} 第 {match.matchNo} 场</h2>
                     <p className="mt-1 text-xs font-semibold text-slate-500">
-                      {match.tournament.name} · {match.round}
+                      {match.tournament.name} · {roundCn(match.round)}
                     </p>
                   </div>
                   <Tag color={statusMeta[match.status].color}>{statusMeta[match.status].label}</Tag>

@@ -1,0 +1,1 @@
+ALTER TABLE `event` ADD COLUMN `drawPublished` TINYINT(1) NOT NULL DEFAULT 0;

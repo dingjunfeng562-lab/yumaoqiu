@@ -23,15 +23,23 @@ import {
 } from 'antd';
 import {
   BranchesOutlined,
+  CheckCircleOutlined,
   DeleteOutlined,
-  LockOutlined,
+  EyeInvisibleOutlined,
   PlusOutlined,
   ReloadOutlined,
   StarFilled,
+  SwapOutlined,
   TrophyOutlined,
-  UnlockOutlined,
 } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
+import { roundCn } from '@/lib/round';
+import {
+  KnockoutBracket,
+  type BracketMatch,
+  type BracketParticipant,
+  type KnockoutBracketData,
+} from '@/components/bracket/KnockoutBracket';
 
 const EVENT_TYPE_LABELS: Record<string, string> = {
   MENS_SINGLES: '男子单打',
@@ -46,14 +54,6 @@ const FORMAT_LABELS: Record<string, string> = {
   GROUP_PLUS_KNOCKOUT: '小组赛 + 淘汰赛',
 };
 
-const ROUND_CN: Record<string, string> = {
-  F: '决赛',
-  SF: '半决赛',
-  QF: '1/4 决赛',
-  R1: '1/8 决赛',
-  R2: '1/16 决赛',
-  R3: '1/32 决赛',
-};
 
 const STATUS_LABELS: Record<string, { label: string; color: string }> = {
   PENDING: { label: '待排程', color: 'default' },
@@ -78,6 +78,7 @@ interface EventItem {
   groupSize?: number | null;
   qualifiersPerGroup?: number | null;
   drawLocked: boolean;
+  drawPublished: boolean;
   drawGeneratedAt?: string | null;
 }
 
@@ -156,15 +157,11 @@ function affiliation(registration?: Registration | null) {
     : registration.player1.affiliation;
 }
 
-function displayRound(round: string) {
-  return ROUND_CN[round] ? `${round} ${ROUND_CN[round]}` : round;
-}
-
 function sourceLabel(rounds: RoundItem[], match: MatchItem, sideNo: 1 | 2) {
   if (match.roundNo <= 1) return '轮空';
   const previousRound = rounds.find((round) => round.roundNo === match.roundNo - 1);
   const previousMatchNo = match.matchNo * 2 - (sideNo === 1 ? 1 : 0);
-  const previousRoundName = previousRound?.round ?? `R${match.roundNo - 1}`;
+  const previousRoundName = roundCn(previousRound?.round ?? `R${match.roundNo - 1}`);
   return `${previousRoundName} 第 ${previousMatchNo} 场胜者`;
 }
 
@@ -178,6 +175,62 @@ function isSingleElimination(event?: EventItem) {
 
 function statusMeta(status: string) {
   return STATUS_LABELS[status] ?? STATUS_LABELS.PENDING;
+}
+
+function toBracketParticipant(
+  registration: Registration | null | undefined,
+  position: number,
+): BracketParticipant {
+  if (!registration) {
+    return {
+      id: `bye-position-${position}`,
+      position,
+      name: '— 轮空 —',
+      isBye: true,
+    };
+  }
+
+  return {
+    id: registration.id,
+    position,
+    name: sideName(registration),
+    seed: registration.seedRank ?? null,
+    isBye: false,
+    affiliation: affiliation(registration),
+  };
+}
+
+function toKnockoutBracketData(data: BracketData): KnockoutBracketData {
+  const firstRound = [...(data.rounds.find((round) => round.roundNo === 1)?.matches ?? [])].sort(
+    (a, b) => a.matchNo - b.matchNo,
+  );
+  const participants = firstRound.flatMap((match, index) => [
+    toBracketParticipant(match.side1, index * 2 + 1),
+    toBracketParticipant(match.side2, index * 2 + 2),
+  ]);
+  const matches: BracketMatch[] = data.rounds.flatMap((round) =>
+    round.matches.map((match) => ({
+      id: match.id,
+      roundNo: match.roundNo,
+      roundLabel: roundCn(match.round),
+      matchNo: match.matchNo,
+      status: match.status,
+      side1Id: match.side1?.id ?? null,
+      side2Id: match.side2?.id ?? null,
+      winnerSide: match.winnerSide ?? null,
+      winnerId: match.winnerSide === 1 ? match.side1?.id ?? null : match.winnerSide === 2 ? match.side2?.id ?? null : null,
+    })),
+  );
+
+  return {
+    id: data.event.id,
+    tournamentId: data.event.tournamentId,
+    title: `${EVENT_TYPE_LABELS[data.event.type] ?? data.event.type} 对阵图`,
+    subtitle: `${FORMAT_LABELS[data.event.format] ?? data.event.format} · ${participants.filter((item) => !item.isBye).length} 个签位`,
+    generatedAt: data.event.drawGeneratedAt ?? null,
+    participants,
+    matches,
+  };
 }
 
 function MatchCard({
@@ -317,44 +370,7 @@ function BracketRenderer({ data }: { data?: BracketData | null }) {
     );
   }
 
-  return (
-    <div style={{ overflowX: 'auto', paddingBottom: 12 }}>
-      <div style={{ display: 'flex', gap: 28, alignItems: 'flex-start', minWidth: data.rounds.length * 264 }}>
-        {data.rounds.map((round) => {
-          const allCompleted = round.matches.every((match) => match.status === 'COMPLETED');
-          const anyLive = round.matches.some((match) => match.status === 'LIVE');
-          return (
-            <div key={round.roundNo} style={{ width: 236, flex: '0 0 236px' }}>
-              <div
-                style={{
-                  height: 40,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  borderRadius: 8,
-                  marginBottom: 12,
-                  background: anyLive
-                    ? 'linear-gradient(90deg, #1d4ed8, #38bdf8)'
-                    : allCompleted
-                      ? '#e5e7eb'
-                      : '#dbeafe',
-                  color: allCompleted && !anyLive ? '#475569' : '#0f172a',
-                  fontWeight: 800,
-                }}
-              >
-                {displayRound(round.round)}
-              </div>
-              <Space direction="vertical" size={18}>
-                {round.matches.map((match) => (
-                  <MatchCard key={match.id} match={match} rounds={data.rounds} />
-                ))}
-              </Space>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
+  return <KnockoutBracket data={toKnockoutBracketData(data)} />;
 }
 
 export default function DrawsPage() {
@@ -370,6 +386,8 @@ export default function DrawsPage() {
   const [loading, setLoading] = useState(false);
   const [registrationOpen, setRegistrationOpen] = useState(false);
   const [registrationForm] = Form.useForm();
+  const [swapPosA, setSwapPosA] = useState<number | undefined>(undefined);
+  const [swapPosB, setSwapPosB] = useState<number | undefined>(undefined);
 
   const selectedEvent = useMemo(
     () => events.find((event) => event.id === selectedEventId),
@@ -393,6 +411,27 @@ export default function DrawsPage() {
     );
     return visibleRegistrations.filter((registration) => !placedIds.has(registration.id));
   }, [visibleBracket, visibleRegistrations]);
+  const slotOptions = useMemo(() => {
+    if (!visibleBracket?.rounds.length) return [];
+    const round1 = visibleBracket.rounds[0];
+    return round1.matches.flatMap((match, i) => [
+      {
+        value: i * 2 + 1,
+        label: `#${i * 2 + 1}  ${match.side1 ? sideName(match.side1) : '轮空'}`,
+      },
+      {
+        value: i * 2 + 2,
+        label: `#${i * 2 + 2}  ${match.side2 ? sideName(match.side2) : '轮空'}`,
+      },
+    ]);
+  }, [visibleBracket]);
+  const canShowSwapControls = Boolean(
+    bracket?.currentDraw &&
+      !selectedEvent?.drawPublished &&
+      isSingleElimination(selectedEvent) &&
+      slotOptions.length > 0 &&
+      ['DRAWN', 'FROZEN'].includes(bracket.currentDraw.status),
+  );
 
   async function loadEvents(tournamentId: string) {
     if (!token || !tournamentId) return;
@@ -412,7 +451,12 @@ export default function DrawsPage() {
     setEvents((prev) =>
       prev.map((event) =>
         event.id === selectedEventId
-          ? { ...event, drawLocked: bracketData.event.drawLocked, drawGeneratedAt: bracketData.event.drawGeneratedAt }
+          ? {
+              ...event,
+              drawLocked: bracketData.event.drawLocked,
+              drawPublished: bracketData.event.drawPublished,
+              drawGeneratedAt: bracketData.event.drawGeneratedAt,
+            }
           : event,
       ),
     );
@@ -455,6 +499,18 @@ export default function DrawsPage() {
         if (!alive) return;
         setRegistrations(registrationData);
         setBracket(bracketData);
+        setEvents((prev) =>
+          prev.map((event) =>
+            event.id === selectedEventId
+              ? {
+                  ...event,
+                  drawLocked: bracketData.event.drawLocked,
+                  drawPublished: bracketData.event.drawPublished,
+                  drawGeneratedAt: bracketData.event.drawGeneratedAt,
+                }
+              : event,
+          ),
+        );
       } finally {
         if (alive) setLoading(false);
       }
@@ -502,7 +558,9 @@ export default function DrawsPage() {
         body: JSON.stringify({ force }),
       });
       await refreshDraw();
-      message.success(force ? '已重新抽签并冻结' : '抽签完成并冻结');
+      setSwapPosA(undefined);
+      setSwapPosB(undefined);
+      message.success(force ? '已重新抽签，可调整签位后发布' : '抽签完成，可调整签位后点击发布');
     } catch (error) {
       message.error(error instanceof Error ? error.message : '抽签失败');
     } finally {
@@ -510,18 +568,35 @@ export default function DrawsPage() {
     }
   }
 
-  async function toggleFreeze(nextLocked: boolean) {
+  async function togglePublish(publish: boolean) {
     if (!token || !selectedEventId || !bracket?.currentDraw) return;
     try {
-      await apiFetch(`/events/${selectedEventId}/draw/${nextLocked ? 'freeze' : 'unfreeze'}`, {
+      await apiFetch(`/events/${selectedEventId}/draw/${publish ? 'publish' : 'unpublish'}`, {
         method: 'POST',
         token,
         body: JSON.stringify({ drawId: bracket.currentDraw.id }),
       });
       await refreshDraw();
-      message.success(nextLocked ? '签表已冻结' : '签表已解冻');
+      message.success(publish ? '对阵图已发布，公众可查看' : '已取消发布，对阵图不再公开显示');
     } catch (error) {
       message.error(error instanceof Error ? error.message : '操作失败');
+    }
+  }
+
+  async function handleSwap() {
+    if (!token || !selectedEventId || !bracket?.currentDraw || !swapPosA || !swapPosB) return;
+    try {
+      await apiFetch(`/events/${selectedEventId}/draw/swap`, {
+        method: 'POST',
+        token,
+        body: JSON.stringify({ drawId: bracket.currentDraw.id, positionA: swapPosA, positionB: swapPosB }),
+      });
+      setSwapPosA(undefined);
+      setSwapPosB(undefined);
+      await refreshDraw();
+      message.success('签位已交换');
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '签位交换失败');
     }
   }
 
@@ -573,25 +648,29 @@ export default function DrawsPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 12, flexWrap: 'wrap' }}>
         <div>
           <Typography.Title level={4} style={{ margin: 0 }}>抽签编排</Typography.Title>
-          <Typography.Text type="secondary">按单项管理报名、种子、冻结状态和淘汰赛对阵。</Typography.Text>
+          <Typography.Text type="secondary">抽签后可调整签位，确认无误后点击发布，公众才能看到对阵图。</Typography.Text>
         </div>
         <Space wrap>
           <Button icon={<ReloadOutlined />} onClick={refreshDraw} disabled={!selectedEventId}>
             刷新
           </Button>
-          {bracket?.currentDraw && (
-            selectedEvent?.drawLocked ? (
-              <Popconfirm title="解冻后可调整未开始签位，确认继续？" onConfirm={() => toggleFreeze(false)}>
-                <Button icon={<UnlockOutlined />}>解冻</Button>
-              </Popconfirm>
-            ) : (
-              <Button type="primary" icon={<LockOutlined />} onClick={() => toggleFreeze(true)}>
-                冻结
-              </Button>
-            )
+          {bracket?.currentDraw && !selectedEvent?.drawPublished && (
+            <Button
+              type="primary"
+              icon={<CheckCircleOutlined />}
+              onClick={() => togglePublish(true)}
+              disabled={!visibleBracket?.rounds.length && !visibleBracket?.groups.length}
+            >
+              发布对阵
+            </Button>
           )}
-          {selectedEvent?.drawLocked ? (
-            <Popconfirm title="重新抽签会覆盖当前未开始对阵，确认继续？" onConfirm={() => handleDraw(true)}>
+          {bracket?.currentDraw && selectedEvent?.drawPublished && (
+            <Popconfirm title="取消发布后公众将看不到对阵，确认继续？" onConfirm={() => togglePublish(false)}>
+              <Button icon={<EyeInvisibleOutlined />}>取消发布</Button>
+            </Popconfirm>
+          )}
+          {bracket?.currentDraw ? (
+            <Popconfirm title="重新抽签会覆盖当前对阵并取消发布，确认继续？" onConfirm={() => handleDraw(true)}>
               <Button danger icon={<BranchesOutlined />} disabled={!selectedEventId || registrations.length < 2}>
                 重新抽签
               </Button>
@@ -628,7 +707,13 @@ export default function DrawsPage() {
             />
           </Col>
           <Col xs={24} md={4}>
-            {selectedEvent?.drawLocked ? <Tag color="green">已冻结</Tag> : <Tag color="orange">编辑中</Tag>}
+            {!bracket?.currentDraw ? (
+              <Tag color="default">未抽签</Tag>
+            ) : selectedEvent?.drawPublished ? (
+              <Tag color="green">已发布</Tag>
+            ) : (
+              <Tag color="orange">未发布</Tag>
+            )}
           </Col>
         </Row>
       </section>
@@ -672,17 +757,62 @@ export default function DrawsPage() {
             </section>
           </Col>
           <Col xs={24} xl={16}>
-            <section style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 16, background: '#fff' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12, flexWrap: 'wrap' }}>
-                <Typography.Title level={5} style={{ margin: 0 }}>对阵图</Typography.Title>
-                <Typography.Text type="secondary">
-                  {selectedEvent?.drawGeneratedAt
-                    ? `生成时间：${new Date(selectedEvent.drawGeneratedAt).toLocaleString()}`
-                    : '尚未生成'}
-                </Typography.Text>
-              </div>
-              <BracketRenderer data={visibleBracket} />
-            </section>
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              {canShowSwapControls && (
+                <section style={{ border: '1px solid #faad14', borderRadius: 8, padding: 16, background: '#fffbe6' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                    <SwapOutlined style={{ color: '#d48806' }} />
+                    <Typography.Text strong style={{ color: '#d48806' }}>签位调整</Typography.Text>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      发布前可交换任意两个签位的选手
+                    </Typography.Text>
+                  </div>
+                  <Space wrap>
+                    <Select
+                      value={swapPosA}
+                      onChange={setSwapPosA}
+                      placeholder="选择签位 A"
+                      style={{ width: 220 }}
+                      options={slotOptions.filter((opt) => opt.value !== swapPosB)}
+                    />
+                    <Select
+                      value={swapPosB}
+                      onChange={setSwapPosB}
+                      placeholder="选择签位 B"
+                      style={{ width: 220 }}
+                      options={slotOptions.filter((opt) => opt.value !== swapPosA)}
+                    />
+                    <Popconfirm
+                      title={`确认交换签位 #${swapPosA} 与 #${swapPosB} 的选手？`}
+                      onConfirm={handleSwap}
+                      disabled={!swapPosA || !swapPosB}
+                    >
+                      <Button
+                        type="primary"
+                        icon={<SwapOutlined />}
+                        disabled={!swapPosA || !swapPosB}
+                      >
+                        交换
+                      </Button>
+                    </Popconfirm>
+                    {(swapPosA || swapPosB) && (
+                      <Button onClick={() => { setSwapPosA(undefined); setSwapPosB(undefined); }}>清除</Button>
+                    )}
+                  </Space>
+                </section>
+              )}
+              <section style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 16, background: '#fff' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12, flexWrap: 'wrap' }}>
+                  <Typography.Title level={5} style={{ margin: 0 }}>对阵图</Typography.Title>
+                  <Typography.Text type="secondary">
+                    {selectedEvent?.drawGeneratedAt
+                      ? `生成时间：${new Date(selectedEvent.drawGeneratedAt).toLocaleString()}`
+                      : '尚未生成'}
+                  </Typography.Text>
+                </div>
+                <BracketRenderer data={visibleBracket} />
+              </section>
+            </Space>
           </Col>
         </Row>
       </Spin>

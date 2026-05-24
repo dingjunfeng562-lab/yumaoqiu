@@ -49,10 +49,11 @@ export class ScoringService {
         venue: true,
         games: { orderBy: { gameNo: 'asc' } },
       },
-      orderBy: [{ status: 'asc' }, { updatedAt: 'desc' }],
+      orderBy: [{ scheduledAt: 'asc' }, { roundNo: 'asc' }, { matchNo: 'asc' }],
     });
 
-    return Promise.all(matches.map((match) => this.hydrateMatchSummary(match)));
+    const orderedMatches = matches.sort((a, b) => this.compareRefereeMatchOrder(a, b));
+    return Promise.all(orderedMatches.map((match) => this.hydrateMatchSummary(match)));
   }
 
   async getMatchState(matchId: string, user?: AuthUser) {
@@ -389,20 +390,7 @@ export class ScoringService {
       // Propagate the "bye" to the next round: clear the corresponding slot
       // on the next match so the bracket renders it as a 轮空.
       if (match.eventId) {
-        const nextMatch = await tx.match.findFirst({
-          where: {
-            eventId: match.eventId,
-            roundNo: match.roundNo + 1,
-            matchNo: Math.ceil(match.matchNo / 2),
-          },
-        });
-        if (nextMatch) {
-          const targetSide = match.matchNo % 2 === 1 ? 'side1Id' : 'side2Id';
-          await tx.match.update({
-            where: { id: nextMatch.id },
-            data: { [targetSide]: null },
-          });
-        }
+        await this.clearSingleEliminationAdvancement(tx, match);
       }
 
       await this.teamCompetitionsService.updateTeamMatchAggregate(tx, matchId);
@@ -497,6 +485,7 @@ export class ScoringService {
     tx: Prisma.TransactionClient,
     match: {
       eventId: string | null;
+      round: string;
       roundNo: number;
       matchNo: number;
       side1Id: string | null;
@@ -507,6 +496,7 @@ export class ScoringService {
     if (!match.eventId || match.roundNo < 1) return;
 
     const winnerId = winnerSide === 1 ? match.side1Id : match.side2Id;
+    const loserId = winnerSide === 1 ? match.side2Id : match.side1Id;
     if (!winnerId) return;
 
     const nextMatch = await tx.match.findFirst({
@@ -514,21 +504,77 @@ export class ScoringService {
         eventId: match.eventId,
         roundNo: match.roundNo + 1,
         matchNo: Math.ceil(match.matchNo / 2),
+        round: { not: 'BRONZE' },
       },
     });
-    if (!nextMatch) return;
+    if (nextMatch) {
+      await this.updatePendingDependentMatch(
+        tx,
+        nextMatch,
+        match.matchNo % 2 === 1 ? 'side1Id' : 'side2Id',
+        winnerId,
+      );
+    }
+
+    if (nextMatch?.round === 'F' && loserId) {
+      const bronzeMatch = await tx.match.findFirst({
+        where: {
+          eventId: match.eventId,
+          roundNo: match.roundNo + 1,
+          round: 'BRONZE',
+        },
+      });
+      if (bronzeMatch) {
+        await this.updatePendingDependentMatch(
+          tx,
+          bronzeMatch,
+          match.matchNo % 2 === 1 ? 'side1Id' : 'side2Id',
+          loserId,
+        );
+      }
+    }
+  }
+
+  private async clearSingleEliminationAdvancement(
+    tx: Prisma.TransactionClient,
+    match: {
+      eventId: string | null;
+      roundNo: number;
+      matchNo: number;
+    },
+  ) {
+    if (!match.eventId || match.roundNo < 1) return;
 
     const targetSide = match.matchNo % 2 === 1 ? 'side1Id' : 'side2Id';
-    const data: Prisma.MatchUncheckedUpdateInput = {
-      [targetSide]: winnerId,
-    };
-    if (nextMatch.status === MatchStatus.PENDING) {
+    const nextMatches = await tx.match.findMany({
+      where: {
+        eventId: match.eventId,
+        roundNo: match.roundNo + 1,
+        OR: [
+          { matchNo: Math.ceil(match.matchNo / 2), round: { not: 'BRONZE' } },
+          { round: 'BRONZE' },
+        ],
+      },
+    });
+
+    for (const nextMatch of nextMatches) {
+      await this.updatePendingDependentMatch(tx, nextMatch, targetSide, null);
+    }
+  }
+
+  private async updatePendingDependentMatch(
+    tx: Prisma.TransactionClient,
+    match: { id: string; status: MatchStatus },
+    side: 'side1Id' | 'side2Id',
+    value: string | null,
+  ) {
+    const data: Prisma.MatchUncheckedUpdateInput = { [side]: value };
+    if (match.status === MatchStatus.PENDING) {
       data.venueId = null;
       data.scheduledAt = null;
     }
-
     await tx.match.update({
-      where: { id: nextMatch.id },
+      where: { id: match.id },
       data,
     });
   }
@@ -545,6 +591,7 @@ export class ScoringService {
     status: MatchStatus;
     winnerSide: number | null;
     round: string;
+    roundNo: number;
     matchNo: number;
     side1Id: string | null;
     side2Id: string | null;
@@ -575,6 +622,7 @@ export class ScoringService {
       status: match.status,
       winnerSide: match.winnerSide,
       round: match.round,
+      roundNo: match.roundNo,
       matchNo: match.matchNo,
       eventType,
       eventTypeLabel: EVENT_TYPE_LABELS[eventType] ?? '团体赛',
@@ -586,6 +634,65 @@ export class ScoringService {
       side2: side2 ? this.registrationView(side2) : null,
       games: match.games,
     };
+  }
+
+  private compareRefereeMatchOrder(
+    a: {
+      scheduledAt: Date | null;
+      venue: { sortOrder?: number | null; name: string } | null;
+      roundNo: number;
+      matchNo: number;
+      event: { tournament: { edition: number }; type: string } | null;
+      teamCompetitionItem?: { eventType: string } | null;
+      teamMatch?: { roundNo: number; matchNo: number } | null;
+      createdAt: Date;
+    },
+    b: {
+      scheduledAt: Date | null;
+      venue: { sortOrder?: number | null; name: string } | null;
+      roundNo: number;
+      matchNo: number;
+      event: { tournament: { edition: number }; type: string } | null;
+      teamCompetitionItem?: { eventType: string } | null;
+      teamMatch?: { roundNo: number; matchNo: number } | null;
+      createdAt: Date;
+    },
+  ) {
+    const aScheduled = a.scheduledAt ? 0 : 1;
+    const bScheduled = b.scheduledAt ? 0 : 1;
+    if (aScheduled !== bScheduled) return aScheduled - bScheduled;
+
+    const aTime = a.scheduledAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
+    const bTime = b.scheduledAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
+    if (aTime !== bTime) return aTime - bTime;
+
+    const aVenueOrder = a.venue?.sortOrder ?? Number.MAX_SAFE_INTEGER;
+    const bVenueOrder = b.venue?.sortOrder ?? Number.MAX_SAFE_INTEGER;
+    if (aVenueOrder !== bVenueOrder) return aVenueOrder - bVenueOrder;
+
+    const venueNameCompare = (a.venue?.name ?? '').localeCompare(b.venue?.name ?? '', 'zh-CN');
+    if (venueNameCompare !== 0) return venueNameCompare;
+
+    const aEdition = a.event?.tournament.edition ?? 0;
+    const bEdition = b.event?.tournament.edition ?? 0;
+    if (aEdition !== bEdition) return bEdition - aEdition;
+
+    const aEventType = a.event?.type ?? a.teamCompetitionItem?.eventType ?? '';
+    const bEventType = b.event?.type ?? b.teamCompetitionItem?.eventType ?? '';
+    const eventTypeCompare = aEventType.localeCompare(bEventType);
+    if (eventTypeCompare !== 0) return eventTypeCompare;
+
+    const aTeamRoundNo = a.teamMatch?.roundNo ?? 0;
+    const bTeamRoundNo = b.teamMatch?.roundNo ?? 0;
+    if (aTeamRoundNo !== bTeamRoundNo) return aTeamRoundNo - bTeamRoundNo;
+
+    const aTeamMatchNo = a.teamMatch?.matchNo ?? 0;
+    const bTeamMatchNo = b.teamMatch?.matchNo ?? 0;
+    if (aTeamMatchNo !== bTeamMatchNo) return aTeamMatchNo - bTeamMatchNo;
+
+    if (a.roundNo !== b.roundNo) return a.roundNo - b.roundNo;
+    if (a.matchNo !== b.matchNo) return a.matchNo - b.matchNo;
+    return a.createdAt.getTime() - b.createdAt.getTime();
   }
 
   private async resolveSideMap(ids: Array<string | null>) {

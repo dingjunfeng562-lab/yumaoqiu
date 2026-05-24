@@ -15,6 +15,8 @@ export type BracketParticipant = {
   seed?: number | string | null;
   isBye?: boolean;
   affiliation?: string | null;
+  teamName?: string | null;
+  members?: string[];
 };
 
 export type BracketMatch = {
@@ -56,11 +58,14 @@ type LayoutMatch = BracketMatch & {
 // Layout constants
 // ─────────────────────────────────────────────────────────────────────
 
-const CARD_WIDTH = 252;
-const CARD_HEIGHT = 86;
-const COL_GAP = 56;
+const CARD_WIDTH = 188;
+const CARD_HEIGHT = 52;
+const PAIR_GAP = 14; // vertical gap between two participants of the same pair
+const COL_GAP = 96;
 const TOP_OFFSET = 56;
 const BOARD_PADDING = 28;
+const CHAMPION_WIDTH = 240;
+const CHAMPION_HEIGHT = 96;
 
 const STATUS_LABELS: Record<string, string> = {
   PENDING: '待开始',
@@ -126,9 +131,12 @@ function formatTime(value?: string | null) {
 }
 
 function rowHeightFor(bracketSize: number) {
-  if (bracketSize <= 8) return 134;
-  if (bracketSize <= 16) return 122;
-  return 110;
+  // rowHeight = vertical pitch between two SLOTS in column 0 (one team box each)
+  // We need at least CARD_HEIGHT + PAIR_GAP/2 per slot so paired teams sit close
+  // and adjacent pairs have breathing room.
+  if (bracketSize <= 8) return 78;
+  if (bracketSize <= 16) return 70;
+  return 62;
 }
 
 function buildPlaceholderMatches(roundCount: number, bracketSize: number): LayoutMatch[] {
@@ -215,7 +223,9 @@ export function KnockoutBracket({
   const bracketSize = slots.length;
   const roundCount = roundCountFor(bracketSize);
   const rowHeight = rowHeightFor(bracketSize);
-  const totalH = TOP_OFFSET + (bracketSize / 2) * rowHeight + BOARD_PADDING;
+  // rowHeight is the pitch per SLOT (column-0 team box). Column 0 has bracketSize
+  // slots; subsequent columns have winner cards whose vertical pitch doubles each round.
+  const totalH = TOP_OFFSET + bracketSize * rowHeight + BOARD_PADDING;
   const colStride = CARD_WIDTH + COL_GAP;
 
   const matches = useMemo(() => {
@@ -267,12 +277,22 @@ export function KnockoutBracket({
   }
 
   // ── Position helpers (tree view)
+  // Column 0 = participants column, columns 1..roundCount = winner-card columns.
+  function xForCol(col: number) {
+    return col * colStride;
+  }
   function xForRound(roundNo: number) {
-    return (roundNo - 1) * colStride;
+    // round R's winner card sits in column R (column 0 is the participants column)
+    return roundNo * colStride;
+  }
+  function yForSlot(slotIndex: number) {
+    return TOP_OFFSET + (slotIndex + 0.5) * rowHeight - CARD_HEIGHT / 2;
   }
   function yForMatch(roundNo: number, index: number) {
-    const pitch = rowHeight * 2 ** (roundNo - 1);
-    return TOP_OFFSET + index * pitch + pitch / 2 - CARD_HEIGHT / 2;
+    // Each round-R match groups 2^R consecutive slots; its winner card centers on
+    // the midpoint of those slot centers.
+    const centerY = TOP_OFFSET + (2 * index + 1) * 2 ** (roundNo - 1) * rowHeight;
+    return centerY - CARD_HEIGHT / 2;
   }
 
   // ── Stats for header
@@ -377,7 +397,9 @@ export function KnockoutBracket({
           matches={matches}
           matchByKey={matchByKey}
           colStride={colStride}
+          xForCol={xForCol}
           xForRound={xForRound}
+          yForSlot={yForSlot}
           yForMatch={yForMatch}
           sideFor={sideFor}
           winnerFor={winnerFor}
@@ -431,7 +453,9 @@ function TreeView({
   matches,
   matchByKey,
   colStride,
+  xForCol,
   xForRound,
+  yForSlot,
   yForMatch,
   sideFor,
   winnerFor,
@@ -451,7 +475,9 @@ function TreeView({
   matches: LayoutMatch[];
   matchByKey: Map<string, LayoutMatch>;
   colStride: number;
+  xForCol: (c: number) => number;
   xForRound: (r: number) => number;
+  yForSlot: (s: number) => number;
   yForMatch: (r: number, i: number) => number;
   sideFor: (match: BracketMatch, side: 1 | 2) => BracketParticipant | null;
   winnerFor: (match: BracketMatch) => BracketParticipant | null;
@@ -464,39 +490,70 @@ function TreeView({
   onDragSlot: (idx: number | null) => void;
   onDropSlot: (targetIdx: number) => void;
 }) {
-  const boardW = roundCount * colStride - (COL_GAP - BOARD_PADDING * 2);
+  // Columns: 1 (participants) + roundCount (winner cols). The FINAL winner card
+  // is itself the champion card — no extra column after it.
+  const boardW = roundCount * colStride + CHAMPION_WIDTH + BOARD_PADDING;
 
-  // Build SVG connectors round-by-round
-  const connectors: { key: string; d: string; highlight: boolean }[] = [];
-  for (let r = 2; r <= roundCount; r += 1) {
-    const colMatches = matches.filter((m) => m.roundNo === r);
-    for (const m of colMatches) {
+  // Build SVG connectors:
+  //   Round 1: pair of slots -> winner card (column 1)
+  //   Round r>1: two parent winner cards -> winner card (column r)
+  type Connector = { key: string; d: string; highlight: boolean; label?: string; labelX?: number; labelY?: number };
+  const connectors: Connector[] = [];
+  const radius = 8;
+
+  for (const m of matches) {
+    const r = m.roundNo;
+    const endX = xForRound(r);
+    const yMid = yForMatch(r, m.index) + CARD_HEIGHT / 2;
+    let startX: number;
+    let yA: number;
+    let yB: number;
+    let parentKeys: [string, string] | null = null;
+
+    if (r === 1) {
+      const slotA = m.index * 2;
+      const slotB = m.index * 2 + 1;
+      startX = xForCol(0) + CARD_WIDTH;
+      yA = yForSlot(slotA) + CARD_HEIGHT / 2;
+      yB = yForSlot(slotB) + CARD_HEIGHT / 2;
+    } else {
       const parentA = matchByKey.get(`${r - 1}-${m.index * 2}`);
       const parentB = matchByKey.get(`${r - 1}-${m.index * 2 + 1}`);
       if (!parentA || !parentB) continue;
-      const startX = xForRound(r - 1) + CARD_WIDTH;
-      const endX = xForRound(r);
-      const midX = startX + (endX - startX) / 2;
-      const yA = yForMatch(r - 1, parentA.index) + CARD_HEIGHT / 2;
-      const yB = yForMatch(r - 1, parentB.index) + CARD_HEIGHT / 2;
-      const yMid = yForMatch(r, m.index) + CARD_HEIGHT / 2;
-      const radius = 10;
-      // Two horizontal stubs from parents → bend → vertical to mid → horizontal to child
-      const d = [
-        `M ${startX} ${yA}`,
-        `L ${midX - radius} ${yA}`,
-        `Q ${midX} ${yA} ${midX} ${yA + (yA < yMid ? radius : -radius)}`,
-        `L ${midX} ${yMid - (yMid > yA ? 0 : 0)}`,
-        `M ${startX} ${yB}`,
-        `L ${midX - radius} ${yB}`,
-        `Q ${midX} ${yB} ${midX} ${yB + (yB < yMid ? radius : -radius)}`,
-        `L ${midX} ${yMid}`,
-        `L ${endX} ${yMid}`,
-      ].join(' ');
-      const highlight = highlightedKeys.has(m.layoutKey) || highlightedKeys.has(`${r - 1}-${m.index * 2}`) || highlightedKeys.has(`${r - 1}-${m.index * 2 + 1}`);
-      connectors.push({ key: `c-${r}-${m.index}`, d, highlight });
+      startX = xForRound(r - 1) + CARD_WIDTH;
+      yA = yForMatch(r - 1, parentA.index) + CARD_HEIGHT / 2;
+      yB = yForMatch(r - 1, parentB.index) + CARD_HEIGHT / 2;
+      parentKeys = [parentA.layoutKey, parentB.layoutKey];
     }
+
+    const midX = startX + (endX - startX) / 2;
+    const d = [
+      // top stub
+      `M ${startX} ${yA}`,
+      `L ${midX - radius} ${yA}`,
+      `Q ${midX} ${yA} ${midX} ${yA + radius}`,
+      `L ${midX} ${yMid}`,
+      `L ${endX} ${yMid}`,
+      // bottom stub
+      `M ${startX} ${yB}`,
+      `L ${midX - radius} ${yB}`,
+      `Q ${midX} ${yB} ${midX} ${yB - radius}`,
+      `L ${midX} ${yMid}`,
+    ].join(' ');
+
+    const highlight =
+      highlightedKeys.has(m.layoutKey) ||
+      (parentKeys ? parentKeys.some((k) => highlightedKeys.has(k)) : false);
+
+    // Match label sits on the horizontal segment from midX to endX
+    const label = m.roundLabel ?? defaultRoundLabel(bracketSize, r);
+    const labelX = midX + (endX - midX) / 2;
+    const labelY = yMid - 6;
+
+    connectors.push({ key: `c-${r}-${m.index}`, d, highlight, label, labelX, labelY });
   }
+
+  // (No separate champion column — the final winner card serves as the champion display.)
 
   return (
     <div
@@ -505,25 +562,46 @@ function TreeView({
       style={{ maxHeight: 720 }}
     >
       <div className="relative" style={{ width: boardW, height: totalH, padding: BOARD_PADDING }}>
-        {/* Round header chips */}
-        {Array.from({ length: roundCount }, (_, i) => {
-          const r = i + 1;
-          const count = bracketSize / 2 ** r;
+        {/* Column header chips: 八强赛 / 半决赛 / 决赛(冠军) */}
+        {Array.from({ length: roundCount + 1 }, (_, col) => {
+          const isFirst = col === 0;
+          const isFinalCol = col === roundCount;
+          const r = isFirst ? 1 : col;
+          const headerLabel = isFirst
+            ? `${bracketSize} 强赛`
+            : isFinalCol
+              ? '决赛 · 冠军'
+              : defaultRoundLabel(bracketSize, r);
+          const count = isFirst ? bracketSize : bracketSize / 2 ** r;
+          const width = isFinalCol ? CHAMPION_WIDTH : CARD_WIDTH;
           return (
             <div
-              key={r}
-              className="absolute flex h-9 items-center justify-center gap-2 rounded-lg border border-blue-100 bg-white/95 px-3 text-xs font-black text-[#03205c] shadow-sm backdrop-blur"
-              style={{ left: xForRound(r) + BOARD_PADDING, top: 8, width: CARD_WIDTH }}
+              key={`hdr-${col}`}
+              className={`absolute flex h-9 items-center justify-center gap-2 rounded-lg border px-3 text-xs font-black shadow-sm backdrop-blur ${
+                isFinalCol
+                  ? 'border-amber-200 bg-amber-50 text-amber-700'
+                  : 'border-blue-100 bg-white/95 text-[#03205c]'
+              }`}
+              style={{ left: xForCol(col) + BOARD_PADDING, top: 8, width }}
             >
-              <span>{defaultRoundLabel(bracketSize, r)}</span>
-              <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-black text-blue-700">
+              {isFinalCol ? (
+                <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="currentColor" aria-hidden>
+                  <path d="M5 4h14v2a4 4 0 0 1-4 4h-.07A4 4 0 0 1 13 13.86V16h2a1 1 0 0 1 0 2H9a1 1 0 0 1 0-2h2v-2.14A4 4 0 0 1 9.07 10H9a4 4 0 0 1-4-4V4zm2 2v.5A2.5 2.5 0 0 0 9 8.95V6H7zm10 0h-2v2.95A2.5 2.5 0 0 0 17 6.5V6z" />
+                </svg>
+              ) : null}
+              <span>{headerLabel}</span>
+              <span
+                className={`rounded-full px-2 py-0.5 text-[10px] font-black ${
+                  isFinalCol ? 'bg-amber-100 text-amber-700' : 'bg-blue-50 text-blue-700'
+                }`}
+              >
                 {count}
               </span>
             </div>
           );
         })}
 
-        {/* Connectors */}
+        {/* Connectors + labels */}
         <svg
           className="pointer-events-none absolute"
           style={{ left: BOARD_PADDING, top: BOARD_PADDING, width: boardW, height: totalH }}
@@ -534,8 +612,8 @@ function TreeView({
               key={c.key}
               d={c.d}
               fill="none"
-              stroke={c.highlight ? '#f59e0b' : '#cbd5e1'}
-              strokeWidth={c.highlight ? 2.4 : 1.4}
+              stroke={c.highlight ? '#f59e0b' : '#94a3b8'}
+              strokeWidth={c.highlight ? 2.2 : 1.4}
               strokeLinecap="round"
               strokeLinejoin="round"
               vectorEffect="non-scaling-stroke"
@@ -543,42 +621,323 @@ function TreeView({
           ))}
         </svg>
 
-        {/* Match cards */}
+        {/* Connector labels (rendered as HTML for crisp text) */}
+        {connectors
+          .filter((c) => c.label && c.labelX !== undefined && c.labelY !== undefined)
+          .map((c) => (
+            <div
+              key={`label-${c.key}`}
+              className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 rounded bg-white/90 px-1.5 py-0.5 text-[10px] font-black text-slate-500 shadow-sm ring-1 ring-blue-100"
+              style={{ left: (c.labelX ?? 0) + BOARD_PADDING, top: (c.labelY ?? 0) + BOARD_PADDING }}
+            >
+              {c.label}
+            </div>
+          ))}
+
+        {/* Column 0: participant boxes */}
+        {slots.map((slot, s) => (
+          <div
+            key={`slot-${s}`}
+            className="absolute"
+            style={{
+              left: xForCol(0) + BOARD_PADDING,
+              top: yForSlot(s) + BOARD_PADDING,
+              width: CARD_WIDTH,
+              height: CARD_HEIGHT,
+            }}
+          >
+            <ParticipantBox
+              participant={slot}
+              slotIndex={s}
+              adminMode={adminMode}
+              onDragSlot={onDragSlot}
+              onDropSlot={onDropSlot}
+              onHoverParticipant={onHoverParticipant}
+              highlighted={!!highlightedKeys.size && (() => {
+                // any match this slot feeds into is highlighted?
+                for (let r = 1; r <= roundCount; r += 1) {
+                  if (highlightedKeys.has(`${r}-${Math.floor(s / 2 ** r)}`)) return true;
+                }
+                return false;
+              })()}
+            />
+          </div>
+        ))}
+
+        {/* Columns 1..roundCount: winner cards (final card is itself the champion display) */}
         {matches.map((m) => {
+          const winner = winnerFor(m);
           const side1 = sideFor(m, 1);
           const side2 = sideFor(m, 2);
-          const winner = winnerFor(m);
           const highlighted = highlightedKeys.has(m.layoutKey);
+          const isFinal = m.roundNo === roundCount && m.index === 0;
+          const w = isFinal ? CHAMPION_WIDTH : CARD_WIDTH;
+          const h = isFinal ? CHAMPION_HEIGHT : CARD_HEIGHT;
+          // Recenter the bigger final card on the same vertical midpoint as a normal card
+          const baseTop = yForMatch(m.roundNo, m.index);
+          const top = isFinal ? baseTop + CARD_HEIGHT / 2 - h / 2 : baseTop;
           return (
             <div
               key={m.layoutKey}
               className="absolute"
               style={{
                 left: xForRound(m.roundNo) + BOARD_PADDING,
-                top: yForMatch(m.roundNo, m.index) + BOARD_PADDING,
-                width: CARD_WIDTH,
-                height: CARD_HEIGHT,
+                top: top + BOARD_PADDING,
+                width: w,
+                height: h,
               }}
             >
-              <MatchCard
+              <WinnerCard
                 match={m}
+                winner={winner}
                 side1={side1}
                 side2={side2}
-                winner={winner}
                 highlight={highlighted}
+                isFinal={isFinal}
                 onOpen={() => onOpenMatch(m)}
                 onHoverParticipant={onHoverParticipant}
-                adminMode={adminMode && m.roundNo === 1}
-                slotIndex1={side1 ? slotIndexById.get(side1.id) ?? null : null}
-                slotIndex2={side2 ? slotIndexById.get(side2.id) ?? null : null}
-                onDragSlot={onDragSlot}
-                onDropSlot={onDropSlot}
               />
             </div>
           );
         })}
       </div>
     </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Tree-view subcomponents — single-team cards
+// ─────────────────────────────────────────────────────────────────────
+
+function ParticipantBox({
+  participant,
+  slotIndex,
+  adminMode,
+  onDragSlot,
+  onDropSlot,
+  onHoverParticipant,
+  highlighted,
+}: {
+  participant: BracketParticipant;
+  slotIndex: number;
+  adminMode: boolean;
+  onDragSlot: (idx: number | null) => void;
+  onDropSlot: (targetIdx: number) => void;
+  onHoverParticipant: (id: string | null) => void;
+  highlighted: boolean;
+}) {
+  const bye = participant.isBye;
+  const draggable = adminMode && !bye;
+  return (
+    <div
+      className={`flex h-full w-full items-center gap-2 rounded-lg border bg-white px-2.5 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${
+        bye
+          ? 'border-dashed border-slate-200 bg-slate-50/60'
+          : highlighted
+            ? 'border-amber-300 ring-2 ring-amber-200'
+            : 'border-blue-100'
+      } ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}`}
+      draggable={draggable}
+      onDragStart={() => draggable && onDragSlot(slotIndex)}
+      onDragOver={(event) => {
+        if (draggable) event.preventDefault();
+      }}
+      onDrop={() => {
+        if (draggable) onDropSlot(slotIndex);
+      }}
+      onMouseEnter={() => !bye && onHoverParticipant(participant.id)}
+      onMouseLeave={() => onHoverParticipant(null)}
+    >
+      {participant.seed ? (
+        <span className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded bg-[#03205c] px-1 text-[10px] font-black text-white">
+          {participant.seed}
+        </span>
+      ) : null}
+      <span className="flex min-w-0 flex-1 flex-col leading-tight">
+        <span
+          className={`truncate text-[13px] ${
+            bye
+              ? 'font-semibold italic text-slate-400'
+              : 'font-bold text-slate-700'
+          }`}
+        >
+          {participant.name}
+        </span>
+        {participant.teamName && participant.members?.length ? (
+          <span className="truncate text-[10px] font-semibold text-slate-400">
+            {participant.members.join(' / ')}
+          </span>
+        ) : null}
+      </span>
+    </div>
+  );
+}
+
+function WinnerCard({
+  match,
+  winner,
+  side1,
+  side2,
+  highlight,
+  isFinal = false,
+  onOpen,
+  onHoverParticipant,
+}: {
+  match: LayoutMatch;
+  winner: BracketParticipant | null;
+  side1: BracketParticipant | null;
+  side2: BracketParticipant | null;
+  highlight: boolean;
+  isFinal?: boolean;
+  onOpen: () => void;
+  onHoverParticipant: (id: string | null) => void;
+}) {
+  const status = normalizeStatus(match.status);
+  const isLive = status === 'LIVE';
+  const isDone = status === 'COMPLETED';
+  const isPlaceholder = match.id.startsWith('placeholder-');
+  const forfeitedSide = match.forfeitedSide === 1 || match.forfeitedSide === 2 ? match.forfeitedSide : null;
+  const bothForfeited = match.forfeitedSide === 0;
+  const isForfeit = forfeitedSide !== null || bothForfeited;
+
+  // What name to show in the winner card
+  let displayName = '待定';
+  let displayParticipant: BracketParticipant | null = null;
+  if (winner) {
+    displayName = winner.name;
+    displayParticipant = winner;
+  } else if (bothForfeited) {
+    displayName = '双方弃权';
+  } else if (forfeitedSide) {
+    // The OTHER side advances by walkover
+    const advancer = forfeitedSide === 1 ? side2 : side1;
+    if (advancer) {
+      displayName = advancer.name;
+      displayParticipant = advancer;
+    }
+  }
+
+  // Champion-style tone for the final-round card when it has a winner
+  const tone = isFinal && (winner || (isForfeit && displayParticipant))
+    ? 'border-amber-300 bg-gradient-to-br from-amber-50 via-white to-amber-100 ring-1 ring-amber-200'
+    : bothForfeited
+      ? 'border-red-200 bg-red-50/60'
+      : isLive
+        ? 'border-red-200 bg-red-50/40 ring-1 ring-red-100'
+        : winner || (isForfeit && displayParticipant)
+          ? 'border-amber-200 bg-white'
+          : isDone
+            ? 'border-amber-200 bg-amber-50/40'
+            : isFinal
+              ? 'border-dashed border-amber-200 bg-amber-50/30'
+              : 'border-blue-100 bg-white';
+
+  if (isFinal) {
+    // Champion-display layout: stacked, large name, "冠军" eyebrow
+    return (
+      <button
+        type="button"
+        onClick={onOpen}
+        className={`group relative flex h-full w-full flex-col items-center justify-center gap-1 rounded-2xl border-2 px-4 text-center shadow-md transition hover:-translate-y-0.5 hover:shadow-lg ${tone} ${
+          highlight ? 'ring-2 ring-amber-300 ring-offset-1 ring-offset-white' : ''
+        }`}
+        onMouseEnter={() => displayParticipant && onHoverParticipant(displayParticipant.id)}
+        onMouseLeave={() => onHoverParticipant(null)}
+      >
+        <span className="flex items-center gap-1 text-[10px] font-black tracking-[0.22em] text-amber-600">
+          <svg viewBox="0 0 24 24" className="h-3 w-3" fill="currentColor" aria-hidden>
+            <path d="M5 4h14v2a4 4 0 0 1-4 4h-.07A4 4 0 0 1 13 13.86V16h2a1 1 0 0 1 0 2H9a1 1 0 0 1 0-2h2v-2.14A4 4 0 0 1 9.07 10H9a4 4 0 0 1-4-4V4z" />
+          </svg>
+          冠　军
+        </span>
+        <span
+          className={`flex max-w-full items-center gap-1.5 truncate text-xl font-black sm:text-2xl ${
+            bothForfeited
+              ? 'text-red-500 line-through decoration-red-300'
+              : winner || displayParticipant
+                ? 'text-[#03205c]'
+                : 'italic text-slate-400'
+          }`}
+        >
+          {displayParticipant?.seed ? (
+            <span className="inline-flex h-5 min-w-5 items-center justify-center rounded bg-[#03205c] px-1 text-[10px] font-black text-white">
+              {displayParticipant.seed}
+            </span>
+          ) : null}
+          {displayName}
+        </span>
+        {displayParticipant?.teamName && displayParticipant.members?.length ? (
+          <span className="max-w-full truncate text-[11px] font-semibold text-slate-500">
+            {displayParticipant.members.join(' / ')}
+          </span>
+        ) : null}
+        {/* Status / forfeit badge */}
+        {bothForfeited ? (
+          <span className="rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-black text-red-700">双方弃权</span>
+        ) : isForfeit ? (
+          <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-black text-amber-700">晋级</span>
+        ) : isLive ? (
+          <span className="inline-flex items-center gap-1 rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-black text-white">
+            <span className="bracket-live-pulse h-1 w-1 rounded-full bg-white" />
+            直播中
+          </span>
+        ) : null}
+      </button>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className={`group relative flex h-full w-full items-center justify-between gap-2 rounded-lg border px-2.5 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${tone} ${
+        highlight ? 'ring-2 ring-amber-300 ring-offset-1 ring-offset-white' : ''
+      } ${isPlaceholder && !winner ? 'opacity-70' : ''}`}
+      onMouseEnter={() => displayParticipant && onHoverParticipant(displayParticipant.id)}
+      onMouseLeave={() => onHoverParticipant(null)}
+    >
+      <span className="flex min-w-0 items-center gap-1.5">
+        {displayParticipant?.seed ? (
+          <span className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded bg-[#03205c] px-1 text-[10px] font-black text-white">
+            {displayParticipant.seed}
+          </span>
+        ) : null}
+        <span className="flex min-w-0 flex-col leading-tight">
+          <span
+            className={`truncate text-[13px] ${
+              bothForfeited
+                ? 'font-semibold text-red-500 line-through decoration-red-300'
+                : winner || displayParticipant
+                  ? 'font-black text-[#03205c]'
+                  : 'font-semibold italic text-slate-400'
+            }`}
+          >
+            {displayName}
+          </span>
+          {displayParticipant?.teamName && displayParticipant.members?.length ? (
+            <span className="truncate text-[10px] font-semibold text-slate-400">
+              {displayParticipant.members.join(' / ')}
+            </span>
+          ) : null}
+        </span>
+      </span>
+      <span className="flex shrink-0 items-center gap-1">
+        {bothForfeited ? (
+          <span className="rounded bg-red-100 px-1.5 py-0.5 text-[9px] font-black text-red-700">双方弃权</span>
+        ) : isForfeit ? (
+          <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[9px] font-black text-amber-700">晋级</span>
+        ) : isLive ? (
+          <span className="inline-flex items-center gap-1 rounded-full bg-red-500 px-1.5 py-0.5 text-[9px] font-black text-white">
+            <span className="bracket-live-pulse h-1 w-1 rounded-full bg-white" />
+            直播中
+          </span>
+        ) : winner ? (
+          <svg viewBox="0 0 20 20" className="h-3.5 w-3.5 text-amber-500" fill="currentColor" aria-hidden>
+            <path d="M16.7 5.3a1 1 0 0 1 0 1.4l-7.5 7.5a1 1 0 0 1-1.4 0L3.3 9.7a1 1 0 0 1 1.4-1.4l3.8 3.8 6.8-6.8a1 1 0 0 1 1.4 0z" />
+          </svg>
+        ) : null}
+      </span>
+    </button>
   );
 }
 
@@ -838,20 +1197,27 @@ function SideRow({
             {participant.seed}
           </span>
         ) : null}
-        <span
-          className={`truncate text-sm ${
-            bye
-              ? 'font-semibold italic text-slate-300'
-              : forfeited
-                ? 'font-semibold text-red-500'
-                : isWinner
-                  ? 'font-black text-[#03205c]'
-                  : dim
-                    ? 'font-semibold text-slate-400'
-                    : 'font-bold text-slate-700'
-          }`}
-        >
-          {participant?.name ?? '待定'}
+        <span className="flex min-w-0 flex-col leading-tight">
+          <span
+            className={`truncate text-sm ${
+              bye
+                ? 'font-semibold italic text-slate-300'
+                : forfeited
+                  ? 'font-semibold text-red-500'
+                  : isWinner
+                    ? 'font-black text-[#03205c]'
+                    : dim
+                      ? 'font-semibold text-slate-400'
+                      : 'font-bold text-slate-700'
+            }`}
+          >
+            {participant?.name ?? '待定'}
+          </span>
+          {participant?.teamName && participant.members?.length ? (
+            <span className="truncate text-[10px] font-semibold text-slate-400">
+              {participant.members.join(' / ')}
+            </span>
+          ) : null}
         </span>
       </span>
       <span className="flex items-center gap-1.5">
@@ -1051,6 +1417,11 @@ function ModalSide({
           >
             {participant?.name ?? '待定'}
           </span>
+          {participant?.teamName && participant.members?.length ? (
+            <span className="block truncate text-[11px] font-semibold text-slate-400">
+              {participant.members.join(' / ')}
+            </span>
+          ) : null}
           {participant?.affiliation ? (
             <span className="block truncate text-[11px] font-semibold text-slate-400">
               {participant.affiliation}

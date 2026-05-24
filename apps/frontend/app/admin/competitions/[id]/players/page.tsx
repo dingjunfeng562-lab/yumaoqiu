@@ -17,6 +17,7 @@ type Player = {
   competitionRegistrationId?: string | null;
   email: string;
   name: string;
+  teamName?: string | null;
   studentId: string;
   school?: string;
   className: string;
@@ -90,7 +91,21 @@ export default function AdminCompetitionPlayersPage() {
 
   const columns = [
     { title: '邮箱', dataIndex: 'email', key: 'email' },
-    { title: '姓名', dataIndex: 'name', key: 'name', width: 110 },
+    {
+      title: '队伍/姓名',
+      key: 'name',
+      width: 160,
+      render: (_: unknown, record: Player) => (
+        <Space direction="vertical" size={0}>
+          {record.teamName ? (
+            <Typography.Text strong>{record.teamName}</Typography.Text>
+          ) : null}
+          <Typography.Text type={record.teamName ? 'secondary' : undefined}>
+            {record.name}
+          </Typography.Text>
+        </Space>
+      ),
+    },
     { title: '学号', dataIndex: 'studentId', key: 'studentId', width: 140 },
     {
       title: '学校',
