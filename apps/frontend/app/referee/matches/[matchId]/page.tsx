@@ -60,11 +60,16 @@ type ScoreState = {
     typeLabel: string;
     scoringRule: string;
     scoringMode: string;
+    customGamePoint?: number | null;
+    customGameCap?: number | null;
+    customGamesToWin?: number | null;
     tournament: { name: string; edition: number };
   };
   venue?: { id: string; name: string } | null;
   scheduledAt?: string | null;
   durationMinutes: number;
+  startedAt?: string | null;
+  finishedAt?: string | null;
   side1?: { name: string; affiliation: string } | null;
   side2?: { name: string; affiliation: string } | null;
   side1Games: number;
@@ -92,8 +97,68 @@ const eventLabels: Record<string, string> = {
   FORFEIT: '弃权',
 };
 
+const SCORING_RULE_BASE: Record<string, { label: string; target: number; cap: number; gamesToWin: number }> = {
+  FIFTEEN_ONE: { label: '15分1局', target: 15, cap: 20, gamesToWin: 1 },
+  FIFTEEN_BO3: { label: '15分3局2胜', target: 15, cap: 20, gamesToWin: 2 },
+  TWENTYONE_BO3: { label: '21分3局2胜', target: 21, cap: 30, gamesToWin: 2 },
+  THIRTYONE_BO3: { label: '31分3局2胜', target: 31, cap: 31, gamesToWin: 2 },
+};
+
+function formatScoringRule(event: ScoreState['event']) {
+  const base = SCORING_RULE_BASE[event.scoringRule] ?? { label: event.scoringRule, target: 21, cap: 30, gamesToWin: 2 };
+  const target = event.customGamePoint && event.customGamePoint > 0 ? event.customGamePoint : base.target;
+  let cap = base.cap;
+  if (event.customGamePoint && event.customGamePoint > 0) {
+    cap = event.customGameCap && event.customGameCap >= event.customGamePoint ? event.customGameCap : event.customGamePoint;
+  } else if (event.customGameCap && event.customGameCap > 0) {
+    cap = event.customGameCap;
+  }
+  const gamesToWin = event.customGamesToWin && event.customGamesToWin > 0 ? event.customGamesToWin : base.gamesToWin;
+  const isCustom = Boolean(event.customGamePoint || event.customGameCap || event.customGamesToWin);
+  const capPart = cap > target ? `（封顶${cap}）` : '';
+  const seriesPart = gamesToWin === 1 ? '单局制' : `${gamesToWin * 2 - 1}局${gamesToWin}胜`;
+  return {
+    label: isCustom ? `自定义：${target}分/局${capPart}，${seriesPart}` : base.label,
+    target,
+    cap,
+    gamesToWin,
+    isCustom,
+  };
+}
+
 function sideName(side?: { name: string } | null) {
   return side?.name ?? '待定';
+}
+
+function MatchClock({
+  startedAt,
+  finishedAt,
+  status,
+}: {
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  status: ScoreState['status'];
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (status !== 'LIVE' || finishedAt) return;
+    const handle = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(handle);
+  }, [status, finishedAt]);
+
+  if (!startedAt) return null;
+  const startMs = new Date(startedAt).getTime();
+  if (Number.isNaN(startMs)) return null;
+  const endMs = finishedAt ? new Date(finishedAt).getTime() : now;
+  const seconds = Math.max(0, Math.floor((endMs - startMs) / 1000));
+  const mm = Math.floor(seconds / 60).toString().padStart(2, '0');
+  const ss = (seconds % 60).toString().padStart(2, '0');
+  return (
+    <p className="mt-1 inline-flex items-center gap-1 text-xs font-black tracking-wider text-emerald-700 sm:text-sm">
+      <FieldTimeOutlined />
+      用时 {mm}:{ss}{finishedAt ? '（已结束）' : ''}
+    </p>
+  );
 }
 
 function sideAffiliation(side?: { affiliation: string } | null) {
@@ -475,6 +540,10 @@ function TopMatchBar({
             <p className="mt-1 text-sm font-semibold text-[#64748B] sm:truncate xl:text-base">
               {score.event.tournament.name} · {score.round}
             </p>
+            <p className="mt-1 text-xs font-bold text-[#2563EB] sm:text-sm">
+              计分规则：{formatScoringRule(score.event).label}
+            </p>
+            <MatchClock startedAt={score.startedAt} finishedAt={score.finishedAt} status={score.status} />
           </div>
         </div>
 

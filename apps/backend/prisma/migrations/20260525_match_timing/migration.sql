@@ -1,0 +1,3 @@
+ALTER TABLE `Match`
+  ADD COLUMN `startedAt` DATETIME(3) NULL,
+  ADD COLUMN `finishedAt` DATETIME(3) NULL;

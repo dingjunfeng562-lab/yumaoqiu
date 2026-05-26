@@ -111,6 +111,7 @@ type TournamentFormValues = {
   organizer: string;
   subtitle?: string;
   coverImageUrl?: string;
+  location?: string;
   showOnHome?: boolean;
   status?: string;
   startDate: Dayjs;
@@ -322,6 +323,7 @@ export default function TournamentsPage() {
       organizer: tournament.organizer ?? '',
       subtitle: tournament.subtitle ?? undefined,
       coverImageUrl: tournament.coverImageUrl ?? undefined,
+      location: tournament.location ?? undefined,
       showOnHome: tournament.showOnHome,
       status: tournament.status,
       startDate: dayjs(tournament.startDate),
@@ -389,6 +391,7 @@ export default function TournamentsPage() {
       organizer: values.organizer.trim(),
       subtitle: values.subtitle?.trim() || undefined,
       coverImageUrl: values.coverImageUrl,
+      location: values.location?.trim() || undefined,
       showOnHome: Boolean(values.showOnHome),
       status: isSuperAdmin ? values.status : undefined,
       startDate: values.startDate.startOf('day').toISOString(),
@@ -712,6 +715,9 @@ export default function TournamentsPage() {
             </Form.Item>
             <Form.Item name="organizer" label="主办单位" rules={[{ required: true, whitespace: true, message: '请输入主办单位' }]}>
               <Input placeholder="XX 大学羽毛球协会" />
+            </Form.Item>
+            <Form.Item name="location" label="比赛地点">
+              <Input placeholder="例如：XX 大学体育馆" maxLength={80} />
             </Form.Item>
             <Space style={{ display: 'flex' }} align="start">
               <Form.Item

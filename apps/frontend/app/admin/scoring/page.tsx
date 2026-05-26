@@ -38,6 +38,7 @@ interface UserItem {
   username?: string | null;
   email?: string | null;
   role: string;
+  refereedMatchesCount?: number;
 }
 
 interface Registration {
@@ -207,10 +208,31 @@ export default function AdminScoringPage() {
                 dataIndex: 'refereeId',
                 render: (value: string | null, row: MatchItem) => (
                   <Select
-                    style={{ width: 220 }}
+                    style={{ width: 260 }}
                     value={value ?? undefined}
                     placeholder="选择裁判"
-                    options={referees.map((item) => ({ value: item.id, label: item.email || item.username || item.id }))}
+                    optionLabelProp="label"
+                    showSearch
+                    filterOption={(input, option) =>
+                      String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())
+                    }
+                    options={referees.map((item) => ({
+                      value: item.id,
+                      label: item.username || item.id,
+                      title: `已裁 ${item.refereedMatchesCount ?? 0} 场`,
+                    }))}
+                    optionRender={(option) => {
+                      const ref = referees.find((r) => r.id === option.value);
+                      const count = ref?.refereedMatchesCount ?? 0;
+                      return (
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                          <span style={{ fontWeight: 600 }}>{ref?.username || ref?.id}</span>
+                          <Tag color={count > 0 ? 'blue' : 'default'} style={{ marginInlineEnd: 0 }}>
+                            已裁 {count} 场
+                          </Tag>
+                        </div>
+                      );
+                    }}
                     onChange={(nextRefereeId) => assignReferee(row.id, nextRefereeId)}
                   />
                 ),

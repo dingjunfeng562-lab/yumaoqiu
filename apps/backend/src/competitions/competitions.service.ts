@@ -838,13 +838,29 @@ export class CompetitionsService {
       registration.className ??
       registration.player1.affiliation ??
       '';
+    const primaryName = registration.player1.name;
+    const partner = registration.player2
+      ? {
+          name: registration.player2.name,
+          gender: registration.player2.gender,
+          genderLabel: registration.player2.gender === Gender.MALE ? '男' : '女',
+          // The partner shares the school of the primary registrant on doubles
+          // registrations, so fall back to the same school resolution.
+          school,
+          phone: registration.player2.contact ?? '',
+        }
+      : null;
     return {
       id: registration.id,
       competitionRegistrationId: registration.competitionRegistrationId,
       competitionId: registration.event.tournamentId,
       eventId: registration.eventId,
       email: registration.competitionRegistration?.user.email ?? '',
-      name: registration.name ?? registration.player1.name,
+      name: registration.name ?? primaryName,
+      // Always expose the primary player's individual name so doubles lists can
+      // show each team member on their own row.
+      primaryName,
+      partner,
       teamName: registration.teamName ?? null,
       studentId: registration.studentId ?? '',
       school,

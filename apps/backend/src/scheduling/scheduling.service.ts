@@ -39,6 +39,8 @@ type ScheduleMatch = {
   venueName: string | null;
   scheduledAt: Date | null;
   durationMinutes: number;
+  startedAt: Date | null;
+  finishedAt: Date | null;
   dependenciesReady: boolean;
   dependencyMatchIds: string[];
   scheduleStatus: 'WAITING_SCHEDULE' | 'PENDING' | 'LIVE' | 'COMPLETED' | 'CANCELLED';
@@ -123,6 +125,8 @@ export class SchedulingService {
       matches: matches.map((match) => ({
         ...match,
         scheduledAt: match.scheduledAt?.toISOString() ?? null,
+        startedAt: match.startedAt?.toISOString() ?? null,
+        finishedAt: match.finishedAt?.toISOString() ?? null,
         conflicts: conflictMap.get(match.id) ?? [],
       })),
       conflicts,
@@ -242,18 +246,25 @@ export class SchedulingService {
         return a.roundNo - b.roundNo || a.matchNo - b.matchNo || aRank - bRank;
       });
 
-    const updates: Array<{ matchId: string; venueId: string; scheduledAt: Date }> = [];
+    const overrideMatchMinutes = Boolean(dto.overrideMatchMinutes);
+    const resolveMinutes = (existing: number | null | undefined) => {
+      if (overrideMatchMinutes) return matchMinutes;
+      return existing && existing > 0 ? existing : matchMinutes;
+    };
+
+    const updates: Array<{ matchId: string; venueId: string; scheduledAt: Date; minutes: number }> = [];
     for (const match of readyMatches) {
       const playerIds = [
         ...this.playerIds(registrationMap.get(match.side1Id!)),
         ...this.playerIds(registrationMap.get(match.side2Id!)),
       ];
+      const perMatchMinutes = resolveMinutes(match.durationMinutes);
       const candidates = venues.map((venue) => ({
         venue,
         startTime: this.findEarliestStart(
           venue.id,
           earliestScheduleStart,
-          matchMinutes,
+          perMatchMinutes,
           breakMinutes,
           dailyWindow,
           tournament.endDate,
@@ -265,12 +276,12 @@ export class SchedulingService {
       candidates.sort((a, b) => a.startTime - b.startTime || a.venue.sortOrder - b.venue.sortOrder);
       const winner = candidates[0];
       const scheduledAt = new Date(winner.startTime);
-      const matchEndAt = this.addMinutes(scheduledAt, matchMinutes).getTime();
+      const matchEndAt = this.addMinutes(scheduledAt, perMatchMinutes).getTime();
 
-      updates.push({ matchId: match.id, venueId: winner.venue.id, scheduledAt });
+      updates.push({ matchId: match.id, venueId: winner.venue.id, scheduledAt, minutes: perMatchMinutes });
       this.addBusyInterval(venueBusy, winner.venue.id, {
         start: scheduledAt.getTime(),
-        end: this.addMinutes(scheduledAt, matchMinutes + breakMinutes).getTime(),
+        end: this.addMinutes(scheduledAt, perMatchMinutes + breakMinutes).getTime(),
       });
       for (const playerId of playerIds) {
         this.addBusyInterval(playerBusy, playerId, {
@@ -280,14 +291,18 @@ export class SchedulingService {
       }
     }
 
+    const resetData: Prisma.MatchUncheckedUpdateManyInput = {
+      venueId: null,
+      scheduledAt: null,
+    };
+    if (overrideMatchMinutes) {
+      resetData.durationMinutes = matchMinutes;
+    }
+
     await this.prisma.$transaction([
       this.prisma.match.updateMany({
         where: { id: { in: [...adjustableIds] } },
-        data: {
-          venueId: null,
-          scheduledAt: null,
-          durationMinutes: matchMinutes,
-        },
+        data: resetData,
       }),
       this.prisma.match.updateMany({
         where: { id: { in: invalidCompletedIds } },
@@ -302,7 +317,7 @@ export class SchedulingService {
           data: {
             venueId: update.venueId,
             scheduledAt: update.scheduledAt,
-            durationMinutes: matchMinutes,
+            durationMinutes: update.minutes,
           },
         }),
       ),
@@ -393,6 +408,8 @@ export class SchedulingService {
         venueName: match.venue?.name ?? null,
         scheduledAt: match.scheduledAt,
         durationMinutes: match.durationMinutes,
+        startedAt: match.startedAt,
+        finishedAt: match.finishedAt,
         dependenciesReady,
         dependencyMatchIds,
         scheduleStatus,

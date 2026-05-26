@@ -8,6 +8,7 @@ import {
   Col,
   Empty,
   Form,
+  Input,
   InputNumber,
   Modal,
   Popconfirm,
@@ -24,8 +25,10 @@ import {
 import {
   BranchesOutlined,
   CheckCircleOutlined,
+  CloseCircleOutlined,
   DeleteOutlined,
   EyeInvisibleOutlined,
+  FileDoneOutlined,
   PlusOutlined,
   ReloadOutlined,
   StarFilled,
@@ -135,6 +138,22 @@ interface BracketData {
   registrations: Registration[];
   rounds: RoundItem[];
   groups: GroupItem[];
+}
+
+interface RedrawRequestItem {
+  id: string;
+  eventItemId: string;
+  drawBracketId: string | null;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED';
+  reason: string | null;
+  requesterId: string;
+  requesterNameSnapshot: string | null;
+  decidedById: string | null;
+  decidedByNameSnapshot: string | null;
+  decisionRemark: string | null;
+  decidedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 function seedMark(seed?: number | null) {
@@ -376,6 +395,9 @@ function BracketRenderer({ data }: { data?: BracketData | null }) {
 export default function DrawsPage() {
   const { data: session } = useSession();
   const token = session?.user?.accessToken as string | undefined;
+  const userRole = session?.user?.role;
+  const userId = session?.user?.id;
+  const isSuperAdmin = userRole === 'SUPER_ADMIN';
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
   const [events, setEvents] = useState<EventItem[]>([]);
   const [players, setPlayers] = useState<Player[]>([]);
@@ -388,6 +410,11 @@ export default function DrawsPage() {
   const [registrationForm] = Form.useForm();
   const [swapPosA, setSwapPosA] = useState<number | undefined>(undefined);
   const [swapPosB, setSwapPosB] = useState<number | undefined>(undefined);
+  const [redrawRequests, setRedrawRequests] = useState<RedrawRequestItem[]>([]);
+  const [requestOpen, setRequestOpen] = useState(false);
+  const [requestForm] = Form.useForm();
+  const [rejectingRequest, setRejectingRequest] = useState<RedrawRequestItem | null>(null);
+  const [rejectForm] = Form.useForm();
 
   const selectedEvent = useMemo(
     () => events.find((event) => event.id === selectedEventId),
@@ -425,6 +452,14 @@ export default function DrawsPage() {
       },
     ]);
   }, [visibleBracket]);
+  const pendingRedrawRequest = useMemo(
+    () =>
+      redrawRequests.find(
+        (item) => item.eventItemId === selectedEventId && item.status === 'PENDING',
+      ) ?? null,
+    [redrawRequests, selectedEventId],
+  );
+
   const canShowSwapControls = Boolean(
     bracket?.currentDraw &&
       !selectedEvent?.drawPublished &&
@@ -440,6 +475,23 @@ export default function DrawsPage() {
     setSelectedEventId(data[0]?.id ?? '');
   }
 
+  async function loadRedrawRequests(eventId: string) {
+    if (!token || !eventId) {
+      setRedrawRequests([]);
+      return;
+    }
+    try {
+      const data = await apiFetch<RedrawRequestItem[]>(
+        `/draw/redraw-requests?eventId=${eventId}&status=PENDING`,
+        { token },
+      );
+      setRedrawRequests(data);
+    } catch (error) {
+      setRedrawRequests([]);
+      console.error(error);
+    }
+  }
+
   async function refreshDraw() {
     if (!token || !selectedEventId) return;
     const [registrationData, bracketData] = await Promise.all([
@@ -448,6 +500,7 @@ export default function DrawsPage() {
     ]);
     setRegistrations(registrationData);
     setBracket(bracketData);
+    loadRedrawRequests(selectedEventId);
     setEvents((prev) =>
       prev.map((event) =>
         event.id === selectedEventId
@@ -516,6 +569,7 @@ export default function DrawsPage() {
       }
     }
     loadDraw().catch((error) => message.error(error instanceof Error ? error.message : '加载抽签数据失败'));
+    loadRedrawRequests(selectedEventId);
     return () => {
       alive = false;
     };
@@ -580,6 +634,70 @@ export default function DrawsPage() {
       message.success(publish ? '对阵图已发布，公众可查看' : '已取消发布，对阵图不再公开显示');
     } catch (error) {
       message.error(error instanceof Error ? error.message : '操作失败');
+    }
+  }
+
+  async function submitRedrawRequest() {
+    if (!token || !selectedEventId) return;
+    const values = await requestForm.validateFields();
+    try {
+      await apiFetch(`/events/${selectedEventId}/draw/redraw-request`, {
+        method: 'POST',
+        token,
+        body: JSON.stringify({ reason: values.reason ?? '' }),
+      });
+      message.success('已提交重抽申请，等待总管理员审批');
+      setRequestOpen(false);
+      requestForm.resetFields();
+      loadRedrawRequests(selectedEventId);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '申请提交失败');
+    }
+  }
+
+  async function approveRedrawRequest(request: RedrawRequestItem) {
+    if (!token) return;
+    try {
+      await apiFetch(`/draw/redraw-requests/${request.id}/approve`, {
+        method: 'POST',
+        token,
+      });
+      message.success('已同意申请，重抽已完成（未发布）');
+      await refreshDraw();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '审批失败');
+    }
+  }
+
+  async function submitRejectRequest() {
+    if (!token || !rejectingRequest) return;
+    const values = await rejectForm.validateFields();
+    try {
+      await apiFetch(`/draw/redraw-requests/${rejectingRequest.id}/reject`, {
+        method: 'POST',
+        token,
+        body: JSON.stringify({ reason: values.reason ?? '' }),
+      });
+      message.success('已拒绝该申请');
+      setRejectingRequest(null);
+      rejectForm.resetFields();
+      loadRedrawRequests(selectedEventId);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '操作失败');
+    }
+  }
+
+  async function cancelRedrawRequest(request: RedrawRequestItem) {
+    if (!token) return;
+    try {
+      await apiFetch(`/draw/redraw-requests/${request.id}/cancel`, {
+        method: 'POST',
+        token,
+      });
+      message.success('已撤回申请');
+      loadRedrawRequests(selectedEventId);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '撤回失败');
     }
   }
 
@@ -670,11 +788,28 @@ export default function DrawsPage() {
             </Popconfirm>
           )}
           {bracket?.currentDraw ? (
-            <Popconfirm title="重新抽签会覆盖当前对阵并取消发布，确认继续？" onConfirm={() => handleDraw(true)}>
-              <Button danger icon={<BranchesOutlined />} disabled={!selectedEventId || registrations.length < 2}>
-                重新抽签
+            selectedEvent?.drawPublished && !isSuperAdmin ? (
+              <Button
+                icon={<FileDoneOutlined />}
+                onClick={() => setRequestOpen(true)}
+                disabled={!selectedEventId || registrations.length < 2 || Boolean(pendingRedrawRequest)}
+              >
+                {pendingRedrawRequest ? '已提交申请，等待审批' : '申请重新抽签'}
               </Button>
-            </Popconfirm>
+            ) : (
+              <Popconfirm
+                title={
+                  selectedEvent?.drawPublished
+                    ? '对阵已发布，重抽会清空所有比赛结果并取消发布，确认继续？'
+                    : '重新抽签会覆盖当前对阵，确认继续？'
+                }
+                onConfirm={() => handleDraw(true)}
+              >
+                <Button danger icon={<BranchesOutlined />} disabled={!selectedEventId || registrations.length < 2}>
+                  重新抽签
+                </Button>
+              </Popconfirm>
+            )
           ) : (
             <Button type="primary" icon={<BranchesOutlined />} onClick={() => handleDraw(false)} disabled={!selectedEventId || registrations.length < 2}>
               抽签
@@ -717,6 +852,64 @@ export default function DrawsPage() {
           </Col>
         </Row>
       </section>
+
+      {pendingRedrawRequest && (
+        <section
+          style={{
+            marginBottom: 16,
+            border: '1px solid #faad14',
+            borderRadius: 8,
+            padding: 16,
+            background: '#fffbe6',
+          }}
+        >
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <Space wrap>
+              <FileDoneOutlined style={{ color: '#d48806' }} />
+              <Typography.Text strong style={{ color: '#d48806' }}>
+                {isSuperAdmin ? '待审批的重抽申请' : '我的重抽申请'}
+              </Typography.Text>
+              <Tag color="orange">PENDING</Tag>
+            </Space>
+            <Typography.Text>
+              申请人：{pendingRedrawRequest.requesterNameSnapshot ?? pendingRedrawRequest.requesterId}　·　提交时间：
+              {new Date(pendingRedrawRequest.createdAt).toLocaleString()}
+            </Typography.Text>
+            <Typography.Text type="secondary">
+              理由：{pendingRedrawRequest.reason || '（未填写）'}
+            </Typography.Text>
+            <Space wrap>
+              {isSuperAdmin && (
+                <>
+                  <Popconfirm
+                    title="同意将立即重新抽签并清空所有已产生的比赛结果（不会自动发布），确认继续？"
+                    onConfirm={() => approveRedrawRequest(pendingRedrawRequest)}
+                  >
+                    <Button type="primary" icon={<CheckCircleOutlined />}>
+                      同意并重抽
+                    </Button>
+                  </Popconfirm>
+                  <Button
+                    danger
+                    icon={<CloseCircleOutlined />}
+                    onClick={() => setRejectingRequest(pendingRedrawRequest)}
+                  >
+                    拒绝
+                  </Button>
+                </>
+              )}
+              {!isSuperAdmin && pendingRedrawRequest.requesterId === userId && (
+                <Popconfirm
+                  title="确认撤回该申请？"
+                  onConfirm={() => cancelRedrawRequest(pendingRedrawRequest)}
+                >
+                  <Button>撤回申请</Button>
+                </Popconfirm>
+              )}
+            </Space>
+          </Space>
+        </section>
+      )}
 
       <Spin spinning={loading}>
         <Row gutter={[16, 16]}>
@@ -845,6 +1038,53 @@ export default function DrawsPage() {
                 </Form.Item>
               ) : null
             }
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title="申请重新抽签"
+        open={requestOpen}
+        onOk={submitRedrawRequest}
+        onCancel={() => {
+          setRequestOpen(false);
+          requestForm.resetFields();
+        }}
+        okText="提交申请"
+        cancelText="取消"
+      >
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="对阵已发布"
+          description="申请通过后，总管理员会清空当前所有比赛结果并重新生成对阵（不会自动重新发布）。"
+        />
+        <Form form={requestForm} layout="vertical">
+          <Form.Item
+            name="reason"
+            label="申请理由"
+            rules={[{ required: true, message: '请填写申请理由，便于总管理员审批' }]}
+          >
+            <Input.TextArea rows={4} maxLength={500} showCount placeholder="例如：发现报名信息有误 / 选手退赛需要重新分签等" />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title="拒绝重抽申请"
+        open={Boolean(rejectingRequest)}
+        onOk={submitRejectRequest}
+        onCancel={() => {
+          setRejectingRequest(null);
+          rejectForm.resetFields();
+        }}
+        okText="确认拒绝"
+        cancelText="取消"
+      >
+        <Form form={rejectForm} layout="vertical">
+          <Form.Item name="reason" label="拒绝原因（可选）">
+            <Input.TextArea rows={4} maxLength={500} showCount placeholder="向申请人说明拒绝原因" />
           </Form.Item>
         </Form>
       </Modal>

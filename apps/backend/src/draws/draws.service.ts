@@ -1,12 +1,14 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import {
   DrawFormat,
   DrawOperationType,
+  DrawRedrawRequestStatus,
   DrawSlotSourceType,
   DrawStatus,
   Format,
@@ -14,6 +16,7 @@ import {
   Prisma,
   Registration,
   RegistrationStatus,
+  Role,
   EventType,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -712,13 +715,19 @@ export class DrawsService {
     confirm: boolean,
     operatorId: string,
     operatorName: string | null,
+    operatorRole: Role,
   ) {
     if (!confirm) throw new BadRequestException('重新抽签需要确认');
+    const event = await this.ensureEvent(eventId);
     const current = await this.prisma.drawBracket.findFirst({
       where: { eventItemId: eventId, isCurrent: true },
       orderBy: { version: 'desc' },
     });
     if (!current) throw new NotFoundException('当前单项还没有可重抽的签表');
+
+    if (event.drawPublished && operatorRole !== Role.SUPER_ADMIN) {
+      throw new ForbiddenException('对阵已发布，普通管理员请提交重抽申请，由总管理员审批');
+    }
 
     const next = await this.executeDraw(eventId, operatorId, operatorName, true);
     await this.prisma.drawOperationLog.create({
@@ -739,6 +748,175 @@ export class DrawsService {
       },
     });
     return next;
+  }
+
+  async createRedrawRequest(
+    eventId: string,
+    reason: string | undefined,
+    requesterId: string,
+    requesterName: string | null,
+  ) {
+    if (!requesterId) throw new BadRequestException('缺少操作人信息');
+    const event = await this.ensureEvent(eventId);
+    if (!event.drawPublished) {
+      throw new ConflictException('对阵尚未发布，可直接重新抽签，无需申请');
+    }
+
+    const current = await this.prisma.drawBracket.findFirst({
+      where: { eventItemId: eventId, isCurrent: true },
+      orderBy: { version: 'desc' },
+    });
+    if (!current) throw new NotFoundException('当前单项还没有可重抽的签表');
+
+    const pending = await this.prisma.drawRedrawRequest.findFirst({
+      where: { eventItemId: eventId, status: DrawRedrawRequestStatus.PENDING },
+    });
+    if (pending) {
+      throw new ConflictException('该单项已存在待审批的重抽申请');
+    }
+
+    return this.prisma.drawRedrawRequest.create({
+      data: {
+        eventItemId: eventId,
+        drawBracketId: current.id,
+        status: DrawRedrawRequestStatus.PENDING,
+        reason: reason?.trim() || null,
+        requesterId,
+        requesterNameSnapshot: requesterName,
+      },
+    });
+  }
+
+  async listRedrawRequests(query: { eventId?: string; status?: string }) {
+    const where: Prisma.DrawRedrawRequestWhereInput = {};
+    if (query.eventId) where.eventItemId = query.eventId;
+    if (query.status) {
+      const statuses = query.status
+        .split(',')
+        .map((item) => item.trim())
+        .filter((item): item is DrawRedrawRequestStatus =>
+          (Object.values(DrawRedrawRequestStatus) as string[]).includes(item),
+        );
+      if (statuses.length === 1) where.status = statuses[0];
+      else if (statuses.length > 1) where.status = { in: statuses };
+    }
+
+    return this.prisma.drawRedrawRequest.findMany({
+      where,
+      orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
+      include: {
+        event: {
+          select: { id: true, type: true, tournamentId: true },
+        },
+      },
+    });
+  }
+
+  async approveRedrawRequest(
+    requestId: string,
+    operatorId: string,
+    operatorName: string | null,
+  ) {
+    if (!operatorId) throw new BadRequestException('缺少操作人信息');
+    const request = await this.prisma.drawRedrawRequest.findUnique({
+      where: { id: requestId },
+    });
+    if (!request) throw new NotFoundException('申请不存在');
+    if (request.status !== DrawRedrawRequestStatus.PENDING) {
+      throw new ConflictException('该申请已处理，无法重复审批');
+    }
+
+    const next = await this.executeDraw(
+      request.eventItemId,
+      operatorId,
+      operatorName,
+      true,
+    );
+
+    await this.prisma.$transaction([
+      this.prisma.drawRedrawRequest.update({
+        where: { id: requestId },
+        data: {
+          status: DrawRedrawRequestStatus.APPROVED,
+          decidedById: operatorId,
+          decidedByNameSnapshot: operatorName,
+          decidedAt: new Date(),
+          drawBracketId: next.id,
+        },
+      }),
+      this.prisma.drawOperationLog.create({
+        data: {
+          eventItemId: request.eventItemId,
+          drawBracketId: next.id,
+          operationType: DrawOperationType.REDRAW,
+          operatorId,
+          operatorNameSnapshot: operatorName,
+          beforeData: {
+            requestId: request.id,
+            requesterId: request.requesterId,
+            requesterName: request.requesterNameSnapshot,
+            reason: request.reason,
+          } as Prisma.InputJsonValue,
+          afterData: {
+            currentDrawId: next.id,
+            currentVersion: next.version,
+          } as Prisma.InputJsonValue,
+          remark: 'REDRAW_APPROVED',
+        },
+      }),
+    ]);
+
+    return {
+      request: await this.prisma.drawRedrawRequest.findUniqueOrThrow({
+        where: { id: requestId },
+      }),
+      draw: next,
+    };
+  }
+
+  async rejectRedrawRequest(
+    requestId: string,
+    reason: string | undefined,
+    operatorId: string,
+    operatorName: string | null,
+  ) {
+    if (!operatorId) throw new BadRequestException('缺少操作人信息');
+    const request = await this.prisma.drawRedrawRequest.findUnique({
+      where: { id: requestId },
+    });
+    if (!request) throw new NotFoundException('申请不存在');
+    if (request.status !== DrawRedrawRequestStatus.PENDING) {
+      throw new ConflictException('该申请已处理，无法重复审批');
+    }
+
+    return this.prisma.drawRedrawRequest.update({
+      where: { id: requestId },
+      data: {
+        status: DrawRedrawRequestStatus.REJECTED,
+        decidedById: operatorId,
+        decidedByNameSnapshot: operatorName,
+        decisionRemark: reason?.trim() || null,
+        decidedAt: new Date(),
+      },
+    });
+  }
+
+  async cancelRedrawRequest(requestId: string, operatorId: string) {
+    if (!operatorId) throw new BadRequestException('缺少操作人信息');
+    const request = await this.prisma.drawRedrawRequest.findUnique({
+      where: { id: requestId },
+    });
+    if (!request) throw new NotFoundException('申请不存在');
+    if (request.status !== DrawRedrawRequestStatus.PENDING) {
+      throw new ConflictException('该申请已处理，无法撤回');
+    }
+    if (request.requesterId !== operatorId) {
+      throw new ForbiddenException('只能撤回自己提交的申请');
+    }
+    return this.prisma.drawRedrawRequest.update({
+      where: { id: requestId },
+      data: { status: DrawRedrawRequestStatus.CANCELLED },
+    });
   }
 
   async getDrawHistory(eventId: string) {
@@ -1022,6 +1200,12 @@ export class DrawsService {
     eventId: string,
     drafts: MatchDraft[],
   ) {
+    const event = await tx.event.findUnique({
+      where: { id: eventId },
+      select: { defaultMatchMinutes: true, tournament: { select: { defaultMatchMinutes: true } } },
+    });
+    const minutes =
+      event?.defaultMatchMinutes ?? event?.tournament?.defaultMatchMinutes ?? 45;
     for (const draft of drafts) {
       await tx.match.create({
         data: {
@@ -1033,6 +1217,7 @@ export class DrawsService {
           side2Id: draft.side2Id,
           status: draft.status,
           winnerSide: draft.winnerSide,
+          durationMinutes: minutes,
         },
       });
     }

@@ -7,6 +7,7 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   DatePicker,
   Empty,
   Form,
@@ -97,7 +98,19 @@ interface ScheduleMatch {
   venueName?: string | null;
   scheduledAt?: string | null;
   durationMinutes: number;
+  startedAt?: string | null;
+  finishedAt?: string | null;
   conflicts: ConflictItem[];
+}
+
+function formatActualDuration(row: ScheduleMatch) {
+  if (!row.startedAt) return '—';
+  const end = row.finishedAt ? new Date(row.finishedAt).getTime() : Date.now();
+  const start = new Date(row.startedAt).getTime();
+  const seconds = Math.max(0, Math.floor((end - start) / 1000));
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return row.finishedAt ? `${m}分${s.toString().padStart(2, '0')}秒` : `${m}分${s.toString().padStart(2, '0')}秒（进行中）`;
 }
 
 interface ScheduleData {
@@ -223,6 +236,7 @@ export default function AdminSchedulingPage() {
     breakMinutes: number;
     venueIds?: string[];
     eventTypeOrder?: string[];
+    overrideMatchMinutes?: boolean;
   }) {
     if (!token || !selectedTournamentId) return;
     try {
@@ -237,6 +251,7 @@ export default function AdminSchedulingPage() {
           breakMinutes: values.breakMinutes,
           venueIds: values.venueIds,
           eventTypeOrder: values.eventTypeOrder,
+          overrideMatchMinutes: values.overrideMatchMinutes,
         }),
       });
       setSchedule(data);
@@ -244,6 +259,21 @@ export default function AdminSchedulingPage() {
       message.success('自动排程完成');
     } catch (error) {
       message.error(error instanceof Error ? error.message : '自动排程失败');
+    }
+  }
+
+  async function quickUpdateDuration(match: ScheduleMatch, durationMinutes: number) {
+    if (!token || !durationMinutes || durationMinutes === match.durationMinutes) return;
+    try {
+      const data = await apiFetch<ScheduleData>(`/matches/${match.id}/schedule`, {
+        method: 'PATCH',
+        token,
+        body: JSON.stringify({ durationMinutes }),
+      });
+      setSchedule(data);
+      message.success('时长已更新');
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '更新时长失败');
     }
   }
 
@@ -273,15 +303,17 @@ export default function AdminSchedulingPage() {
     durationMinutes?: number;
   }) {
     if (!token || !editingMatch) return;
+    const payload: Record<string, unknown> = {};
+    if (values.venueId !== undefined) payload.venueId = values.venueId || null;
+    if (values.scheduledAt !== undefined) {
+      payload.scheduledAt = values.scheduledAt ? values.scheduledAt.toISOString() : null;
+    }
+    if (values.durationMinutes !== undefined) payload.durationMinutes = values.durationMinutes;
     try {
       const data = await apiFetch<ScheduleData>(`/matches/${editingMatch.id}/schedule`, {
         method: 'PATCH',
         token,
-        body: JSON.stringify({
-          venueId: values.venueId ?? null,
-          scheduledAt: values.scheduledAt ? values.scheduledAt.toISOString() : null,
-          durationMinutes: values.durationMinutes,
-        }),
+        body: JSON.stringify(payload),
       });
       setSchedule(data);
       setEditingMatch(null);
@@ -409,7 +441,34 @@ export default function AdminSchedulingPage() {
                 return <Tag color={meta.color}>{meta.label}</Tag>;
               },
             },
-            { title: '时长', dataIndex: 'durationMinutes', width: 90, render: (value) => `${value}分钟` },
+            {
+              title: '预估时长',
+              dataIndex: 'durationMinutes',
+              width: 130,
+              render: (value: number, row: ScheduleMatch) => (
+                <InputNumber
+                  size="small"
+                  min={5}
+                  max={600}
+                  value={value}
+                  onBlur={(e) => {
+                    const next = Number((e.target as HTMLInputElement).value);
+                    if (Number.isFinite(next)) quickUpdateDuration(row, next);
+                  }}
+                  onPressEnter={(e) => {
+                    const next = Number((e.target as HTMLInputElement).value);
+                    if (Number.isFinite(next)) quickUpdateDuration(row, next);
+                  }}
+                  addonAfter="分"
+                  style={{ width: 120 }}
+                />
+              ),
+            },
+            {
+              title: '实际用时',
+              width: 140,
+              render: (_: unknown, row: ScheduleMatch) => formatActualDuration(row),
+            },
             {
               title: '操作',
               width: 100,
@@ -458,19 +517,25 @@ export default function AdminSchedulingPage() {
               options={events.map((item) => ({ value: item.type, label: EVENT_TYPE_LABELS[item.type] ?? item.type }))}
             />
           </Form.Item>
+          <Form.Item name="overrideMatchMinutes" valuePropName="checked" initialValue={false}>
+            <Checkbox>覆盖每场已有的预估时长（默认仅作用于没单独调整过的场次）</Checkbox>
+          </Form.Item>
         </Form>
       </Modal>
 
       <Modal title="手动调整排程" open={Boolean(editingMatch)} onCancel={() => setEditingMatch(null)} onOk={() => editForm.submit()} destroyOnHidden>
         <Form form={editForm} layout="vertical" onFinish={updateMatchSchedule}>
-          <Form.Item name="venueId" label="场地" rules={[{ required: true, message: '请选择场地' }]}>
-            <Select options={activeVenues.map((venue) => ({ value: venue.id, label: venue.name }))} />
+          <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+            场地与时间留空表示不变更；预估时长可独立修改而不影响其他字段。
+          </Typography.Text>
+          <Form.Item name="venueId" label="场地">
+            <Select allowClear options={activeVenues.map((venue) => ({ value: venue.id, label: venue.name }))} />
           </Form.Item>
-          <Form.Item name="scheduledAt" label="比赛时间" rules={[{ required: true, message: '请选择比赛时间' }]}>
+          <Form.Item name="scheduledAt" label="比赛时间">
             <DatePicker showTime format="YYYY-MM-DD HH:mm" style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item name="durationMinutes" label="预估时长（分钟）" rules={[{ required: true }]}>
-            <InputNumber min={5} style={{ width: '100%' }} />
+          <Form.Item name="durationMinutes" label="预估时长（分钟）" rules={[{ required: true, message: '请输入预估时长' }]}>
+            <InputNumber min={5} max={600} style={{ width: '100%' }} />
           </Form.Item>
         </Form>
       </Modal>

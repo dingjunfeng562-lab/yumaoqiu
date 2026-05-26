@@ -685,6 +685,9 @@ export class PublicService {
         venueName: match.venue?.name ?? '待排场地',
         refereeName: match.referee?.username ?? null,
         scheduledAt: match.scheduledAt?.toISOString?.() ?? null,
+        startedAt: match.startedAt?.toISOString?.() ?? null,
+        finishedAt: match.finishedAt?.toISOString?.() ?? null,
+        durationMinutes: match.durationMinutes ?? null,
         score: match.forfeitedSide
           ? '弃权'
           : match.games.length

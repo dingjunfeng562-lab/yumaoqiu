@@ -84,6 +84,9 @@ export class ScoringService {
     const eventType = match.event?.type ?? match.teamCompetitionItem?.eventType ?? 'TEAM_COMPETITION';
     const scoringRule = match.event?.scoringRule ?? ScoringRule.TWENTYONE_BO3;
     const scoringMode = match.event?.scoringMode ?? ScoringMode.CAPPED_30;
+    const customGamePoint = match.event?.customGamePoint ?? null;
+    const customGameCap = match.event?.customGameCap ?? null;
+    const customGamesToWin = match.event?.customGamesToWin ?? null;
     const tournament = match.event?.tournament ?? match.teamMatch?.teamCompetition.tournament;
 
     return {
@@ -101,6 +104,9 @@ export class ScoringService {
         typeLabel: EVENT_TYPE_LABELS[eventType] ?? '团体赛',
         scoringRule,
         scoringMode,
+        customGamePoint,
+        customGameCap,
+        customGamesToWin,
         tournament: tournament
           ? {
               id: tournament.id,
@@ -113,6 +119,9 @@ export class ScoringService {
       venue: match.venue ? { id: match.venue.id, name: match.venue.name } : null,
       scheduledAt: match.scheduledAt,
       durationMinutes: match.durationMinutes,
+      startedAt: match.startedAt,
+      finishedAt: match.finishedAt,
+      actualDurationSeconds: this.computeActualDurationSeconds(match.startedAt, match.finishedAt, match.status),
       side1: side1 ? this.registrationView(side1) : null,
       side2: side2 ? this.registrationView(side2) : null,
       side1Games,
@@ -139,7 +148,11 @@ export class ScoringService {
       });
       await tx.match.update({
         where: { id: matchId },
-        data: { status: MatchStatus.LIVE },
+        data: {
+          status: MatchStatus.LIVE,
+          startedAt: match.startedAt ?? new Date(),
+          finishedAt: null,
+        },
       });
     });
 
@@ -168,6 +181,7 @@ export class ScoringService {
         game.side2Score,
         match.event?.scoringRule ?? ScoringRule.TWENTYONE_BO3,
         match.event?.scoringMode ?? ScoringMode.CAPPED_30,
+        match.event ?? null,
       );
 
       if (gameWinner) {
@@ -192,11 +206,16 @@ export class ScoringService {
       const matchWinner = this.resolveMatchWinner(
         games,
         match.event?.scoringRule ?? ScoringRule.TWENTYONE_BO3,
+        match.event ?? null,
       );
       if (matchWinner) {
         await tx.match.update({
           where: { id: matchId },
-          data: { status: MatchStatus.COMPLETED, winnerSide: matchWinner },
+          data: {
+            status: MatchStatus.COMPLETED,
+            winnerSide: matchWinner,
+            finishedAt: new Date(),
+          },
         });
         await this.advanceSingleEliminationWinner(tx, match, matchWinner);
         await this.teamCompetitionsService.updateTeamMatchAggregate(tx, matchId);
@@ -340,6 +359,7 @@ export class ScoringService {
           winnerSide,
           forfeitedSide,
           forfeitReason: reason?.trim() || '选手未到场弃权',
+          finishedAt: new Date(),
         },
       });
 
@@ -375,6 +395,7 @@ export class ScoringService {
           winnerSide: null,
           forfeitedSide: 0,
           forfeitReason: reason?.trim() || '双方均未到场,本场作废',
+          finishedAt: new Date(),
         },
       });
 
@@ -410,6 +431,21 @@ export class ScoringService {
       select: { id: true },
     });
     return this.getMatchState(match.id);
+  }
+
+  private computeActualDurationSeconds(
+    startedAt: Date | null,
+    finishedAt: Date | null,
+    status: MatchStatus,
+  ): number | null {
+    if (!startedAt) return null;
+    const endAt =
+      finishedAt ??
+      (status === MatchStatus.LIVE ? new Date() : null);
+    if (!endAt) return null;
+    const ms = endAt.getTime() - startedAt.getTime();
+    if (ms < 0) return 0;
+    return Math.floor(ms / 1000);
   }
 
   private async ensureMatchAccess(matchId: string, user: AuthUser) {
@@ -451,8 +487,13 @@ export class ScoringService {
     side2Score: number,
     rule: ScoringRule,
     mode: ScoringMode,
+    eventOverrides?: {
+      customGamePoint?: number | null;
+      customGameCap?: number | null;
+      customGamesToWin?: number | null;
+    } | null,
   ) {
-    const { target, cap } = this.ruleConfig(rule);
+    const { target, cap } = this.ruleConfig(rule, eventOverrides);
     if (this.sideWinsGame(side1Score, side2Score, target, cap, mode)) return 1;
     if (this.sideWinsGame(side2Score, side1Score, target, cap, mode)) return 2;
     return null;
@@ -472,8 +513,13 @@ export class ScoringService {
   private resolveMatchWinner(
     games: Array<{ winnerSide: number | null }>,
     rule: ScoringRule,
+    eventOverrides?: {
+      customGamePoint?: number | null;
+      customGameCap?: number | null;
+      customGamesToWin?: number | null;
+    } | null,
   ) {
-    const { gamesToWin } = this.ruleConfig(rule);
+    const { gamesToWin } = this.ruleConfig(rule, eventOverrides);
     const side1Wins = games.filter((game) => game.winnerSide === 1).length;
     const side2Wins = games.filter((game) => game.winnerSide === 2).length;
     if (side1Wins >= gamesToWin) return 1;
@@ -579,11 +625,32 @@ export class ScoringService {
     });
   }
 
-  private ruleConfig(rule: ScoringRule) {
-    if (rule === ScoringRule.FIFTEEN_ONE) return { target: 15, cap: 20, gamesToWin: 1 };
-    if (rule === ScoringRule.FIFTEEN_BO3) return { target: 15, cap: 20, gamesToWin: 2 };
-    if (rule === ScoringRule.TWENTYONE_BO3) return { target: 21, cap: 30, gamesToWin: 2 };
-    return { target: 31, cap: 31, gamesToWin: 2 };
+  private ruleConfig(
+    rule: ScoringRule,
+    overrides?: {
+      customGamePoint?: number | null;
+      customGameCap?: number | null;
+      customGamesToWin?: number | null;
+    } | null,
+  ) {
+    let base: { target: number; cap: number; gamesToWin: number };
+    if (rule === ScoringRule.FIFTEEN_ONE) base = { target: 15, cap: 20, gamesToWin: 1 };
+    else if (rule === ScoringRule.FIFTEEN_BO3) base = { target: 15, cap: 20, gamesToWin: 2 };
+    else if (rule === ScoringRule.TWENTYONE_BO3) base = { target: 21, cap: 30, gamesToWin: 2 };
+    else base = { target: 31, cap: 31, gamesToWin: 2 };
+
+    if (overrides?.customGamePoint && overrides.customGamePoint > 0) {
+      base.target = overrides.customGamePoint;
+      base.cap = overrides.customGameCap && overrides.customGameCap >= overrides.customGamePoint
+        ? overrides.customGameCap
+        : overrides.customGamePoint;
+    } else if (overrides?.customGameCap && overrides.customGameCap > 0) {
+      base.cap = overrides.customGameCap;
+    }
+    if (overrides?.customGamesToWin && overrides.customGamesToWin > 0) {
+      base.gamesToWin = overrides.customGamesToWin;
+    }
+    return base;
   }
 
   private async hydrateMatchSummary(match: {

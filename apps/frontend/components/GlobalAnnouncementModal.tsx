@@ -33,16 +33,20 @@ const typeMeta: Record<string, { label: string; className: string }> = {
 };
 
 function todayKey() {
-  return new Date().toISOString().slice(0, 10);
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
 }
 
 function shouldShowAnnouncement(announcement: ActiveAnnouncement) {
-  if (typeof window === 'undefined') return true;
+  // During SSR / pre-hydration we cannot read localStorage, so suppress by
+  // default. The client will flip it back on once the per-id cache has been
+  // checked, which avoids the brief "flash" of a dismissed popup.
+  if (typeof window === 'undefined') return false;
 
-  if (
-    announcement.frequency === 'once_per_day' &&
-    window.localStorage.getItem(`announcement_closed_date_${announcement.id}`) === todayKey()
-  ) {
+  if (window.localStorage.getItem(`announcement_closed_date_${announcement.id}`) === todayKey()) {
     return false;
   }
 
@@ -60,7 +64,9 @@ function recordAnnouncementClosed(announcement: ActiveAnnouncement, muteToday: b
     window.localStorage.setItem(`announcement_closed_${announcement.id}`, '1');
   }
 
-  if (announcement.frequency === 'once_per_day' || (announcement.frequency !== 'every_visit' && muteToday)) {
+  // once_per_day always blocks today; the checkbox is honored for any
+  // frequency so the user can suppress an every-visit notice for the day too.
+  if (announcement.frequency === 'once_per_day' || muteToday) {
     window.localStorage.setItem(`announcement_closed_date_${announcement.id}`, todayKey());
   }
 }
@@ -68,7 +74,10 @@ function recordAnnouncementClosed(announcement: ActiveAnnouncement, muteToday: b
 export function GlobalAnnouncementModal({ initialAnnouncement }: { initialAnnouncement?: ActiveAnnouncement | null }) {
   const router = useRouter();
   const [announcement, setAnnouncement] = useState<ActiveAnnouncement | null>(initialAnnouncement ?? null);
-  const [open, setOpen] = useState(Boolean(initialAnnouncement));
+  // Always start closed: shouldShowAnnouncement reads localStorage which is
+  // only available on the client, so we open the modal after hydration once
+  // the per-announcement cache has been consulted.
+  const [open, setOpen] = useState(false);
   const [muteToday, setMuteToday] = useState(false);
 
   const activeType = useMemo(() => {
@@ -119,8 +128,8 @@ export function GlobalAnnouncementModal({ initialAnnouncement }: { initialAnnoun
   }, [announcement, closeModal, router]);
 
   useEffect(() => {
-    if (initialAnnouncement && !shouldShowAnnouncement(initialAnnouncement)) {
-      setOpen(false);
+    if (initialAnnouncement) {
+      setOpen(shouldShowAnnouncement(initialAnnouncement));
     }
     void loadActiveAnnouncement();
   }, [initialAnnouncement, loadActiveAnnouncement]);

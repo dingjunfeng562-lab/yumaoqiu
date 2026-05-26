@@ -68,6 +68,10 @@ export class AutoScheduleDto {
   @IsArray()
   @IsString({ each: true })
   eventTypeOrder?: string[];
+
+  @IsOptional()
+  @IsBoolean()
+  overrideMatchMinutes?: boolean;
 }
 
 export class UpdateMatchScheduleDto {

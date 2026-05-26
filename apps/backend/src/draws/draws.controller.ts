@@ -17,12 +17,15 @@ import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { DrawsService } from './draws.service';
 import {
+  CreateRedrawRequestDto,
   CreateRegistrationDto,
   FreezeDrawDto,
   GenerateDrawDto,
   GetDrawLogsQueryDto,
+  ListRedrawRequestsQueryDto,
   PublishDrawDto,
   RedrawDrawDto,
+  RejectRedrawRequestDto,
   SwapDrawSlotsDto,
   UnfreezeDrawDto,
   UnpublishDrawDto,
@@ -34,6 +37,7 @@ type AuthRequest = {
   user?: {
     id?: string;
     username?: string;
+    role?: Role;
   };
 };
 
@@ -191,7 +195,57 @@ export class DrawsController {
       dto.confirm,
       req.user?.id ?? '',
       req.user?.username ?? req.user?.id ?? null,
+      (req.user?.role ?? Role.ADMIN) as Role,
     );
+  }
+
+  @Post('events/:eventId/draw/redraw-request')
+  createRedrawRequest(
+    @Param('eventId') eventId: string,
+    @Body() dto: CreateRedrawRequestDto,
+    @Req() req: AuthRequest,
+  ) {
+    return this.drawsService.createRedrawRequest(
+      eventId,
+      dto.reason,
+      req.user?.id ?? '',
+      req.user?.username ?? req.user?.id ?? null,
+    );
+  }
+
+  @Get('draw/redraw-requests')
+  listRedrawRequests(@Query() query: ListRedrawRequestsQueryDto) {
+    return this.drawsService.listRedrawRequests(query);
+  }
+
+  @Roles(Role.SUPER_ADMIN)
+  @Post('draw/redraw-requests/:id/approve')
+  approveRedrawRequest(@Param('id') id: string, @Req() req: AuthRequest) {
+    return this.drawsService.approveRedrawRequest(
+      id,
+      req.user?.id ?? '',
+      req.user?.username ?? req.user?.id ?? null,
+    );
+  }
+
+  @Roles(Role.SUPER_ADMIN)
+  @Post('draw/redraw-requests/:id/reject')
+  rejectRedrawRequest(
+    @Param('id') id: string,
+    @Body() dto: RejectRedrawRequestDto,
+    @Req() req: AuthRequest,
+  ) {
+    return this.drawsService.rejectRedrawRequest(
+      id,
+      dto.reason,
+      req.user?.id ?? '',
+      req.user?.username ?? req.user?.id ?? null,
+    );
+  }
+
+  @Post('draw/redraw-requests/:id/cancel')
+  cancelRedrawRequest(@Param('id') id: string, @Req() req: AuthRequest) {
+    return this.drawsService.cancelRedrawRequest(id, req.user?.id ?? '');
   }
 
   @Get('events/:eventId/draw/history')

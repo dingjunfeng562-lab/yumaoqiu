@@ -375,6 +375,9 @@ export class AuthService {
         competitionRegistrations: {
           select: { status: true },
         },
+        _count: {
+          select: { matches: true },
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -383,6 +386,9 @@ export class AuthService {
       ...this.serializeUser(user),
       inviteCode: user.inviteCode?.code ?? null,
       registrationStatus: user.competitionRegistrations[0]?.status ?? null,
+      // Total matches assigned to this user as referee (includes pending,
+      // live, completed and cancelled — gives an at-a-glance workload view).
+      refereedMatchesCount: user._count.matches,
       createdAt: user.createdAt,
     }));
   }

@@ -108,6 +108,28 @@ export class RedrawDrawDto {
   confirm: boolean;
 }
 
+export class CreateRedrawRequestDto {
+  @IsOptional()
+  @IsString()
+  reason?: string;
+}
+
+export class RejectRedrawRequestDto {
+  @IsOptional()
+  @IsString()
+  reason?: string;
+}
+
+export class ListRedrawRequestsQueryDto {
+  @IsOptional()
+  @IsString()
+  eventId?: string;
+
+  @IsOptional()
+  @IsString()
+  status?: string;
+}
+
 export class GetDrawLogsQueryDto {
   @IsOptional()
   @IsString()

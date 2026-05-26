@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { signOut, useSession } from 'next-auth/react';
 import { Button, Empty, Spin, Tag, message } from 'antd';
 import { LogoutOutlined, ReloadOutlined } from '@ant-design/icons';
@@ -33,6 +33,30 @@ function sideName(side?: { name: string } | null) {
   return side?.name ?? '待定';
 }
 
+const STAT_TONES: Record<'slate' | 'blue' | 'green' | 'amber', string> = {
+  slate: 'border-slate-200 bg-white text-slate-900',
+  blue: 'border-blue-200 bg-blue-50 text-blue-900',
+  green: 'border-emerald-200 bg-emerald-50 text-emerald-900',
+  amber: 'border-amber-200 bg-amber-50 text-amber-900',
+};
+
+function StatCard({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: keyof typeof STAT_TONES;
+}) {
+  return (
+    <div className={`rounded-2xl border px-4 py-3 shadow-sm ${STAT_TONES[tone]}`}>
+      <p className="text-xs font-bold uppercase tracking-wider opacity-70">{label}</p>
+      <p className="mt-1 text-2xl font-black sm:text-3xl">{value}</p>
+    </div>
+  );
+}
+
 function scoreLine(match: MatchSummary) {
   if (!match.games.length) return '0 : 0';
   const current = match.games.find((game) => !game.winnerSide) ?? match.games[match.games.length - 1];
@@ -62,6 +86,14 @@ export default function RefereeMatchesPage() {
     loadMatches();
   }, [token]);
 
+  const stats = useMemo(() => {
+    const total = matches.length;
+    const completed = matches.filter((m) => m.status === 'COMPLETED').length;
+    const live = matches.filter((m) => m.status === 'LIVE').length;
+    const pending = matches.filter((m) => m.status === 'PENDING').length;
+    return { total, completed, live, pending };
+  }, [matches]);
+
   if (status === 'loading') {
     return <div className="grid min-h-screen place-items-center bg-slate-950 text-white"><Spin /></div>;
   }
@@ -90,7 +122,10 @@ export default function RefereeMatchesPage() {
           <div>
             <p className="text-xs font-bold uppercase tracking-[0.18em] text-blue-600">Referee Console</p>
             <h1 className="mt-1 text-2xl font-black text-slate-950 sm:text-3xl">我的裁判场次</h1>
-            <p className="mt-2 text-sm text-slate-500">选择当前负责的场次，进入实时记分页。</p>
+            <p className="mt-2 text-sm text-slate-500">
+              你好 <span className="font-bold text-slate-700">{session?.user?.name || session?.user?.username || ''}</span>
+              ，选择当前负责的场次，进入实时记分页。
+            </p>
           </div>
           <div className="flex gap-2">
             <Button icon={<ReloadOutlined />} onClick={loadMatches} loading={loading}>
@@ -101,6 +136,13 @@ export default function RefereeMatchesPage() {
             </Button>
           </div>
         </header>
+
+        <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <StatCard label="累计场次" value={stats.total} tone="slate" />
+          <StatCard label="已裁决" value={stats.completed} tone="blue" />
+          <StatCard label="进行中" value={stats.live} tone="green" />
+          <StatCard label="未开始" value={stats.pending} tone="amber" />
+        </section>
 
         {loading ? (
           <div className="grid min-h-60 place-items-center rounded-2xl border border-blue-100 bg-white/90">

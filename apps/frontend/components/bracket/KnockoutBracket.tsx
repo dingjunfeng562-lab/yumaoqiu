@@ -36,6 +36,9 @@ export type BracketMatch = {
   venueName?: string | null;
   refereeName?: string | null;
   scheduledAt?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  durationMinutes?: number | null;
   detailLines?: string[];
 };
 
@@ -128,6 +131,18 @@ function formatTime(value?: string | null) {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+function formatActualDuration(startedAt?: string | null, finishedAt?: string | null) {
+  if (!startedAt) return '—';
+  const start = new Date(startedAt).getTime();
+  if (Number.isNaN(start)) return '—';
+  const end = finishedAt ? new Date(finishedAt).getTime() : Date.now();
+  const seconds = Math.max(0, Math.floor((end - start) / 1000));
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  const suffix = finishedAt ? '' : '（进行中）';
+  return `${m}分${s.toString().padStart(2, '0')}秒${suffix}`;
 }
 
 function rowHeightFor(bracketSize: number) {
@@ -1343,6 +1358,8 @@ function MatchDetailModal({
             <ModalFact label="时间" value={formatTime(match.scheduledAt) ?? '待排时间'} />
             <ModalFact label="裁判" value={match.refereeName || '待分配'} />
             <ModalFact label="胜方" value={winner?.name || '待定'} highlight={!!winner} highlightTone="amber" />
+            <ModalFact label="预估时长" value={match.durationMinutes ? `${match.durationMinutes}分钟` : '—'} />
+            <ModalFact label="实际用时" value={formatActualDuration(match.startedAt, match.finishedAt)} />
           </dl>
 
           {match.forfeitedSide ? (

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import { Button, Card, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography, message } from 'antd';
 import { DeleteOutlined, PlusOutlined, ReloadOutlined, LockOutlined, StopOutlined, CheckCircleOutlined } from '@ant-design/icons';
@@ -16,7 +16,7 @@ type UserItem = {
   role: UserRole;
   status: 'ACTIVE' | 'DISABLED';
   inviteCode: string | null;
-  registrationStatus: 'PENDING' | 'APPROVED' | 'REJECTED' | 'REMOVED' | null;
+  refereedMatchesCount?: number;
   createdAt: string;
 };
 
@@ -54,12 +54,13 @@ const statusLabels: Record<UserItem['status'], string> = {
   DISABLED: '禁用',
 };
 
-const registrationStatusLabels: Record<NonNullable<UserItem['registrationStatus']>, string> = {
-  PENDING: '待审核',
-  APPROVED: '已通过',
-  REJECTED: '已驳回',
-  REMOVED: '已移除',
-};
+const ROLE_FILTER_OPTIONS: Array<{ value: UserRole | 'ALL'; label: string }> = [
+  { value: 'ALL', label: '全部角色' },
+  { value: 'SUPER_ADMIN', label: '总管理员' },
+  { value: 'ADMIN', label: '管理员' },
+  { value: 'REFEREE', label: '裁判' },
+  { value: 'PLAYER', label: '选手' },
+];
 
 export default function AdminUsersPage() {
   const { data: session } = useSession();
@@ -71,7 +72,13 @@ export default function AdminUsersPage() {
   const [resetSubmitting, setResetSubmitting] = useState(false);
   const [resetTarget, setResetTarget] = useState<UserItem | null>(null);
   const [temporaryPassword, setTemporaryPassword] = useState<string | null>(null);
+  const [roleFilter, setRoleFilter] = useState<UserRole | 'ALL'>('ALL');
   const [form] = Form.useForm();
+
+  const filteredUsers = useMemo(
+    () => (roleFilter === 'ALL' ? users : users.filter((user) => user.role === roleFilter)),
+    [users, roleFilter],
+  );
 
   async function loadUsers() {
     if (!token) return;
@@ -166,6 +173,12 @@ export default function AdminUsersPage() {
           </Typography.Text>
         </div>
         <Space>
+          <Select
+            value={roleFilter}
+            onChange={(value) => setRoleFilter(value)}
+            options={ROLE_FILTER_OPTIONS}
+            style={{ width: 140 }}
+          />
           <Button icon={<ReloadOutlined />} onClick={loadUsers} loading={loading}>刷新</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>新建账号</Button>
         </Space>
@@ -175,7 +188,7 @@ export default function AdminUsersPage() {
         <Table
           rowKey="id"
           loading={loading}
-          dataSource={users}
+          dataSource={filteredUsers}
           columns={[
             {
               title: '用户名',
@@ -205,9 +218,14 @@ export default function AdminUsersPage() {
               render: (value: string | null) => value || '-',
             },
             {
-              title: '报名状态',
-              dataIndex: 'registrationStatus',
-              render: (value: UserItem['registrationStatus']) => value ? registrationStatusLabels[value] : '-',
+              title: '已裁场次',
+              dataIndex: 'refereedMatchesCount',
+              render: (value: number | undefined, row: UserItem) =>
+                row.role === 'REFEREE' ? (
+                  <Tag color={value ? 'blue' : 'default'}>{value ?? 0} 场</Tag>
+                ) : (
+                  '-'
+                ),
             },
             {
               title: '创建时间',

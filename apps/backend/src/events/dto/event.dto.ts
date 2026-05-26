@@ -1,4 +1,4 @@
-import { IsString, IsEnum, IsOptional, IsInt, Min } from 'class-validator';
+import { IsString, IsEnum, IsOptional, IsInt, Min, Max } from 'class-validator';
 import { EventType, Format, ScoringRule, ScoringMode } from '@prisma/client';
 
 export class CreateEventDto {
@@ -16,6 +16,30 @@ export class CreateEventDto {
 
   @IsEnum(ScoringMode)
   scoringMode: ScoringMode;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(999)
+  customGamePoint?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(999)
+  customGameCap?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(9)
+  customGamesToWin?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(5)
+  @Max(600)
+  defaultMatchMinutes?: number;
 
   @IsOptional()
   @IsInt()
@@ -44,6 +68,30 @@ export class UpdateEventDto {
   @IsOptional()
   @IsEnum(ScoringMode)
   scoringMode?: ScoringMode;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(999)
+  customGamePoint?: number | null;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(999)
+  customGameCap?: number | null;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(9)
+  customGamesToWin?: number | null;
+
+  @IsOptional()
+  @IsInt()
+  @Min(5)
+  @Max(600)
+  defaultMatchMinutes?: number | null;
 
   @IsOptional()
   @IsInt()

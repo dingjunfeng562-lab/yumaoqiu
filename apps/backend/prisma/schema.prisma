@@ -114,6 +114,13 @@ enum DrawSlotSourceType {
   MANUAL_SWAP
 }
 
+enum DrawRedrawRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
 model InviteCode {
   id          String   @id @default(cuid())
   code        String   @unique
@@ -149,6 +156,8 @@ model User {
   matches           Match[]
   drawOperationLogs DrawOperationLog[] @relation("drawOperationLogOperator")
   drawSeedSettings  DrawSeedSetting[]  @relation("drawSeedSettingCreator")
+  drawRedrawRequests        DrawRedrawRequest[] @relation("drawRedrawRequestRequester")
+  drawRedrawDecisions       DrawRedrawRequest[] @relation("drawRedrawRequestDecider")
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
 
@@ -258,6 +267,10 @@ model Event {
   format             Format
   scoringRule        ScoringRule
   scoringMode        ScoringMode
+  customGamePoint    Int?
+  customGameCap      Int?
+  customGamesToWin   Int?
+  defaultMatchMinutes Int?
   groupSize          Int?
   qualifiersPerGroup Int?
   drawLocked         Boolean            @default(false)
@@ -269,6 +282,7 @@ model Event {
   drawBrackets       DrawBracket[]
   drawSeedSettings   DrawSeedSetting[]
   drawOperationLogs  DrawOperationLog[] @relation("drawOperationLogEvent")
+  drawRedrawRequests DrawRedrawRequest[]
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
 }
@@ -486,6 +500,8 @@ model Match {
   scheduledAt           DateTime?
   durationMinutes       Int                  @default(45)
   status                MatchStatus          @default(PENDING)
+  startedAt             DateTime?
+  finishedAt            DateTime?
   winnerSide            Int?
   forfeitedSide         Int?
   forfeitReason         String?              @db.VarChar(191)
@@ -658,6 +674,30 @@ model DrawGroup {
   @@unique([drawBracketId, groupCode])
   @@index([drawBracketId])
   @@map("draw_group")
+}
+
+model DrawRedrawRequest {
+  id              String                  @id @default(cuid())
+  eventItemId     String                  @map("event_item_id")
+  event           Event                   @relation(fields: [eventItemId], references: [id], onDelete: Cascade)
+  drawBracketId   String?                 @map("draw_bracket_id")
+  status          DrawRedrawRequestStatus @default(PENDING)
+  reason          String?                 @db.VarChar(500)
+  requesterId     String                  @map("requester_id")
+  requester       User                    @relation("drawRedrawRequestRequester", fields: [requesterId], references: [id], onDelete: Restrict)
+  requesterNameSnapshot String?           @db.VarChar(64) @map("requester_name_snapshot")
+  decidedById     String?                 @map("decided_by_id")
+  decidedBy       User?                   @relation("drawRedrawRequestDecider", fields: [decidedById], references: [id], onDelete: Restrict)
+  decidedByNameSnapshot String?           @db.VarChar(64) @map("decided_by_name_snapshot")
+  decisionRemark  String?                 @db.VarChar(500) @map("decision_remark")
+  decidedAt       DateTime?               @map("decided_at")
+  createdAt       DateTime                @default(now()) @map("created_at")
+  updatedAt       DateTime                @updatedAt @map("updated_at")
+
+  @@index([eventItemId, status])
+  @@index([requesterId])
+  @@index([status, createdAt])
+  @@map("draw_redraw_request")
 }
 
 model DrawGroupMember {
