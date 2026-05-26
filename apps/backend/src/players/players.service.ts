@@ -31,8 +31,26 @@ export class PlayersService {
   }
 
   async update(id: string, dto: UpdatePlayerDto) {
-    await this.findOne(id);
-    return this.prisma.player.update({ where: { id }, data: dto });
+    const before = await this.findOne(id);
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.player.update({ where: { id }, data: dto });
+
+      const contactChanged =
+        dto.contact !== undefined && (dto.contact ?? null) !== (before.contact ?? null);
+      const nameChanged = dto.name !== undefined && dto.name !== before.name;
+
+      if (contactChanged || nameChanged) {
+        const registrationPatch: Record<string, unknown> = {};
+        if (contactChanged) registrationPatch.phone = dto.contact ?? null;
+        if (nameChanged) registrationPatch.name = dto.name;
+        await tx.registration.updateMany({
+          where: { player1Id: id },
+          data: registrationPatch,
+        });
+      }
+
+      return updated;
+    });
   }
 
   async remove(id: string) {

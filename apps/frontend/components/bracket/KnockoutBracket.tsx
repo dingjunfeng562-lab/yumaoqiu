@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from 'react';
 
 // ─────────────────────────────────────────────────────────────────────
 // Types — kept compatible with previous callers
@@ -182,6 +182,68 @@ function parseScores(text?: string | null): { a?: number; b?: number } {
   return { a: Number(match[1]), b: Number(match[2]) };
 }
 
+function useBracketZoomGestures(
+  ref: RefObject<HTMLDivElement | null>,
+  setZoom: Dispatch<SetStateAction<number>>,
+  zoomLimits: { min: number; max: number },
+) {
+  const pinchRef = useRef<{ distance: number; zoom: number } | null>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const clamp = (value: number) =>
+      Math.min(zoomLimits.max, Math.max(zoomLimits.min, Math.round(value * 100) / 100));
+
+    function onWheel(event: WheelEvent) {
+      if (!(event.ctrlKey || event.metaKey)) return;
+      event.preventDefault();
+      const delta = -event.deltaY * 0.0025;
+      setZoom((current) => clamp(current + delta));
+    }
+
+    function distanceBetween(touches: TouchList) {
+      const dx = touches[0].clientX - touches[1].clientX;
+      const dy = touches[0].clientY - touches[1].clientY;
+      return Math.hypot(dx, dy);
+    }
+
+    function onTouchStart(event: TouchEvent) {
+      if (event.touches.length !== 2) return;
+      pinchRef.current = { distance: distanceBetween(event.touches), zoom: 0 };
+      setZoom((current) => {
+        if (pinchRef.current) pinchRef.current.zoom = current;
+        return current;
+      });
+    }
+
+    function onTouchMove(event: TouchEvent) {
+      if (event.touches.length !== 2 || !pinchRef.current) return;
+      event.preventDefault();
+      const next = distanceBetween(event.touches);
+      const ratio = next / pinchRef.current.distance;
+      setZoom(clamp(pinchRef.current.zoom * ratio));
+    }
+
+    function onTouchEnd(event: TouchEvent) {
+      if (event.touches.length < 2) pinchRef.current = null;
+    }
+
+    el.addEventListener('wheel', onWheel, { passive: false });
+    el.addEventListener('touchstart', onTouchStart, { passive: true });
+    el.addEventListener('touchmove', onTouchMove, { passive: false });
+    el.addEventListener('touchend', onTouchEnd, { passive: true });
+    el.addEventListener('touchcancel', onTouchEnd, { passive: true });
+    return () => {
+      el.removeEventListener('wheel', onWheel);
+      el.removeEventListener('touchstart', onTouchStart);
+      el.removeEventListener('touchmove', onTouchMove);
+      el.removeEventListener('touchend', onTouchEnd);
+      el.removeEventListener('touchcancel', onTouchEnd);
+    };
+  }, [ref, setZoom, zoomLimits.max, zoomLimits.min]);
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Main
 // ─────────────────────────────────────────────────────────────────────
@@ -221,7 +283,15 @@ export function KnockoutBracket({
   const [viewMode, setViewMode] = useState<'tree' | 'rounds'>('rounds');
   const [activeRound, setActiveRound] = useState(1);
   const [adminMode, setAdminMode] = useState(false);
+  const [zoom, setZoom] = useState(1);
   const treeRef = useRef<HTMLDivElement | null>(null);
+
+  const ZOOM_MIN = 0.5;
+  const ZOOM_MAX = 1.6;
+  const ZOOM_STEP = 0.1;
+  const clampZoom = (value: number) =>
+    Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(value * 100) / 100));
+  const adjustZoom = (delta: number) => setZoom((current) => clampZoom(current + delta));
 
   // Reset slots when underlying data changes
   useEffect(() => {
@@ -399,6 +469,35 @@ export function KnockoutBracket({
               {adminMode ? '退出微调' : '管理微调'}
             </button>
           ) : null}
+
+          <div className="ml-auto inline-flex items-center gap-1 rounded-lg bg-white/10 p-0.5 text-[11px] font-black text-blue-50/90 backdrop-blur sm:text-xs">
+            <button
+              type="button"
+              onClick={() => adjustZoom(-ZOOM_STEP)}
+              disabled={zoom <= ZOOM_MIN + 0.001}
+              aria-label="缩小"
+              className="h-7 w-7 rounded-md transition hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40 sm:h-8 sm:w-8"
+            >
+              −
+            </button>
+            <button
+              type="button"
+              onClick={() => setZoom(1)}
+              aria-label="重置缩放"
+              className="h-7 min-w-12 rounded-md px-2 text-center tabular-nums transition hover:bg-white/15 sm:h-8"
+            >
+              {Math.round(zoom * 100)}%
+            </button>
+            <button
+              type="button"
+              onClick={() => adjustZoom(ZOOM_STEP)}
+              disabled={zoom >= ZOOM_MAX - 0.001}
+              aria-label="放大"
+              className="h-7 w-7 rounded-md transition hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40 sm:h-8 sm:w-8"
+            >
+              +
+            </button>
+          </div>
         </div>
       </header>
 
@@ -426,6 +525,9 @@ export function KnockoutBracket({
           slotIndexById={slotIndexById}
           onDragSlot={setDraggedSlot}
           onDropSlot={swapSlots}
+          zoom={zoom}
+          setZoom={setZoom}
+          zoomLimits={{ min: ZOOM_MIN, max: ZOOM_MAX }}
         />
       ) : (
         <RoundsView
@@ -439,6 +541,9 @@ export function KnockoutBracket({
           onOpenMatch={(m) => setSelectedMatch(m)}
           onHoverParticipant={setHoveredParticipantId}
           highlightedKeys={highlightedKeys}
+          zoom={zoom}
+          setZoom={setZoom}
+          zoomLimits={{ min: ZOOM_MIN, max: ZOOM_MAX }}
         />
       )}
 
@@ -482,6 +587,9 @@ function TreeView({
   slotIndexById,
   onDragSlot,
   onDropSlot,
+  zoom,
+  setZoom,
+  zoomLimits,
 }: {
   treeRef: React.RefObject<HTMLDivElement | null>;
   totalH: number;
@@ -504,6 +612,9 @@ function TreeView({
   slotIndexById: Map<string, number>;
   onDragSlot: (idx: number | null) => void;
   onDropSlot: (targetIdx: number) => void;
+  zoom: number;
+  setZoom: React.Dispatch<React.SetStateAction<number>>;
+  zoomLimits: { min: number; max: number };
 }) {
   // Columns: 1 (participants) + roundCount (winner cols). The FINAL winner card
   // is itself the champion card — no extra column after it.
@@ -570,13 +681,29 @@ function TreeView({
 
   // (No separate champion column — the final winner card serves as the champion display.)
 
+  useBracketZoomGestures(treeRef, setZoom, zoomLimits);
+
   return (
     <div
       ref={treeRef}
-      className="relative overflow-x-auto overflow-y-auto bg-[radial-gradient(circle_at_top,#f5f8ff,#eef3fb_60%,#e5edf8)] [scrollbar-width:thin]"
+      className="relative overflow-x-auto overflow-y-auto bg-[radial-gradient(circle_at_top,#f5f8ff,#eef3fb_60%,#e5edf8)] [scrollbar-width:thin] [touch-action:pan-x_pan-y]"
       style={{ maxHeight: 720 }}
     >
-      <div className="relative" style={{ width: boardW, height: totalH, padding: BOARD_PADDING }}>
+      <div
+        style={{
+          width: (boardW + BOARD_PADDING * 2) * zoom,
+          height: (totalH + BOARD_PADDING * 2) * zoom,
+        }}
+      >
+      <div
+        className="relative origin-top-left"
+        style={{
+          width: boardW,
+          height: totalH,
+          padding: BOARD_PADDING,
+          transform: `scale(${zoom})`,
+        }}
+      >
         {/* Column header chips: 八强赛 / 半决赛 / 决赛(冠军) */}
         {Array.from({ length: roundCount + 1 }, (_, col) => {
           const isFirst = col === 0;
@@ -716,6 +843,7 @@ function TreeView({
           );
         })}
       </div>
+      </div>
     </div>
   );
 }
@@ -745,7 +873,7 @@ function ParticipantBox({
   const draggable = adminMode && !bye;
   return (
     <div
-      className={`flex h-full w-full items-center gap-2 rounded-lg border bg-white px-2.5 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${
+      className={`flex h-full w-full items-center justify-center gap-2 rounded-lg border bg-white px-2.5 text-center shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${
         bye
           ? 'border-dashed border-slate-200 bg-slate-50/60'
           : highlighted
@@ -768,9 +896,9 @@ function ParticipantBox({
           {participant.seed}
         </span>
       ) : null}
-      <span className="flex min-w-0 flex-1 flex-col leading-tight">
+      <span className="flex min-w-0 flex-1 flex-col items-center justify-center leading-tight">
         <span
-          className={`truncate text-[13px] ${
+          className={`truncate text-center text-[13px] ${
             bye
               ? 'font-semibold italic text-slate-400'
               : 'font-bold text-slate-700'
@@ -779,7 +907,7 @@ function ParticipantBox({
           {participant.name}
         </span>
         {participant.teamName && participant.members?.length ? (
-          <span className="truncate text-[10px] font-semibold text-slate-400">
+          <span className="truncate text-center text-[10px] font-semibold text-slate-400">
             {participant.members.join(' / ')}
           </span>
         ) : null}
@@ -905,21 +1033,21 @@ function WinnerCard({
     <button
       type="button"
       onClick={onOpen}
-      className={`group relative flex h-full w-full items-center justify-between gap-2 rounded-lg border px-2.5 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${tone} ${
+      className={`group relative flex h-full w-full items-center justify-center gap-2 rounded-lg border px-2.5 text-center shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${tone} ${
         highlight ? 'ring-2 ring-amber-300 ring-offset-1 ring-offset-white' : ''
       } ${isPlaceholder && !winner ? 'opacity-70' : ''}`}
       onMouseEnter={() => displayParticipant && onHoverParticipant(displayParticipant.id)}
       onMouseLeave={() => onHoverParticipant(null)}
     >
-      <span className="flex min-w-0 items-center gap-1.5">
+      <span className="flex min-w-0 flex-1 items-center justify-center gap-1.5">
         {displayParticipant?.seed ? (
           <span className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded bg-[#03205c] px-1 text-[10px] font-black text-white">
             {displayParticipant.seed}
           </span>
         ) : null}
-        <span className="flex min-w-0 flex-col leading-tight">
+        <span className="flex min-w-0 flex-col items-center justify-center leading-tight">
           <span
-            className={`truncate text-[13px] ${
+            className={`truncate text-center text-[13px] ${
               bothForfeited
                 ? 'font-semibold text-red-500 line-through decoration-red-300'
                 : winner || displayParticipant
@@ -930,7 +1058,7 @@ function WinnerCard({
             {displayName}
           </span>
           {displayParticipant?.teamName && displayParticipant.members?.length ? (
-            <span className="truncate text-[10px] font-semibold text-slate-400">
+            <span className="truncate text-center text-[10px] font-semibold text-slate-400">
               {displayParticipant.members.join(' / ')}
             </span>
           ) : null}
@@ -971,6 +1099,9 @@ function RoundsView({
   onOpenMatch,
   onHoverParticipant,
   highlightedKeys,
+  zoom,
+  setZoom,
+  zoomLimits,
 }: {
   roundCount: number;
   bracketSize: number;
@@ -982,8 +1113,13 @@ function RoundsView({
   onOpenMatch: (m: LayoutMatch) => void;
   onHoverParticipant: (id: string | null) => void;
   highlightedKeys: Set<string>;
+  zoom: number;
+  setZoom: Dispatch<SetStateAction<number>>;
+  zoomLimits: { min: number; max: number };
 }) {
   const activeMatches = matches.filter((m) => m.roundNo === activeRound);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  useBracketZoomGestures(viewportRef, setZoom, zoomLimits);
 
   return (
     <div className="bg-[#f7f9fd] px-4 py-4 sm:px-6 sm:py-5">
@@ -1016,20 +1152,28 @@ function RoundsView({
         })}
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        {activeMatches.map((m) => (
-          <MatchCard
-            key={m.layoutKey}
-            match={m}
-            side1={sideFor(m, 1)}
-            side2={sideFor(m, 2)}
-            winner={winnerFor(m)}
-            highlight={highlightedKeys.has(m.layoutKey)}
-            variant="list"
-            onOpen={() => onOpenMatch(m)}
-            onHoverParticipant={onHoverParticipant}
-          />
-        ))}
+      <div
+        ref={viewportRef}
+        className="overflow-auto [scrollbar-width:thin] [touch-action:pan-x_pan-y]"
+        style={{ maxHeight: 640 }}
+      >
+        <div style={{ zoom }}>
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {activeMatches.map((m) => (
+            <MatchCard
+              key={m.layoutKey}
+              match={m}
+              side1={sideFor(m, 1)}
+              side2={sideFor(m, 2)}
+              winner={winnerFor(m)}
+              highlight={highlightedKeys.has(m.layoutKey)}
+              variant="list"
+              onOpen={() => onOpenMatch(m)}
+              onHoverParticipant={onHoverParticipant}
+            />
+          ))}
+        </div>
+        </div>
       </div>
     </div>
   );
@@ -1206,15 +1350,15 @@ function SideRow({
       onMouseEnter={() => participant && !bye && onHover(participant.id)}
       onMouseLeave={() => onHover(null)}
     >
-      <span className="flex min-w-0 items-center gap-1.5">
+      <span className="flex min-w-0 flex-1 items-center justify-center gap-1.5">
         {participant?.seed ? (
           <span className="inline-flex h-5 min-w-5 items-center justify-center rounded bg-[#03205c] px-1 text-[10px] font-black text-white">
             {participant.seed}
           </span>
         ) : null}
-        <span className="flex min-w-0 flex-col leading-tight">
+        <span className="flex min-w-0 flex-col items-center justify-center leading-tight">
           <span
-            className={`truncate text-sm ${
+            className={`truncate text-center text-sm ${
               bye
                 ? 'font-semibold italic text-slate-300'
                 : forfeited
@@ -1229,7 +1373,7 @@ function SideRow({
             {participant?.name ?? '待定'}
           </span>
           {participant?.teamName && participant.members?.length ? (
-            <span className="truncate text-[10px] font-semibold text-slate-400">
+            <span className="truncate text-center text-[10px] font-semibold text-slate-400">
               {participant.members.join(' / ')}
             </span>
           ) : null}

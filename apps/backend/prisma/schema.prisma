@@ -336,6 +336,7 @@ model CompetitionRegistration {
   name           String
   gender         Gender
   school         String?            @db.VarChar(191)
+  className      String?            @db.VarChar(120)
   contact        String?
   remark         String?            @db.Text
   status         RegistrationStatus @default(PENDING)

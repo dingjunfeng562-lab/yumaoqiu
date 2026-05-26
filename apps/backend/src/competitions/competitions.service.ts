@@ -232,6 +232,7 @@ export class CompetitionsService {
             name: dto.name.trim(),
             gender,
             school: dto.school.trim(),
+            className: dto.className?.trim() || null,
             contact: dto.contact?.trim() || null,
             remark: dto.remark?.trim() || null,
             status: nextStatus,
@@ -270,6 +271,7 @@ export class CompetitionsService {
           name: dto.name.trim(),
           gender,
           school: dto.school.trim(),
+          className: dto.className?.trim() || null,
           contact: dto.contact?.trim() || null,
           remark: dto.remark?.trim() || null,
           status: nextStatus,
@@ -740,7 +742,7 @@ export class CompetitionsService {
           name: secondaryPlayerId && item.partnerName ? `${registration.name} / ${item.partnerName}` : registration.name,
           teamName: secondaryPlayerId ? item.teamName?.trim() || null : null,
           studentId: registration.studentId,
-          className: schoolName,
+          className: registration.className?.trim() || null,
           phone: registration.contact,
           gender: registration.gender,
           eventName: EVENT_TYPE_LABELS[item.event.type],
@@ -807,6 +809,7 @@ export class CompetitionsService {
       gender: registration.gender,
       genderLabel: registration.gender === Gender.MALE ? '男' : '女',
       school: registration.school ?? '',
+      className: registration.className ?? '',
       contact: registration.contact ?? '',
       phone: registration.contact ?? '',
       remark: registration.remark ?? '',
@@ -835,8 +838,11 @@ export class CompetitionsService {
     const gender = registration.gender ?? registration.player1.gender;
     const school =
       registration.competitionRegistration?.school ??
-      registration.className ??
       registration.player1.affiliation ??
+      '';
+    const className =
+      registration.competitionRegistration?.className ??
+      registration.className ??
       '';
     const primaryName = registration.player1.name;
     const partner = registration.player2
@@ -844,9 +850,10 @@ export class CompetitionsService {
           name: registration.player2.name,
           gender: registration.player2.gender,
           genderLabel: registration.player2.gender === Gender.MALE ? '男' : '女',
-          // The partner shares the school of the primary registrant on doubles
-          // registrations, so fall back to the same school resolution.
+          // Partners share the primary registrant's school and class on doubles
+          // entries (one registration form covers the whole team).
           school,
+          className,
           phone: registration.player2.contact ?? '',
         }
       : null;
@@ -864,7 +871,7 @@ export class CompetitionsService {
       teamName: registration.teamName ?? null,
       studentId: registration.studentId ?? '',
       school,
-      className: registration.className ?? registration.player1.affiliation,
+      className,
       phone: registration.phone ?? registration.player1.contact ?? '',
       gender,
       genderLabel: gender === Gender.MALE ? '男' : '女',

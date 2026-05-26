@@ -332,6 +332,30 @@ export default function AdminSchedulingPage() {
         .schedule-error-row > td {
           background: #fef2f2 !important;
         }
+        .schedule-table-compact .ant-card-body {
+          padding: 8px;
+        }
+        .schedule-table-compact .ant-table {
+          font-size: 12px;
+        }
+        .schedule-table-compact .ant-table-thead > tr > th,
+        .schedule-table-compact .ant-table-tbody > tr > td {
+          padding: 5px 6px !important;
+          line-height: 1.35;
+        }
+        .schedule-table-compact .ant-tag {
+          margin-inline-end: 0;
+          padding-inline: 5px;
+          font-size: 11px;
+          line-height: 18px;
+        }
+        .schedule-table-compact .ant-input-number-group-wrapper {
+          width: 72px !important;
+        }
+        .schedule-table-compact .ant-input-number-input {
+          height: 22px;
+          padding-inline: 5px;
+        }
       `}</style>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
@@ -405,18 +429,20 @@ export default function AdminSchedulingPage() {
         />
       )}
 
-      <Card title="赛程表">
+      <Card title="赛程表" size="small" className="schedule-table-compact">
         <Table
           rowKey="id"
+          size="small"
+          tableLayout="fixed"
           dataSource={schedule.matches}
           loading={loading}
           rowClassName={rowConflictClass}
-          pagination={{ pageSize: 10 }}
-          scroll={{ x: 1180 }}
+          pagination={{ pageSize: 10, size: 'small', showSizeChanger: false }}
+          scroll={{ x: 820 }}
           columns={[
             {
               title: '冲突',
-              width: 120,
+              width: 64,
               render: (_, row: ScheduleMatch) => {
                 if (!row.conflicts.length) return <Tag>正常</Tag>;
                 const conflict = row.conflicts[0];
@@ -424,27 +450,29 @@ export default function AdminSchedulingPage() {
                 return <Tag color={meta.color}>{meta.label}</Tag>;
               },
             },
-            { title: '时间', dataIndex: 'scheduledAt', width: 160, render: formatTime },
-            { title: '场地', dataIndex: 'venueName', width: 120, render: (value) => value || '—' },
-            { title: '项目', dataIndex: 'eventTypeLabel', width: 120 },
-            { title: '轮次', dataIndex: 'round', width: 90, render: (value: string) => roundCn(value) },
-            { title: '场次', dataIndex: 'matchNo', width: 90, render: (value) => `第${value}场` },
+            { title: '时间', dataIndex: 'scheduledAt', width: 118, render: formatTime },
+            { title: '场地', dataIndex: 'venueName', width: 68, ellipsis: true, render: (value) => value || '—' },
+            { title: '项目', dataIndex: 'eventTypeLabel', width: 74, ellipsis: true },
+            { title: '轮次', dataIndex: 'round', width: 62, ellipsis: true, render: (value: string) => roundCn(value) },
+            { title: '场次', dataIndex: 'matchNo', width: 58, render: (value) => `第${value}场` },
             {
               title: '对阵',
+              width: 190,
+              ellipsis: true,
               render: (_, row: ScheduleMatch) => `${sideName(row.side1)} VS ${sideName(row.side2)}`,
             },
             {
               title: '状态',
-              width: 100,
+              width: 66,
               render: (_, row: ScheduleMatch) => {
                 const meta = STATUS_LABELS[row.scheduleStatus] ?? STATUS_LABELS[row.status] ?? STATUS_LABELS.PENDING;
                 return <Tag color={meta.color}>{meta.label}</Tag>;
               },
             },
             {
-              title: '预估时长',
+              title: '预估',
               dataIndex: 'durationMinutes',
-              width: 130,
+              width: 78,
               render: (value: number, row: ScheduleMatch) => (
                 <InputNumber
                   size="small"
@@ -460,23 +488,21 @@ export default function AdminSchedulingPage() {
                     if (Number.isFinite(next)) quickUpdateDuration(row, next);
                   }}
                   addonAfter="分"
-                  style={{ width: 120 }}
+                  style={{ width: 72 }}
                 />
               ),
             },
             {
-              title: '实际用时',
-              width: 140,
+              title: '实际',
+              width: 82,
+              ellipsis: true,
               render: (_: unknown, row: ScheduleMatch) => formatActualDuration(row),
             },
             {
               title: '操作',
-              width: 100,
-              fixed: 'right',
+              width: 58,
               render: (_, row: ScheduleMatch) => (
-                <Button icon={<EditOutlined />} onClick={() => openEdit(row)}>
-                  调整
-                </Button>
+                <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(row)} aria-label="调整" />
               ),
             },
           ]}

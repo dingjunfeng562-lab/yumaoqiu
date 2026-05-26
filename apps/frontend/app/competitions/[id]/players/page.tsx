@@ -36,6 +36,7 @@ type Partner = {
   name: string;
   genderLabel?: string;
   school?: string;
+  className?: string;
   phone?: string;
 };
 
@@ -229,14 +230,14 @@ function PlayerGroup({ title, players }: { title: string; players: Player[] }) {
 function SinglesTable({ players }: { players: Player[] }) {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[840px] text-left text-sm">
+      <table className="w-full min-w-[820px] text-left text-sm">
         <thead className="bg-white text-xs font-black uppercase text-slate-500">
           <tr>
             <th className="px-4 py-3">姓名</th>
             <th className="px-4 py-3">性别</th>
             <th className="px-4 py-3">学校</th>
+            <th className="px-4 py-3">学院班级</th>
             <th className="px-4 py-3">学号</th>
-            <th className="px-4 py-3">联系方式</th>
             <th className="px-4 py-3">参赛项目</th>
             <th className="px-4 py-3">报名时间</th>
             <th className="px-4 py-3">审核状态</th>
@@ -247,9 +248,9 @@ function SinglesTable({ players }: { players: Player[] }) {
             <tr key={player.id} className="border-t border-blue-50">
               <td className="px-4 py-4 font-bold text-slate-900">{player.primaryName || player.name}</td>
               <td className="px-4 py-4 text-slate-600">{player.genderLabel ?? '-'}</td>
-              <td className="px-4 py-4 font-semibold text-slate-700">{player.school || player.className || '-'}</td>
+              <td className="px-4 py-4 font-semibold text-slate-700">{player.school || '-'}</td>
+              <td className="px-4 py-4 text-slate-600">{player.className || '-'}</td>
               <td className="px-4 py-4 text-slate-600">{player.studentId || '-'}</td>
-              <td className="px-4 py-4 text-slate-600">{player.phone || '-'}</td>
               <td className="px-4 py-4 text-slate-600">{player.eventName}</td>
               <td className="px-4 py-4 text-slate-600">{formatDateTime(player.createdAt)}</td>
               <td className="px-4 py-4">
@@ -268,21 +269,22 @@ function SinglesTable({ players }: { players: Player[] }) {
 function DoublesTable({ players }: { players: Player[] }) {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[680px] text-left text-sm">
+      <table className="w-full min-w-[720px] text-left text-sm">
         <thead className="bg-white text-xs font-black uppercase text-slate-500">
           <tr>
             <th className="px-4 py-3">队伍名称</th>
             <th className="px-4 py-3">姓名</th>
             <th className="px-4 py-3">性别</th>
             <th className="px-4 py-3">学校</th>
-            <th className="px-4 py-3">电话号码</th>
+            <th className="px-4 py-3">学院班级</th>
           </tr>
         </thead>
         <tbody>
           {players.map((player) => {
             const hasPartner = Boolean(player.partner);
             const teamLabel = player.teamName || player.name || '未命名队伍';
-            const school = player.school || player.className || '-';
+            const school = player.school || '-';
+            const className = player.className || '-';
             return (
               <Fragment key={player.id}>
                 <tr className="border-t border-blue-50">
@@ -295,14 +297,14 @@ function DoublesTable({ players }: { players: Player[] }) {
                   <td className="px-4 py-4 font-bold text-slate-900">{player.primaryName || player.name}</td>
                   <td className="px-4 py-4 text-slate-600">{player.genderLabel ?? '-'}</td>
                   <td className="px-4 py-4 font-semibold text-slate-700">{school}</td>
-                  <td className="px-4 py-4 text-slate-600">{player.phone || '-'}</td>
+                  <td className="px-4 py-4 text-slate-600">{className}</td>
                 </tr>
                 {hasPartner ? (
                   <tr className="border-t border-blue-50/60 bg-blue-50/30">
                     <td className="px-4 py-4 font-bold text-slate-900">{player.partner!.name}</td>
                     <td className="px-4 py-4 text-slate-600">{player.partner!.genderLabel ?? '-'}</td>
                     <td className="px-4 py-4 font-semibold text-slate-700">{player.partner!.school || school}</td>
-                    <td className="px-4 py-4 text-slate-600">{player.partner!.phone || '-'}</td>
+                    <td className="px-4 py-4 text-slate-600">{player.partner?.className || className}</td>
                   </tr>
                 ) : null}
               </Fragment>

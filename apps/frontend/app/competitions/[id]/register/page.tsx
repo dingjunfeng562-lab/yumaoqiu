@@ -51,6 +51,7 @@ type ExistingRegistration = {
   name: string;
   gender: 'MALE' | 'FEMALE';
   school?: string | null;
+  className?: string | null;
   phone?: string;
   remark?: string;
   items: Array<{
@@ -74,6 +75,7 @@ type FormState = {
   name: string;
   gender: 'MALE' | 'FEMALE';
   school: string;
+  className: string;
   contact: string;
   remark: string;
   items: ItemState[];
@@ -84,6 +86,7 @@ const initialForm: FormState = {
   name: '',
   gender: 'MALE',
   school: '',
+  className: '',
   contact: '',
   remark: '',
   items: [{ eventId: '', partnerName: '', partnerStudentId: '', teamName: '' }],
@@ -162,6 +165,7 @@ export default function CompetitionRegisterPage() {
             name: registrationData.name,
             gender: registrationData.gender,
             school: registrationData.school ?? '',
+            className: registrationData.className ?? '',
             contact: registrationData.phone ?? '',
             remark: registrationData.remark ?? '',
             items: registrationData.items.length
@@ -227,6 +231,7 @@ export default function CompetitionRegisterPage() {
         name: form.name,
         gender: form.gender,
         school: form.school.trim(),
+        className: form.className.trim() || undefined,
         contact: form.contact,
         remark: form.remark,
         items: form.items.map((item) => ({
@@ -329,6 +334,15 @@ export default function CompetitionRegisterPage() {
                   value={form.school}
                   onChange={(event) => updateField('school', event.target.value)}
                   placeholder="例如:武汉大学、华中科技大学经济学院"
+                />
+              </Field>
+              <Field label="学院班级" wide>
+                <input
+                  maxLength={120}
+                  disabled={existingLocked}
+                  value={form.className}
+                  onChange={(event) => updateField('className', event.target.value)}
+                  placeholder="例如:健康产业学院社会体育2班"
                 />
               </Field>
               <Field label="联系方式">

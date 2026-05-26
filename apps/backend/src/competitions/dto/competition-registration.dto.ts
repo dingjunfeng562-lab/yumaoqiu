@@ -37,6 +37,10 @@ export class SubmitCompetitionRegistrationDto {
 
   @IsOptional()
   @IsString()
+  className?: string;
+
+  @IsOptional()
+  @IsString()
   contact?: string;
 
   @IsOptional()
