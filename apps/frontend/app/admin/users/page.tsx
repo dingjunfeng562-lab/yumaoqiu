@@ -49,6 +49,8 @@ const ROLE_CREATE_ENDPOINT: Record<CreatableRole, string> = {
   PLAYER: '/auth/users/player',
 };
 
+const usernamePattern = /^[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9_-]{1,19}$/;
+
 const statusLabels: Record<UserItem['status'], string> = {
   ACTIVE: '启用',
   DISABLED: '禁用',
@@ -282,8 +284,8 @@ export default function AdminUsersPage() {
             rules={[
               { required: true, message: '请输入用户名' },
               {
-                pattern: /^[A-Za-z][A-Za-z0-9_]{3,19}$/,
-                message: '用户名需为 4-20 位字母、数字或下划线，且首字符为字母',
+                pattern: usernamePattern,
+                message: '用户名需为 2-20 位中文、字母、数字、下划线或连字符，首字符需为中文或字母',
               },
             ]}
           >

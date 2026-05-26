@@ -12,7 +12,7 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
-export const USERNAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]{3,19}$/;
+export const USERNAME_PATTERN = /^[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9_-]{1,19}$/;
 export const PASSWORD_PATTERN = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[^\s\u4e00-\u9fa5]{8,32}$/;
 export const INVITE_CODE_PATTERN = /^YZY-\d{4}-[A-Z0-9]{6}$/;
 
@@ -45,7 +45,7 @@ export class RegisterDto {
   inviteCode: string;
 
   @IsString()
-  @Matches(USERNAME_PATTERN, { message: '用户名需为 4-20 位字母、数字或下划线，且首字符为字母' })
+  @Matches(USERNAME_PATTERN, { message: '用户名需为 2-20 位中文、字母、数字、下划线或连字符，首字符需为中文或字母' })
   username: string;
 
   @IsEmail({}, { message: '邮箱格式不正确' })
@@ -58,7 +58,7 @@ export class RegisterDto {
 
 export class CreateUserDto {
   @IsString()
-  @Matches(USERNAME_PATTERN, { message: '用户名需为 4-20 位字母、数字或下划线，且首字符为字母' })
+  @Matches(USERNAME_PATTERN, { message: '用户名需为 2-20 位中文、字母、数字、下划线或连字符，首字符需为中文或字母' })
   username: string;
 
   @IsEmail({}, { message: '邮箱格式不正确' })

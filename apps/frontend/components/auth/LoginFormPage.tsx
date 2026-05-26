@@ -15,7 +15,7 @@ type FormValues = {
   remember?: boolean;
 };
 
-const usernamePattern = /^[A-Za-z][A-Za-z0-9_]{3,19}$/;
+const usernamePattern = /^[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9_-]{1,19}$/;
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const manrope = { className: 'font-sans' };
@@ -174,7 +174,7 @@ function LoginContent() {
                     ]
                   : [
                       { required: true, message: '请输入用户名' },
-                      { pattern: usernamePattern, message: '4-20 位字母、数字或下划线,首字符必须为字母' },
+                      { pattern: usernamePattern, message: '2-20 位中文、字母、数字、下划线或连字符，首字符需为中文或字母' },
                     ]
               }
             >

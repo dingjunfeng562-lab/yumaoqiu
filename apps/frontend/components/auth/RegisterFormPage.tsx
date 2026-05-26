@@ -40,7 +40,7 @@ type StrengthLevel = {
 };
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
-const usernamePattern = /^[A-Za-z][A-Za-z0-9_]{3,19}$/;
+const usernamePattern = /^[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9_-]{1,19}$/;
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const invitePattern = /^YZY-\d{4}-[A-Z0-9]{6}$/;
 const passwordPattern = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[^\s一-龥]{8,32}$/;
@@ -118,7 +118,7 @@ export default function RegisterFormPage() {
   function localValidation(field: CheckField, value: string) {
     if (!value) return field === 'email' ? '请输入邮箱' : `请输入${field === 'inviteCode' ? '邀请码' : '用户名'}`;
     if (field === 'inviteCode' && !invitePattern.test(value)) return '格式示例：YZY-2026-XXXXXX';
-    if (field === 'username' && !usernamePattern.test(value)) return '4-20 位字母、数字或下划线，首字符必须为字母';
+    if (field === 'username' && !usernamePattern.test(value)) return '2-20 位中文、字母、数字、下划线或连字符，首字符需为中文或字母';
     if (field === 'email' && !emailPattern.test(value)) return '邮箱格式不正确';
     return '';
   }
@@ -291,11 +291,11 @@ export default function RegisterFormPage() {
 
             <Form.Item<FormValues>
               name="username"
-              label={<FieldLabel label="用户名" hint="4-20 位" />}
-              extra={<FieldTip>字母、数字、下划线，首字符必须为字母</FieldTip>}
+              label={<FieldLabel label="用户名" hint="2-20 位" />}
+              extra={<FieldTip>支持中文、字母、数字、下划线或连字符，首字符需为中文或字母</FieldTip>}
               rules={[
                 { required: true, message: '请输入用户名' },
-                { pattern: usernamePattern, message: '4-20 位字母、数字或下划线，首字符必须为字母' },
+                { pattern: usernamePattern, message: '2-20 位中文、字母、数字、下划线或连字符，首字符需为中文或字母' },
               ]}
             >
               <Input

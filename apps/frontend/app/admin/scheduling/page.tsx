@@ -7,7 +7,6 @@ import {
   Alert,
   Button,
   Card,
-  Checkbox,
   DatePicker,
   Empty,
   Form,
@@ -236,7 +235,6 @@ export default function AdminSchedulingPage() {
     breakMinutes: number;
     venueIds?: string[];
     eventTypeOrder?: string[];
-    overrideMatchMinutes?: boolean;
   }) {
     if (!token || !selectedTournamentId) return;
     try {
@@ -251,7 +249,6 @@ export default function AdminSchedulingPage() {
           breakMinutes: values.breakMinutes,
           venueIds: values.venueIds,
           eventTypeOrder: values.eventTypeOrder,
-          overrideMatchMinutes: values.overrideMatchMinutes,
         }),
       });
       setSchedule(data);
@@ -475,10 +472,11 @@ export default function AdminSchedulingPage() {
               width: 78,
               render: (value: number, row: ScheduleMatch) => (
                 <InputNumber
+                  key={`${row.id}-${value}`}
                   size="small"
                   min={5}
                   max={600}
-                  value={value}
+                  defaultValue={value}
                   onBlur={(e) => {
                     const next = Number((e.target as HTMLInputElement).value);
                     if (Number.isFinite(next)) quickUpdateDuration(row, next);
@@ -542,9 +540,6 @@ export default function AdminSchedulingPage() {
               allowClear
               options={events.map((item) => ({ value: item.type, label: EVENT_TYPE_LABELS[item.type] ?? item.type }))}
             />
-          </Form.Item>
-          <Form.Item name="overrideMatchMinutes" valuePropName="checked" initialValue={false}>
-            <Checkbox>覆盖每场已有的预估时长（默认仅作用于没单独调整过的场次）</Checkbox>
           </Form.Item>
         </Form>
       </Modal>

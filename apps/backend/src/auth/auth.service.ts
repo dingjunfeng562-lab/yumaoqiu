@@ -209,7 +209,7 @@ export class AuthService {
       return {
         available: false,
         status: 'invalid_format',
-        message: '用户名需为 4-20 位字母、数字或下划线，且首字符为字母',
+        message: '用户名需为 2-20 位中文、字母、数字、下划线或连字符，首字符需为中文或字母',
       };
     }
     const exists = await this.prisma.user.findUnique({ where: { username } });
@@ -575,7 +575,7 @@ export class AuthService {
 
   private assertValidUsername(username: string) {
     if (!USERNAME_PATTERN.test(username)) {
-      throw new BadRequestException('用户名需为 4-20 位字母、数字或下划线，且首字符为字母');
+      throw new BadRequestException('用户名需为 2-20 位中文、字母、数字、下划线或连字符，首字符需为中文或字母');
     }
   }
 

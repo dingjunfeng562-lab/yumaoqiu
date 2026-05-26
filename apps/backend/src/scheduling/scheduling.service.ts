@@ -232,38 +232,37 @@ export class SchedulingService {
       scopeMatches.flatMap((match) => [match.side1Id, match.side2Id]),
     );
     const eventTypeRank = new Map((dto.eventTypeOrder ?? []).map((type, index) => [type, index]));
-    const readyMatches = scopeMatches
-      .filter(
-        (match) =>
-          match.status === MatchStatus.PENDING &&
-          Boolean(match.side1Id) &&
-          Boolean(match.side2Id) &&
-          this.dependenciesReady(match, matchMap),
-      )
+    const scheduledEndByKey = new Map<string, number>();
+    for (const anchor of anchors) {
+      if (!anchor.eventId || !anchor.scheduledAt) continue;
+      scheduledEndByKey.set(
+        this.matchKey(anchor.eventId, anchor.roundNo, anchor.matchNo),
+        this.addMinutes(anchor.scheduledAt, anchor.durationMinutes + breakMinutes).getTime(),
+      );
+    }
+
+    const schedulableMatches = scopeMatches
+      .filter((match) => match.status === MatchStatus.PENDING)
       .sort((a, b) => {
         const aRank = eventTypeRank.get(a.event?.type ?? '') ?? Number.MAX_SAFE_INTEGER;
         const bRank = eventTypeRank.get(b.event?.type ?? '') ?? Number.MAX_SAFE_INTEGER;
-        return a.roundNo - b.roundNo || a.matchNo - b.matchNo || aRank - bRank;
+        return aRank - bRank || a.roundNo - b.roundNo || a.matchNo - b.matchNo;
       });
 
-    const overrideMatchMinutes = Boolean(dto.overrideMatchMinutes);
-    const resolveMinutes = (existing: number | null | undefined) => {
-      if (overrideMatchMinutes) return matchMinutes;
-      return existing && existing > 0 ? existing : matchMinutes;
-    };
-
     const updates: Array<{ matchId: string; venueId: string; scheduledAt: Date; minutes: number }> = [];
-    for (const match of readyMatches) {
+    for (const match of schedulableMatches) {
       const playerIds = [
         ...this.playerIds(registrationMap.get(match.side1Id!)),
         ...this.playerIds(registrationMap.get(match.side2Id!)),
       ];
-      const perMatchMinutes = resolveMinutes(match.durationMinutes);
+      const perMatchMinutes = matchMinutes;
+      const dependencyReleaseTime = this.dependencyReleaseTime(match, matchMap, scheduledEndByKey);
+      const earliestMatchStart = Math.max(earliestScheduleStart, dependencyReleaseTime);
       const candidates = venues.map((venue) => ({
         venue,
         startTime: this.findEarliestStart(
           venue.id,
-          earliestScheduleStart,
+          earliestMatchStart,
           perMatchMinutes,
           breakMinutes,
           dailyWindow,
@@ -279,6 +278,12 @@ export class SchedulingService {
       const matchEndAt = this.addMinutes(scheduledAt, perMatchMinutes).getTime();
 
       updates.push({ matchId: match.id, venueId: winner.venue.id, scheduledAt, minutes: perMatchMinutes });
+      if (match.eventId) {
+        scheduledEndByKey.set(
+          this.matchKey(match.eventId, match.roundNo, match.matchNo),
+          this.addMinutes(scheduledAt, perMatchMinutes + breakMinutes).getTime(),
+        );
+      }
       this.addBusyInterval(venueBusy, winner.venue.id, {
         start: scheduledAt.getTime(),
         end: this.addMinutes(scheduledAt, perMatchMinutes + breakMinutes).getTime(),
@@ -294,10 +299,8 @@ export class SchedulingService {
     const resetData: Prisma.MatchUncheckedUpdateManyInput = {
       venueId: null,
       scheduledAt: null,
+      durationMinutes: matchMinutes,
     };
-    if (overrideMatchMinutes) {
-      resetData.durationMinutes = matchMinutes;
-    }
 
     await this.prisma.$transaction([
       this.prisma.match.updateMany({
@@ -526,6 +529,27 @@ export class SchedulingService {
 
       return start;
     }
+  }
+
+  private dependencyReleaseTime<T extends {
+    eventId: string | null;
+    round?: string | null;
+    roundNo: number;
+    matchNo: number;
+  }>(
+    match: { eventId: string | null; round?: string | null; roundNo: number; matchNo: number },
+    matchMap: Map<string, T>,
+    scheduledEndByKey: Map<string, number>,
+  ) {
+    const dependencies = this.dependencyMatches(match, matchMap);
+    if (!dependencies.length) return 0;
+    return Math.max(
+      ...dependencies.map((dependency) =>
+        dependency.eventId
+          ? scheduledEndByKey.get(this.matchKey(dependency.eventId, dependency.roundNo, dependency.matchNo)) ?? 0
+          : 0,
+      ),
+    );
   }
 
   private parseDailyWindow(startTime: string, endTime: string): DailyWindow {
