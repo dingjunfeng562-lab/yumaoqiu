@@ -22,6 +22,9 @@ type PublicMatch = {
   score: string;
   gamesText: string;
   winnerName?: string | null;
+  matchPaused?: boolean;
+  pausedAt?: string | null;
+  actualDurationSeconds?: number | null;
   updatedAt?: string | null;
 };
 
@@ -81,8 +84,12 @@ function formatTime(value?: string | null) {
 }
 
 function MatchRow({ match, compact = false }: { match: PublicMatch; compact?: boolean }) {
+  const paused = Boolean(match.matchPaused);
+
   return (
-    <article className="grid min-h-[96px] grid-cols-[86px_1fr_86px] items-center gap-3 rounded-lg border border-white/10 bg-white/[0.07] px-4 py-3 shadow-[0_14px_34px_rgba(0,0,0,0.16)]">
+    <article className={`grid min-h-[96px] grid-cols-[86px_1fr_86px] items-center gap-3 rounded-lg border px-4 py-3 shadow-[0_14px_34px_rgba(0,0,0,0.16)] ${
+      paused ? 'border-amber-300/45 bg-amber-300/12' : 'border-white/10 bg-white/[0.07]'
+    }`}>
       <div className="text-left">
         <p className="text-xs font-bold text-cyan-200">{match.eventTypeLabel}</p>
         <p className="mt-1 text-[11px] font-semibold text-white/55">{match.venueName}</p>
@@ -99,7 +106,9 @@ function MatchRow({ match, compact = false }: { match: PublicMatch; compact?: bo
         <strong className={compact ? 'text-2xl font-black text-amber-300' : 'text-3xl font-black text-amber-300'}>
           {match.score}
         </strong>
-        <p className="mt-1 text-[11px] font-semibold text-white/50">{match.statusLabel}</p>
+        <p className={`mt-1 text-[11px] font-black ${paused ? 'text-amber-200' : 'text-white/50'}`}>
+          {paused ? '比赛暂停' : match.statusLabel}
+        </p>
       </div>
     </article>
   );

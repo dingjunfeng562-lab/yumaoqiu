@@ -757,6 +757,12 @@ export class TeamCompetitionsService {
           ? `${lineup.player1.affiliation} / ${lineup.player2.affiliation}`
           : lineup.player1.affiliation,
         playerIds: [lineup.player1Id, lineup.player2Id].filter(Boolean),
+        players: [
+          { id: lineup.player1Id, name: lineup.player1.name, affiliation: lineup.player1.affiliation },
+          lineup.player2
+            ? { id: lineup.player2Id, name: lineup.player2.name, affiliation: lineup.player2.affiliation }
+            : null,
+        ].filter(Boolean),
         teamName: lineup.team.name,
         eventType: lineup.teamCompetitionItem.eventType,
       });

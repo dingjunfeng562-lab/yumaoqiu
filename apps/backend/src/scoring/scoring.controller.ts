@@ -3,7 +3,7 @@ import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
-import { AssignRefereeDto, ForfeitMatchDto, LogMatchEventDto, ScorePointDto } from './dto/scoring.dto';
+import { AssignRefereeDto, ForfeitMatchDto, LogMatchEventDto, ScorePointDto, StartMatchDto } from './dto/scoring.dto';
 import { ScoringGateway } from './scoring.gateway';
 import { ScoringService } from './scoring.service';
 
@@ -36,8 +36,8 @@ export class ScoringController {
 
   @Roles(Role.ADMIN, Role.REFEREE)
   @Post('matches/:id/start')
-  async startMatch(@Param('id') id: string, @Req() req: RequestWithUser) {
-    const state = await this.scoringService.startMatch(id, req.user);
+  async startMatch(@Param('id') id: string, @Body() dto: StartMatchDto, @Req() req: RequestWithUser) {
+    const state = await this.scoringService.startMatch(id, req.user, dto);
     this.scoringGateway.emitMatchState(id, state);
     return state;
   }
@@ -58,6 +58,22 @@ export class ScoringController {
   @Post('matches/:id/undo')
   async undoLastPoint(@Param('id') id: string, @Req() req: RequestWithUser) {
     const state = await this.scoringService.undoLastPoint(id, req.user);
+    this.scoringGateway.emitMatchState(id, state);
+    return state;
+  }
+
+  @Roles(Role.ADMIN, Role.REFEREE)
+  @Post('matches/:id/pause')
+  async pauseMatch(@Param('id') id: string, @Req() req: RequestWithUser) {
+    const state = await this.scoringService.pauseMatch(id, req.user);
+    this.scoringGateway.emitMatchState(id, state);
+    return state;
+  }
+
+  @Roles(Role.ADMIN, Role.REFEREE)
+  @Post('matches/:id/resume')
+  async resumeMatch(@Param('id') id: string, @Req() req: RequestWithUser) {
+    const state = await this.scoringService.resumeMatch(id, req.user);
     this.scoringGateway.emitMatchState(id, state);
     return state;
   }

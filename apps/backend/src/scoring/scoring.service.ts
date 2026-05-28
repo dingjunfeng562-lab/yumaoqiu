@@ -20,6 +20,38 @@ type AuthUser = {
   role: Role;
 };
 
+type PlayerIndex = 1 | 2;
+type CourtSide = 'left' | 'right';
+
+type ServingState = {
+  gameNo: number;
+  servingSide: 1 | 2 | null;
+  serverPlayerIndex: PlayerIndex | null;
+  serverCourtSide: CourtSide | null;
+  receivingSide: 1 | 2 | null;
+  receiverPlayerIndex: PlayerIndex | null;
+  receiverCourtSide: CourtSide | null;
+  side1Positions: Record<CourtSide, PlayerIndex | null>;
+  side2Positions: Record<CourtSide, PlayerIndex | null>;
+};
+
+type StartMatchOptions = {
+  servingSide: 1 | 2;
+  serverPlayerIndex: PlayerIndex;
+  receiverPlayerIndex: PlayerIndex;
+  side1LeftPlayerIndex?: PlayerIndex;
+  side1RightPlayerIndex?: PlayerIndex;
+  side2LeftPlayerIndex?: PlayerIndex;
+  side2RightPlayerIndex?: PlayerIndex;
+};
+
+type MatchPauseState = {
+  paused: boolean;
+  pausedAt: Date | null;
+  pauseStartedAt: Date | null;
+  pausedDurationMs: number;
+};
+
 const EVENT_TYPE_LABELS: Record<string, string> = {
   MENS_SINGLES: '男子单打',
   WOMENS_SINGLES: '女子单打',
@@ -27,6 +59,15 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
   WOMENS_DOUBLES: '女子双打',
   MIXED_DOUBLES: '混合双打',
 };
+
+const SIDE_REQUIRED_EVENT_TYPES = new Set<MatchEventType>([
+  MatchEventType.TIMEOUT,
+  MatchEventType.MEDICAL_TIMEOUT,
+  MatchEventType.WARNING,
+  MatchEventType.YELLOW_CARD,
+]);
+
+const MATCH_PAUSE_NOTE_PREFIX = 'MATCH_PAUSE:';
 
 @Injectable()
 export class ScoringService {
@@ -79,6 +120,8 @@ export class ScoringService {
     const sideMap = await this.resolveSideMap([match.side1Id, match.side2Id]);
     const side1 = match.side1Id ? sideMap.get(match.side1Id) ?? null : null;
     const side2 = match.side2Id ? sideMap.get(match.side2Id) ?? null : null;
+    const side1View = side1 ? this.registrationView(side1) : null;
+    const side2View = side2 ? this.registrationView(side2) : null;
     const side1Games = match.games.filter((game) => game.winnerSide === 1).length;
     const side2Games = match.games.filter((game) => game.winnerSide === 2).length;
     const eventType = match.event?.type ?? match.teamCompetitionItem?.eventType ?? 'TEAM_COMPETITION';
@@ -88,6 +131,26 @@ export class ScoringService {
     const customGameCap = match.event?.customGameCap ?? null;
     const customGamesToWin = match.event?.customGamesToWin ?? null;
     const tournament = match.event?.tournament ?? match.teamMatch?.teamCompetition.tournament;
+    const servingEvents = await this.prisma.matchEvent.findMany({
+      where: {
+        matchId,
+        type: { in: [MatchEventType.SERVE_CHANGE, MatchEventType.POINT] },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+    const pauseEvents = await this.prisma.matchEvent.findMany({
+      where: { matchId, type: MatchEventType.TIMEOUT },
+      orderBy: { createdAt: 'asc' },
+    });
+    const pauseState = this.computePauseState(pauseEvents, match.finishedAt);
+    const currentGame = match.games.find((game) => !game.winnerSide) ?? match.games.at(-1) ?? null;
+    const servingState = this.buildServingState(
+      match.games,
+      servingEvents,
+      currentGame?.gameNo ?? 1,
+      this.sidePlayerCount(side1View),
+      this.sidePlayerCount(side2View),
+    );
 
     return {
       id: match.id,
@@ -121,30 +184,64 @@ export class ScoringService {
       durationMinutes: match.durationMinutes,
       startedAt: match.startedAt,
       finishedAt: match.finishedAt,
-      actualDurationSeconds: this.computeActualDurationSeconds(match.startedAt, match.finishedAt, match.status),
-      side1: side1 ? this.registrationView(side1) : null,
-      side2: side2 ? this.registrationView(side2) : null,
+      matchPaused: pauseState.paused,
+      pausedAt: pauseState.pausedAt,
+      actualDurationSeconds: this.computeActualDurationSeconds(match.startedAt, match.finishedAt, match.status, pauseState),
+      side1: side1View,
+      side2: side2View,
       side1Games,
       side2Games,
       games: match.games,
-      currentGame: match.games.find((game) => !game.winnerSide) ?? match.games.at(-1) ?? null,
+      currentGame,
+      servingState,
       events: match.events,
       updatedAt: match.updatedAt,
     };
   }
 
-  async startMatch(matchId: string, user: AuthUser) {
+  async startMatch(matchId: string, user: AuthUser, options: StartMatchOptions) {
     await this.ensureMatchAccess(matchId, user);
     const match = await this.ensurePlayableMatch(matchId);
     if (match.status === MatchStatus.COMPLETED || match.status === MatchStatus.CANCELLED) {
       throw new BadRequestException('已结束的场次不能重新开始');
     }
+    if (match.status !== MatchStatus.PENDING) {
+      throw new BadRequestException('比赛已开始');
+    }
+    if (
+      ![1, 2].includes(options.servingSide) ||
+      ![1, 2].includes(options.serverPlayerIndex) ||
+      ![1, 2].includes(options.receiverPlayerIndex)
+    ) {
+      throw new BadRequestException('请选择首发方、首位发球员和接发球员');
+    }
+
+    const servingState = this.initialServingState(
+      1,
+      options.servingSide,
+      options.serverPlayerIndex,
+      null,
+      {
+        side1Positions: this.startPositionsFromOptions(1, options),
+        side2Positions: this.startPositionsFromOptions(2, options),
+        receiverPlayerIndex: options.receiverPlayerIndex,
+      },
+    );
 
     await this.prisma.$transaction(async (tx) => {
       await tx.game.upsert({
         where: { matchId_gameNo: { matchId, gameNo: 1 } },
-        update: {},
-        create: { matchId, gameNo: 1 },
+        update: { server: options.servingSide },
+        create: { matchId, gameNo: 1, server: options.servingSide },
+      });
+      await tx.matchEvent.create({
+        data: {
+          matchId,
+          type: MatchEventType.SERVE_CHANGE,
+          side: options.servingSide,
+          gameNo: 1,
+          note: this.encodeServingState(servingState),
+        },
       });
       await tx.match.update({
         where: { id: matchId },
@@ -165,9 +262,32 @@ export class ScoringService {
     if (match.status === MatchStatus.COMPLETED || match.status === MatchStatus.CANCELLED) {
       throw new BadRequestException('场次已结束，不能继续记分');
     }
+    if (match.status !== MatchStatus.LIVE) {
+      throw new BadRequestException('请先开始比赛再记分');
+    }
+    if (await this.isMatchPaused(matchId)) {
+      throw new BadRequestException('比赛暂停中，不能继续记分');
+    }
 
     await this.prisma.$transaction(async (tx) => {
       const currentGame = await this.ensureCurrentGame(tx, matchId);
+      const [gamesBeforePoint, servingEventsBeforePoint] = await Promise.all([
+        tx.game.findMany({ where: { matchId }, orderBy: { gameNo: 'asc' } }),
+        tx.matchEvent.findMany({
+          where: {
+            matchId,
+            type: { in: [MatchEventType.SERVE_CHANGE, MatchEventType.POINT] },
+          },
+          orderBy: { createdAt: 'asc' },
+        }),
+      ]);
+      const servingStateBeforePoint = this.buildServingState(
+        gamesBeforePoint,
+        servingEventsBeforePoint,
+        currentGame.gameNo,
+        2,
+        2,
+      );
       const updatedGame = await tx.game.update({
         where: { id: currentGame.id },
         data:
@@ -176,6 +296,12 @@ export class ScoringService {
             : { side2Score: { increment: 1 }, server: side },
       });
       let game = updatedGame;
+      const servingStateAfterPoint = this.nextServingState(
+        servingStateBeforePoint,
+        side,
+        game.side1Score,
+        game.side2Score,
+      );
       const gameWinner = this.resolveGameWinner(
         game.side1Score,
         game.side2Score,
@@ -199,6 +325,7 @@ export class ScoringService {
           gameNo: game.gameNo,
           side1Score: game.side1Score,
           side2Score: game.side2Score,
+          note: this.encodeServingState(servingStateAfterPoint),
         },
       });
 
@@ -229,11 +356,29 @@ export class ScoringService {
       await this.teamCompetitionsService.updateTeamMatchAggregate(tx, matchId);
 
       if (gameWinner) {
-        // 羽毛球规则：上一局胜方在新一局先发球
+        const nextGameNo = game.gameNo + 1;
+        const nextGameServer = gameWinner === 1 ? 2 : 1;
+        const nextServerPlayer = this.playerOnCourtSide(servingStateAfterPoint, nextGameServer, 'right') ?? 1;
+        const nextGameServingState = this.initialServingState(
+          nextGameNo,
+          nextGameServer,
+          nextServerPlayer,
+          servingStateAfterPoint,
+        );
+        // 项目规则：上一局输方在新一局先发球
         await tx.game.upsert({
-          where: { matchId_gameNo: { matchId, gameNo: game.gameNo + 1 } },
-          update: { server: gameWinner },
-          create: { matchId, gameNo: game.gameNo + 1, server: gameWinner },
+          where: { matchId_gameNo: { matchId, gameNo: nextGameNo } },
+          update: { server: nextGameServer },
+          create: { matchId, gameNo: nextGameNo, server: nextGameServer },
+        });
+        await tx.matchEvent.create({
+          data: {
+            matchId,
+            type: MatchEventType.SERVE_CHANGE,
+            side: nextGameServer,
+            gameNo: nextGameNo,
+            note: this.encodeServingState(nextGameServingState),
+          },
         });
       }
     });
@@ -241,8 +386,56 @@ export class ScoringService {
     return this.getMatchState(matchId, user);
   }
 
+  async pauseMatch(matchId: string, user: AuthUser) {
+    await this.ensureMatchAccess(matchId, user);
+    const match = await this.ensurePlayableMatch(matchId);
+    if (match.status !== MatchStatus.LIVE) {
+      throw new BadRequestException('只有进行中的比赛可以暂停');
+    }
+    if (await this.isMatchPaused(matchId)) {
+      return this.getMatchState(matchId, user);
+    }
+
+    await this.prisma.matchEvent.create({
+      data: {
+        matchId,
+        type: MatchEventType.TIMEOUT,
+        note: this.encodeMatchPauseNote('START'),
+      },
+    });
+    return this.getMatchState(matchId, user);
+  }
+
+  async resumeMatch(matchId: string, user: AuthUser) {
+    await this.ensureMatchAccess(matchId, user);
+    const match = await this.ensurePlayableMatch(matchId);
+    if (match.status !== MatchStatus.LIVE) {
+      throw new BadRequestException('只有进行中的比赛可以恢复');
+    }
+    if (!(await this.isMatchPaused(matchId))) {
+      return this.getMatchState(matchId, user);
+    }
+
+    await this.prisma.matchEvent.create({
+      data: {
+        matchId,
+        type: MatchEventType.TIMEOUT,
+        note: this.encodeMatchPauseNote('END'),
+      },
+    });
+    return this.getMatchState(matchId, user);
+  }
+
   async undoLastPoint(matchId: string, user: AuthUser) {
     await this.ensureMatchAccess(matchId, user);
+    const match = await this.ensurePlayableMatch(matchId);
+    if (match.status === MatchStatus.COMPLETED || match.status === MatchStatus.CANCELLED) {
+      throw new BadRequestException('场次已结束，不能撤销比分');
+    }
+    if (match.status !== MatchStatus.LIVE) {
+      throw new BadRequestException('比赛尚未开始，不能撤销比分');
+    }
+
     await this.prisma.$transaction(async (tx) => {
       const lastPoint = await tx.matchEvent.findFirst({
         where: { matchId, type: MatchEventType.POINT, undoneAt: null },
@@ -335,7 +528,14 @@ export class ScoringService {
     note?: string,
   ) {
     await this.ensureMatchAccess(matchId, user);
-    await this.ensurePlayableMatch(matchId);
+    const match = await this.ensurePlayableMatch(matchId);
+    if (match.status === MatchStatus.COMPLETED || match.status === MatchStatus.CANCELLED) {
+      throw new BadRequestException('场次已结束，不能继续记录裁判操作');
+    }
+    if (SIDE_REQUIRED_EVENT_TYPES.has(type) && !side) {
+      throw new BadRequestException('请选择该裁判操作对应的选手');
+    }
+
     await this.prisma.matchEvent.create({
       data: { matchId, type, side, note },
     });
@@ -437,15 +637,64 @@ export class ScoringService {
     startedAt: Date | null,
     finishedAt: Date | null,
     status: MatchStatus,
+    pauseState?: MatchPauseState,
   ): number | null {
     if (!startedAt) return null;
     const endAt =
       finishedAt ??
+      pauseState?.pauseStartedAt ??
       (status === MatchStatus.LIVE ? new Date() : null);
     if (!endAt) return null;
-    const ms = endAt.getTime() - startedAt.getTime();
+    const ms = endAt.getTime() - startedAt.getTime() - (pauseState?.pausedDurationMs ?? 0);
     if (ms < 0) return 0;
     return Math.floor(ms / 1000);
+  }
+
+  private computePauseState(
+    events: Array<{ note: string | null; createdAt: Date }>,
+    finishedAt?: Date | null,
+  ): MatchPauseState {
+    let pauseStartedAt: Date | null = null;
+    let pausedDurationMs = 0;
+    const endLimit = finishedAt?.getTime() ?? null;
+
+    for (const event of events) {
+      if (endLimit !== null && event.createdAt.getTime() > endLimit) continue;
+      const action = this.decodeMatchPauseNote(event.note);
+      if (action === 'START' && !pauseStartedAt) {
+        pauseStartedAt = event.createdAt;
+      } else if (action === 'END' && pauseStartedAt) {
+        pausedDurationMs += Math.max(0, event.createdAt.getTime() - pauseStartedAt.getTime());
+        pauseStartedAt = null;
+      }
+    }
+
+    const paused = Boolean(pauseStartedAt && !finishedAt);
+    return {
+      paused,
+      pausedAt: paused ? pauseStartedAt : null,
+      pauseStartedAt: paused ? pauseStartedAt : null,
+      pausedDurationMs,
+    };
+  }
+
+  private async isMatchPaused(matchId: string) {
+    const events = await this.prisma.matchEvent.findMany({
+      where: { matchId, type: MatchEventType.TIMEOUT },
+      orderBy: { createdAt: 'asc' },
+      select: { note: true, createdAt: true },
+    });
+    return this.computePauseState(events).paused;
+  }
+
+  private encodeMatchPauseNote(action: 'START' | 'END') {
+    return `${MATCH_PAUSE_NOTE_PREFIX}${action}`;
+  }
+
+  private decodeMatchPauseNote(note?: string | null): 'START' | 'END' | null {
+    if (note === `${MATCH_PAUSE_NOTE_PREFIX}START`) return 'START';
+    if (note === `${MATCH_PAUSE_NOTE_PREFIX}END`) return 'END';
+    return null;
   }
 
   private async ensureMatchAccess(matchId: string, user: AuthUser) {
@@ -480,6 +729,283 @@ export class ScoringService {
     return tx.game.create({
       data: { matchId, gameNo: (last?.gameNo ?? 0) + 1 },
     });
+  }
+
+  private buildServingState(
+    games: Array<{ gameNo: number; server: number | null }>,
+    events: Array<{
+      type: MatchEventType;
+      side: number | null;
+      gameNo: number | null;
+      side1Score: number | null;
+      side2Score: number | null;
+      note: string | null;
+      undoneAt?: Date | null;
+    }>,
+    currentGameNo: number,
+    side1PlayerCount: number,
+    side2PlayerCount: number,
+  ): ServingState {
+    const firstGame = games.find((game) => game.gameNo === 1);
+    let state: ServingState | null = null;
+
+    for (const event of events) {
+      if (event.type === MatchEventType.SERVE_CHANGE) {
+        const parsed = this.decodeServingState(event.note);
+        if (parsed) state = parsed;
+        continue;
+      }
+      if (event.type !== MatchEventType.POINT || event.undoneAt || !event.side) continue;
+      const gameNo = event.gameNo ?? state?.gameNo ?? 1;
+      state = this.ensureServingStateForGame(
+        state ??
+          this.initialServingState(
+            gameNo,
+            this.validSide(games.find((game) => game.gameNo === gameNo)?.server) ??
+              this.validSide(firstGame?.server) ??
+              1,
+            1,
+          ),
+        games,
+        gameNo,
+      );
+      const parsed = this.decodeServingState(event.note);
+      if (parsed && parsed.gameNo === gameNo) {
+        state = parsed;
+      } else if (typeof event.side1Score === 'number' && typeof event.side2Score === 'number') {
+        state = this.nextServingState(
+          state,
+          event.side as 1 | 2,
+          event.side1Score,
+          event.side2Score,
+        );
+      }
+    }
+
+    const fallbackServer = this.validSide(games.find((game) => game.gameNo === currentGameNo)?.server) ??
+      this.validSide(firstGame?.server) ??
+      1;
+    const currentState = this.ensureServingStateForGame(
+      state ?? this.initialServingState(currentGameNo, fallbackServer, 1),
+      games,
+      currentGameNo,
+    );
+    return this.sanitizeServingState(currentState, side1PlayerCount, side2PlayerCount);
+  }
+
+  private initialServingState(
+    gameNo: number,
+    servingSide: 1 | 2,
+    serverPlayerIndex: PlayerIndex,
+    previous?: ServingState | null,
+    options?: {
+      side1Positions?: Record<CourtSide, PlayerIndex | null>;
+      side2Positions?: Record<CourtSide, PlayerIndex | null>;
+      receiverPlayerIndex?: PlayerIndex;
+    },
+  ): ServingState {
+    const side1Positions = options?.side1Positions
+      ? { ...options.side1Positions }
+      : previous
+      ? { ...previous.side1Positions }
+      : ({ left: 2, right: 1 } as Record<CourtSide, PlayerIndex | null>);
+    const side2Positions = options?.side2Positions
+      ? { ...options.side2Positions }
+      : previous
+      ? { ...previous.side2Positions }
+      : ({ left: 2, right: 1 } as Record<CourtSide, PlayerIndex | null>);
+    const positions = servingSide === 1 ? side1Positions : side2Positions;
+    if (this.courtSideOfPlayer(positions, serverPlayerIndex) === null) {
+      positions.right = serverPlayerIndex;
+      positions.left = serverPlayerIndex === 1 ? 2 : 1;
+    }
+    const serverCourtSide = this.courtSideOfPlayer(positions, serverPlayerIndex) ?? 'right';
+    const receivingSide: 1 | 2 = servingSide === 1 ? 2 : 1;
+    const receivingPositions = receivingSide === 1 ? side1Positions : side2Positions;
+    const receiverPlayerIndex =
+      options?.receiverPlayerIndex ??
+      this.playerOnCourtSide(
+        {
+          gameNo,
+          servingSide,
+          serverPlayerIndex,
+          serverCourtSide,
+          receivingSide,
+          receiverPlayerIndex: null,
+          receiverCourtSide: null,
+          side1Positions,
+          side2Positions,
+        },
+        receivingSide,
+        this.oppositeCourtSide(serverCourtSide),
+      ) ??
+      1;
+    const receiverCourtSide =
+      this.courtSideOfPlayer(receivingPositions, receiverPlayerIndex) ??
+      this.oppositeCourtSide(serverCourtSide);
+    return {
+      gameNo,
+      servingSide,
+      serverPlayerIndex,
+      serverCourtSide,
+      receivingSide,
+      receiverPlayerIndex,
+      receiverCourtSide,
+      side1Positions,
+      side2Positions,
+    };
+  }
+
+  private ensureServingStateForGame(
+    state: ServingState,
+    games: Array<{ gameNo: number; server: number | null }>,
+    gameNo: number,
+  ) {
+    if (state.gameNo === gameNo) return state;
+    const serverSide = this.validSide(games.find((game) => game.gameNo === gameNo)?.server) ??
+      state.servingSide ??
+      1;
+    const serverPlayerIndex = this.playerOnCourtSide(state, serverSide, 'right') ?? 1;
+    return this.initialServingState(gameNo, serverSide, serverPlayerIndex, state);
+  }
+
+  private nextServingState(
+    state: ServingState,
+    scoringSide: 1 | 2,
+    side1Score: number,
+    side2Score: number,
+  ): ServingState {
+    const next: ServingState = {
+      ...state,
+      side1Positions: { ...state.side1Positions },
+      side2Positions: { ...state.side2Positions },
+    };
+    const scoringScore = scoringSide === 1 ? side1Score : side2Score;
+    const serverCourtSide: CourtSide = scoringScore % 2 === 0 ? 'right' : 'left';
+
+    if (state.servingSide === scoringSide) {
+      const positions = scoringSide === 1 ? next.side1Positions : next.side2Positions;
+      [positions.left, positions.right] = [positions.right, positions.left];
+      next.serverPlayerIndex = state.serverPlayerIndex;
+    } else {
+      next.servingSide = scoringSide;
+      next.serverPlayerIndex = this.playerOnCourtSide(next, scoringSide, serverCourtSide) ?? 1;
+    }
+
+    next.serverCourtSide = serverCourtSide;
+    next.receivingSide = next.servingSide === 1 ? 2 : 1;
+    next.receiverCourtSide = this.oppositeCourtSide(serverCourtSide);
+    next.receiverPlayerIndex =
+      this.playerOnCourtSide(next, next.receivingSide, next.receiverCourtSide) ?? 1;
+    return next;
+  }
+
+  private playerOnCourtSide(state: ServingState, side: 1 | 2, courtSide: CourtSide) {
+    const positions = side === 1 ? state.side1Positions : state.side2Positions;
+    return positions[courtSide] ?? null;
+  }
+
+  private courtSideOfPlayer(positions: Record<CourtSide, PlayerIndex | null>, playerIndex: PlayerIndex) {
+    if (positions.left === playerIndex) return 'left';
+    if (positions.right === playerIndex) return 'right';
+    return null;
+  }
+
+  private oppositeCourtSide(courtSide: CourtSide): CourtSide {
+    return courtSide === 'left' ? 'right' : 'left';
+  }
+
+  private sanitizeServingState(state: ServingState, side1PlayerCount: number, side2PlayerCount: number) {
+    const side1Positions = this.sanitizePositions(state.side1Positions, side1PlayerCount);
+    const side2Positions = this.sanitizePositions(state.side2Positions, side2PlayerCount);
+    return {
+      ...state,
+      serverPlayerIndex: state.serverPlayerIndex === 2 && this.sidePlayerCountForSide(state.servingSide, side1PlayerCount, side2PlayerCount) < 2
+        ? 1
+        : state.serverPlayerIndex,
+      receiverPlayerIndex: state.receiverPlayerIndex === 2 && this.sidePlayerCountForSide(state.receivingSide, side1PlayerCount, side2PlayerCount) < 2
+        ? 1
+        : state.receiverPlayerIndex,
+      side1Positions,
+      side2Positions,
+    };
+  }
+
+  private sanitizePositions(positions: Record<CourtSide, PlayerIndex | null>, playerCount: number) {
+    const hasSecondPlayer = playerCount > 1;
+    return {
+      left: positions.left === 2 && !hasSecondPlayer ? null : positions.left,
+      right: positions.right === 2 && !hasSecondPlayer ? null : positions.right,
+    };
+  }
+
+  private sidePlayerCount(side?: { players?: unknown[] } | null) {
+    return Math.max(1, side?.players?.length ?? 1);
+  }
+
+  private sidePlayerCountForSide(side: 1 | 2 | null, side1PlayerCount: number, side2PlayerCount: number) {
+    if (side === 1) return side1PlayerCount;
+    if (side === 2) return side2PlayerCount;
+    return 0;
+  }
+
+  private startPositionsFromOptions(side: 1 | 2, options: StartMatchOptions) {
+    const left = side === 1 ? options.side1LeftPlayerIndex : options.side2LeftPlayerIndex;
+    const right = side === 1 ? options.side1RightPlayerIndex : options.side2RightPlayerIndex;
+    if ((left === 1 || left === 2) && (right === 1 || right === 2) && left !== right) {
+      return { left, right } as Record<CourtSide, PlayerIndex>;
+    }
+    return { left: 2, right: 1 } as Record<CourtSide, PlayerIndex>;
+  }
+
+  private validSide(value?: number | null): 1 | 2 | null {
+    return value === 1 || value === 2 ? value : null;
+  }
+
+  private encodeServingState(state: ServingState) {
+    return JSON.stringify({ refereeServingState: state });
+  }
+
+  private decodeServingState(note?: string | null): ServingState | null {
+    if (!note) return null;
+    try {
+      const parsed = JSON.parse(note) as { refereeServingState?: Partial<ServingState> };
+      const state = parsed.refereeServingState;
+      if (!state) return null;
+      const servingSide = this.validSide(state.servingSide);
+      const serverPlayerIndex = state.serverPlayerIndex === 1 || state.serverPlayerIndex === 2
+        ? state.serverPlayerIndex
+        : null;
+      const serverCourtSide = state.serverCourtSide === 'left' || state.serverCourtSide === 'right'
+        ? state.serverCourtSide
+        : null;
+      const receivingSide = this.validSide(state.receivingSide);
+      const receiverPlayerIndex = state.receiverPlayerIndex === 1 || state.receiverPlayerIndex === 2
+        ? state.receiverPlayerIndex
+        : null;
+      const receiverCourtSide = state.receiverCourtSide === 'left' || state.receiverCourtSide === 'right'
+        ? state.receiverCourtSide
+        : null;
+      return {
+        gameNo: typeof state.gameNo === 'number' ? state.gameNo : 1,
+        servingSide,
+        serverPlayerIndex,
+        serverCourtSide,
+        receivingSide,
+        receiverPlayerIndex,
+        receiverCourtSide,
+        side1Positions: this.normalizePositions(state.side1Positions),
+        side2Positions: this.normalizePositions(state.side2Positions),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private normalizePositions(value?: Partial<Record<CourtSide, unknown>>) {
+    const left = value?.left === 1 || value?.left === 2 ? value.left : 2;
+    const right = value?.right === 1 || value?.right === 2 ? value.right : 1;
+    return { left, right } as Record<CourtSide, PlayerIndex | null>;
   }
 
   private resolveGameWinner(
@@ -781,14 +1307,42 @@ export class ScoringService {
   }
 
   private registrationView(registration: any) {
+    const players = registration.players?.length
+      ? registration.players
+      : [
+          registration.player1
+            ? {
+                id: registration.player1.id,
+                name: registration.player1.name,
+                affiliation: registration.player1.affiliation,
+              }
+            : null,
+          registration.player2
+            ? {
+                id: registration.player2.id,
+                name: registration.player2.name,
+                affiliation: registration.player2.affiliation,
+              }
+            : null,
+        ].filter(Boolean);
+    const name = registration.name ?? (registration.player2
+      ? `${registration.player1.name} / ${registration.player2.name}`
+      : registration.player1?.name ?? registration.name);
+    const teamName = registration.teamName?.trim?.() || (players.length > 1 ? registration.name : null);
+    const affiliation = registration.affiliation ?? (registration.player2
+      ? `${registration.player1.affiliation} / ${registration.player2.affiliation}`
+      : registration.player1?.affiliation ?? players[0]?.affiliation ?? null);
     return {
       id: registration.id,
-      name: registration.name ?? (registration.player2
-        ? `${registration.player1.name} / ${registration.player2.name}`
-        : registration.player1.name),
-      affiliation: registration.affiliation ?? (registration.player2
-        ? `${registration.player1.affiliation} / ${registration.player2.affiliation}`
-        : registration.player1.affiliation),
+      name,
+      teamName,
+      players: players.map((player: any, index: number) => ({
+        id: player.id ?? `${registration.id}:player-${index + 1}`,
+        index: index + 1,
+        name: player.name,
+          affiliation: player.affiliation ?? null,
+      })),
+      affiliation,
     };
   }
 }

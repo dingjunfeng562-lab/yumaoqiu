@@ -19,6 +19,17 @@ export type BracketParticipant = {
   members?: string[];
 };
 
+export type BracketMatchEvent = {
+  id: string;
+  type: string;
+  typeLabel: string;
+  side?: 1 | 2 | number | null;
+  sideLabel?: string | null;
+  note?: string | null;
+  createdAt?: string | null;
+  text?: string | null;
+};
+
 export type BracketMatch = {
   id: string;
   roundNo: number;
@@ -39,6 +50,10 @@ export type BracketMatch = {
   startedAt?: string | null;
   finishedAt?: string | null;
   durationMinutes?: number | null;
+  matchPaused?: boolean;
+  pausedAt?: string | null;
+  actualDurationSeconds?: number | null;
+  latestEvents?: BracketMatchEvent[];
   detailLines?: string[];
 };
 
@@ -133,16 +148,31 @@ function formatTime(value?: string | null) {
   });
 }
 
-function formatActualDuration(startedAt?: string | null, finishedAt?: string | null) {
+function formatActualDuration(
+  startedAt?: string | null,
+  finishedAt?: string | null,
+  actualDurationSeconds?: number | null,
+  matchPaused?: boolean,
+) {
   if (!startedAt) return '—';
-  const start = new Date(startedAt).getTime();
-  if (Number.isNaN(start)) return '—';
-  const end = finishedAt ? new Date(finishedAt).getTime() : Date.now();
-  const seconds = Math.max(0, Math.floor((end - start) / 1000));
+  let seconds: number;
+  if (typeof actualDurationSeconds === 'number') {
+    seconds = Math.max(0, Math.floor(actualDurationSeconds));
+  } else {
+    const start = new Date(startedAt).getTime();
+    if (Number.isNaN(start)) return '—';
+    const end = finishedAt ? new Date(finishedAt).getTime() : Date.now();
+    seconds = Math.max(0, Math.floor((end - start) / 1000));
+  }
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
-  const suffix = finishedAt ? '' : '（进行中）';
+  const suffix = finishedAt ? '' : matchPaused ? '（暂停中）' : '（进行中）';
   return `${m}分${s.toString().padStart(2, '0')}秒${suffix}`;
+}
+
+function matchEventText(event?: BracketMatchEvent | null) {
+  if (!event) return '';
+  return event.text || (event.sideLabel ? `${event.sideLabel} · ${event.typeLabel}` : event.typeLabel);
 }
 
 function rowHeightFor(bracketSize: number) {
@@ -937,6 +967,7 @@ function WinnerCard({
 }) {
   const status = normalizeStatus(match.status);
   const isLive = status === 'LIVE';
+  const isPaused = isLive && Boolean(match.matchPaused);
   const isDone = status === 'COMPLETED';
   const isPlaceholder = match.id.startsWith('placeholder-');
   const forfeitedSide = match.forfeitedSide === 1 || match.forfeitedSide === 2 ? match.forfeitedSide : null;
@@ -965,7 +996,9 @@ function WinnerCard({
     ? 'border-amber-300 bg-gradient-to-br from-amber-50 via-white to-amber-100 ring-1 ring-amber-200'
     : bothForfeited
       ? 'border-red-200 bg-red-50/60'
-      : isLive
+      : isPaused
+        ? 'border-amber-300 bg-amber-50/60 ring-1 ring-amber-200'
+        : isLive
         ? 'border-red-200 bg-red-50/40 ring-1 ring-red-100'
         : winner || (isForfeit && displayParticipant)
           ? 'border-amber-200 bg-white'
@@ -1214,6 +1247,7 @@ function MatchCard({
 }) {
   const status = normalizeStatus(match.status);
   const isLive = status === 'LIVE';
+  const isPaused = isLive && Boolean(match.matchPaused);
   const isDone = status === 'COMPLETED';
   const isPending = status === 'PENDING';
   const forfeitedSide = match.forfeitedSide === 1 || match.forfeitedSide === 2 ? match.forfeitedSide : null;
@@ -1223,10 +1257,14 @@ function MatchCard({
   const isPlaceholder = match.id.startsWith('placeholder-');
   const time = formatTime(match.scheduledAt);
   const venueName = match.venueName?.trim();
+  const latestEvent = match.latestEvents?.[0] ?? null;
+  const latestEventTime = formatTime(latestEvent?.createdAt);
 
   const tone = isForfeit
     ? 'border-red-200 bg-red-50/40'
-    : isLive
+    : isPaused
+      ? 'border-amber-300 bg-amber-50/60 ring-1 ring-amber-200'
+      : isLive
       ? 'border-red-200 bg-red-50/40 ring-1 ring-red-100'
       : isDone
         ? 'border-amber-200 bg-amber-50/40'
@@ -1249,17 +1287,26 @@ function MatchCard({
           className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-black ${
             isForfeit
               ? 'bg-red-100 text-red-700'
-              : isLive
+              : isPaused
+                ? 'bg-amber-500 text-white'
+                : isLive
                 ? 'bg-red-500 text-white'
                 : isDone
                   ? 'bg-amber-100 text-amber-700'
                   : 'bg-slate-100 text-slate-500'
           }`}
         >
-          {isLive && !isForfeit ? <span className="bracket-live-pulse h-1.5 w-1.5 rounded-full bg-white" /> : null}
-          {bothForfeited ? '双方弃权' : isForfeit ? '弃权' : statusText(match.status)}
+          {isLive && !isPaused && !isForfeit ? <span className="bracket-live-pulse h-1.5 w-1.5 rounded-full bg-white" /> : null}
+          {bothForfeited ? '双方弃权' : isForfeit ? '弃权' : isPaused ? '比赛暂停' : statusText(match.status)}
         </span>
       </div>
+
+      {latestEvent ? (
+        <div className="flex items-center justify-between gap-2 border-b border-black/5 bg-white/70 px-3 py-1.5 text-[10px] font-black text-emerald-700">
+          <span className="truncate">{matchEventText(latestEvent)}</span>
+          <span className="shrink-0 text-emerald-600/80">{latestEventTime ?? '刚刚记录'}</span>
+        </div>
+      ) : null}
 
       {/* Sides */}
       <div className="flex flex-1 flex-col gap-1 p-1">
@@ -1441,6 +1488,7 @@ function MatchDetailModal({
 
   const status = normalizeStatus(match.status);
   const isLive = status === 'LIVE';
+  const isPaused = isLive && Boolean(match.matchPaused);
 
   return (
     <div
@@ -1489,9 +1537,9 @@ function MatchDetailModal({
           <dl className="grid grid-cols-2 gap-2.5 text-sm">
             <ModalFact
               label="状态"
-              value={match.forfeitedSide ? '弃权' : statusText(match.status)}
+              value={match.forfeitedSide ? '弃权' : isPaused ? '比赛暂停' : statusText(match.status)}
               highlight={isLive || !!match.forfeitedSide}
-              highlightTone="red"
+              highlightTone={isPaused ? 'amber' : 'red'}
             />
             <ModalFact
               label="比分"
@@ -1503,8 +1551,25 @@ function MatchDetailModal({
             <ModalFact label="裁判" value={match.refereeName || '待分配'} />
             <ModalFact label="胜方" value={winner?.name || '待定'} highlight={!!winner} highlightTone="amber" />
             <ModalFact label="预估时长" value={match.durationMinutes ? `${match.durationMinutes}分钟` : '—'} />
-            <ModalFact label="实际用时" value={formatActualDuration(match.startedAt, match.finishedAt)} />
+            <ModalFact
+              label="实际用时"
+              value={formatActualDuration(match.startedAt, match.finishedAt, match.actualDurationSeconds, match.matchPaused)}
+            />
           </dl>
+
+          {match.latestEvents?.length ? (
+            <div className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-3">
+              <p className="text-[10px] font-black uppercase tracking-wider text-emerald-700/70">裁判记录</p>
+              <div className="mt-2 space-y-1.5">
+                {match.latestEvents.map((event) => (
+                  <p key={event.id} className="flex items-center justify-between gap-3 text-xs font-semibold text-slate-700">
+                    <span className="truncate">{matchEventText(event)}</span>
+                    <span className="shrink-0 font-black text-emerald-700">{formatTime(event.createdAt) ?? '刚刚记录'}</span>
+                  </p>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           {match.forfeitedSide ? (
             <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3">

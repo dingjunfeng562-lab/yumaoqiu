@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { Alert, Button, Input, Modal, Spin, Tag, message } from 'antd';
+import { Alert, Button, Input, Modal, Spin, message } from 'antd';
 import {
   ArrowLeftOutlined,
   CloseCircleOutlined,
@@ -15,6 +15,7 @@ import {
   MedicineBoxOutlined,
   PauseCircleOutlined,
   PlayCircleFilled,
+  PlayCircleOutlined,
   ReloadOutlined,
   StopOutlined,
   TrophyOutlined,
@@ -37,6 +38,40 @@ type GameScore = {
   winnerSide?: number | null;
 };
 
+type PlayerIndex = 1 | 2;
+type CourtSide = 'left' | 'right';
+
+type SidePlayer = {
+  id: string;
+  index: number;
+  name: string;
+  affiliation?: string | null;
+};
+
+type MatchSide = {
+  name: string;
+  affiliation: string;
+  teamName?: string | null;
+  players?: SidePlayer[];
+};
+
+type ServingState = {
+  gameNo: number;
+  servingSide?: 1 | 2 | null;
+  serverPlayerIndex?: PlayerIndex | null;
+  serverCourtSide?: CourtSide | null;
+  receivingSide?: 1 | 2 | null;
+  receiverPlayerIndex?: PlayerIndex | null;
+  receiverCourtSide?: CourtSide | null;
+  side1Positions?: Record<CourtSide, PlayerIndex | null>;
+  side2Positions?: Record<CourtSide, PlayerIndex | null>;
+};
+
+type StartCourtPositions = {
+  side1: Record<CourtSide, PlayerIndex | null>;
+  side2: Record<CourtSide, PlayerIndex | null>;
+};
+
 type MatchEventLog = {
   id: string;
   type: string;
@@ -47,6 +82,13 @@ type MatchEventLog = {
   note?: string | null;
   createdAt: string;
 };
+
+type RefereeEventType = 'TIMEOUT' | 'MEDICAL_TIMEOUT' | 'WARNING' | 'YELLOW_CARD';
+
+type PendingRefereeAction = {
+  type: RefereeEventType;
+  label: string;
+} | null;
 
 type ScoreState = {
   id: string;
@@ -70,13 +112,18 @@ type ScoreState = {
   durationMinutes: number;
   startedAt?: string | null;
   finishedAt?: string | null;
-  side1?: { name: string; affiliation: string } | null;
-  side2?: { name: string; affiliation: string } | null;
+  matchPaused?: boolean;
+  pausedAt?: string | null;
+  actualDurationSeconds?: number | null;
+  side1?: MatchSide | null;
+  side2?: MatchSide | null;
   side1Games: number;
   side2Games: number;
   games: GameScore[];
   currentGame?: GameScore | null;
+  servingState?: ServingState | null;
   events: MatchEventLog[];
+  updatedAt?: string | null;
 };
 
 const statusMeta: Record<ScoreState['status'], { label: string; color: string; tone: string }> = {
@@ -130,33 +177,116 @@ function sideName(side?: { name: string } | null) {
   return side?.name ?? '待定';
 }
 
+function sidePlayers(side?: MatchSide | null): SidePlayer[] {
+  if (side?.players?.length) return side.players;
+  return [{ id: side?.name ?? 'pending', index: 1, name: sideName(side), affiliation: side?.affiliation ?? null }];
+}
+
+function sideDisplayName(side?: MatchSide | null) {
+  return side?.teamName || sideName(side);
+}
+
+function isDoublesSide(side?: MatchSide | null) {
+  return sidePlayers(side).length > 1;
+}
+
+function positionLabel(side: 1 | 2, playerIndex: number, servingState?: ServingState | null) {
+  const positions = side === 1 ? servingState?.side1Positions : servingState?.side2Positions;
+  if (positions?.left === playerIndex) return '左侧';
+  if (positions?.right === playerIndex) return '右侧';
+  if (servingState?.servingSide === side && servingState.serverPlayerIndex === playerIndex) {
+    return servingState.serverCourtSide === 'left' ? '左侧' : '右侧';
+  }
+  return null;
+}
+
+function defaultPositionsForSide(side?: MatchSide | null): Record<CourtSide, PlayerIndex | null> {
+  const players = sidePlayers(side);
+  return players.length > 1 ? { left: 2, right: 1 } : { left: null, right: 1 };
+}
+
+function defaultStartPositions(score: ScoreState): StartCourtPositions {
+  return {
+    side1: defaultPositionsForSide(score.side1),
+    side2: defaultPositionsForSide(score.side2),
+  };
+}
+
+function courtSideForStartPlayer(positions: Record<CourtSide, PlayerIndex | null>, playerIndex: number) {
+  if (positions.left === playerIndex) return 'left';
+  if (positions.right === playerIndex) return 'right';
+  return null;
+}
+
+function updateStartCourtPosition(
+  positions: StartCourtPositions,
+  side: 1 | 2,
+  playerIndex: PlayerIndex,
+  courtSide: CourtSide,
+): StartCourtPositions {
+  const sideKey = side === 1 ? 'side1' : 'side2';
+  const current = { ...positions[sideKey] };
+  const opposite = courtSide === 'left' ? 'right' : 'left';
+  current[courtSide] = playerIndex;
+  current[opposite] = playerIndex === 1 ? 2 : 1;
+  return { ...positions, [sideKey]: current };
+}
+
 function MatchClock({
   startedAt,
   finishedAt,
   status,
+  matchPaused = false,
+  actualDurationSeconds,
+  compact = false,
 }: {
   startedAt?: string | null;
   finishedAt?: string | null;
   status: ScoreState['status'];
+  matchPaused?: boolean;
+  actualDurationSeconds?: number | null;
+  compact?: boolean;
 }) {
   const [now, setNow] = useState(() => Date.now());
+  const [baseReceivedAt, setBaseReceivedAt] = useState(() => Date.now());
+
   useEffect(() => {
-    if (status !== 'LIVE' || finishedAt) return;
+    setBaseReceivedAt(Date.now());
+    setNow(Date.now());
+  }, [actualDurationSeconds, finishedAt, matchPaused, startedAt, status]);
+
+  useEffect(() => {
+    if (status !== 'LIVE' || finishedAt || matchPaused) return;
     const handle = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(handle);
-  }, [status, finishedAt]);
+  }, [status, finishedAt, matchPaused]);
 
   if (!startedAt) return null;
   const startMs = new Date(startedAt).getTime();
   if (Number.isNaN(startMs)) return null;
-  const endMs = finishedAt ? new Date(finishedAt).getTime() : now;
-  const seconds = Math.max(0, Math.floor((endMs - startMs) / 1000));
+  let seconds: number;
+  if (typeof actualDurationSeconds === 'number') {
+    seconds = Math.max(0, Math.floor(actualDurationSeconds));
+    if (status === 'LIVE' && !finishedAt && !matchPaused) {
+      seconds += Math.max(0, Math.floor((now - baseReceivedAt) / 1000));
+    }
+  } else {
+    const endMs = finishedAt ? new Date(finishedAt).getTime() : now;
+    seconds = Math.max(0, Math.floor((endMs - startMs) / 1000));
+  }
   const mm = Math.floor(seconds / 60).toString().padStart(2, '0');
   const ss = (seconds % 60).toString().padStart(2, '0');
+  const label = finishedAt ? '比赛用时' : matchPaused ? '比赛暂停' : '正在计时';
   return (
-    <p className="mt-1 inline-flex items-center gap-1 text-xs font-black tracking-wider text-emerald-700 sm:text-sm">
+    <p
+      className={
+        compact
+          ? 'inline-flex items-center gap-2 text-sm font-black tracking-wider text-white sm:text-base'
+          : 'mt-1 inline-flex items-center gap-1 text-xs font-black tracking-wider text-emerald-700 sm:text-sm'
+      }
+    >
       <FieldTimeOutlined />
-      用时 {mm}:{ss}{finishedAt ? '（已结束）' : ''}
+      {label} {mm}:{ss}{finishedAt ? '（已结束）' : matchPaused ? '（已停止）' : ''}
     </p>
   );
 }
@@ -205,15 +335,26 @@ function recordItems(score: ScoreState) {
   });
 }
 
-function eventDescription(event: MatchEventLog) {
-  const label = eventLabels[event.type] ?? event.type;
+function eventDescription(event: MatchEventLog, side1Name?: string, side2Name?: string) {
+  const pauseAction = event.note === 'MATCH_PAUSE:START' ? 'START' : event.note === 'MATCH_PAUSE:END' ? 'END' : null;
+  const label = pauseAction === 'START'
+    ? '比赛暂停'
+    : pauseAction === 'END'
+      ? '比赛恢复'
+      : eventLabels[event.type] ?? event.type;
+  const sideText =
+    event.side === 1
+      ? ` · ${side1Name ?? '选手 1'}`
+      : event.side === 2
+        ? ` · ${side2Name ?? '选手 2'}`
+        : '';
   const scoreText =
     typeof event.side1Score === 'number' && typeof event.side2Score === 'number'
       ? ` · ${event.side1Score}:${event.side2Score}`
       : '';
   const gameText = event.gameNo ? ` · 第 ${event.gameNo} 局` : '';
-  const noteText = event.note ? ` · ${event.note}` : '';
-  return `${label}${gameText}${scoreText}${noteText}`;
+  const noteText = event.note && !pauseAction ? ` · ${event.note}` : '';
+  return `${label}${sideText}${gameText}${scoreText}${noteText}`;
 }
 
 export default function RefereeScoringPage() {
@@ -229,6 +370,15 @@ export default function RefereeScoringPage() {
   const [forfeitReason, setForfeitReason] = useState('选手未到场弃权');
   const [forfeitChooserOpen, setForfeitChooserOpen] = useState(false);
   const [finishConfirmOpen, setFinishConfirmOpen] = useState(false);
+  const [startConfirmOpen, setStartConfirmOpen] = useState(false);
+  const [startServingSide, setStartServingSide] = useState<1 | 2 | null>(null);
+  const [startServerPlayerIndex, setStartServerPlayerIndex] = useState<PlayerIndex | null>(null);
+  const [startReceiverPlayerIndex, setStartReceiverPlayerIndex] = useState<PlayerIndex | null>(null);
+  const [startPositions, setStartPositions] = useState<StartCourtPositions>({
+    side1: { left: 2, right: 1 },
+    side2: { left: 2, right: 1 },
+  });
+  const [pendingRefereeAction, setPendingRefereeAction] = useState<PendingRefereeAction>(null);
 
   const currentGame = score ? currentGameOf(score) : null;
   const disabled = !score || score.status === 'COMPLETED' || score.status === 'CANCELLED' || busyAction !== '';
@@ -266,6 +416,14 @@ export default function RefereeScoringPage() {
     } finally {
       setBusyAction('');
     }
+  }
+
+  function openStartConfirm() {
+    setStartPositions(defaultStartPositions(score!));
+    setStartServingSide(null);
+    setStartServerPlayerIndex(null);
+    setStartReceiverPlayerIndex(null);
+    setStartConfirmOpen(true);
   }
 
   useEffect(() => {
@@ -321,10 +479,19 @@ export default function RefereeScoringPage() {
   const side2Score = currentSideScore(score, 2);
   const hasPointEvent = score.events.some((event) => event.type === 'POINT');
   const recentEvents = score.events.slice(0, 10);
-  const status = statusMeta[score.status] ?? statusMeta.PENDING;
+  const scoringLocked = score.status !== 'LIVE' || Boolean(score.matchPaused) || busyAction !== '';
+  const scoreLockedReason =
+    score.status === 'PENDING'
+      ? '请先点击开始比赛'
+      : score.status === 'COMPLETED' || score.status === 'CANCELLED'
+        ? '比赛已结束，计分已锁定'
+        : score.matchPaused
+          ? '比赛暂停中，请恢复后继续计分'
+          : '';
 
   return (
     <main className="min-h-screen overflow-x-hidden bg-[linear-gradient(180deg,#F5F8FC_0%,#EEF5FF_54%,#FFFFFF_100%)] text-slate-950">
+      <MatchTimerStrip score={score} />
       <div className="w-full px-3 py-3 sm:px-5 sm:py-4 xl:px-8 2xl:px-10">
         <div className="mx-auto flex w-full max-w-[1920px] flex-col gap-4 sm:gap-5">
           <TopMatchBar
@@ -351,6 +518,16 @@ export default function RefereeScoringPage() {
             />
           ) : null}
 
+          {score.matchPaused ? (
+            <Alert
+              type="warning"
+              showIcon
+              className="rounded-2xl border-amber-200 bg-amber-50/90"
+              message="比赛暂停中"
+              description="前台已同步显示比赛暂停，计时已停止。点击裁判操作中的恢复比赛后继续计分。"
+            />
+          ) : null}
+
           <div className="grid min-w-0 grid-cols-1 gap-4 sm:gap-5 xl:grid-cols-[minmax(0,1fr)_360px] 2xl:grid-cols-[minmax(0,1fr)_400px]">
             <div className="min-w-0 space-y-4 sm:space-y-5">
               <section className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.72fr)_minmax(0,1fr)]">
@@ -358,17 +535,20 @@ export default function RefereeScoringPage() {
                   <SideScoreCard
                     side={1}
                     accent="blue"
+                    matchSide={score.side1}
                     name={sideName(score.side1)}
                     affiliation={sideAffiliation(score.side1)}
                     score={side1Score}
                     gamesWon={score.side1Games}
                     server={currentGame?.server === 1}
+                    servingState={score.servingState}
                     winner={score.winnerSide === 1}
-                    disabled={disabled}
+                    disabled={scoringLocked}
+                    lockedReason={scoreLockedReason}
                     loading={busyAction === `/matches/${matchId}/point-1`}
                     onPoint={() => postAction(`/matches/${matchId}/point`, { side: 1 })}
                     onUndo={() => postAction(`/matches/${matchId}/undo`)}
-                    undoDisabled={!hasPointEvent || Boolean(busyAction)}
+                    undoDisabled={scoringLocked || !hasPointEvent}
                     undoLoading={busyAction === `/matches/${matchId}/undo`}
                   />
                 </div>
@@ -378,7 +558,7 @@ export default function RefereeScoringPage() {
                     score={score}
                     side1Score={side1Score}
                     side2Score={side2Score}
-                    onStart={() => postAction(`/matches/${matchId}/start`)}
+                    onStart={openStartConfirm}
                     startDisabled={score.status !== 'PENDING' || Boolean(busyAction)}
                   />
                 </div>
@@ -387,17 +567,20 @@ export default function RefereeScoringPage() {
                   <SideScoreCard
                     side={2}
                     accent="red"
+                    matchSide={score.side2}
                     name={sideName(score.side2)}
                     affiliation={sideAffiliation(score.side2)}
                     score={side2Score}
                     gamesWon={score.side2Games}
                     server={currentGame?.server === 2}
+                    servingState={score.servingState}
                     winner={score.winnerSide === 2}
-                    disabled={disabled}
+                    disabled={scoringLocked}
+                    lockedReason={scoreLockedReason}
                     loading={busyAction === `/matches/${matchId}/point-2`}
                     onPoint={() => postAction(`/matches/${matchId}/point`, { side: 2 })}
                     onUndo={() => postAction(`/matches/${matchId}/undo`)}
-                    undoDisabled={!hasPointEvent || Boolean(busyAction)}
+                    undoDisabled={scoringLocked || !hasPointEvent}
                     undoLoading={busyAction === `/matches/${matchId}/undo`}
                   />
                 </div>
@@ -409,7 +592,10 @@ export default function RefereeScoringPage() {
                   matchId={matchId}
                   busyAction={busyAction}
                   disabled={disabled}
-                  onAction={postAction}
+                  matchStatus={score.status}
+                  matchPaused={Boolean(score.matchPaused)}
+                  onPauseToggle={() => postAction(score.matchPaused ? `/matches/${matchId}/resume` : `/matches/${matchId}/pause`)}
+                  onOpenSideAction={setPendingRefereeAction}
                   onOpenForfeit={() => setForfeitChooserOpen(true)}
                   onOpenFinish={() => setFinishConfirmOpen(true)}
                 />
@@ -422,7 +608,7 @@ export default function RefereeScoringPage() {
                 side1Score={side1Score}
                 side2Score={side2Score}
               />
-              <EventLogPanel events={recentEvents} />
+              <EventLogPanel events={recentEvents} score={score} />
             </aside>
           </div>
         </div>
@@ -465,6 +651,63 @@ export default function RefereeScoringPage() {
         }}
       />
 
+      <RefereeSideActionModal
+        open={pendingRefereeAction !== null}
+        action={pendingRefereeAction}
+        score={score}
+        busyAction={busyAction}
+        matchId={matchId}
+        onCancel={() => setPendingRefereeAction(null)}
+        onChoose={async (side) => {
+          if (!pendingRefereeAction) return;
+          await postAction(`/matches/${matchId}/events`, {
+            type: pendingRefereeAction.type,
+            side,
+          });
+          setPendingRefereeAction(null);
+        }}
+      />
+
+      <StartMatchConfirmModal
+        open={startConfirmOpen}
+        score={score}
+        matchId={matchId}
+        busyAction={busyAction}
+        servingSide={startServingSide}
+        serverPlayerIndex={startServerPlayerIndex}
+        receiverPlayerIndex={startReceiverPlayerIndex}
+        startPositions={startPositions}
+        onServingSideChange={(side) => {
+          setStartServingSide(side);
+          const players = sidePlayers(side === 1 ? score.side1 : score.side2);
+          const receiverPlayers = sidePlayers(side === 1 ? score.side2 : score.side1);
+          setStartServerPlayerIndex(players.length === 1 ? 1 : null);
+          setStartReceiverPlayerIndex(receiverPlayers.length === 1 ? 1 : null);
+        }}
+        onServerPlayerChange={setStartServerPlayerIndex}
+        onReceiverPlayerChange={setStartReceiverPlayerIndex}
+        onPositionChange={(side, playerIndex, courtSide) =>
+          setStartPositions((current) => updateStartCourtPosition(current, side, playerIndex, courtSide))
+        }
+        onCancel={() => setStartConfirmOpen(false)}
+        onConfirm={async () => {
+          if (!startServingSide || !startServerPlayerIndex || !startReceiverPlayerIndex) {
+            message.warning('请先选择首发方、首位发球员和接发球员');
+            return;
+          }
+          await postAction(`/matches/${matchId}/start`, {
+            servingSide: startServingSide,
+            serverPlayerIndex: startServerPlayerIndex,
+            receiverPlayerIndex: startReceiverPlayerIndex,
+            side1LeftPlayerIndex: startPositions.side1.left,
+            side1RightPlayerIndex: startPositions.side1.right,
+            side2LeftPlayerIndex: startPositions.side2.left,
+            side2RightPlayerIndex: startPositions.side2.right,
+          });
+          setStartConfirmOpen(false);
+        }}
+      />
+
       <Modal
         open={finishConfirmOpen}
         title="确认结束比赛"
@@ -493,6 +736,33 @@ export default function RefereeScoringPage() {
   );
 }
 
+function MatchTimerStrip({ score }: { score: ScoreState }) {
+  if (!score.startedAt) return null;
+
+  const isFinished = score.status === 'COMPLETED' || score.status === 'CANCELLED' || Boolean(score.finishedAt);
+  const isPaused = score.status === 'LIVE' && Boolean(score.matchPaused);
+
+  return (
+    <div className={`sticky top-0 z-30 w-full px-3 py-2 shadow-lg sm:px-5 ${
+      isFinished ? 'bg-slate-900' : isPaused ? 'bg-amber-600' : 'bg-emerald-600'
+    }`}>
+      <div className="mx-auto flex max-w-[1920px] items-center justify-between gap-3">
+        <MatchClock
+          startedAt={score.startedAt}
+          finishedAt={score.finishedAt}
+          status={score.status}
+          matchPaused={score.matchPaused}
+          actualDurationSeconds={score.actualDurationSeconds}
+          compact
+        />
+        <span className="shrink-0 rounded-full bg-white/15 px-3 py-1 text-xs font-black text-white">
+          {isFinished ? '计分锁定' : isPaused ? '比赛暂停' : '比赛进行中'}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function TopMatchBar({
   score,
   socketStatus,
@@ -504,7 +774,7 @@ function TopMatchBar({
   onRefresh: () => void;
   refreshLoading: boolean;
 }) {
-  const status = statusMeta[score.status] ?? statusMeta.PENDING;
+  const matchStatus = statusMeta[score.status] ?? statusMeta.PENDING;
   const socketTone =
     socketStatus === '已连接'
       ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
@@ -529,9 +799,13 @@ function TopMatchBar({
               <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-black uppercase tracking-[0.18em] text-[#2563EB]">
                 LIVE SCORING
               </span>
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-red-50 px-3 py-1 text-xs font-black text-red-600">
-                <span className="h-2 w-2 rounded-full bg-red-500 shadow-[0_0_0_4px_rgba(239,68,68,0.14)]" />
-                实时计分中
+              <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-black ${
+                score.matchPaused ? 'bg-amber-50 text-amber-700' : 'bg-red-50 text-red-600'
+              }`}>
+                <span className={`h-2 w-2 rounded-full ${
+                  score.matchPaused ? 'bg-amber-500 shadow-[0_0_0_4px_rgba(245,158,11,0.14)]' : 'bg-red-500 shadow-[0_0_0_4px_rgba(239,68,68,0.14)]'
+                }`} />
+                {score.matchPaused ? '比赛暂停中' : '实时计分中'}
               </span>
             </div>
             <h1 className="mt-2 text-2xl font-black tracking-tight text-[#0F172A] sm:truncate sm:text-3xl xl:text-4xl">
@@ -543,7 +817,13 @@ function TopMatchBar({
             <p className="mt-1 text-xs font-bold text-[#2563EB] sm:text-sm">
               计分规则：{formatScoringRule(score.event).label}
             </p>
-            <MatchClock startedAt={score.startedAt} finishedAt={score.finishedAt} status={score.status} />
+            <MatchClock
+              startedAt={score.startedAt}
+              finishedAt={score.finishedAt}
+              status={score.status}
+              matchPaused={score.matchPaused}
+              actualDurationSeconds={score.actualDurationSeconds}
+            />
           </div>
         </div>
 
@@ -568,8 +848,10 @@ function TopMatchBar({
             <EnvironmentOutlined />
             {score.venue?.name ?? '未排场地'}
           </span>
-          <span className={`inline-flex h-10 items-center justify-center rounded-xl px-4 text-xs font-black sm:text-sm ${status.tone}`}>
-            {status.label}
+          <span className={`inline-flex h-10 items-center justify-center rounded-xl px-4 text-xs font-black sm:text-sm ${
+            score.matchPaused && score.status === 'LIVE' ? 'bg-amber-100 text-amber-700' : matchStatus.tone
+          }`}>
+            {score.matchPaused && score.status === 'LIVE' ? '比赛暂停' : matchStatus.label}
           </span>
         </div>
       </div>
@@ -580,13 +862,16 @@ function TopMatchBar({
 function SideScoreCard({
   side,
   accent,
+  matchSide,
   name,
   affiliation,
   score,
   gamesWon,
   server,
+  servingState,
   winner,
   disabled,
+  lockedReason,
   loading,
   onPoint,
   onUndo,
@@ -595,13 +880,16 @@ function SideScoreCard({
 }: {
   side: 1 | 2;
   accent: 'blue' | 'red';
+  matchSide?: MatchSide | null;
   name: string;
   affiliation: string;
   score: number;
   gamesWon: number;
   server: boolean;
+  servingState?: ServingState | null;
   winner: boolean;
   disabled: boolean;
+  lockedReason?: string;
   loading: boolean;
   onPoint: () => void;
   onUndo: () => void;
@@ -615,6 +903,10 @@ function SideScoreCard({
     ? 'bg-[#2563EB] hover:!bg-blue-500 active:!bg-blue-700'
     : 'bg-[#EF4444] hover:!bg-red-500 active:!bg-red-700';
   const ringTone = isBlue ? 'ring-blue-100' : 'ring-red-100';
+  const players = sidePlayers(matchSide);
+  const doubles = isDoublesSide(matchSide);
+  const activeServerPlayer = server ? servingState?.serverPlayerIndex : null;
+  const activeReceiverPlayer = servingState?.receivingSide === side ? servingState.receiverPlayerIndex : null;
 
   return (
     <article className={`min-w-0 overflow-hidden rounded-2xl border border-[#E5E7EB] bg-white shadow-[0_18px_45px_rgba(15,23,42,0.08)] ring-1 ${ringTone}`}>
@@ -628,8 +920,41 @@ function SideScoreCard({
 
       <div className="flex min-h-[300px] flex-col p-4 sm:min-h-[340px] sm:p-5 xl:min-h-[430px]">
         <div className="min-w-0">
-          <h2 className="truncate text-xl font-black text-[#0F172A] sm:text-2xl xl:text-3xl">{name}</h2>
-          <p className="mt-2 truncate text-sm font-bold text-[#64748B]">级别：{affiliation}</p>
+          <h2 className="truncate text-xl font-black text-[#0F172A] sm:text-2xl xl:text-3xl">
+            {doubles ? sideDisplayName(matchSide) : name}
+          </h2>
+          {doubles ? (
+            <div className="mt-2 grid gap-1.5">
+              {players.map((player) => {
+                const label = positionLabel(side, player.index, servingState);
+                const isServer = activeServerPlayer === player.index;
+                const isReceiver = activeReceiverPlayer === player.index;
+                return (
+                  <div
+                    key={player.id}
+                    className={`flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-xs font-black ${
+                      isServer
+                        ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100'
+                        : isReceiver
+                          ? 'bg-orange-50 text-orange-700 ring-1 ring-orange-100'
+                          : 'bg-slate-50 text-slate-600'
+                    }`}
+                  >
+                    <span className="truncate">{player.name}</span>
+                    <span className="shrink-0">
+                      {isServer ? `发球 · ${label ?? ''}` : isReceiver ? `接发 · ${label ?? ''}` : label ?? '待位'}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="mt-2 truncate text-sm font-bold text-[#64748B]">
+              {server && servingState?.serverCourtSide
+                ? `发球站位：${servingState.serverCourtSide === 'left' ? '左侧' : '右侧'}`
+                : `级别：${affiliation}`}
+            </p>
+          )}
         </div>
 
         <div className="my-4 flex flex-1 flex-col items-center justify-center rounded-2xl bg-slate-50/80 px-3 py-4 sm:my-7 sm:px-4 sm:py-6">
@@ -651,6 +976,7 @@ function SideScoreCard({
           >
             +1 得分
           </Button>
+          {lockedReason ? <p className="text-center text-xs font-bold text-slate-400">{lockedReason}</p> : null}
           <Button
             block
             icon={<UndoOutlined />}
@@ -681,6 +1007,7 @@ function CenterScoreboard({
   startDisabled: boolean;
 }) {
   const status = statusMeta[score.status] ?? statusMeta.PENDING;
+  const statusLabel = score.matchPaused && score.status === 'LIVE' ? '比赛暂停' : status.label;
 
   return (
     <article className="min-w-0 overflow-hidden rounded-2xl border border-[#0F172A]/10 bg-[#07152F] text-white shadow-[0_24px_60px_rgba(15,23,42,0.22)]">
@@ -699,7 +1026,7 @@ function CenterScoreboard({
             </div>
             <div className="rounded-xl bg-white/8 px-3 py-3">
               <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-400">比赛状态</p>
-              <p className="mt-1 text-xl font-black text-white sm:text-2xl">{status.label}</p>
+              <p className="mt-1 text-xl font-black text-white sm:text-2xl">{statusLabel}</p>
             </div>
           </div>
         </div>
@@ -718,7 +1045,9 @@ function CenterScoreboard({
           <p className="mt-4 text-center text-sm font-semibold text-slate-300">
             {score.status === 'PENDING'
               ? '比赛未开始，点击开始比赛计分'
-              : score.status === 'LIVE'
+              : score.matchPaused
+                ? '比赛暂停中，前台计时已同步停止'
+                : score.status === 'LIVE'
                 ? '比赛进行中，比分将实时同步'
                 : '比赛已结束，计分已锁定'}
           </p>
@@ -729,6 +1058,8 @@ function CenterScoreboard({
 }
 
 function GameRecordCard({ score }: { score: ScoreState }) {
+  const paused = score.matchPaused && score.status === 'LIVE';
+
   return (
     <section className="min-w-0 rounded-2xl border border-[#E5E7EB] bg-white p-4 shadow-[0_18px_45px_rgba(15,23,42,0.08)] sm:p-5">
       <div className="flex items-center gap-3">
@@ -743,7 +1074,7 @@ function GameRecordCard({ score }: { score: ScoreState }) {
 
       <div className="mt-5 space-y-3">
         {recordItems(score).map((game) => {
-          const statusText = game.winnerSide ? `胜方 SIDE ${game.winnerSide}` : game.active ? '进行中' : '未开始';
+          const statusText = game.winnerSide ? `胜方 SIDE ${game.winnerSide}` : game.active ? (paused ? '暂停中' : '进行中') : '未开始';
           return (
             <div
               key={game.gameNo}
@@ -774,45 +1105,67 @@ function RefereeActionCard({
   matchId,
   busyAction,
   disabled,
-  onAction,
+  matchStatus,
+  matchPaused,
+  onPauseToggle,
+  onOpenSideAction,
   onOpenForfeit,
   onOpenFinish,
 }: {
   matchId: string;
   busyAction: string;
   disabled: boolean;
-  onAction: (path: string, body?: Record<string, unknown>) => void;
+  matchStatus: ScoreState['status'];
+  matchPaused: boolean;
+  onPauseToggle: () => void;
+  onOpenSideAction: (action: Exclude<PendingRefereeAction, null>) => void;
   onOpenForfeit: () => void;
   onOpenFinish: () => void;
 }) {
+  const matchEnded = matchStatus === 'COMPLETED' || matchStatus === 'CANCELLED';
+  const pauseActionPath = `/matches/${matchId}/${matchPaused ? 'resume' : 'pause'}`;
   const actions = [
+    {
+      label: matchPaused ? '恢复比赛' : '比赛暂停',
+      icon: matchPaused ? <PlayCircleOutlined /> : <PauseCircleOutlined />,
+      className: matchPaused
+        ? 'border-emerald-200 text-emerald-700 hover:!border-emerald-400 hover:!bg-emerald-50'
+        : 'border-amber-200 text-amber-700 hover:!border-amber-400 hover:!bg-amber-50',
+      onClick: onPauseToggle,
+      loading: busyAction === pauseActionPath,
+      pauseToggle: true,
+    },
     {
       label: '普通暂停',
       icon: <PauseCircleOutlined />,
       className: 'border-blue-200 text-blue-700 hover:!border-blue-400 hover:!bg-blue-50',
-      onClick: () => onAction(`/matches/${matchId}/events`, { type: 'TIMEOUT' }),
-      loading: busyAction === `/matches/${matchId}/events-timeout`,
+      onClick: () => onOpenSideAction({ type: 'TIMEOUT', label: '普通暂停' }),
+      loading: busyAction === `/matches/${matchId}/events`,
+      pauseToggle: false,
     },
     {
       label: '医疗暂停',
       icon: <MedicineBoxOutlined />,
       className: 'border-emerald-200 text-emerald-700 hover:!border-emerald-400 hover:!bg-emerald-50',
-      onClick: () => onAction(`/matches/${matchId}/events`, { type: 'MEDICAL_TIMEOUT' }),
-      loading: false,
+      onClick: () => onOpenSideAction({ type: 'MEDICAL_TIMEOUT', label: '医疗暂停' }),
+      loading: busyAction === `/matches/${matchId}/events`,
+      pauseToggle: false,
     },
     {
       label: '警告',
       icon: <WarningOutlined />,
       className: 'border-orange-200 text-orange-700 hover:!border-orange-400 hover:!bg-orange-50',
-      onClick: () => onAction(`/matches/${matchId}/events`, { type: 'WARNING' }),
-      loading: false,
+      onClick: () => onOpenSideAction({ type: 'WARNING', label: '警告' }),
+      loading: busyAction === `/matches/${matchId}/events`,
+      pauseToggle: false,
     },
     {
       label: '黄牌',
       icon: <ExclamationCircleOutlined />,
       className: 'border-yellow-200 text-yellow-700 hover:!border-yellow-400 hover:!bg-yellow-50',
-      onClick: () => onAction(`/matches/${matchId}/events`, { type: 'YELLOW_CARD' }),
-      loading: false,
+      onClick: () => onOpenSideAction({ type: 'YELLOW_CARD', label: '黄牌' }),
+      loading: busyAction === `/matches/${matchId}/events`,
+      pauseToggle: false,
     },
     {
       label: '弃权处理',
@@ -820,6 +1173,7 @@ function RefereeActionCard({
       className: 'border-red-200 text-red-700 hover:!border-red-400 hover:!bg-red-50',
       onClick: onOpenForfeit,
       loading: false,
+      pauseToggle: false,
     },
     {
       label: '结束比赛',
@@ -827,6 +1181,7 @@ function RefereeActionCard({
       className: 'border-red-200 text-red-700 hover:!border-red-400 hover:!bg-red-50',
       onClick: onOpenFinish,
       loading: false,
+      pauseToggle: false,
     },
   ];
 
@@ -847,7 +1202,12 @@ function RefereeActionCard({
           <Button
             key={action.label}
             icon={action.icon}
-            disabled={disabled && action.label !== '结束比赛'}
+            disabled={
+              matchEnded ||
+              (action.pauseToggle && matchStatus !== 'LIVE') ||
+              (Boolean(busyAction) && !action.loading) ||
+              (!action.pauseToggle && disabled && action.label !== '结束比赛')
+            }
             loading={action.loading}
             onClick={action.onClick}
             className={`!h-12 !rounded-2xl !bg-white text-xs !font-black transition active:scale-[0.98] disabled:!border-slate-100 disabled:!bg-slate-50 disabled:!text-slate-300 sm:text-sm ${action.className}`}
@@ -857,6 +1217,262 @@ function RefereeActionCard({
         ))}
       </div>
     </section>
+  );
+}
+
+function RefereeSideActionModal({
+  open,
+  action,
+  score,
+  busyAction,
+  matchId,
+  onCancel,
+  onChoose,
+}: {
+  open: boolean;
+  action: PendingRefereeAction;
+  score: ScoreState;
+  busyAction: string;
+  matchId: string;
+  onCancel: () => void;
+  onChoose: (side: 1 | 2) => void;
+}) {
+  const loading = busyAction === `/matches/${matchId}/events`;
+
+  return (
+    <Modal
+      open={open}
+      title={action ? `${action.label} · 选择选手` : '选择选手'}
+      footer={null}
+      onCancel={onCancel}
+    >
+      <div className="space-y-3">
+        <Alert
+          type="info"
+          showIcon
+          message="请选择本次裁判操作对应的选手或组合"
+          description="确认后会记录操作时间，并同步显示到前端对阵表的比赛记录中。"
+        />
+        <div className="grid gap-3">
+          <Button
+            className="!h-12 !rounded-xl !font-black"
+            loading={loading}
+            disabled={!score.side1 || loading}
+            onClick={() => onChoose(1)}
+          >
+            {sideName(score.side1)}
+          </Button>
+          <Button
+            className="!h-12 !rounded-xl !font-black"
+            loading={loading}
+            disabled={!score.side2 || loading}
+            onClick={() => onChoose(2)}
+          >
+            {sideName(score.side2)}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function StartMatchConfirmModal({
+  open,
+  score,
+  matchId,
+  busyAction,
+  servingSide,
+  serverPlayerIndex,
+  receiverPlayerIndex,
+  startPositions,
+  onServingSideChange,
+  onServerPlayerChange,
+  onReceiverPlayerChange,
+  onPositionChange,
+  onCancel,
+  onConfirm,
+}: {
+  open: boolean;
+  score: ScoreState;
+  matchId: string;
+  busyAction: string;
+  servingSide: 1 | 2 | null;
+  serverPlayerIndex: PlayerIndex | null;
+  receiverPlayerIndex: PlayerIndex | null;
+  startPositions: StartCourtPositions;
+  onServingSideChange: (side: 1 | 2) => void;
+  onServerPlayerChange: (playerIndex: PlayerIndex) => void;
+  onReceiverPlayerChange: (playerIndex: PlayerIndex) => void;
+  onPositionChange: (side: 1 | 2, playerIndex: PlayerIndex, courtSide: CourtSide) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const selectedSide = servingSide === 1 ? score.side1 : servingSide === 2 ? score.side2 : null;
+  const receivingSide = servingSide === 1 ? 2 : servingSide === 2 ? 1 : null;
+  const selectedReceivingSide = receivingSide === 1 ? score.side1 : receivingSide === 2 ? score.side2 : null;
+  const serverCandidates = sidePlayers(selectedSide);
+  const receiverCandidates = sidePlayers(selectedReceivingSide);
+
+  return (
+    <Modal
+      open={open}
+      title="确认开始比赛"
+      okText="双方已到齐，开始比赛"
+      cancelText="暂不开始"
+      okButtonProps={{
+        loading: busyAction === `/matches/${matchId}/start`,
+        disabled: score.status !== 'PENDING' || !servingSide || !serverPlayerIndex || !receiverPlayerIndex,
+      }}
+      onCancel={onCancel}
+      onOk={onConfirm}
+    >
+      <div className="space-y-3">
+        <Alert
+          type="info"
+          showIcon
+          message="请确认双方选手是否到齐"
+          description="确认双方到齐后，请设置左右站位、首位发球员和接发球员。"
+        />
+        <div className="grid gap-2 text-sm font-semibold text-slate-700">
+          <div className="rounded-xl border border-blue-100 bg-blue-50/60 px-4 py-3">
+            <span className="text-slate-500">左侧：</span>
+            <strong className="text-[#0F172A]">{sideDisplayName(score.side1)}</strong>
+            {isDoublesSide(score.side1) ? <p className="mt-1 text-xs text-slate-500">{sidePlayers(score.side1).map((player) => player.name).join(' / ')}</p> : null}
+          </div>
+          <div className="rounded-xl border border-red-100 bg-red-50/60 px-4 py-3">
+            <span className="text-slate-500">右侧：</span>
+            <strong className="text-[#0F172A]">{sideDisplayName(score.side2)}</strong>
+            {isDoublesSide(score.side2) ? <p className="mt-1 text-xs text-slate-500">{sidePlayers(score.side2).map((player) => player.name).join(' / ')}</p> : null}
+          </div>
+        </div>
+        <div className="grid gap-3">
+          <StartPositionPicker
+            title={sideDisplayName(score.side1)}
+            tone="blue"
+            side={1}
+            matchSide={score.side1}
+            positions={startPositions.side1}
+            onChange={onPositionChange}
+          />
+          <StartPositionPicker
+            title={sideDisplayName(score.side2)}
+            tone="red"
+            side={2}
+            matchSide={score.side2}
+            positions={startPositions.side2}
+            onChange={onPositionChange}
+          />
+        </div>
+        <div>
+          <p className="mb-2 text-sm font-black text-slate-700">首发方</p>
+          <div className="grid grid-cols-2 gap-2">
+            <Button
+              className={`!h-11 !rounded-xl !font-black ${servingSide === 1 ? '!border-blue-500 !bg-blue-50 !text-blue-700' : ''}`}
+              onClick={() => onServingSideChange(1)}
+            >
+              {sideDisplayName(score.side1)}
+            </Button>
+            <Button
+              className={`!h-11 !rounded-xl !font-black ${servingSide === 2 ? '!border-red-500 !bg-red-50 !text-red-700' : ''}`}
+              onClick={() => onServingSideChange(2)}
+            >
+              {sideDisplayName(score.side2)}
+            </Button>
+          </div>
+        </div>
+        {servingSide ? (
+          <div>
+            <p className="mb-2 text-sm font-black text-slate-700">首位发球员</p>
+            <div className="grid gap-2">
+              {serverCandidates.map((player) => (
+                <Button
+                  key={player.id}
+                  className={`!h-11 !rounded-xl !font-black ${
+                    serverPlayerIndex === player.index ? '!border-emerald-500 !bg-emerald-50 !text-emerald-700' : ''
+                  }`}
+                  onClick={() => onServerPlayerChange(player.index === 2 ? 2 : 1)}
+                >
+                  {player.name}
+                </Button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        {receivingSide ? (
+          <div>
+            <p className="mb-2 text-sm font-black text-slate-700">接发球员</p>
+            <div className="grid gap-2">
+              {receiverCandidates.map((player) => (
+                <Button
+                  key={player.id}
+                  className={`!h-11 !rounded-xl !font-black ${
+                    receiverPlayerIndex === player.index ? '!border-orange-500 !bg-orange-50 !text-orange-700' : ''
+                  }`}
+                  onClick={() => onReceiverPlayerChange(player.index === 2 ? 2 : 1)}
+                >
+                  {player.name}
+                </Button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        <p className="text-xs font-bold text-slate-500">
+          如有选手未到齐，请先不要开始比赛，可返回裁判操作中进行弃权处理。
+        </p>
+      </div>
+    </Modal>
+  );
+}
+
+function StartPositionPicker({
+  title,
+  tone,
+  side,
+  matchSide,
+  positions,
+  onChange,
+}: {
+  title: string;
+  tone: 'blue' | 'red';
+  side: 1 | 2;
+  matchSide?: MatchSide | null;
+  positions: Record<CourtSide, PlayerIndex | null>;
+  onChange: (side: 1 | 2, playerIndex: PlayerIndex, courtSide: CourtSide) => void;
+}) {
+  const players = sidePlayers(matchSide);
+  const selectedTone =
+    tone === 'blue'
+      ? '!border-blue-500 !bg-blue-50 !text-blue-700'
+      : '!border-red-500 !bg-red-50 !text-red-700';
+
+  return (
+    <div className="rounded-xl border border-slate-100 bg-slate-50/70 p-3">
+      <p className="text-sm font-black text-slate-700">{title} 站位</p>
+      <div className="mt-2 grid gap-2">
+        {players.map((player) => {
+          const selected = courtSideForStartPlayer(positions, player.index);
+          return (
+            <div key={player.id} className="grid grid-cols-[minmax(0,1fr)_72px_72px] items-center gap-2">
+              <span className="truncate text-xs font-black text-slate-600">{player.name}</span>
+              <Button
+                size="small"
+                className={`!rounded-lg !font-black ${selected === 'left' ? selectedTone : ''}`}
+                onClick={() => onChange(side, player.index === 2 ? 2 : 1, 'left')}
+              >
+                左边
+              </Button>
+              <Button
+                size="small"
+                className={`!rounded-lg !font-black ${selected === 'right' ? selectedTone : ''}`}
+                onClick={() => onChange(side, player.index === 2 ? 2 : 1, 'right')}
+              >
+                右边
+              </Button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -871,7 +1487,7 @@ function MatchInfoPanel({
 }) {
   const status = statusMeta[score.status] ?? statusMeta.PENDING;
   const items = [
-    ['比赛状态', status.label],
+    ['比赛状态', score.matchPaused && score.status === 'LIVE' ? '比赛暂停' : status.label],
     ['当前局数', `第 ${currentGameNo(score)} 局`],
     ['总比分', `${score.side1Games} : ${score.side2Games}`],
     ['本局比分', `${side1Score} : ${side2Score}`],
@@ -894,18 +1510,20 @@ function MatchInfoPanel({
   );
 }
 
-function EventLogPanel({ events }: { events: MatchEventLog[] }) {
+function EventLogPanel({ events, score }: { events: MatchEventLog[]; score: ScoreState }) {
   const pointEvents = events.filter((event) => event.type === 'POINT');
   const timeoutEvents = events.filter((event) => event.type === 'TIMEOUT' || event.type === 'MEDICAL_TIMEOUT');
   const warningEvents = events.filter((event) => event.type === 'WARNING' || event.type === 'YELLOW_CARD' || event.type === 'FORFEIT');
+  const side1Label = sideName(score.side1);
+  const side2Label = sideName(score.side2);
 
   return (
     <section className="rounded-2xl border border-[#E5E7EB] bg-white p-4 shadow-[0_18px_45px_rgba(15,23,42,0.08)] sm:p-5">
       <h2 className="text-xl font-black text-[#0F172A]">操作记录</h2>
       <div className="mt-4 space-y-4">
-        <LogGroup title="最近得分记录" events={pointEvents} emptyText="暂无得分记录" />
-        <LogGroup title="暂停记录" events={timeoutEvents} emptyText="暂无暂停记录" />
-        <LogGroup title="警告记录" events={warningEvents} emptyText="暂无警告记录" />
+        <LogGroup title="最近得分记录" events={pointEvents} emptyText="暂无得分记录" side1Label={side1Label} side2Label={side2Label} />
+        <LogGroup title="暂停记录" events={timeoutEvents} emptyText="暂无暂停记录" side1Label={side1Label} side2Label={side2Label} />
+        <LogGroup title="警告记录" events={warningEvents} emptyText="暂无警告记录" side1Label={side1Label} side2Label={side2Label} />
       </div>
     </section>
   );
@@ -915,10 +1533,14 @@ function LogGroup({
   title,
   events,
   emptyText,
+  side1Label,
+  side2Label,
 }: {
   title: string;
   events: MatchEventLog[];
   emptyText: string;
+  side1Label?: string;
+  side2Label?: string;
 }) {
   return (
     <div>
@@ -927,7 +1549,7 @@ function LogGroup({
         {events.length ? (
           events.slice(0, 4).map((event) => (
             <div key={event.id} className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
-              <p className="truncate text-xs font-bold text-slate-700">{eventDescription(event)}</p>
+              <p className="truncate text-xs font-bold text-slate-700">{eventDescription(event, side1Label, side2Label)}</p>
               <p className="mt-1 text-[11px] font-semibold text-slate-400">
                 {new Date(event.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
               </p>

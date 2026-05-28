@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Format, MatchStatus, RegistrationStatus, TournamentStatus } from '@prisma/client';
+import { Format, MatchEventType, MatchStatus, RegistrationStatus, TournamentStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TeamCompetitionsService } from '../team-competitions/team-competitions.service';
 import { AnnouncementsService } from '../announcements/announcements.service';
@@ -301,6 +301,10 @@ export class PublicService {
           event: true,
           venue: true,
           games: { orderBy: { gameNo: 'asc' } },
+          events: {
+            where: { type: MatchEventType.TIMEOUT },
+            orderBy: { createdAt: 'asc' },
+          },
         },
         orderBy: [{ updatedAt: 'desc' }],
         take: 8,
@@ -315,6 +319,10 @@ export class PublicService {
           event: true,
           venue: true,
           games: { orderBy: { gameNo: 'asc' } },
+          events: {
+            where: { type: MatchEventType.TIMEOUT },
+            orderBy: { createdAt: 'asc' },
+          },
         },
         orderBy: [{ scheduledAt: 'asc' }, { roundNo: 'asc' }, { matchNo: 'asc' }],
         take: 8,
@@ -325,6 +333,10 @@ export class PublicService {
           event: true,
           venue: true,
           games: { orderBy: { gameNo: 'asc' } },
+          events: {
+            where: { type: MatchEventType.TIMEOUT },
+            orderBy: { createdAt: 'asc' },
+          },
         },
         orderBy: [{ updatedAt: 'desc' }],
         take: 8,
@@ -449,6 +461,21 @@ export class PublicService {
             venue: true,
             referee: { select: { username: true } },
             games: { orderBy: { gameNo: 'asc' } },
+            events: {
+              where: {
+                type: {
+                  in: [
+                    MatchEventType.TIMEOUT,
+                    MatchEventType.MEDICAL_TIMEOUT,
+                    MatchEventType.WARNING,
+                    MatchEventType.YELLOW_CARD,
+                    MatchEventType.FORFEIT,
+                  ],
+                },
+              },
+              orderBy: { createdAt: 'desc' },
+              take: 20,
+            },
           },
           orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }],
         },
@@ -670,7 +697,9 @@ export class PublicService {
       subtitle: `${FORMAT_LABELS[event.format] ?? event.format} · ${participants.filter((item: any) => !item.isBye).length} 个签位`,
       generatedAt: event.drawGeneratedAt?.toISOString?.() ?? null,
       participants,
-      matches: event.matches.map((match: any) => ({
+      matches: event.matches.map((match: any) => {
+        const pauseState = this.computePublicPauseState(match.events ?? [], match.finishedAt);
+        return {
         id: match.id,
         roundNo: match.roundNo,
         roundLabel: this.publicRoundLabel(match.round),
@@ -688,6 +717,13 @@ export class PublicService {
         startedAt: match.startedAt?.toISOString?.() ?? null,
         finishedAt: match.finishedAt?.toISOString?.() ?? null,
         durationMinutes: match.durationMinutes ?? null,
+        matchPaused: pauseState.paused,
+        pausedAt: pauseState.pausedAt?.toISOString?.() ?? null,
+        actualDurationSeconds: this.publicActualDurationSeconds(match.startedAt, match.finishedAt, match.status, pauseState),
+        latestEvents: match.events
+          ?.filter((event: any) => this.decodePublicMatchPauseNote(event.note) !== 'END')
+          .slice(0, 3)
+          .map((event: any) => this.publicMatchEventView(event, match, registrationMap)) ?? [],
         score: match.forfeitedSide
           ? '弃权'
           : match.games.length
@@ -698,8 +734,82 @@ export class PublicService {
           : match.games.length
             ? match.games.map((game: any) => `${game.side1Score}:${game.side2Score}`).join(' / ')
             : '-',
-      })),
+        };
+      }),
     };
+  }
+
+  private publicMatchEventView(event: any, match: any, registrationMap: Map<string, any>) {
+    const typeLabel = this.decodePublicMatchPauseNote(event.note) === 'START'
+      ? '比赛暂停'
+      : this.matchEventTypeLabel(event.type);
+    const sideLabel =
+      event.side === 1
+        ? this.sideName(match.side1Id, registrationMap)
+        : event.side === 2
+          ? this.sideName(match.side2Id, registrationMap)
+          : null;
+    return {
+      id: event.id,
+      type: event.type,
+      typeLabel,
+      side: event.side ?? null,
+      sideLabel,
+      note: event.note ?? null,
+      createdAt: event.createdAt?.toISOString?.() ?? null,
+      text: sideLabel ? `${sideLabel} · ${typeLabel}` : typeLabel,
+    };
+  }
+
+  private matchEventTypeLabel(type: string) {
+    const labels: Record<string, string> = {
+      TIMEOUT: '普通暂停',
+      MEDICAL_TIMEOUT: '医疗暂停',
+      WARNING: '警告',
+      YELLOW_CARD: '黄牌',
+      FORFEIT: '弃权',
+    };
+    return labels[type] ?? type;
+  }
+
+  private computePublicPauseState(events: Array<{ note: string | null; createdAt: Date }>, finishedAt?: Date | null) {
+    let pauseStartedAt: Date | null = null;
+    let pausedDurationMs = 0;
+    const endLimit = finishedAt?.getTime() ?? null;
+    for (const event of [...events].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())) {
+      if (endLimit !== null && event.createdAt.getTime() > endLimit) continue;
+      const action = this.decodePublicMatchPauseNote(event.note);
+      if (action === 'START' && !pauseStartedAt) pauseStartedAt = event.createdAt;
+      else if (action === 'END' && pauseStartedAt) {
+        pausedDurationMs += Math.max(0, event.createdAt.getTime() - pauseStartedAt.getTime());
+        pauseStartedAt = null;
+      }
+    }
+    const paused = Boolean(pauseStartedAt && !finishedAt);
+    return {
+      paused,
+      pausedAt: paused ? pauseStartedAt : null,
+      pauseStartedAt: paused ? pauseStartedAt : null,
+      pausedDurationMs,
+    };
+  }
+
+  private publicActualDurationSeconds(
+    startedAt: Date | null,
+    finishedAt: Date | null,
+    status: MatchStatus,
+    pauseState: { pauseStartedAt: Date | null; pausedDurationMs: number },
+  ) {
+    if (!startedAt) return null;
+    const endAt = finishedAt ?? pauseState.pauseStartedAt ?? (status === MatchStatus.LIVE ? new Date() : null);
+    if (!endAt) return null;
+    return Math.max(0, Math.floor((endAt.getTime() - startedAt.getTime() - pauseState.pausedDurationMs) / 1000));
+  }
+
+  private decodePublicMatchPauseNote(note?: string | null): 'START' | 'END' | null {
+    if (note === 'MATCH_PAUSE:START') return 'START';
+    if (note === 'MATCH_PAUSE:END') return 'END';
+    return null;
   }
 
   private publicRoundLabel(round: string) {
@@ -763,6 +873,8 @@ export class PublicService {
       games.find((game: { winnerSide: number | null }) => !game.winnerSide) ??
       games.at(-1) ??
       null;
+    const pauseState = this.computePublicPauseState(match.events ?? [], match.finishedAt);
+    const matchPaused = pauseState.paused;
 
     return {
       id: match.id,
@@ -773,8 +885,13 @@ export class PublicService {
       roundNo: match.roundNo,
       matchNo: match.matchNo,
       status: match.status,
-      statusLabel: STATUS_LABELS[match.status as MatchStatus],
+      statusLabel: matchPaused ? '比赛暂停' : STATUS_LABELS[match.status as MatchStatus],
       scheduledAt: match.scheduledAt?.toISOString?.() ?? null,
+      startedAt: match.startedAt?.toISOString?.() ?? null,
+      finishedAt: match.finishedAt?.toISOString?.() ?? null,
+      matchPaused,
+      pausedAt: pauseState.pausedAt?.toISOString?.() ?? null,
+      actualDurationSeconds: this.publicActualDurationSeconds(match.startedAt, match.finishedAt, match.status, pauseState),
       venueName: match.venue?.name ?? '待排场地',
       side1: this.sideName(match.side1Id, registrationMap),
       side2: this.sideName(match.side2Id, registrationMap),
