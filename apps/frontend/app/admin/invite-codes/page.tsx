@@ -6,7 +6,7 @@ import { Button, Card, Form, Input, InputNumber, Modal, Popconfirm, Select, Spac
 import { DeleteOutlined, PlusOutlined, ReloadOutlined, CopyOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 
-type InviteRole = 'SUPER_ADMIN' | 'ADMIN' | 'REFEREE' | 'PLAYER';
+type InviteRole = 'SUPER_ADMIN' | 'ADMIN' | 'REFEREE' | 'PLAYER' | 'PHOTOGRAPHER';
 
 type InviteCodeItem = {
   id: string;
@@ -32,6 +32,7 @@ const roleLabels: Record<InviteRole, string> = {
   ADMIN: '管理员',
   REFEREE: '裁判',
   PLAYER: '选手',
+  PHOTOGRAPHER: '图片上传员',
 };
 
 const roleColors: Record<InviteRole, string> = {
@@ -39,6 +40,7 @@ const roleColors: Record<InviteRole, string> = {
   ADMIN: 'blue',
   REFEREE: 'green',
   PLAYER: 'gold',
+  PHOTOGRAPHER: 'purple',
 };
 
 export default function InviteCodesPage() {
@@ -193,6 +195,7 @@ export default function InviteCodesPage() {
                 { value: 'PLAYER', label: '选手' },
                 { value: 'REFEREE', label: '裁判' },
                 { value: 'ADMIN', label: '管理员' },
+                { value: 'PHOTOGRAPHER', label: '图片上传员' },
               ]}
             />
           </Form.Item>

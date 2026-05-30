@@ -2,6 +2,7 @@
 
 import Image from 'next/image';
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { signOut, useSession } from 'next-auth/react';
 
@@ -9,11 +10,23 @@ const navItems = [
   { label: '首页', href: '/' },
   { label: '赛事列表', href: '/competitions' },
   { label: '赛程安排', href: '/schedule' },
+  { label: '直播大屏幕', href: '/live-screen' },
+  { label: '赛事图片', href: '/photos' },
   { label: '成绩排行', href: '/ranking' },
   { label: '通知公告', href: '/notice' },
 ];
 
-export function Header({ activeHref = '/' }: { activeHref?: string }) {
+function isActiveNavItem(href: string, currentPath: string) {
+  if (href === '/') return currentPath === '/';
+  if (href === '/competitions') {
+    return currentPath.startsWith('/competitions') || currentPath.startsWith('/bracket');
+  }
+  return currentPath === href || currentPath.startsWith(`${href}/`);
+}
+
+export function Header({ activeHref }: { activeHref?: string }) {
+  const pathname = usePathname() ?? '/';
+  const currentPath = activeHref ?? pathname;
   const { data: session, status } = useSession();
   const role = session?.user?.role;
   const roleHref =
@@ -23,7 +36,9 @@ export function Header({ activeHref = '/' }: { activeHref?: string }) {
         ? '/referee/my-matches'
         : role === 'PLAYER'
           ? '/my-registrations'
-          : '/';
+          : role === 'PHOTOGRAPHER'
+            ? '/photographer/upload'
+            : '/';
   const [menuOpen, setMenuOpen] = useState(false);
 
   // Lock body scroll while menu is open + close on Escape
@@ -69,7 +84,7 @@ export function Header({ activeHref = '/' }: { activeHref?: string }) {
 
         <nav className="hidden flex-1 items-center justify-center gap-6 lg:flex xl:gap-8">
           {navItems.map((item) => {
-            const active = item.href === activeHref;
+            const active = isActiveNavItem(item.href, currentPath);
             return (
               <Link
                 key={item.label}
@@ -88,6 +103,18 @@ export function Header({ activeHref = '/' }: { activeHref?: string }) {
         </nav>
 
         <div className="flex shrink-0 items-center gap-2 sm:gap-2.5">
+          <Link
+            href="/live-screen"
+            onClick={closeMenu}
+            style={{ color: '#fff' }}
+            className={`tappable inline-flex h-10 min-h-[44px] items-center rounded-lg px-3 text-xs font-black !text-white shadow-[0_6px_18px_rgba(245,158,11,0.25)] transition duration-300 lg:hidden ${
+              isActiveNavItem('/live-screen', currentPath)
+                ? 'border border-white/45 bg-white/18'
+                : 'border border-white/35 bg-white/10 hover:bg-white/16'
+            }`}
+          >
+            直播
+          </Link>
           {status === 'authenticated' ? (
             <>
               {/* Mobile already has a "我的"/"后台" entry in the bottom nav,
@@ -111,7 +138,8 @@ export function Header({ activeHref = '/' }: { activeHref?: string }) {
             <Link
               href="/login"
               onClick={closeMenu}
-              className="tappable inline-flex h-10 min-h-[44px] items-center rounded-lg border border-white/60 px-3 text-xs font-bold text-white transition duration-300 hover:bg-white/10 sm:px-4 sm:text-sm"
+              style={{ color: '#fff' }}
+              className="tappable inline-flex h-10 min-h-[44px] items-center rounded-lg border border-white/60 px-3 text-xs font-bold !text-white transition duration-300 hover:bg-white/10 sm:px-4 sm:text-sm"
             >
               登录
             </Link>
@@ -124,7 +152,8 @@ export function Header({ activeHref = '/' }: { activeHref?: string }) {
             aria-expanded={menuOpen}
             aria-controls="mobile-nav"
             onClick={() => setMenuOpen((open) => !open)}
-            className="tappable inline-flex h-10 min-h-[44px] w-10 min-w-[44px] items-center justify-center rounded-lg border border-white/40 text-white transition hover:bg-white/10 lg:hidden"
+            style={{ color: '#fff' }}
+            className="tappable inline-flex h-10 min-h-[44px] w-10 min-w-[44px] items-center justify-center rounded-lg border border-white/40 !text-white transition hover:bg-white/10 lg:hidden"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" className="h-5 w-5">
               {menuOpen ? (
@@ -160,18 +189,19 @@ export function Header({ activeHref = '/' }: { activeHref?: string }) {
         >
           <nav className="flex flex-col py-2">
             {navItems.map((item) => {
-              const active = item.href === activeHref;
+              const active = isActiveNavItem(item.href, currentPath);
               return (
                 <Link
                   key={item.label}
                   href={item.href}
                   onClick={closeMenu}
+                  style={{ color: '#fff' }}
                   className={`flex items-center justify-between border-b border-white/5 px-5 py-3.5 text-sm font-bold transition last:border-b-0 ${
-                    active ? 'bg-white/5 text-amber-300' : 'text-white/95 hover:bg-white/5 hover:text-amber-200'
+                    active ? 'bg-white/12 !text-white' : '!text-white hover:bg-white/5 hover:!text-white'
                   }`}
                 >
                   <span>{item.label}</span>
-                  <span className={`text-base ${active ? 'text-amber-300' : 'text-white/40'}`}>›</span>
+                  <span style={{ color: '#fff' }} className={`text-base ${active ? '!text-white' : '!text-white/70'}`}>›</span>
                 </Link>
               );
             })}

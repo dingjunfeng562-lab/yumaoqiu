@@ -25,6 +25,7 @@ type MyRegistration = {
     eventName: string;
     partnerName?: string | null;
     partnerStudentId?: string | null;
+    partnerClassName?: string | null;
   }>;
   competition: {
     id: string;
@@ -208,6 +209,7 @@ export default function MyRegistrationsPage() {
                           {item.partnerName ? (
                             <span className="text-slate-500">
                               · 搭档 {item.partnerName}({item.partnerStudentId || '学号未填'})
+                              {item.partnerClassName ? ` · 学院班级：${item.partnerClassName}` : ''}
                             </span>
                           ) : null}
                         </li>

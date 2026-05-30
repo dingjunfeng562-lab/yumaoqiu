@@ -20,6 +20,8 @@ type StandingRow = {
 
 type ExportRegistration = {
   id: string;
+  eventId: string;
+  studentId: string | null;
   createdAt: Date;
   className: string | null;
   groupName: string | null;
@@ -39,6 +41,10 @@ type ExportRegistration = {
   } | null;
   competitionRegistration: {
     school: string | null;
+    eventItems: Array<{
+      eventId: string;
+      partnerStudentId: string | null;
+    }>;
   } | null;
 };
 
@@ -139,6 +145,8 @@ export class ExportsService {
                 orderBy: [{ groupName: 'asc' }, { isSeed: 'desc' }, { seedRank: 'asc' }, { createdAt: 'asc' }],
                 select: {
                   id: true,
+                  eventId: true,
+                  studentId: true,
                   createdAt: true,
                   className: true,
                   groupName: true,
@@ -163,6 +171,12 @@ export class ExportsService {
                   competitionRegistration: {
                     select: {
                       school: true,
+                      eventItems: {
+                        select: {
+                          eventId: true,
+                          partnerStudentId: true,
+                        },
+                      },
                     },
                   },
                 },
@@ -210,6 +224,8 @@ export class ExportsService {
               orderBy: [{ groupName: 'asc' }, { isSeed: 'desc' }, { seedRank: 'asc' }, { createdAt: 'asc' }],
               select: {
                 id: true,
+                eventId: true,
+                studentId: true,
                 createdAt: true,
                 className: true,
                 groupName: true,
@@ -234,6 +250,12 @@ export class ExportsService {
                 competitionRegistration: {
                   select: {
                     school: true,
+                    eventItems: {
+                      select: {
+                        eventId: true,
+                        partnerStudentId: true,
+                      },
+                    },
                   },
                 },
               },
@@ -374,10 +396,12 @@ export class ExportsService {
         '参赛方',
         '学校',
         '选手1',
+        '学号1',
         '性别1',
         '院系/班级1',
         '联系方式1',
         '选手2',
+        '学号2',
         '性别2',
         '院系/班级2',
         '联系方式2',
@@ -401,10 +425,12 @@ export class ExportsService {
           this.registrationName(registration),
           school,
           registration.player1.name,
+          registration.studentId ?? '',
           GENDER_LABELS[registration.player1.gender] ?? registration.player1.gender,
           registration.player1.affiliation,
           registration.player1.contact ?? '',
           registration.player2?.name ?? '',
+          registration.player2 ? this.partnerStudentId(registration) : '',
           registration.player2 ? (GENDER_LABELS[registration.player2.gender] ?? registration.player2.gender) : '',
           registration.player2?.affiliation ?? '',
           registration.player2?.contact ?? '',
@@ -416,7 +442,7 @@ export class ExportsService {
       }
     }
 
-    if (rows.length === 1) rows.push([tournament.name, '', '暂无报名', '', '', '', '', '', '', '', '', '', '', '', '', '']);
+    if (rows.length === 1) rows.push([tournament.name, '', '暂无报名', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']);
     return { name: '报名表', rows };
   }
 
@@ -456,6 +482,13 @@ export class ExportsService {
     return registration.player2
       ? `${registration.player1.name} / ${registration.player2.name}`
       : registration.player1.name;
+  }
+
+  private partnerStudentId(registration: ExportRegistration) {
+    return (
+      registration.competitionRegistration?.eventItems.find((item) => item.eventId === registration.eventId)
+        ?.partnerStudentId ?? ''
+    );
   }
 
   private gamesText(games: ExportMatch['games']) {

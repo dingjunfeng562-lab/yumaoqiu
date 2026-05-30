@@ -223,14 +223,12 @@ export default async function CompetitionDetailPage({ params }: { params: Promis
             >
               查看选手
             </Link>
-            {brackets.length ? (
-              <a
-                href="#brackets"
-                className="inline-flex h-11 w-full items-center justify-center rounded-lg border border-blue-200 text-sm font-black text-blue-700 transition hover:bg-blue-50"
-              >
-                查看对阵表
-              </a>
-            ) : null}
+            <a
+              href="#brackets"
+              className="inline-flex h-11 w-full items-center justify-center rounded-lg border border-blue-200 text-sm font-black text-blue-700 transition hover:bg-blue-50"
+            >
+              查看对阵表
+            </a>
             <Link
               href="/competitions"
               className="inline-flex h-11 w-full items-center justify-center rounded-lg text-sm font-semibold text-slate-500 transition hover:text-blue-700"
@@ -256,7 +254,7 @@ export default async function CompetitionDetailPage({ params }: { params: Promis
           brackets.map((bracket) => <KnockoutBracket key={bracket.id} data={bracket} />)
         ) : (
           <div className="rounded-xl border border-dashed border-blue-200 bg-white px-5 py-8 text-center shadow-sm sm:py-10">
-            <p className="text-sm font-black text-slate-700">对阵表尚未公布</p>
+            <p className="text-sm font-black text-slate-700">该赛事未发布对阵表</p>
             <p className="mt-1 text-xs font-semibold text-slate-500">
               报名截止并完成抽签后,这里会自动展示完整的淘汰赛签表。
             </p>

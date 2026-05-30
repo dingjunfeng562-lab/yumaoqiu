@@ -34,6 +34,7 @@ type Competition = {
 
 type Partner = {
   name: string;
+  studentId?: string;
   genderLabel?: string;
   school?: string;
   className?: string;
@@ -274,6 +275,7 @@ function DoublesTable({ players }: { players: Player[] }) {
           <tr>
             <th className="px-4 py-3">队伍名称</th>
             <th className="px-4 py-3">姓名</th>
+            <th className="px-4 py-3">学号</th>
             <th className="px-4 py-3">性别</th>
             <th className="px-4 py-3">学校</th>
             <th className="px-4 py-3">学院班级</th>
@@ -295,6 +297,7 @@ function DoublesTable({ players }: { players: Player[] }) {
                     {teamLabel}
                   </td>
                   <td className="px-4 py-4 font-bold text-slate-900">{player.primaryName || player.name}</td>
+                  <td className="px-4 py-4 text-slate-600">{player.studentId || '-'}</td>
                   <td className="px-4 py-4 text-slate-600">{player.genderLabel ?? '-'}</td>
                   <td className="px-4 py-4 font-semibold text-slate-700">{school}</td>
                   <td className="px-4 py-4 text-slate-600">{className}</td>
@@ -302,9 +305,10 @@ function DoublesTable({ players }: { players: Player[] }) {
                 {hasPartner ? (
                   <tr className="border-t border-blue-50/60 bg-blue-50/30">
                     <td className="px-4 py-4 font-bold text-slate-900">{player.partner!.name}</td>
+                    <td className="px-4 py-4 text-slate-600">{player.partner?.studentId || '-'}</td>
                     <td className="px-4 py-4 text-slate-600">{player.partner!.genderLabel ?? '-'}</td>
                     <td className="px-4 py-4 font-semibold text-slate-700">{player.partner!.school || school}</td>
-                    <td className="px-4 py-4 text-slate-600">{player.partner?.className || className}</td>
+                    <td className="px-4 py-4 text-slate-600">{player.partner?.className || '-'}</td>
                   </tr>
                 ) : null}
               </Fragment>

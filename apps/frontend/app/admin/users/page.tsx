@@ -6,7 +6,7 @@ import { Button, Card, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag
 import { DeleteOutlined, PlusOutlined, ReloadOutlined, LockOutlined, StopOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 
-type UserRole = 'SUPER_ADMIN' | 'ADMIN' | 'REFEREE' | 'PLAYER';
+type UserRole = 'SUPER_ADMIN' | 'ADMIN' | 'REFEREE' | 'PLAYER' | 'PHOTOGRAPHER';
 
 type UserItem = {
   id: string;
@@ -20,7 +20,7 @@ type UserItem = {
   createdAt: string;
 };
 
-type CreatableRole = 'ADMIN' | 'REFEREE' | 'PLAYER';
+type CreatableRole = 'ADMIN' | 'REFEREE' | 'PLAYER' | 'PHOTOGRAPHER';
 
 type CreatedUserPayload = {
   username: string;
@@ -34,6 +34,7 @@ const roleLabels: Record<UserRole, string> = {
   ADMIN: '管理员',
   REFEREE: '裁判',
   PLAYER: '选手',
+  PHOTOGRAPHER: '图片上传员',
 };
 
 const roleColors: Record<UserRole, string> = {
@@ -41,12 +42,14 @@ const roleColors: Record<UserRole, string> = {
   ADMIN: 'blue',
   REFEREE: 'green',
   PLAYER: 'gold',
+  PHOTOGRAPHER: 'purple',
 };
 
 const ROLE_CREATE_ENDPOINT: Record<CreatableRole, string> = {
   ADMIN: '/auth/users/admin',
   REFEREE: '/auth/users/referee',
   PLAYER: '/auth/users/player',
+  PHOTOGRAPHER: '/auth/users/photographer',
 };
 
 const usernamePattern = /^[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9_-]{1,19}$/;
@@ -62,6 +65,7 @@ const ROLE_FILTER_OPTIONS: Array<{ value: UserRole | 'ALL'; label: string }> = [
   { value: 'ADMIN', label: '管理员' },
   { value: 'REFEREE', label: '裁判' },
   { value: 'PLAYER', label: '选手' },
+  { value: 'PHOTOGRAPHER', label: '图片上传员' },
 ];
 
 export default function AdminUsersPage() {
@@ -275,6 +279,7 @@ export default function AdminUsersPage() {
                 { value: 'ADMIN', label: '管理员 · 可新建/编辑赛事,需总管理员审核' },
                 { value: 'REFEREE', label: '裁判 · 仅可记分,无后台权限' },
                 { value: 'PLAYER', label: '选手 · 仅可查看本人报名信息' },
+                { value: 'PHOTOGRAPHER', label: '图片上传员 · 仅可进入赛事图片上传页' },
               ]}
             />
           </Form.Item>

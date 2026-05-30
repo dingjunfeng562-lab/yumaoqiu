@@ -59,6 +59,7 @@ type ExistingRegistration = {
     eventName: string;
     partnerName?: string | null;
     partnerStudentId?: string | null;
+    partnerClassName?: string | null;
     teamName?: string | null;
   }>;
 };
@@ -67,6 +68,7 @@ type ItemState = {
   eventId: string;
   partnerName: string;
   partnerStudentId: string;
+  partnerClassName: string;
   teamName: string;
 };
 
@@ -89,7 +91,7 @@ const initialForm: FormState = {
   className: '',
   contact: '',
   remark: '',
-  items: [{ eventId: '', partnerName: '', partnerStudentId: '', teamName: '' }],
+  items: [{ eventId: '', partnerName: '', partnerStudentId: '', partnerClassName: '', teamName: '' }],
 };
 
 async function parseJsonSafe<T>(res: Response): Promise<T | null> {
@@ -173,6 +175,7 @@ export default function CompetitionRegisterPage() {
                   eventId: item.eventId,
                   partnerName: item.partnerName ?? '',
                   partnerStudentId: item.partnerStudentId ?? '',
+                  partnerClassName: item.partnerClassName ?? '',
                   teamName: item.teamName ?? '',
                 }))
               : initialForm.items,
@@ -208,7 +211,7 @@ export default function CompetitionRegisterPage() {
   function addItem() {
     setForm((prev) => ({
       ...prev,
-      items: [...prev.items, { eventId: '', partnerName: '', partnerStudentId: '', teamName: '' }],
+      items: [...prev.items, { eventId: '', partnerName: '', partnerStudentId: '', partnerClassName: '', teamName: '' }],
     }));
   }
 
@@ -238,6 +241,7 @@ export default function CompetitionRegisterPage() {
           eventId: item.eventId,
           partnerName: item.partnerName || undefined,
           partnerStudentId: item.partnerStudentId || undefined,
+          partnerClassName: item.partnerClassName || undefined,
           teamName: item.teamName || undefined,
         })),
       };
@@ -375,7 +379,7 @@ export default function CompetitionRegisterPage() {
                         required
                         disabled={existingLocked}
                         value={item.eventId}
-                        onChange={(event) => updateItem(index, { eventId: event.target.value, partnerName: '', partnerStudentId: '', teamName: '' })}
+                        onChange={(event) => updateItem(index, { eventId: event.target.value, partnerName: '', partnerStudentId: '', partnerClassName: '', teamName: '' })}
                       >
                         <option value="">请选择项目</option>
                         {eventOptions.map((option) => (
@@ -434,6 +438,16 @@ export default function CompetitionRegisterPage() {
                                 value={item.partnerStudentId}
                                 onChange={(event) => updateItem(index, { partnerStudentId: event.target.value })}
                                 placeholder="请填写搭档学号"
+                              />
+                            </Field>
+                            <Field label="搭档学院班级" wide>
+                              <input
+                                required
+                                maxLength={120}
+                                disabled={existingLocked}
+                                value={item.partnerClassName}
+                                onChange={(event) => updateItem(index, { partnerClassName: event.target.value })}
+                                placeholder="例如:健康产业学院社会体育2班"
                               />
                             </Field>
                           </div>

@@ -18,6 +18,7 @@ type RegistrationItem = {
   eventName: string;
   partnerName?: string | null;
   partnerStudentId?: string | null;
+  partnerClassName?: string | null;
   teamName?: string | null;
 };
 
@@ -152,6 +153,7 @@ export default function AdminCompetitionRegistrationsPage() {
                 {item.eventName}
                 {item.teamName ? ` · 队伍：${item.teamName}` : ''}
                 ：搭档 {item.partnerName}（{item.partnerStudentId || '未填学号'}）
+                {item.partnerClassName ? ` · 学院班级：${item.partnerClassName}` : ''}
               </Typography.Text>
             ) : null,
           )}

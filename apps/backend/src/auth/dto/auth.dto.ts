@@ -86,8 +86,8 @@ export class ChangePasswordDto {
 }
 
 export class CreateInviteCodeDto {
-  @IsIn(['ADMIN', 'REFEREE', 'PLAYER'])
-  role: 'ADMIN' | 'REFEREE' | 'PLAYER';
+  @IsIn(['ADMIN', 'REFEREE', 'PLAYER', 'PHOTOGRAPHER'])
+  role: 'ADMIN' | 'REFEREE' | 'PLAYER' | 'PHOTOGRAPHER';
 
   @Type(() => Number)
   @IsInt()

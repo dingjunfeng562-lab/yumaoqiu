@@ -4,7 +4,7 @@ import { Suspense, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { getSession, signIn } from 'next-auth/react';
-import { ArrowRightOutlined, EyeInvisibleOutlined, EyeOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, ArrowRightOutlined, EyeInvisibleOutlined, EyeOutlined } from '@ant-design/icons';
 import { Alert, Button, Checkbox, ConfigProvider, Form, Input } from 'antd';
 
 type LoginType = 'username' | 'email';
@@ -25,6 +25,7 @@ function destinationForRole(role?: string | null) {
   if (role === 'REFEREE') return '/referee/my-matches';
   if (role === 'ADMIN' || role === 'SUPER_ADMIN') return '/admin';
   if (role === 'PLAYER') return '/my-registrations';
+  if (role === 'PHOTOGRAPHER') return '/photographer/upload';
   return '/';
 }
 
@@ -94,6 +95,11 @@ function LoginContent() {
         <div className="register-page__grid" />
         <div className="register-page__glow register-page__glow--top" />
         <div className="register-page__glow register-page__glow--bottom" />
+
+        <Link href="/" className="register-back-home">
+          <ArrowLeftOutlined />
+          <span>返回首页</span>
+        </Link>
 
         <section className="register-card login-card">
           <div className="register-brand">

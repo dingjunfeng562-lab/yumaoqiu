@@ -16,6 +16,10 @@ export class CompetitionRegistrationEventItemDto {
 
   @IsOptional()
   @IsString()
+  partnerClassName?: string;
+
+  @IsOptional()
+  @IsString()
   teamName?: string;
 }
 

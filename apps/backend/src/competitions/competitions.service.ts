@@ -82,6 +82,7 @@ type RegistrationWithRelations = Prisma.RegistrationGetPayload<{
     competitionRegistration: {
       include: {
         user: true;
+        eventItems: true;
       };
     };
   };
@@ -180,7 +181,7 @@ export class CompetitionsService {
       if (!event) {
         throw new BadRequestException('存在无效的报名项目');
       }
-      this.ensurePartnerFields(event.type, item.partnerName, item.partnerStudentId, item.teamName);
+      this.ensurePartnerFields(event.type, item.partnerName, item.partnerStudentId, item.partnerClassName, item.teamName);
     }
 
     const existing = await this.prisma.competitionRegistration.findUnique({
@@ -244,6 +245,7 @@ export class CompetitionsService {
                 eventId: item.eventId.trim(),
                 partnerName: item.partnerName?.trim() || null,
                 partnerStudentId: item.partnerStudentId?.trim() || null,
+                partnerClassName: item.partnerClassName?.trim() || null,
                 teamName: item.teamName?.trim() || null,
               })),
             },
@@ -281,6 +283,7 @@ export class CompetitionsService {
               eventId: item.eventId.trim(),
               partnerName: item.partnerName?.trim() || null,
               partnerStudentId: item.partnerStudentId?.trim() || null,
+              partnerClassName: item.partnerClassName?.trim() || null,
               teamName: item.teamName?.trim() || null,
             })),
           },
@@ -694,6 +697,7 @@ export class CompetitionsService {
         competitionRegistration: {
           include: {
             user: true,
+            eventItems: true,
           },
         },
       },
@@ -820,6 +824,7 @@ export class CompetitionsService {
         eventName: EVENT_TYPE_LABELS[item.event.type],
         partnerName: item.partnerName,
         partnerStudentId: item.partnerStudentId,
+        partnerClassName: item.partnerClassName,
         teamName: item.teamName,
       })),
       eventNames: registration.eventItems.map((item) => EVENT_TYPE_LABELS[item.event.type]),
@@ -844,16 +849,16 @@ export class CompetitionsService {
       registration.competitionRegistration?.className ??
       registration.className ??
       '';
+    const eventItem = registration.competitionRegistration?.eventItems.find((item) => item.eventId === registration.eventId);
     const primaryName = registration.player1.name;
     const partner = registration.player2
       ? {
           name: registration.player2.name,
+          studentId: eventItem?.partnerStudentId ?? '',
           gender: registration.player2.gender,
           genderLabel: registration.player2.gender === Gender.MALE ? '男' : '女',
-          // Partners share the primary registrant's school and class on doubles
-          // entries (one registration form covers the whole team).
           school,
-          className,
+          className: eventItem?.partnerClassName ?? '',
           phone: registration.player2.contact ?? '',
         }
       : null;
@@ -971,13 +976,14 @@ export class CompetitionsService {
     eventType: EventType,
     partnerName?: string,
     partnerStudentId?: string,
+    partnerClassName?: string,
     teamName?: string,
   ) {
     if (!this.isDoubleEvent(eventType)) {
       return;
     }
-    if (!partnerName?.trim() || !partnerStudentId?.trim()) {
-      throw new BadRequestException('双打项目必须填写搭档姓名和学号');
+    if (!partnerName?.trim() || !partnerStudentId?.trim() || !partnerClassName?.trim()) {
+      throw new BadRequestException('双打项目必须填写搭档姓名、学号和学院班级');
     }
     if (!teamName?.trim()) {
       throw new BadRequestException('双打项目必须填写队伍名称');

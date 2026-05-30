@@ -97,6 +97,13 @@ export class AuthController {
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.SUPER_ADMIN)
+  @Post('users/photographer')
+  createPhotographer(@Body() dto: CreateUserDto) {
+    return this.authService.createPhotographer(dto.username, dto.email, dto.password);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.SUPER_ADMIN)
   @Post('users/:id/reset-password')
   resetUserPassword(@Param('id') id: string) {
     return this.authService.resetUserPassword(id);

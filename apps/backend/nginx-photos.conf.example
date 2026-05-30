@@ -1,0 +1,51 @@
+# ============================================================================
+# 赛事图片功能 —— 生产环境 Nginx 参考配置(本地开发不生效)
+#
+# 本仓库在开发环境通过 NestJS 控制器(uploads.controller.ts)直接分发图片,
+# 无需 Nginx。下述配置仅供生产部署参考:让 Nginx 直接提供水印版 / 缩略图 /
+# Logo 等公开静态资源,同时严格隔离 original/ 原图目录(仅后端 API 可读)。
+#
+# 假设磁盘布局:
+#   /var/www/yzy-tournament/uploads/photos/{tournamentId}/original/
+#   /var/www/yzy-tournament/uploads/photos/{tournamentId}/watermark/
+#   /var/www/yzy-tournament/uploads/photos/{tournamentId}/thumb/
+#   /var/www/yzy-tournament/uploads/photos/{tournamentId}/logos/
+# ============================================================================
+
+server {
+    listen 80;
+    server_name your-domain.example.com;
+
+    # 上传相关:批量上传 20 张、单张 50MB,放宽请求体与超时。
+    client_max_body_size 100M;
+    client_body_timeout 300s;
+
+    # ---- 公开静态资源:水印版 / 缩略图 / Logo ----
+    # 只暴露 watermark、thumb、logos 三个子目录,original 不在其列。
+    location ~ ^/uploads/photos/[^/]+/(watermark|thumb|logos)/ {
+        root /var/www/yzy-tournament;
+        expires 30d;
+        add_header Cache-Control "public";
+        try_files $uri =404;
+    }
+
+    # ---- 显式拒绝直接访问原图目录 ----
+    location ~ ^/uploads/photos/[^/]+/original/ {
+        deny all;
+        return 404;
+    }
+
+    # ---- 其余 /api 反向代理到 NestJS(含 /api/admin/photos/:id/original 鉴权读原图) ----
+    location /api/ {
+        proxy_pass http://127.0.0.1:4000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # 大文件上传:延长读写超时,避免水印合成期间断开。
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_request_buffering off;
+    }
+}

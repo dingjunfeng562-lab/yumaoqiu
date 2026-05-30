@@ -94,7 +94,11 @@ export function MobileBottomNav({ activeHref }: { activeHref?: string } = {}) {
       label: '赛事',
       href: '/competitions',
       icon: CompetitionIcon,
-      match: (p) => p.startsWith('/competitions') || p.startsWith('/bracket') || p.startsWith('/schedule'),
+      match: (p) =>
+        p.startsWith('/competitions') ||
+        p.startsWith('/bracket') ||
+        p.startsWith('/schedule') ||
+        p.startsWith('/live-screen'),
     },
     {
       key: 'reg',

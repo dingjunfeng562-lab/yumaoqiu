@@ -17,7 +17,12 @@ type Player = {
   competitionRegistrationId?: string | null;
   email: string;
   name: string;
+  primaryName?: string;
   teamName?: string | null;
+  partner?: {
+    name: string;
+    studentId?: string;
+  } | null;
   studentId: string;
   school?: string;
   className: string;
@@ -101,12 +106,29 @@ export default function AdminCompetitionPlayersPage() {
             <Typography.Text strong>{record.teamName}</Typography.Text>
           ) : null}
           <Typography.Text type={record.teamName ? 'secondary' : undefined}>
-            {record.name}
+            {record.primaryName || record.name}
           </Typography.Text>
+          {record.partner ? (
+            <Typography.Text type="secondary">
+              {record.partner.name}
+            </Typography.Text>
+          ) : null}
         </Space>
       ),
     },
-    { title: '学号', dataIndex: 'studentId', key: 'studentId', width: 140 },
+    {
+      title: '学号',
+      key: 'studentId',
+      width: 150,
+      render: (_: unknown, record: Player) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text>{record.studentId || '-'}</Typography.Text>
+          {record.partner ? (
+            <Typography.Text type="secondary">{record.partner.studentId || '-'}</Typography.Text>
+          ) : null}
+        </Space>
+      ),
+    },
     {
       title: '学校',
       dataIndex: 'school',

@@ -12,6 +12,13 @@ enum Role {
   ADMIN
   REFEREE
   PLAYER
+  PHOTOGRAPHER
+}
+
+enum PhotoCategory {
+  PLAYER
+  MATCH
+  AWARD
 }
 
 enum UserStatus {
@@ -158,6 +165,8 @@ model User {
   drawSeedSettings  DrawSeedSetting[]  @relation("drawSeedSettingCreator")
   drawRedrawRequests        DrawRedrawRequest[] @relation("drawRedrawRequestRequester")
   drawRedrawDecisions       DrawRedrawRequest[] @relation("drawRedrawRequestDecider")
+  photos            Photo[]
+  photoOperationLogs PhotoOperationLog[]
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
 
@@ -253,10 +262,57 @@ model Tournament {
   competitionRegistrations CompetitionRegistration[]
   venues                Venue[]
   teamCompetitions      TeamCompetition[]
+  photos                Photo[]
+  watermark             TournamentWatermark?
   createdAt             DateTime         @default(now())
   updatedAt             DateTime         @updatedAt
 
   @@index([approvalStatus, isPublished])
+}
+
+model Photo {
+  id              String        @id @default(cuid())
+  tournamentId    String
+  tournament      Tournament    @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  uploaderId      String
+  uploader        User          @relation(fields: [uploaderId], references: [id], onDelete: Restrict)
+  category        PhotoCategory
+  originalPath    String        @db.VarChar(500)
+  watermarkPath   String        @db.VarChar(500)
+  thumbPath       String        @db.VarChar(500)
+  fileSize        Int
+  width           Int
+  height          Int
+  uploadedAt      DateTime      @default(now())
+  deletedAt       DateTime?
+
+  @@index([tournamentId, category, deletedAt])
+  @@index([tournamentId, deletedAt, uploadedAt])
+  @@index([uploaderId])
+  @@index([deletedAt])
+}
+
+model TournamentWatermark {
+  id           String     @id @default(cuid())
+  tournamentId String     @unique
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  logos        Json
+  updatedAt    DateTime   @updatedAt
+}
+
+model PhotoOperationLog {
+  id                   String   @id @default(cuid())
+  photoId              String?
+  tournamentId         String
+  operatorId           String
+  operator             User     @relation(fields: [operatorId], references: [id], onDelete: Restrict)
+  operatorNameSnapshot String?  @db.VarChar(64)
+  action               String   @db.VarChar(32)
+  detail               Json?
+  createdAt            DateTime @default(now())
+
+  @@index([tournamentId, createdAt])
+  @@index([operatorId])
 }
 
 model Event {
@@ -362,6 +418,7 @@ model CompetitionRegistrationEventItem {
   event                      Event                   @relation(fields: [eventId], references: [id], onDelete: Cascade)
   partnerName                String?
   partnerStudentId           String?
+  partnerClassName           String?                 @db.VarChar(120)
   teamName                   String?                 @db.VarChar(120)
   createdAt                  DateTime                @default(now())
 

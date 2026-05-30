@@ -9,6 +9,7 @@ import {
   EditOutlined,
   EyeOutlined,
   PauseCircleOutlined,
+  PictureOutlined,
   PlusOutlined,
   PlayCircleOutlined,
   TeamOutlined,
@@ -139,7 +140,7 @@ export default function AdminCompetitionsPage() {
     {
       title: '操作',
       key: 'actions',
-      width: 360,
+      width: 520,
       render: (_: unknown, record: Competition) => (
         <Space wrap>
           <Button icon={<EditOutlined />} onClick={() => router.push('/admin/tournaments')}>
@@ -174,6 +175,18 @@ export default function AdminCompetitionsPage() {
             onClick={() => router.push(`/admin/competitions/${record.id}/players`)}
           >
             参赛选手
+          </Button>
+          <Button
+            icon={<PictureOutlined />}
+            onClick={() => router.push(`/admin/competitions/${record.id}/watermark`)}
+          >
+            水印设置
+          </Button>
+          <Button
+            icon={<PictureOutlined />}
+            onClick={() => router.push(`/admin/competitions/${record.id}/photos`)}
+          >
+            图片管理
           </Button>
         </Space>
       ),
