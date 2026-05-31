@@ -4,7 +4,15 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, normalize } from 'node:path';
 import { PrismaService } from '../prisma/prisma.service';
-import { WatermarkService } from './watermark.service';
+import { WatermarkService, WATERMARK_POSITIONS, WatermarkPosition } from './watermark.service';
+
+const DEFAULT_LOGO_HEIGHT_PERCENT = WatermarkService.DEFAULT_LOGO_HEIGHT_PERCENT;
+const MIN_LOGO_HEIGHT_PERCENT = WatermarkService.MIN_LOGO_HEIGHT_PERCENT;
+const MAX_LOGO_HEIGHT_PERCENT = WatermarkService.MAX_LOGO_HEIGHT_PERCENT;
+const DEFAULT_LOGO_GAP_PERCENT = WatermarkService.DEFAULT_LOGO_GAP_PERCENT;
+const MIN_LOGO_GAP_PERCENT = WatermarkService.MIN_LOGO_GAP_PERCENT;
+const MAX_LOGO_GAP_PERCENT = WatermarkService.MAX_LOGO_GAP_PERCENT;
+const DEFAULT_WATERMARK_POSITION = WatermarkService.DEFAULT_POSITION;
 import {
   AdminPhotoQueryDto,
   PublicPhotoQueryDto,
@@ -96,11 +104,23 @@ export class PhotosService {
   // Upload + watermark
   // ---------------------------------------------------------------------------
 
-  private async loadLogoBuffers(tournamentId: string): Promise<Buffer[]> {
+  private async loadLogoConfig(tournamentId: string): Promise<{
+    buffers: Buffer[];
+    logoHeightPercent: number;
+    logoGapPercent: number;
+    position: WatermarkPosition;
+  }> {
     const config = await this.prisma.tournamentWatermark.findUnique({
       where: { tournamentId },
     });
-    if (!config) return [];
+    if (!config) {
+      return {
+        buffers: [],
+        logoHeightPercent: DEFAULT_LOGO_HEIGHT_PERCENT,
+        logoGapPercent: DEFAULT_LOGO_GAP_PERCENT,
+        position: DEFAULT_WATERMARK_POSITION,
+      };
+    }
     const logos = this.parseLogos(config.logos);
     const buffers: Buffer[] = [];
     for (const logo of logos) {
@@ -109,7 +129,18 @@ export class PhotosService {
         buffers.push(readFileSync(abs));
       }
     }
-    return buffers;
+    return {
+      buffers,
+      logoHeightPercent: config.logoHeightPercent ?? DEFAULT_LOGO_HEIGHT_PERCENT,
+      logoGapPercent: config.logoGapPercent ?? DEFAULT_LOGO_GAP_PERCENT,
+      position: this.normalizePosition(config.position),
+    };
+  }
+
+  private normalizePosition(value?: string | null): WatermarkPosition {
+    return WATERMARK_POSITIONS.includes(value as WatermarkPosition)
+      ? (value as WatermarkPosition)
+      : DEFAULT_WATERMARK_POSITION;
   }
 
   async uploadPhotos(
@@ -125,7 +156,16 @@ export class PhotosService {
     if (!tournament) throw new NotFoundException('赛事不存在');
     if (!files?.length) throw new BadRequestException('请至少上传一张图片');
 
-    const logos = await this.loadLogoBuffers(tournamentId);
+    const { buffers: logos, logoHeightPercent, logoGapPercent, position } =
+      await this.loadLogoConfig(tournamentId);
+
+    // Per-tournament upload sequence. New photos continue from the current max
+    // (deleted rows included) so download names stay unique and stable.
+    const seqAgg = await this.prisma.photo.aggregate({
+      where: { tournamentId },
+      _max: { seq: true },
+    });
+    const seqBase = seqAgg._max.seq ?? 0;
 
     // Bound concurrency so several large images don't blow up memory.
     // p-limit@3 is CommonJS; the dynamic import exposes it on `.default`.
@@ -136,11 +176,12 @@ export class PhotosService {
     let uploaded = 0;
 
     await Promise.all(
-      files.map((file) =>
+      files.map((file, idx) =>
         limit(async () => {
           const name = file.originalname || 'unknown';
           try {
             if (!file.buffer) throw new Error('空文件');
+            const seq = seqBase + idx + 1;
             const uuid = randomUUID();
             const isPng = (file.mimetype || '').includes('png');
             const origExt = isPng ? '.png' : '.jpg';
@@ -150,7 +191,13 @@ export class PhotosService {
             const thumbPath = `photos/${tournamentId}/thumb/${uuid}.jpg`;
 
             const { width, height } = await this.watermark.dimensions(file.buffer);
-            const watermarked = await this.watermark.applyWatermark(file.buffer, logos);
+            const watermarked = await this.watermark.applyWatermark(
+              file.buffer,
+              logos,
+              logoHeightPercent,
+              logoGapPercent,
+              position,
+            );
             const thumb = await this.watermark.generateThumbnail(watermarked);
 
             this.writeRelative(originalPath, file.buffer);
@@ -162,6 +209,7 @@ export class PhotosService {
                 tournamentId,
                 uploaderId,
                 category,
+                seq,
                 originalPath,
                 watermarkPath,
                 thumbPath,
@@ -211,6 +259,7 @@ export class PhotosService {
         select: {
           id: true,
           category: true,
+          seq: true,
           watermarkPath: true,
           thumbPath: true,
           width: true,
@@ -227,6 +276,7 @@ export class PhotosService {
       items: rows.map((r) => ({
         id: r.id,
         category: r.category,
+        seq: r.seq,
         url: this.url(r.watermarkPath),
         thumbUrl: this.url(r.thumbPath),
         width: r.width,
@@ -247,6 +297,16 @@ export class PhotosService {
       .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   }
 
+  private clampLogoHeightPercent(value?: number | null): number {
+    const v = value ?? DEFAULT_LOGO_HEIGHT_PERCENT;
+    return Math.min(MAX_LOGO_HEIGHT_PERCENT, Math.max(MIN_LOGO_HEIGHT_PERCENT, Math.round(v)));
+  }
+
+  private clampLogoGapPercent(value?: number | null): number {
+    const v = value ?? DEFAULT_LOGO_GAP_PERCENT;
+    return Math.min(MAX_LOGO_GAP_PERCENT, Math.max(MIN_LOGO_GAP_PERCENT, Math.round(v)));
+  }
+
   async getWatermark(tournamentId: string) {
     const config = await this.prisma.tournamentWatermark.findUnique({
       where: { tournamentId },
@@ -255,6 +315,9 @@ export class PhotosService {
     return {
       tournamentId,
       logos: logos.map((l) => ({ ...l, url: this.url(l.path) })),
+      logoHeightPercent: config?.logoHeightPercent ?? DEFAULT_LOGO_HEIGHT_PERCENT,
+      logoGapPercent: config?.logoGapPercent ?? DEFAULT_LOGO_GAP_PERCENT,
+      position: this.normalizePosition(config?.position),
       updatedAt: config?.updatedAt ?? null,
     };
   }
@@ -264,7 +327,12 @@ export class PhotosService {
     const logos = dto.logos
       .slice(0, 5)
       .map((l, i) => ({ order: i + 1, path: l.path, filename: l.filename }));
-    const data = { logos: logos as unknown as Prisma.InputJsonValue };
+    const data = {
+      logos: logos as unknown as Prisma.InputJsonValue,
+      logoHeightPercent: this.clampLogoHeightPercent(dto.logoHeightPercent),
+      logoGapPercent: this.clampLogoGapPercent(dto.logoGapPercent),
+      position: this.normalizePosition(dto.position),
+    };
     await this.prisma.tournamentWatermark.upsert({
       where: { tournamentId },
       create: { tournamentId, ...data },
@@ -353,6 +421,7 @@ export class PhotosService {
         select: {
           id: true,
           category: true,
+          seq: true,
           watermarkPath: true,
           thumbPath: true,
           fileSize: true,
@@ -371,6 +440,7 @@ export class PhotosService {
       items: rows.map((r) => ({
         id: r.id,
         category: r.category,
+        seq: r.seq,
         url: this.url(r.watermarkPath),
         thumbUrl: this.url(r.thumbPath),
         originalUrl: `/api/admin/photos/${r.id}/original`,
@@ -388,7 +458,10 @@ export class PhotosService {
     photoId: string,
     operator: { id: string; username?: string | null },
   ) {
-    const photo = await this.prisma.photo.findUnique({ where: { id: photoId } });
+    const photo = await this.prisma.photo.findUnique({
+      where: { id: photoId },
+      include: { tournament: { select: { name: true } } },
+    });
     if (!photo || photo.deletedAt) throw new NotFoundException('图片不存在');
     const abs = this.absolute(photo.originalPath);
     if (!existsSync(abs)) throw new NotFoundException('原图文件丢失');
@@ -397,7 +470,8 @@ export class PhotosService {
       originalPath: photo.originalPath,
     });
 
-    const filename = photo.originalPath.split('/').pop() || `${photo.id}.jpg`;
+    const ext = photo.originalPath.slice(photo.originalPath.lastIndexOf('.')) || '.jpg';
+    const filename = `${this.safeFileName(photo.tournament?.name ?? '赛事')}-${photo.seq}${ext}`;
     return { absolutePath: abs, filename };
   }
 
@@ -501,6 +575,14 @@ export class PhotosService {
     this.removeRelative(photo.originalPath);
     this.removeRelative(photo.watermarkPath);
     this.removeRelative(photo.thumbPath);
+  }
+
+  /** Strip characters that are illegal in filenames / Content-Disposition. */
+  private safeFileName(name: string) {
+    return (name || '')
+      .replace(/[\\/:*?"<>|\r\n]/g, '')
+      .trim()
+      .slice(0, 80) || '赛事';
   }
 
   private async assertTournamentExists(tournamentId: string) {

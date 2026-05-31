@@ -89,9 +89,12 @@ export class AdminPhotosController {
     const { absolutePath, filename } = await this.photosService.getOriginal(id, req.user);
     const ext = extname(absolutePath).toLowerCase();
     const type = ext === '.png' ? 'image/png' : 'image/jpeg';
+    const asciiFallback = filename.replace(/[^\x20-\x7e]/g, '_');
     return new StreamableFile(createReadStream(absolutePath), {
       type,
-      disposition: `inline; filename="${filename}"`,
+      disposition:
+        `inline; filename="${asciiFallback}"; ` +
+        `filename*=UTF-8''${encodeURIComponent(filename)}`,
     });
   }
 

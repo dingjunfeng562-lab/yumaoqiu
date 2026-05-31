@@ -29,7 +29,8 @@ import {
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 
 const MAX_FILES = 20;
-const MAX_FILE_SIZE = 50 * 1024 * 1024;
+const MAX_FILE_SIZE_MB = 10;
+const MAX_FILE_SIZE = MAX_FILE_SIZE_MB * 1024 * 1024;
 const ACCEPTED = /^image\/(png|jpe?g)$/;
 
 const CATEGORIES = [
@@ -156,7 +157,7 @@ export default function PhotographerUploadPage() {
         accepted.push(f);
       }
       if (rejectedType) message.warning(`已忽略 ${rejectedType} 个非 JPG/PNG 文件`);
-      if (rejectedSize) message.warning(`已忽略 ${rejectedSize} 个超过 50MB 的文件`);
+      if (rejectedSize) message.warning(`已忽略 ${rejectedSize} 个超过 ${MAX_FILE_SIZE_MB}MB 的文件`);
 
       setQueue((prev) => {
         const remaining = MAX_FILES - prev.length;
@@ -337,7 +338,7 @@ export default function PhotographerUploadPage() {
           onChange={setTournamentId}
           options={tournaments.map((t) => ({
             value: t.id,
-            label: `第${t.edition}届 · ${t.name}(${formatDate(t.startDate)} - ${formatDate(t.endDate)})`,
+            label: `${t.name}(${formatDate(t.startDate)} - ${formatDate(t.endDate)})`,
           }))}
           showSearch
           optionFilterProp="label"
@@ -397,7 +398,7 @@ export default function PhotographerUploadPage() {
             <Typography.Text strong>点击选择或拖拽图片到此处</Typography.Text>
           </div>
           <Typography.Text type="secondary">
-            支持 JPG / PNG,单张 ≤ 50MB,每批最多 20 张
+            支持 JPG / PNG,单张 ≤ {MAX_FILE_SIZE_MB}MB,每批最多 {MAX_FILES} 张
           </Typography.Text>
           <input
             ref={fileInputRef}

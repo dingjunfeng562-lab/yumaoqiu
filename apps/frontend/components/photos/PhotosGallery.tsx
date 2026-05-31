@@ -20,6 +20,7 @@ type TournamentTab = {
 type PhotoItem = {
   id: string;
   category: 'PLAYER' | 'MATCH' | 'AWARD';
+  seq: number;
   url: string;
   thumbUrl: string;
   width: number;
@@ -151,14 +152,14 @@ export function PhotosGallery() {
     return () => observer.disconnect();
   }, [photos.length, total, page, loadPage]);
 
-  async function downloadPhoto(item: PhotoItem, index: number) {
+  async function downloadPhoto(item: PhotoItem) {
     try {
       const res = await fetch(fullUrl(item.url));
       const blob = await res.blob();
       const objectUrl = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = objectUrl;
-      a.download = `${tournamentName}-${CATEGORY_FILE_LABEL[item.category]}-${index + 1}.jpg`;
+      a.download = `${tournamentName}-${item.seq}.jpg`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -187,7 +188,7 @@ export function PhotosGallery() {
         onChange={setTournamentId}
         items={tournaments.map((t) => ({
           key: t.id,
-          label: `第${t.edition}届 · ${t.name}(${t.photoCount})`,
+          label: `${t.name}(${t.photoCount})`,
         }))}
       />
 
@@ -256,7 +257,7 @@ export function PhotosGallery() {
                   <button
                     type="button"
                     className="photo-overlay-btn"
-                    onClick={() => void downloadPhoto(item, index)}
+                    onClick={() => void downloadPhoto(item)}
                   >
                     <DownloadOutlined /> 下载
                   </button>

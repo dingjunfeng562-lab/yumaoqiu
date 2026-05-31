@@ -1,9 +1,22 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { Alert, Button, Card, Empty, Space, Spin, Typography, Upload, message } from 'antd';
+import {
+  Alert,
+  Button,
+  Card,
+  Empty,
+  InputNumber,
+  Radio,
+  Slider,
+  Space,
+  Spin,
+  Typography,
+  Upload,
+  message,
+} from 'antd';
 import {
   ArrowLeftOutlined,
   ArrowDownOutlined,
@@ -17,9 +30,31 @@ import { apiFetch } from '@/lib/api';
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 const API_ORIGIN = API_BASE.replace(/\/api$/, '');
 const MAX_LOGOS = 5;
+const DEFAULT_LOGO_PERCENT = 8;
+const MIN_LOGO_PERCENT = 2;
+const MAX_LOGO_PERCENT = 80;
+const DEFAULT_LOGO_GAP = 20;
+const MIN_LOGO_GAP = 0;
+const MAX_LOGO_GAP = 200;
+
+type WatermarkPosition = 'TOP_LEFT' | 'TOP_RIGHT' | 'BOTTOM_LEFT' | 'BOTTOM_RIGHT';
+const DEFAULT_POSITION: WatermarkPosition = 'TOP_RIGHT';
+const POSITION_OPTIONS: Array<{ value: WatermarkPosition; label: string }> = [
+  { value: 'TOP_LEFT', label: '左上角' },
+  { value: 'TOP_RIGHT', label: '右上角' },
+  { value: 'BOTTOM_LEFT', label: '左下角' },
+  { value: 'BOTTOM_RIGHT', label: '右下角' },
+];
 
 type Logo = { order: number; path: string; filename?: string; url: string };
-type WatermarkConfig = { tournamentId: string; logos: Logo[]; updatedAt: string | null };
+type WatermarkConfig = {
+  tournamentId: string;
+  logos: Logo[];
+  logoHeightPercent: number;
+  logoGapPercent: number;
+  position: WatermarkPosition;
+  updatedAt: string | null;
+};
 
 export default function WatermarkSettingsPage() {
   const params = useParams<{ id: string }>();
@@ -29,10 +64,26 @@ export default function WatermarkSettingsPage() {
   const token = session?.user?.accessToken as string | undefined;
 
   const [logos, setLogos] = useState<Logo[]>([]);
+  const [logoPercent, setLogoPercent] = useState<number>(DEFAULT_LOGO_PERCENT);
+  const [logoGap, setLogoGap] = useState<number>(DEFAULT_LOGO_GAP);
+  const [position, setPosition] = useState<WatermarkPosition>(DEFAULT_POSITION);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [dirty, setDirty] = useState(false);
+
+  // Measure the preview "photo" height so the logo size mirrors the real
+  // watermark (logo height = imageHeight * percent), not a fixed pixel size.
+  const previewRef = useRef<HTMLDivElement>(null);
+  const [previewBoxH, setPreviewBoxH] = useState(0);
+  useLayoutEffect(() => {
+    const el = previewRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => setPreviewBoxH(el.clientHeight));
+    ro.observe(el);
+    setPreviewBoxH(el.clientHeight);
+    return () => ro.disconnect();
+  }, []);
 
   const load = useCallback(async () => {
     if (!token || !id) return;
@@ -40,6 +91,9 @@ export default function WatermarkSettingsPage() {
     try {
       const data = await apiFetch<WatermarkConfig>(`/admin/tournaments/${id}/watermark`, { token });
       setLogos(data.logos);
+      setLogoPercent(data.logoHeightPercent ?? DEFAULT_LOGO_PERCENT);
+      setLogoGap(data.logoGapPercent ?? DEFAULT_LOGO_GAP);
+      setPosition(data.position ?? DEFAULT_POSITION);
       setDirty(false);
     } catch (error) {
       message.error(error instanceof Error ? error.message : '水印配置加载失败');
@@ -81,7 +135,12 @@ export default function WatermarkSettingsPage() {
       }
       const data = (await res.json()) as WatermarkConfig;
       setLogos(data.logos);
-      setDirty(false);
+      // Keep any pending (unsaved) size change; only clear dirty if it matches.
+      setDirty(
+        logoPercent !== (data.logoHeightPercent ?? DEFAULT_LOGO_PERCENT) ||
+          logoGap !== (data.logoGapPercent ?? DEFAULT_LOGO_GAP) ||
+          position !== (data.position ?? DEFAULT_POSITION),
+      );
       message.success('Logo 已添加');
     } catch (error) {
       message.error(error instanceof Error ? error.message : '上传失败');
@@ -99,7 +158,11 @@ export default function WatermarkSettingsPage() {
         body: JSON.stringify({ path: logo.path }),
       });
       setLogos(data.logos);
-      setDirty(false);
+      setDirty(
+        logoPercent !== (data.logoHeightPercent ?? DEFAULT_LOGO_PERCENT) ||
+          logoGap !== (data.logoGapPercent ?? DEFAULT_LOGO_GAP) ||
+          position !== (data.position ?? DEFAULT_POSITION),
+      );
       message.success('Logo 已删除');
     } catch (error) {
       message.error(error instanceof Error ? error.message : '删除失败');
@@ -126,9 +189,15 @@ export default function WatermarkSettingsPage() {
         token,
         body: JSON.stringify({
           logos: logos.map((l, i) => ({ order: i + 1, path: l.path, filename: l.filename })),
+          logoHeightPercent: logoPercent,
+          logoGapPercent: logoGap,
+          position,
         }),
       });
       setLogos(data.logos);
+      setLogoPercent(data.logoHeightPercent ?? logoPercent);
+      setLogoGap(data.logoGapPercent ?? logoGap);
+      setPosition(data.position ?? position);
       setDirty(false);
       message.success('水印设置已保存,将应用于后续上传的图片');
     } catch (error) {
@@ -139,6 +208,38 @@ export default function WatermarkSettingsPage() {
   }
 
   const previewLogos = useMemo(() => logos, [logos]);
+  // Logo height in preview px mirrors the real watermark: imageHeight * percent.
+  const previewLogoPx = Math.max(8, Math.round(((previewBoxH || 180) * logoPercent) / 100));
+  // Gap mirrors the real watermark: a percentage of the logo height.
+  const previewGap = Math.round((previewLogoPx * logoGap) / 100);
+
+  function changePercent(value: number | null) {
+    if (value == null) return;
+    const clamped = Math.min(MAX_LOGO_PERCENT, Math.max(MIN_LOGO_PERCENT, Math.round(value)));
+    setLogoPercent(clamped);
+    setDirty(true);
+  }
+
+  function changeGap(value: number | null) {
+    if (value == null) return;
+    const clamped = Math.min(MAX_LOGO_GAP, Math.max(MIN_LOGO_GAP, Math.round(value)));
+    setLogoGap(clamped);
+    setDirty(true);
+  }
+
+  function changePosition(value: WatermarkPosition) {
+    setPosition(value);
+    setDirty(true);
+  }
+
+  // Preview corner placement (matches backend EDGE_MARGIN ratio, ~4% of edge).
+  const previewCornerOffset = '4%';
+  const previewCorner = {
+    top: position.startsWith('TOP_') ? previewCornerOffset : undefined,
+    bottom: position.startsWith('BOTTOM_') ? previewCornerOffset : undefined,
+    left: position.endsWith('_LEFT') ? previewCornerOffset : undefined,
+    right: position.endsWith('_RIGHT') ? previewCornerOffset : undefined,
+  } as const;
 
   return (
     <div>
@@ -155,7 +256,7 @@ export default function WatermarkSettingsPage() {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="第 1 个为赛事主 Logo,其余为赞助商 Logo,展示时以「×」连接。最多 5 个,仅支持透明背景 PNG(< 5MB)。"
+        message="第 1 个为赛事主 Logo,其余为赞助商 Logo,多个 Logo 横向并排展示(间距可调)。最多 5 个,仅支持透明背景 PNG(< 5MB)。"
       />
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
@@ -262,7 +363,85 @@ export default function WatermarkSettingsPage() {
         </Card>
 
         <Card title="效果预览" style={{ flex: '1 1 420px', minWidth: 320 }}>
+          <div style={{ marginBottom: 16 }}>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                marginBottom: 4,
+              }}
+            >
+              <Typography.Text strong>Logo 大小</Typography.Text>
+              <InputNumber
+                size="small"
+                min={MIN_LOGO_PERCENT}
+                max={MAX_LOGO_PERCENT}
+                value={logoPercent}
+                onChange={changePercent}
+                formatter={(v) => `${v}%`}
+                parser={(v) => Number((v ?? '').replace('%', ''))}
+                style={{ width: 88 }}
+              />
+            </div>
+            <Slider
+              min={MIN_LOGO_PERCENT}
+              max={MAX_LOGO_PERCENT}
+              value={logoPercent}
+              onChange={changePercent}
+              tooltip={{ formatter: (v) => `${v}%` }}
+            />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              Logo 高度 = 图片高度的 {logoPercent}%(下方预览实时模拟)
+            </Typography.Text>
+
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                margin: '16px 0 4px',
+              }}
+            >
+              <Typography.Text strong>Logo 间距</Typography.Text>
+              <InputNumber
+                size="small"
+                min={MIN_LOGO_GAP}
+                max={MAX_LOGO_GAP}
+                value={logoGap}
+                onChange={changeGap}
+                formatter={(v) => `${v}%`}
+                parser={(v) => Number((v ?? '').replace('%', ''))}
+                style={{ width: 88 }}
+              />
+            </div>
+            <Slider
+              min={MIN_LOGO_GAP}
+              max={MAX_LOGO_GAP}
+              value={logoGap}
+              onChange={changeGap}
+              tooltip={{ formatter: (v) => `${v}%` }}
+            />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              多个 Logo 之间的间距 = Logo 高度的 {logoGap}%(仅在有 2 个及以上 Logo 时生效)
+            </Typography.Text>
+
+            <div style={{ marginTop: 16 }}>
+              <Typography.Text strong style={{ display: 'block', marginBottom: 6 }}>
+                水印位置
+              </Typography.Text>
+              <Radio.Group
+                value={position}
+                onChange={(e) => changePosition(e.target.value as WatermarkPosition)}
+                optionType="button"
+                buttonStyle="solid"
+                options={POSITION_OPTIONS}
+              />
+            </div>
+          </div>
+
           <div
+            ref={previewRef}
             style={{
               position: 'relative',
               width: '100%',
@@ -275,11 +454,10 @@ export default function WatermarkSettingsPage() {
             <div
               style={{
                 position: 'absolute',
-                top: 16,
-                right: 16,
+                ...previewCorner,
                 display: 'flex',
                 alignItems: 'center',
-                gap: 10,
+                gap: previewGap,
                 opacity: 0.85,
               }}
             >
@@ -288,25 +466,28 @@ export default function WatermarkSettingsPage() {
                   未配置 Logo
                 </Typography.Text>
               ) : (
-                previewLogos.map((logo, index) => (
-                  <span key={logo.path} style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
-                    {index > 0 && (
-                      <span style={{ color: '#fff', fontSize: 22, fontFamily: 'sans-serif' }}>×</span>
-                    )}
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={`${API_ORIGIN}${logo.url}`}
-                      alt={logo.filename ?? 'logo'}
-                      style={{ height: 30, objectFit: 'contain' }}
-                    />
-                  </span>
+                previewLogos.map((logo) => (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    key={logo.path}
+                    src={`${API_ORIGIN}${logo.url}`}
+                    alt={logo.filename ?? 'logo'}
+                    style={{ height: previewLogoPx, objectFit: 'contain' }}
+                  />
                 ))
               )}
             </div>
+            {/* Caption hugs the opposite corner of the watermark so it never overlaps. */}
             <Typography.Text
-              style={{ position: 'absolute', bottom: 12, left: 16, color: 'rgba(255,255,255,0.65)' }}
+              style={{
+                position: 'absolute',
+                color: 'rgba(255,255,255,0.65)',
+                fontSize: 12,
+                ...(position.startsWith('TOP_') ? { bottom: 12 } : { top: 12 }),
+                ...(position.endsWith('_LEFT') ? { right: 16 } : { left: 16 }),
+              }}
             >
-              示例照片 —— 水印显示在右上角
+              示例照片 —— 水印显示在{POSITION_OPTIONS.find((o) => o.value === position)?.label ?? ''}
             </Typography.Text>
           </div>
           {loading && (

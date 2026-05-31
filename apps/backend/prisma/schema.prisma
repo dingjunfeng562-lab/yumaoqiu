@@ -277,6 +277,7 @@ model Photo {
   uploaderId      String
   uploader        User          @relation(fields: [uploaderId], references: [id], onDelete: Restrict)
   category        PhotoCategory
+  seq             Int           @default(0)
   originalPath    String        @db.VarChar(500)
   watermarkPath   String        @db.VarChar(500)
   thumbPath       String        @db.VarChar(500)
@@ -297,6 +298,9 @@ model TournamentWatermark {
   tournamentId String     @unique
   tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
   logos        Json
+  logoHeightPercent Int    @default(8)
+  logoGapPercent    Int    @default(20)
+  position          String @default("TOP_RIGHT") @db.VarChar(16)
   updatedAt    DateTime   @updatedAt
 }
 

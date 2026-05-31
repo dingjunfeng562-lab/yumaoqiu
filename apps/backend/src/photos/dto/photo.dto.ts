@@ -101,6 +101,27 @@ export class UpdateWatermarkDto {
   @ValidateNested({ each: true })
   @Type(() => WatermarkLogoDto)
   logos: WatermarkLogoDto[];
+
+  /** Logo height as a percentage of the image height (2–80). */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(2)
+  @Max(80)
+  logoHeightPercent?: number;
+
+  /** Gap between logos as a percentage of the logo height (0–200). */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(200)
+  logoGapPercent?: number;
+
+  /** Watermark corner position. */
+  @IsOptional()
+  @IsIn(['TOP_LEFT', 'TOP_RIGHT', 'BOTTOM_LEFT', 'BOTTOM_RIGHT'])
+  position?: 'TOP_LEFT' | 'TOP_RIGHT' | 'BOTTOM_LEFT' | 'BOTTOM_RIGHT';
 }
 
 export class BatchDeletePhotosDto {
