@@ -279,8 +279,8 @@ model Photo {
   category        PhotoCategory
   seq             Int           @default(0)
   originalPath    String        @db.VarChar(500)
-  watermarkPath   String        @db.VarChar(500)
-  thumbPath       String        @db.VarChar(500)
+  fullPath        String        @db.VarChar(500)
+  thumbnailPath   String        @db.VarChar(500)
   fileSize        Int
   width           Int
   height          Int

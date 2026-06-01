@@ -31,6 +31,13 @@ type WatermarkLogo = { order: number; path: string; filename?: string };
 
 const PHOTO_LOG_RETENTION_DAYS = 90;
 
+/** Chinese labels used in download filenames: 赛事名-分类-序号.jpg */
+const PHOTO_CATEGORY_LABELS: Record<PhotoCategory, string> = {
+  PLAYER: '选手照',
+  MATCH: '现场照',
+  AWARD: '颁奖照',
+};
+
 @Injectable()
 export class PhotosService {
   constructor(
@@ -187,8 +194,8 @@ export class PhotosService {
             const origExt = isPng ? '.png' : '.jpg';
 
             const originalPath = `photos/${tournamentId}/original/${uuid}${origExt}`;
-            const watermarkPath = `photos/${tournamentId}/watermark/${uuid}.jpg`;
-            const thumbPath = `photos/${tournamentId}/thumb/${uuid}.jpg`;
+            const fullPath = `photos/${tournamentId}/full/${uuid}.jpg`;
+            const thumbnailPath = `photos/${tournamentId}/thumb/${uuid}.jpg`;
 
             const { width, height } = await this.watermark.dimensions(file.buffer);
             const watermarked = await this.watermark.applyWatermark(
@@ -201,8 +208,8 @@ export class PhotosService {
             const thumb = await this.watermark.generateThumbnail(watermarked);
 
             this.writeRelative(originalPath, file.buffer);
-            this.writeRelative(watermarkPath, watermarked);
-            this.writeRelative(thumbPath, thumb);
+            this.writeRelative(fullPath, watermarked);
+            this.writeRelative(thumbnailPath, thumb);
 
             await this.prisma.photo.create({
               data: {
@@ -211,8 +218,8 @@ export class PhotosService {
                 category,
                 seq,
                 originalPath,
-                watermarkPath,
-                thumbPath,
+                fullPath,
+                thumbnailPath,
                 fileSize: file.size ?? file.buffer.length,
                 width,
                 height,
@@ -260,8 +267,8 @@ export class PhotosService {
           id: true,
           category: true,
           seq: true,
-          watermarkPath: true,
-          thumbPath: true,
+          fullPath: true,
+          thumbnailPath: true,
           width: true,
           height: true,
           uploadedAt: true,
@@ -277,8 +284,8 @@ export class PhotosService {
         id: r.id,
         category: r.category,
         seq: r.seq,
-        url: this.url(r.watermarkPath),
-        thumbUrl: this.url(r.thumbPath),
+        url: this.url(r.fullPath),
+        thumbUrl: this.url(r.thumbnailPath),
         width: r.width,
         height: r.height,
         uploadedAt: r.uploadedAt,
@@ -422,8 +429,8 @@ export class PhotosService {
           id: true,
           category: true,
           seq: true,
-          watermarkPath: true,
-          thumbPath: true,
+          fullPath: true,
+          thumbnailPath: true,
           fileSize: true,
           width: true,
           height: true,
@@ -441,8 +448,8 @@ export class PhotosService {
         id: r.id,
         category: r.category,
         seq: r.seq,
-        url: this.url(r.watermarkPath),
-        thumbUrl: this.url(r.thumbPath),
+        url: this.url(r.fullPath),
+        thumbUrl: this.url(r.thumbnailPath),
         originalUrl: `/api/admin/photos/${r.id}/original`,
         fileSize: r.fileSize,
         width: r.width,
@@ -472,6 +479,26 @@ export class PhotosService {
 
     const ext = photo.originalPath.slice(photo.originalPath.lastIndexOf('.')) || '.jpg';
     const filename = `${this.safeFileName(photo.tournament?.name ?? '赛事')}-${photo.seq}${ext}`;
+    return { absolutePath: abs, filename };
+  }
+
+  /**
+   * Public download of the high-res watermarked version. Routed through the API
+   * (rather than a raw /uploads URL) so the filename is server-controlled and
+   * future access control / counting can hook in here. Filename: 赛事名-分类-序号.jpg.
+   */
+  async getDownload(photoId: string) {
+    const photo = await this.prisma.photo.findUnique({
+      where: { id: photoId },
+      include: { tournament: { select: { name: true } } },
+    });
+    if (!photo || photo.deletedAt) throw new NotFoundException('图片不存在');
+    const abs = this.absolute(photo.fullPath);
+    if (!existsSync(abs)) throw new NotFoundException('图片文件丢失');
+
+    const name = this.safeFileName(photo.tournament?.name ?? '赛事');
+    const category = PHOTO_CATEGORY_LABELS[photo.category] ?? photo.category;
+    const filename = `${name}-${category}-${photo.seq}.jpg`;
     return { absolutePath: abs, filename };
   }
 
@@ -569,12 +596,12 @@ export class PhotosService {
 
   private hardRemoveFiles(photo: {
     originalPath: string;
-    watermarkPath: string;
-    thumbPath: string;
+    fullPath: string;
+    thumbnailPath: string;
   }) {
     this.removeRelative(photo.originalPath);
-    this.removeRelative(photo.watermarkPath);
-    this.removeRelative(photo.thumbPath);
+    this.removeRelative(photo.fullPath);
+    this.removeRelative(photo.thumbnailPath);
   }
 
   /** Strip characters that are illegal in filenames / Content-Disposition. */

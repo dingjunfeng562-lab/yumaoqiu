@@ -3,14 +3,17 @@ import {
   Body,
   Controller,
   Get,
+  Param,
   Post,
   Query,
   Req,
+  StreamableFile,
   UploadedFiles,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
+import { createReadStream } from 'node:fs';
 import { Role } from '@prisma/client';
 import { PhotosService } from './photos.service';
 import { PublicPhotoQueryDto, UploadPhotosDto } from './dto/photo.dto';
@@ -39,6 +42,20 @@ export class PhotosController {
   @Get('photos/tournaments')
   listTournaments() {
     return this.photosService.listTournamentsWithPhotos();
+  }
+
+  // Download the high-res watermarked version as an attachment. Public, like the
+  // gallery itself; goes through the API so the filename is server-controlled.
+  @Get('photos/:id/download')
+  async download(@Param('id') id: string) {
+    const { absolutePath, filename } = await this.photosService.getDownload(id);
+    const asciiFallback = filename.replace(/[^\x20-\x7e]/g, '_');
+    return new StreamableFile(createReadStream(absolutePath), {
+      type: 'image/jpeg',
+      disposition:
+        `attachment; filename="${asciiFallback}"; ` +
+        `filename*=UTF-8''${encodeURIComponent(filename)}`,
+    });
   }
 
   // ----- Photographer -----
