@@ -908,10 +908,10 @@ export default function TournamentsPage() {
             </Form.List>
             <Space style={{ display: 'flex', marginTop: 16 }} align="start">
               <Form.Item name="defaultMatchMinutes" label="每场预估时长（分钟）" rules={[{ required: true }]} style={{ flex: 1 }}>
-                <InputNumber min={15} max={180} style={{ width: '100%' }} />
+                <InputNumber min={1} style={{ width: '100%' }} />
               </Form.Item>
               <Form.Item name="breakMinutes" label="场地间隔时间（分钟）" rules={[{ required: true }]} style={{ flex: 1 }}>
-                <InputNumber min={0} max={60} style={{ width: '100%' }} />
+                <InputNumber min={0} style={{ width: '100%' }} />
               </Form.Item>
             </Space>
             <Form.Item name="dailyTimes" label="每日比赛时段" rules={[{ required: true, message: '请选择每日比赛时段' }]}>

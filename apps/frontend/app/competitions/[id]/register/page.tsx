@@ -40,6 +40,8 @@ type Competition = {
   registrationEndTime?: string | null;
   registrationStatus?: string;
   eventOptions?: EventOption[];
+  maxRegistrationEvents?: number;
+  allowCrossEventRegistration?: boolean;
 };
 
 type ExistingRegistration = {
@@ -58,8 +60,11 @@ type ExistingRegistration = {
     eventId: string;
     eventName: string;
     partnerName?: string | null;
+    partnerGender?: 'MALE' | 'FEMALE' | null;
     partnerStudentId?: string | null;
+    partnerSchool?: string | null;
     partnerClassName?: string | null;
+    partnerContact?: string | null;
     teamName?: string | null;
   }>;
 };
@@ -67,8 +72,11 @@ type ExistingRegistration = {
 type ItemState = {
   eventId: string;
   partnerName: string;
+  partnerGender: 'MALE' | 'FEMALE' | '';
   partnerStudentId: string;
+  partnerSchool: string;
   partnerClassName: string;
+  partnerContact: string;
   teamName: string;
 };
 
@@ -91,7 +99,7 @@ const initialForm: FormState = {
   className: '',
   contact: '',
   remark: '',
-  items: [{ eventId: '', partnerName: '', partnerStudentId: '', partnerClassName: '', teamName: '' }],
+  items: [{ eventId: '', partnerName: '', partnerGender: '', partnerStudentId: '', partnerSchool: '', partnerClassName: '', partnerContact: '', teamName: '' }],
 };
 
 async function parseJsonSafe<T>(res: Response): Promise<T | null> {
@@ -119,6 +127,33 @@ function formatDate(value: string) {
   return date.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
 }
 
+function genderOptionsForPrimary(option?: EventOption) {
+  if (option?.type === 'MENS_SINGLES' || option?.type === 'MENS_DOUBLES') return [{ value: 'MALE', label: '男' }];
+  if (option?.type === 'WOMENS_SINGLES' || option?.type === 'WOMENS_DOUBLES') return [{ value: 'FEMALE', label: '女' }];
+  return [
+    { value: 'MALE', label: '男' },
+    { value: 'FEMALE', label: '女' },
+  ];
+}
+
+function genderOptionsForPartner(option: EventOption | undefined, primaryGender: FormState['gender']) {
+  if (option?.type === 'MENS_DOUBLES') return [{ value: 'MALE', label: '男' }];
+  if (option?.type === 'WOMENS_DOUBLES') return [{ value: 'FEMALE', label: '女' }];
+  if (option?.type === 'MIXED_DOUBLES') {
+    return primaryGender === 'MALE'
+      ? [{ value: 'FEMALE', label: '女' }]
+      : [{ value: 'MALE', label: '男' }];
+  }
+  return [
+    { value: 'MALE', label: '男' },
+    { value: 'FEMALE', label: '女' },
+  ];
+}
+
+function isPrimaryGenderAllowed(option: EventOption | undefined, gender: FormState['gender']) {
+  return genderOptionsForPrimary(option).some((item) => item.value === gender);
+}
+
 export default function CompetitionRegisterPage() {
   const params = useParams<{ id: string }>();
   const id = params?.id;
@@ -132,6 +167,7 @@ export default function CompetitionRegisterPage() {
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [step, setStep] = useState<'events' | 'details'>('events');
 
   useEffect(() => {
     if (status === 'unauthenticated') {
@@ -162,6 +198,7 @@ export default function CompetitionRegisterPage() {
         setCompetition(competitionData);
         setExisting(registrationData);
         if (registrationData) {
+          setStep('details');
           setForm({
             studentId: registrationData.studentId,
             name: registrationData.name,
@@ -174,8 +211,11 @@ export default function CompetitionRegisterPage() {
               ? registrationData.items.map((item) => ({
                   eventId: item.eventId,
                   partnerName: item.partnerName ?? '',
+                  partnerGender: item.partnerGender ?? '',
                   partnerStudentId: item.partnerStudentId ?? '',
+                  partnerSchool: item.partnerSchool ?? '',
                   partnerClassName: item.partnerClassName ?? '',
+                  partnerContact: item.partnerContact ?? '',
                   teamName: item.teamName ?? '',
                 }))
               : initialForm.items,
@@ -195,7 +235,22 @@ export default function CompetitionRegisterPage() {
 
   const eventOptions = competition?.eventOptions ?? [];
   const selectedEventIds = useMemo(() => form.items.map((item) => item.eventId).filter(Boolean), [form.items]);
-  const existingLocked = existing?.status === 'pending' || existing?.status === 'approved';
+  const existingLocked = existing?.status === 'pending';
+  const existingApproved = existing?.status === 'approved';
+  const existingApprovedEventIds = useMemo(
+    () => existing?.status === 'approved' ? existing.items.map((item) => item.eventId) : [],
+    [existing],
+  );
+  const selectedOptions = useMemo(
+    () => form.items.map((item) => eventOptions.find((option) => option.id === item.eventId)),
+    [eventOptions, form.items],
+  );
+  const firstSelectedOption = selectedOptions.find(Boolean);
+  const hasDoubleSelection = selectedOptions.some((option) => isDoubleOption(option));
+  const hasNewEventSelection = form.items.some((item) => item.eventId && !existingApprovedEventIds.includes(item.eventId));
+  const maxSelectableEvents = competition?.allowCrossEventRegistration ? competition.maxRegistrationEvents ?? 2 : 1;
+  const currentStep = existingLocked ? 'details' : step;
+  const canContinueToDetails = form.items.length > 0 && form.items.every((item) => Boolean(item.eventId));
 
   function updateField<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -211,7 +266,7 @@ export default function CompetitionRegisterPage() {
   function addItem() {
     setForm((prev) => ({
       ...prev,
-      items: [...prev.items, { eventId: '', partnerName: '', partnerStudentId: '', partnerClassName: '', teamName: '' }],
+      items: [...prev.items, { eventId: '', partnerName: '', partnerGender: '', partnerStudentId: '', partnerSchool: '', partnerClassName: '', partnerContact: '', teamName: '' }],
     }));
   }
 
@@ -220,6 +275,30 @@ export default function CompetitionRegisterPage() {
       ...prev,
       items: prev.items.filter((_, itemIndex) => itemIndex !== index),
     }));
+  }
+
+  function goToDetails() {
+    setError('');
+    setForm((prev) => {
+      const option = eventOptions.find((item) => item.id === prev.items[0]?.eventId);
+      const primaryOptions = genderOptionsForPrimary(option);
+      const nextGender = primaryOptions.some((item) => item.value === prev.gender)
+        ? prev.gender
+        : primaryOptions[0].value as FormState['gender'];
+      return {
+        ...prev,
+        gender: nextGender,
+        items: prev.items.map((item) => {
+          const itemOption = eventOptions.find((current) => current.id === item.eventId);
+          const partnerOptions = genderOptionsForPartner(itemOption, nextGender);
+          const partnerGender = partnerOptions.some((current) => current.value === item.partnerGender)
+            ? item.partnerGender
+            : (isDoubleOption(itemOption) ? partnerOptions[0].value as ItemState['partnerGender'] : '');
+          return { ...item, partnerGender };
+        }),
+      };
+    });
+    setStep('details');
   }
 
   async function submitRegistration(event: React.FormEvent<HTMLFormElement>) {
@@ -240,8 +319,11 @@ export default function CompetitionRegisterPage() {
         items: form.items.map((item) => ({
           eventId: item.eventId,
           partnerName: item.partnerName || undefined,
+          partnerGender: item.partnerGender || undefined,
           partnerStudentId: item.partnerStudentId || undefined,
+          partnerSchool: item.partnerSchool || undefined,
           partnerClassName: item.partnerClassName || undefined,
+          partnerContact: item.partnerContact || undefined,
           teamName: item.teamName || undefined,
         })),
       };
@@ -271,7 +353,7 @@ export default function CompetitionRegisterPage() {
       activeHref="/competitions"
       eyebrow="Registration"
       title="赛事报名"
-      description="登录后的普通用户可提交一次报名，待审核或已通过状态下不能重复提交，被驳回后可修改并重新提交。"
+      description="先选择报名组别，再填写基本信息。待审核时不能修改，报名通过后可继续追加新的报名项目。"
     >
       <div className="grid gap-4 sm:gap-6 lg:grid-cols-[0.9fr_1.1fr]">
         <section className="rounded-lg border border-blue-100 bg-white p-4 shadow-sm sm:p-6">
@@ -316,72 +398,38 @@ export default function CompetitionRegisterPage() {
             </div>
           )}
           <form className="mt-5 grid gap-4" onSubmit={submitRegistration}>
-            <div className="grid gap-4 md:grid-cols-2">
-              <Field label="学号">
-                <input required disabled={existingLocked} value={form.studentId} onChange={(event) => updateField('studentId', event.target.value)} />
-              </Field>
-              <Field label="姓名">
-                <input required disabled={existingLocked} value={form.name} onChange={(event) => updateField('name', event.target.value)} />
-              </Field>
-              <Field label="性别">
-                <select disabled={existingLocked} value={form.gender} onChange={(event) => updateField('gender', event.target.value as FormState['gender'])}>
-                  <option value="MALE">男</option>
-                  <option value="FEMALE">女</option>
-                </select>
-              </Field>
-              <Field label="学校(完整名称)" wide>
-                <input
-                  required
-                  minLength={2}
-                  maxLength={120}
-                  disabled={existingLocked}
-                  value={form.school}
-                  onChange={(event) => updateField('school', event.target.value)}
-                  placeholder="例如:武汉大学、华中科技大学经济学院"
-                />
-              </Field>
-              <Field label="学院班级" wide>
-                <input
-                  maxLength={120}
-                  disabled={existingLocked}
-                  value={form.className}
-                  onChange={(event) => updateField('className', event.target.value)}
-                  placeholder="例如:健康产业学院社会体育2班"
-                />
-              </Field>
-              <Field label="联系方式">
-                <input value={form.contact} onChange={(event) => updateField('contact', event.target.value)} />
-              </Field>
-              <Field label="备注" wide>
-                <textarea rows={3} value={form.remark} onChange={(event) => updateField('remark', event.target.value)} placeholder="可填写特殊说明，非必填" />
-              </Field>
+            <div className="grid grid-cols-2 gap-2 rounded-lg bg-slate-50 p-1 text-sm font-black">
+              <span className={`rounded-md px-3 py-2 text-center ${currentStep === 'events' ? 'bg-blue-700 text-white' : 'text-slate-500'}`}>
+                1 选择组别
+              </span>
+              <span className={`rounded-md px-3 py-2 text-center ${currentStep === 'details' ? 'bg-blue-700 text-white' : 'text-slate-500'}`}>
+                2 基本信息
+              </span>
             </div>
 
-            <div className="space-y-4 rounded-lg border border-blue-100 bg-blue-50/40 p-4">
-              <div className="flex items-center justify-between">
-                <h3 className="text-base font-black text-slate-900">报名项目</h3>
-                <button
-                  type="button"
-                  onClick={addItem}
-                  disabled={form.items.length >= 2 || existingLocked}
-                  className="tappable inline-flex h-10 min-h-[44px] items-center rounded-lg border border-blue-200 px-3 text-sm font-black text-blue-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
-                >
-                  新增项目
-                </button>
-              </div>
-              {form.items.map((item, index) => {
-                const selectedOption = eventOptions.find((option) => option.id === item.eventId);
-                const isDouble = isDoubleOption(selectedOption);
-                return (
-                  <div key={`${index}-${item.eventId}`} className="grid gap-4 rounded-lg border border-white bg-white p-4 md:grid-cols-2">
-                    <Field label={`项目 ${index + 1}`}>
+            {currentStep === 'events' ? (
+              <div className="space-y-4 rounded-lg border border-blue-100 bg-blue-50/40 p-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-base font-black text-slate-900">选择报名组别/项目</h3>
+                  <button
+                    type="button"
+                    onClick={addItem}
+                    disabled={form.items.length >= maxSelectableEvents || existingLocked}
+                    className="tappable inline-flex h-10 min-h-[44px] items-center rounded-lg border border-blue-200 px-3 text-sm font-black text-blue-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                  >
+                    新增项目
+                  </button>
+                </div>
+                {form.items.map((item, index) => (
+                  <div key={`${index}-${item.eventId}`} className="grid gap-4 rounded-lg border border-white bg-white p-4 md:grid-cols-[1fr_auto]">
+                    <Field label={`组别/项目 ${index + 1}`}>
                       <select
                         required
                         disabled={existingLocked}
                         value={item.eventId}
                         onChange={(event) => updateItem(index, { eventId: event.target.value, partnerName: '', partnerStudentId: '', partnerClassName: '', teamName: '' })}
                       >
-                        <option value="">请选择项目</option>
+                        <option value="">请选择组别/项目</option>
                         {eventOptions.map((option) => (
                           <option
                             key={option.id}
@@ -393,7 +441,7 @@ export default function CompetitionRegisterPage() {
                         ))}
                       </select>
                     </Field>
-                    <div className="flex items-end justify-end">
+                    <div className="flex items-end">
                       {form.items.length > 1 ? (
                         <button
                           type="button"
@@ -401,15 +449,90 @@ export default function CompetitionRegisterPage() {
                           disabled={existingLocked}
                           className="tappable inline-flex h-11 min-h-[44px] w-full items-center justify-center rounded-lg border border-red-200 px-3 text-sm font-black text-red-600 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400 md:w-auto"
                         >
-                          删除该项目
+                          删除
                         </button>
                       ) : null}
+                    </div>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  disabled={!canContinueToDetails || !competition}
+                  onClick={goToDetails}
+                  className="tappable inline-flex h-12 min-h-[44px] w-full items-center justify-center rounded-lg bg-blue-700 px-5 text-base font-black text-white shadow-sm transition hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                >
+                  下一步，填写基本信息
+                </button>
+              </div>
+            ) : (
+              <>
+                {!hasDoubleSelection ? (
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <Field label="姓名">
+                      <input required disabled={existingLocked} value={form.name} onChange={(event) => updateField('name', event.target.value)} />
+                    </Field>
+                    <Field label="性别">
+                      <select disabled={existingLocked} value={form.gender} onChange={(event) => updateField('gender', event.target.value as FormState['gender'])}>
+                        {genderOptionsForPrimary(firstSelectedOption).map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label="学号">
+                      <input required disabled={existingLocked} value={form.studentId} onChange={(event) => updateField('studentId', event.target.value)} />
+                    </Field>
+                    <Field label="学校">
+                      <input
+                        required
+                        minLength={2}
+                        maxLength={120}
+                        disabled={existingLocked}
+                        value={form.school}
+                        onChange={(event) => updateField('school', event.target.value)}
+                        placeholder="例如:武汉大学"
+                      />
+                    </Field>
+                    <Field label="学院班级">
+                      <input
+                        required
+                        maxLength={120}
+                        disabled={existingLocked}
+                        value={form.className}
+                        onChange={(event) => updateField('className', event.target.value)}
+                        placeholder="例如:健康产业学院社会体育2班"
+                      />
+                    </Field>
+                    <Field label="联系方式">
+                      <input required value={form.contact} onChange={(event) => updateField('contact', event.target.value)} />
+                    </Field>
+                  </div>
+                ) : null}
+
+                <div className="space-y-4 rounded-lg border border-blue-100 bg-blue-50/40 p-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-black text-slate-900">已选组别/项目</h3>
+                <button
+                  type="button"
+                  onClick={() => setStep('events')}
+                  disabled={existingLocked}
+                  className="tappable inline-flex h-10 min-h-[44px] items-center rounded-lg border border-blue-200 px-3 text-sm font-black text-blue-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                >
+                  返回修改
+                </button>
+              </div>
+              {form.items.map((item, index) => {
+                const selectedOption = eventOptions.find((option) => option.id === item.eventId);
+                const isDouble = isDoubleOption(selectedOption);
+                return (
+                  <div key={`${index}-${item.eventId}`} className="grid gap-4 rounded-lg border border-white bg-white p-4 md:grid-cols-2">
+                    <div className="md:col-span-2 rounded-lg bg-slate-50 px-3 py-2 text-sm font-black text-slate-800">
+                      项目 {index + 1}：{selectedOption?.label ?? '未选择'}
                     </div>
                     {selectedOption ? (
                       isDouble ? (
                         <div className="md:col-span-2 rounded-lg border border-blue-200 bg-blue-50/60 p-3">
                           <p className="mb-3 text-sm font-black text-blue-800">
-                            双打项目 · 请填写队伍名称与搭档信息（共 2 人参赛）
+                            双打项目 · 请按顺序填写队伍与两名队员信息
                           </p>
                           <div className="grid gap-4 md:grid-cols-2">
                             <Field label="队伍名称" wide>
@@ -422,6 +545,47 @@ export default function CompetitionRegisterPage() {
                                 placeholder="例如：极速搭档、AOE 战队"
                               />
                             </Field>
+                            <Field label="姓名">
+                              <input required disabled={existingLocked} value={form.name} onChange={(event) => updateField('name', event.target.value)} />
+                            </Field>
+                            <Field label="性别">
+                              <select disabled={existingLocked} value={form.gender} onChange={(event) => {
+                                const nextGender = event.target.value as FormState['gender'];
+                                updateField('gender', nextGender);
+                                updateItem(index, { partnerGender: genderOptionsForPartner(selectedOption, nextGender)[0].value as ItemState['partnerGender'] });
+                              }}>
+                                {genderOptionsForPrimary(selectedOption).map((option) => (
+                                  <option key={option.value} value={option.value}>{option.label}</option>
+                                ))}
+                              </select>
+                            </Field>
+                            <Field label="学号">
+                              <input required disabled={existingLocked} value={form.studentId} onChange={(event) => updateField('studentId', event.target.value)} />
+                            </Field>
+                            <Field label="学校">
+                              <input
+                                required
+                                minLength={2}
+                                maxLength={120}
+                                disabled={existingLocked}
+                                value={form.school}
+                                onChange={(event) => updateField('school', event.target.value)}
+                                placeholder="例如:武汉大学"
+                              />
+                            </Field>
+                            <Field label="学院班级">
+                              <input
+                                required
+                                maxLength={120}
+                                disabled={existingLocked}
+                                value={form.className}
+                                onChange={(event) => updateField('className', event.target.value)}
+                                placeholder="例如:健康产业学院社会体育2班"
+                              />
+                            </Field>
+                            <Field label="联系方式">
+                              <input required value={form.contact} onChange={(event) => updateField('contact', event.target.value)} />
+                            </Field>
                             <Field label="搭档姓名">
                               <input
                                 required
@@ -430,6 +594,18 @@ export default function CompetitionRegisterPage() {
                                 onChange={(event) => updateItem(index, { partnerName: event.target.value })}
                                 placeholder="请填写搭档姓名"
                               />
+                            </Field>
+                            <Field label="搭档性别">
+                              <select
+                                required
+                                disabled={existingLocked}
+                                value={item.partnerGender}
+                                onChange={(event) => updateItem(index, { partnerGender: event.target.value as ItemState['partnerGender'] })}
+                              >
+                                {genderOptionsForPartner(selectedOption, form.gender).map((option) => (
+                                  <option key={option.value} value={option.value}>{option.label}</option>
+                                ))}
+                              </select>
                             </Field>
                             <Field label="搭档学号">
                               <input
@@ -440,7 +616,18 @@ export default function CompetitionRegisterPage() {
                                 placeholder="请填写搭档学号"
                               />
                             </Field>
-                            <Field label="搭档学院班级" wide>
+                            <Field label="搭档学校">
+                              <input
+                                required
+                                minLength={2}
+                                maxLength={120}
+                                disabled={existingLocked}
+                                value={item.partnerSchool}
+                                onChange={(event) => updateItem(index, { partnerSchool: event.target.value })}
+                                placeholder="例如:武汉大学"
+                              />
+                            </Field>
+                            <Field label="搭档学院班级">
                               <input
                                 required
                                 maxLength={120}
@@ -448,6 +635,15 @@ export default function CompetitionRegisterPage() {
                                 value={item.partnerClassName}
                                 onChange={(event) => updateItem(index, { partnerClassName: event.target.value })}
                                 placeholder="例如:健康产业学院社会体育2班"
+                              />
+                            </Field>
+                            <Field label="搭档联系方式">
+                              <input
+                                required
+                                disabled={existingLocked}
+                                value={item.partnerContact}
+                                onChange={(event) => updateItem(index, { partnerContact: event.target.value })}
+                                placeholder="请填写搭档联系方式"
                               />
                             </Field>
                           </div>
@@ -461,17 +657,28 @@ export default function CompetitionRegisterPage() {
                   </div>
                 );
               })}
-            </div>
+                </div>
 
-            <div className="pt-1">
-              <button
-                type="submit"
-                disabled={submitting || !competition || existingLocked}
-                className="tappable inline-flex h-12 min-h-[44px] w-full items-center justify-center rounded-lg bg-blue-700 px-5 text-base font-black text-white shadow-sm transition hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-slate-300 md:h-11 md:w-auto md:text-sm"
-              >
-                {existing?.status === 'rejected' ? (submitting ? '重新提交中...' : '重新提交报名') : submitting ? '提交中...' : '提交报名'}
-              </button>
-            </div>
+                <div className="pt-1">
+                  <button
+                    type="submit"
+                    disabled={submitting || !competition || existingLocked || (existingApproved && !hasNewEventSelection)}
+                    className="tappable inline-flex h-12 min-h-[44px] w-full items-center justify-center rounded-lg bg-blue-700 px-5 text-base font-black text-white shadow-sm transition hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-slate-300 md:h-11 md:w-auto md:text-sm"
+                  >
+                    {existingApproved
+                      ? submitting
+                        ? '追加提交中...'
+                        : '追加报名'
+                      : existing?.status === 'rejected'
+                        ? submitting ? '重新提交中...' : '重新提交报名'
+                        : submitting ? '提交中...' : '提交报名'}
+                  </button>
+                  {existingApproved && !hasNewEventSelection ? (
+                    <p className="mt-2 text-xs font-bold text-slate-400">请选择新的报名项目后再提交。</p>
+                  ) : null}
+                </div>
+              </>
+            )}
           </form>
         </section>
       </div>

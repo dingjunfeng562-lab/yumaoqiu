@@ -51,9 +51,52 @@ export class LogMatchEventDto {
   note?: string;
 }
 
+export class PauseMatchDto {
+  @IsOptional()
+  @IsString()
+  reason?: string;
+}
+
 export class ForfeitMatchDto {
   @IsIn([1, 2])
   side: 1 | 2;
+
+  @IsOptional()
+  @IsString()
+  reason?: string;
+}
+
+export class RetireMatchDto {
+  @IsIn([1, 2])
+  side: 1 | 2;
+
+  @IsOptional()
+  @IsString()
+  reason?: string;
+}
+
+export class FaultMatchDto {
+  @IsIn([1, 2])
+  side: 1 | 2;
+
+  @IsOptional()
+  @IsIn([1, 2])
+  playerIndex?: 1 | 2;
+
+  @IsString()
+  faultType: string;
+}
+
+export class CardMatchDto {
+  @IsIn([1, 2])
+  side: 1 | 2;
+
+  @IsOptional()
+  @IsIn([1, 2])
+  playerIndex?: 1 | 2;
+
+  @IsIn(['yellow', 'red', 'black'])
+  cardType: 'yellow' | 'red' | 'black';
 
   @IsOptional()
   @IsString()

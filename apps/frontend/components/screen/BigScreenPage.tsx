@@ -24,6 +24,11 @@ type PublicMatch = {
   winnerName?: string | null;
   matchPaused?: boolean;
   pausedAt?: string | null;
+  courtDisplayState?: {
+    side1CourtSide: 'left' | 'right';
+    side2CourtSide: 'left' | 'right';
+    swapCount: number;
+  } | null;
   actualDurationSeconds?: number | null;
   updatedAt?: string | null;
 };
@@ -83,8 +88,20 @@ function formatTime(value?: string | null) {
   });
 }
 
+function displayMatch(match: PublicMatch) {
+  const shouldSwap = match.status === 'LIVE' && match.courtDisplayState?.side1CourtSide === 'right';
+  const scoreParts = match.score.match(/^(\D*)(\d+)\s*[:锛?]\s*(\d+)(\D*)$/);
+  const score = shouldSwap && scoreParts
+    ? `${scoreParts[1]}${scoreParts[3]}:${scoreParts[2]}${scoreParts[4]}`
+    : match.score;
+  return shouldSwap
+    ? { side1: match.side2, side2: match.side1, score }
+    : { side1: match.side1, side2: match.side2, score };
+}
+
 function MatchRow({ match, compact = false }: { match: PublicMatch; compact?: boolean }) {
   const paused = Boolean(match.matchPaused);
+  const display = displayMatch(match);
 
   return (
     <article className={`grid min-h-[96px] grid-cols-[86px_1fr_86px] items-center gap-3 rounded-lg border px-4 py-3 shadow-[0_14px_34px_rgba(0,0,0,0.16)] ${
@@ -96,7 +113,7 @@ function MatchRow({ match, compact = false }: { match: PublicMatch; compact?: bo
       </div>
       <div className="min-w-0 text-center">
         <p className="truncate text-sm font-black text-white">
-          {match.side1} <span className="px-2 text-white/35">VS</span> {match.side2}
+          {display.side1} <span className="px-2 text-white/35">VS</span> {display.side2}
         </p>
         <p className="mt-1 text-xs font-semibold text-white/48">
           {match.round} · 第 {match.matchNo} 场 · {formatTime(match.scheduledAt)}
@@ -104,7 +121,7 @@ function MatchRow({ match, compact = false }: { match: PublicMatch; compact?: bo
       </div>
       <div className="text-right">
         <strong className={compact ? 'text-2xl font-black text-amber-300' : 'text-3xl font-black text-amber-300'}>
-          {match.score}
+          {display.score}
         </strong>
         <p className={`mt-1 text-[11px] font-black ${paused ? 'text-amber-200' : 'text-white/50'}`}>
           {paused ? '比赛暂停' : match.statusLabel}
@@ -149,6 +166,7 @@ export function BigScreenPage({ initialData }: { initialData: ScreenData }) {
     socket.on('connect', () => setSocketState('实时同步'));
     socket.on('disconnect', () => setSocketState('已断开'));
     socket.on('scoreboard:update', reloadScreen);
+    socket.on('bracket:update', reloadScreen);
     return () => {
       socket.disconnect();
     };

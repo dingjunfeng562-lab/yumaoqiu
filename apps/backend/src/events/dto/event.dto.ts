@@ -1,5 +1,61 @@
-import { IsString, IsEnum, IsOptional, IsInt, Min, Max } from 'class-validator';
+import { IsString, IsEnum, IsOptional, IsInt, Min, Max, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
 import { EventType, Format, ScoringRule, ScoringMode } from '@prisma/client';
+
+/** 支持分阶段规则的淘汰赛阶段（与 Match.round 标签一致） */
+export const STAGE_SCORING_KEYS = ['QF', 'SF', 'BRONZE', 'F'] as const;
+export type StageScoringKey = (typeof STAGE_SCORING_KEYS)[number];
+
+/**
+ * 单个阶段的计分规则覆盖。
+ * 阶段覆盖是一套独立完整的规则，不继承单项级自定义分数：
+ * 要么给 scoringRule（预设规则），要么给 customGamePoint（+ 可选封顶/胜出局数）。
+ */
+export class StageScoringRuleDto {
+  @IsOptional()
+  @IsEnum(ScoringRule)
+  scoringRule?: ScoringRule;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(999)
+  customGamePoint?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(999)
+  customGameCap?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(9)
+  customGamesToWin?: number;
+}
+
+export class StageScoringRulesDto {
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => StageScoringRuleDto)
+  QF?: StageScoringRuleDto;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => StageScoringRuleDto)
+  SF?: StageScoringRuleDto;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => StageScoringRuleDto)
+  BRONZE?: StageScoringRuleDto;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => StageScoringRuleDto)
+  F?: StageScoringRuleDto;
+}
 
 export class CreateEventDto {
   @IsString()
@@ -36,9 +92,13 @@ export class CreateEventDto {
   customGamesToWin?: number;
 
   @IsOptional()
+  @ValidateNested()
+  @Type(() => StageScoringRulesDto)
+  stageScoringRules?: StageScoringRulesDto | null;
+
+  @IsOptional()
   @IsInt()
-  @Min(5)
-  @Max(600)
+  @Min(1)
   defaultMatchMinutes?: number;
 
   @IsOptional()
@@ -88,9 +148,13 @@ export class UpdateEventDto {
   customGamesToWin?: number | null;
 
   @IsOptional()
+  @ValidateNested()
+  @Type(() => StageScoringRulesDto)
+  stageScoringRules?: StageScoringRulesDto | null;
+
+  @IsOptional()
   @IsInt()
-  @Min(5)
-  @Max(600)
+  @Min(1)
   defaultMatchMinutes?: number | null;
 
   @IsOptional()

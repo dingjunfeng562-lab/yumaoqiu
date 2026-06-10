@@ -15,6 +15,9 @@ import { TeamCompetitionsModule } from './team-competitions/team-competitions.mo
 import { CompetitionsModule } from './competitions/competitions.module';
 import { AnnouncementsModule } from './announcements/announcements.module';
 import { PhotosModule } from './photos/photos.module';
+import { MailModule } from './mail/mail.module';
+import { AppController } from './app.controller';
+import { AppService } from './app.service';
 
 @Module({
   imports: [
@@ -34,6 +37,9 @@ import { PhotosModule } from './photos/photos.module';
     CompetitionsModule,
     AnnouncementsModule,
     PhotosModule,
+    MailModule,
   ],
+  controllers: [AppController],
+  providers: [AppService],
 })
 export class AppModule {}

@@ -3,7 +3,17 @@ import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
-import { AssignRefereeDto, ForfeitMatchDto, LogMatchEventDto, ScorePointDto, StartMatchDto } from './dto/scoring.dto';
+import {
+  AssignRefereeDto,
+  CardMatchDto,
+  FaultMatchDto,
+  ForfeitMatchDto,
+  LogMatchEventDto,
+  PauseMatchDto,
+  RetireMatchDto,
+  ScorePointDto,
+  StartMatchDto,
+} from './dto/scoring.dto';
 import { ScoringGateway } from './scoring.gateway';
 import { ScoringService } from './scoring.service';
 
@@ -63,9 +73,17 @@ export class ScoringController {
   }
 
   @Roles(Role.ADMIN, Role.REFEREE)
+  @Post('matches/:id/finish')
+  async finishMatch(@Param('id') id: string, @Req() req: RequestWithUser) {
+    const state = await this.scoringService.finishMatch(id, req.user);
+    this.scoringGateway.emitMatchState(id, state);
+    return state;
+  }
+
+  @Roles(Role.ADMIN, Role.REFEREE)
   @Post('matches/:id/pause')
-  async pauseMatch(@Param('id') id: string, @Req() req: RequestWithUser) {
-    const state = await this.scoringService.pauseMatch(id, req.user);
+  async pauseMatch(@Param('id') id: string, @Body() dto: PauseMatchDto, @Req() req: RequestWithUser) {
+    const state = await this.scoringService.pauseMatch(id, req.user, dto.reason);
     this.scoringGateway.emitMatchState(id, state);
     return state;
   }
@@ -74,6 +92,14 @@ export class ScoringController {
   @Post('matches/:id/resume')
   async resumeMatch(@Param('id') id: string, @Req() req: RequestWithUser) {
     const state = await this.scoringService.resumeMatch(id, req.user);
+    this.scoringGateway.emitMatchState(id, state);
+    return state;
+  }
+
+  @Roles(Role.ADMIN, Role.REFEREE)
+  @Post('matches/:id/swap-court')
+  async swapCourt(@Param('id') id: string, @Req() req: RequestWithUser) {
+    const state = await this.scoringService.swapCourt(id, req.user);
     this.scoringGateway.emitMatchState(id, state);
     return state;
   }
@@ -103,6 +129,18 @@ export class ScoringController {
   }
 
   @Roles(Role.ADMIN, Role.REFEREE)
+  @Post('matches/:id/retire')
+  async retireMatch(
+    @Param('id') id: string,
+    @Body() dto: RetireMatchDto,
+    @Req() req: RequestWithUser,
+  ) {
+    const state = await this.scoringService.retireMatch(id, dto.side, req.user, dto.reason);
+    this.scoringGateway.emitMatchState(id, state);
+    return state;
+  }
+
+  @Roles(Role.ADMIN, Role.REFEREE)
   @Post('matches/:id/events')
   async logEvent(
     @Param('id') id: string,
@@ -115,6 +153,43 @@ export class ScoringController {
       req.user,
       dto.side,
       dto.note,
+    );
+    this.scoringGateway.emitMatchState(id, state);
+    return state;
+  }
+
+  @Roles(Role.ADMIN, Role.REFEREE)
+  @Post('matches/:id/fault')
+  async recordFault(
+    @Param('id') id: string,
+    @Body() dto: FaultMatchDto,
+    @Req() req: RequestWithUser,
+  ) {
+    const state = await this.scoringService.recordFault(
+      id,
+      req.user,
+      dto.side,
+      dto.faultType,
+      dto.playerIndex,
+    );
+    this.scoringGateway.emitMatchState(id, state);
+    return state;
+  }
+
+  @Roles(Role.ADMIN, Role.REFEREE)
+  @Post('matches/:id/card')
+  async recordCard(
+    @Param('id') id: string,
+    @Body() dto: CardMatchDto,
+    @Req() req: RequestWithUser,
+  ) {
+    const state = await this.scoringService.recordCard(
+      id,
+      req.user,
+      dto.side,
+      dto.cardType,
+      dto.reason,
+      dto.playerIndex,
     );
     this.scoringGateway.emitMatchState(id, state);
     return state;

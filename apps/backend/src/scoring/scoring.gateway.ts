@@ -37,6 +37,20 @@ export class ScoringGateway {
     this.server.emit('scoreboard:update', state);
   }
 
+  // Broadcast that the bracket has changed (winner advanced, slot cleared, or
+  // a forfeit propagated). Public bracket / live screen / home page listen on
+  // the same `/scores` namespace and refetch the affected tournament/event
+  // instead of polling.
+  emitBracketUpdate(payload: { tournamentId?: string | null; eventId?: string | null; matchId?: string | null }) {
+    if (!payload.tournamentId && !payload.eventId && !payload.matchId) return;
+    this.server.emit('bracket:update', {
+      tournamentId: payload.tournamentId ?? null,
+      eventId: payload.eventId ?? null,
+      matchId: payload.matchId ?? null,
+      at: new Date().toISOString(),
+    });
+  }
+
   private matchRoom(matchId: string) {
     return `match:${matchId}`;
   }

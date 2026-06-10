@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { Announcement, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { sanitizeAnnouncementContent } from './announcement-content';
 import { AnnouncementStatus, CreateAnnouncementDto, UpdateAnnouncementDto } from './dto/announcement.dto';
 
 const DEFAULT_TYPE = 'normal';
@@ -104,7 +105,7 @@ export class AnnouncementsService {
     const data: Record<string, unknown> = {};
 
     if (dto.title !== undefined) data.title = dto.title.trim();
-    if (dto.content !== undefined) data.content = dto.content.trim();
+    if (dto.content !== undefined) data.content = sanitizeAnnouncementContent(dto.content.trim());
     if (dto.type !== undefined) data.type = this.normalizeType(dto.type);
     if (dto.displayMode !== undefined) data.displayMode = dto.displayMode;
     if (dto.scope !== undefined) data.scope = dto.scope;

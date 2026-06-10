@@ -72,14 +72,12 @@ export class CreateTournamentDto {
 
   @Type(() => Number)
   @IsInt()
-  @Min(15)
-  @Max(180)
+  @Min(1)
   defaultMatchMinutes: number;
 
   @Type(() => Number)
   @IsInt()
   @Min(0)
-  @Max(60)
   breakMinutes: number;
 
   @Matches(/^([01]\d|2[0-3]):[0-5]\d$/)
@@ -204,15 +202,13 @@ export class UpdateTournamentDto {
   @IsOptional()
   @Type(() => Number)
   @IsInt()
-  @Min(15)
-  @Max(180)
+  @Min(1)
   defaultMatchMinutes?: number;
 
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(0)
-  @Max(60)
   breakMinutes?: number;
 
   @IsOptional()

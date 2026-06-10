@@ -12,14 +12,17 @@ export class PlayersService {
 
   findAll(search?: string) {
     return this.prisma.player.findMany({
-      where: search
-        ? {
-            OR: [
-              { name: { contains: search } },
-              { affiliation: { contains: search } },
-            ],
-          }
-        : undefined,
+      where: {
+        isTemporary: false,
+        ...(search
+          ? {
+              OR: [
+                { name: { contains: search } },
+                { affiliation: { contains: search } },
+              ],
+            }
+          : {}),
+      },
       orderBy: { createdAt: 'desc' },
     });
   }

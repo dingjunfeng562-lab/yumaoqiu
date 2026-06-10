@@ -24,6 +24,8 @@ import { DeleteOutlined, EditOutlined, PlusOutlined, ReloadOutlined } from '@ant
 import dayjs from 'dayjs';
 import type { Dayjs } from 'dayjs';
 import { apiFetch } from '@/lib/api';
+import { announcementPlainText } from '@/lib/announcement-html';
+import { RichTextEditor } from '@/components/RichTextEditor';
 
 type AnnouncementType = 'normal' | 'event' | 'maintenance' | 'urgent';
 type DisplayMode = 'popup' | 'banner';
@@ -282,7 +284,7 @@ export default function AdminAnnouncementsPage() {
         <Space direction="vertical" size={2}>
           <Typography.Text strong>{value}</Typography.Text>
           <Typography.Paragraph ellipsis={{ rows: 2 }} style={{ margin: 0, maxWidth: 360 }}>
-            {record.content}
+            {announcementPlainText(record.content)}
           </Typography.Paragraph>
         </Space>
       ),
@@ -400,9 +402,19 @@ export default function AdminAnnouncementsPage() {
           <Form.Item
             name="content"
             label="公告内容"
-            rules={[{ required: true, whitespace: true, message: '请输入公告内容' }]}
+            rules={[
+              {
+                required: true,
+                message: '请输入公告内容',
+                // 富文本为空时 innerHTML 仍可能是 <p><br></p>，按纯文本判断
+                validator: (_, value: string | undefined) =>
+                  value && announcementPlainText(value).trim()
+                    ? Promise.resolve()
+                    : Promise.reject(new Error('请输入公告内容')),
+              },
+            ]}
           >
-            <Input.TextArea rows={6} showCount placeholder="请输入要展示给前台用户的公告内容" />
+            <RichTextEditor placeholder="请输入要展示给前台用户的公告内容；选中文字后可设置颜色、加粗、字号" />
           </Form.Item>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16 }}>

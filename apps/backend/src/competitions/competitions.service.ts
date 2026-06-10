@@ -17,7 +17,12 @@ import {
   TournamentStatus,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { SubmitCompetitionRegistrationDto } from './dto/competition-registration.dto';
+import { EmailService } from '../mail/email.service';
+import {
+  AdminBatchCompetitionPlayerDto,
+  AdminBatchCompetitionPlayersDto,
+  SubmitCompetitionRegistrationDto,
+} from './dto/competition-registration.dto';
 import { effectiveTournamentStatus } from '../tournaments/tournament-status';
 
 const EVENT_TYPE_LABELS: Record<EventType, string> = {
@@ -88,9 +93,28 @@ type RegistrationWithRelations = Prisma.RegistrationGetPayload<{
   };
 }>;
 
+type NormalizedAdminBatchPlayer = {
+  name: string;
+  gender: Gender;
+  studentId: string;
+  school: string;
+  className: string;
+  contact: string;
+  teamName?: string;
+  partnerName?: string;
+  partnerGender?: Gender;
+  partnerStudentId?: string;
+  partnerSchool?: string;
+  partnerClassName?: string;
+  partnerContact?: string;
+};
+
 @Injectable()
 export class CompetitionsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private emailService: EmailService,
+  ) {}
 
   async listPublicCompetitions() {
     const competitions = await this.prisma.tournament.findMany({
@@ -161,29 +185,14 @@ export class CompetitionsService {
     if (user.role !== Role.PLAYER) {
       throw new ForbiddenException('只有普通用户可以提交报名');
     }
+    if (!dto.className?.trim() || !dto.contact?.trim()) {
+      throw new BadRequestException('请完整填写学院班级和联系方式');
+    }
 
-    const eventIds = [...new Set(dto.items.map((item) => item.eventId.trim()))];
-    if (eventIds.length !== dto.items.length) {
+    const submittedEventIds = [...new Set(dto.items.map((item) => item.eventId.trim()))];
+    if (submittedEventIds.length !== dto.items.length) {
       throw new BadRequestException('报名项目不能重复');
     }
-    const maxRegistrationEvents = competition.allowCrossEventRegistration ? competition.maxRegistrationEvents : 1;
-    if (eventIds.length > maxRegistrationEvents) {
-      throw new BadRequestException(`最多选择 ${maxRegistrationEvents} 个报名项目`);
-    }
-
-    const events = competition.events.filter((event) => eventIds.includes(event.id));
-    if (events.length !== eventIds.length) {
-      throw new BadRequestException('存在无效的报名项目');
-    }
-
-    for (const item of dto.items) {
-      const event = events.find((current) => current.id === item.eventId.trim());
-      if (!event) {
-        throw new BadRequestException('存在无效的报名项目');
-      }
-      this.ensurePartnerFields(event.type, item.partnerName, item.partnerStudentId, item.partnerClassName, item.teamName);
-    }
-
     const existing = await this.prisma.competitionRegistration.findUnique({
       where: {
         competitionId_userId: {
@@ -201,8 +210,41 @@ export class CompetitionsService {
       },
     });
 
-    if (existing && (existing.status === RegistrationStatus.PENDING || existing.status === RegistrationStatus.APPROVED)) {
-      throw new ConflictException('你已提交报名，当前状态下不能重复提交');
+    if (existing?.status === RegistrationStatus.PENDING) {
+      throw new ConflictException('你已提交报名，待审核状态下不能重复提交');
+    }
+
+    const existingApprovedEventIds =
+      existing?.status === RegistrationStatus.APPROVED
+        ? existing.eventItems.map((item) => item.eventId)
+        : [];
+    const eventIds = [...new Set([...existingApprovedEventIds, ...submittedEventIds])];
+    const maxRegistrationEvents = competition.allowCrossEventRegistration ? competition.maxRegistrationEvents : 1;
+    if (eventIds.length > maxRegistrationEvents) {
+      throw new BadRequestException(`最多选择 ${maxRegistrationEvents} 个报名项目`);
+    }
+
+    const events = competition.events.filter((event) => eventIds.includes(event.id));
+    if (events.length !== eventIds.length) {
+      throw new BadRequestException('存在无效的报名项目');
+    }
+
+    for (const item of dto.items) {
+      const event = events.find((current) => current.id === item.eventId.trim());
+      if (!event) {
+        throw new BadRequestException('存在无效的报名项目');
+      }
+      this.ensureRegistrationGender(event.type, this.normalizeGender(dto.gender), item.partnerGender);
+      this.ensurePartnerFields(
+        event.type,
+        item.partnerName,
+        item.partnerGender,
+        item.partnerStudentId,
+        item.partnerSchool,
+        item.partnerClassName,
+        item.partnerContact,
+        item.teamName,
+      );
     }
 
     const gender = this.normalizeGender(dto.gender);
@@ -210,6 +252,54 @@ export class CompetitionsService {
 
     const registration = await this.prisma.$transaction(async (tx) => {
       if (existing) {
+        if (existing.status === RegistrationStatus.APPROVED) {
+          const newItems = dto.items.filter((item) => !existingApprovedEventIds.includes(item.eventId.trim()));
+          if (!newItems.length) {
+            throw new ConflictException('请选择新的报名项目');
+          }
+          const updated = await tx.competitionRegistration.update({
+            where: { id: existing.id },
+            data: {
+              studentId: dto.studentId.trim(),
+              name: dto.name.trim(),
+              gender,
+              school: dto.school.trim(),
+              className: dto.className?.trim() || null,
+              contact: dto.contact?.trim() || null,
+              remark: dto.remark?.trim() || null,
+              status: RegistrationStatus.APPROVED,
+              rejectReason: null,
+              eventItems: {
+                create: newItems.map((item) => ({
+                  eventId: item.eventId.trim(),
+                  partnerName: item.partnerName?.trim() || null,
+                  partnerGender: item.partnerGender ? this.normalizeGender(item.partnerGender) : null,
+                  partnerStudentId: item.partnerStudentId?.trim() || null,
+                  partnerSchool: item.partnerSchool?.trim() || null,
+                  partnerClassName: item.partnerClassName?.trim() || null,
+                  partnerContact: item.partnerContact?.trim() || null,
+                  teamName: item.teamName?.trim() || null,
+                })),
+              },
+            },
+            include: {
+              user: true,
+              eventItems: {
+                include: {
+                  event: true,
+                },
+              },
+            },
+          });
+          await this.createApprovedRegistrationRecords(
+            tx,
+            updated,
+            existing.reviewedById ?? null,
+            newItems.map((item) => item.eventId.trim()),
+          );
+          return updated;
+        }
+
         await tx.competitionRegistrationEventItem.deleteMany({
           where: { competitionRegistrationId: existing.id },
         });
@@ -244,8 +334,11 @@ export class CompetitionsService {
               create: dto.items.map((item) => ({
                 eventId: item.eventId.trim(),
                 partnerName: item.partnerName?.trim() || null,
+                partnerGender: item.partnerGender ? this.normalizeGender(item.partnerGender) : null,
                 partnerStudentId: item.partnerStudentId?.trim() || null,
+                partnerSchool: item.partnerSchool?.trim() || null,
                 partnerClassName: item.partnerClassName?.trim() || null,
+                partnerContact: item.partnerContact?.trim() || null,
                 teamName: item.teamName?.trim() || null,
               })),
             },
@@ -282,8 +375,11 @@ export class CompetitionsService {
             create: dto.items.map((item) => ({
               eventId: item.eventId.trim(),
               partnerName: item.partnerName?.trim() || null,
+              partnerGender: item.partnerGender ? this.normalizeGender(item.partnerGender) : null,
               partnerStudentId: item.partnerStudentId?.trim() || null,
+              partnerSchool: item.partnerSchool?.trim() || null,
               partnerClassName: item.partnerClassName?.trim() || null,
+              partnerContact: item.partnerContact?.trim() || null,
               teamName: item.teamName?.trim() || null,
             })),
           },
@@ -303,8 +399,17 @@ export class CompetitionsService {
       return created;
     });
 
+    if (registration.status === RegistrationStatus.APPROVED) {
+      // 免审核赛事提交即通过，按"审核通过"通知
+      this.notifyRegistrationEmail(registration, 'registration_approved');
+    } else if (registration.status === RegistrationStatus.PENDING) {
+      this.notifyRegistrationEmail(registration, 'registration_submitted');
+    }
+
     return {
-      message: competition.needsRegistrationReview ? '报名已提交，请等待管理员审核。' : '报名已提交并自动通过。',
+      message: existing?.status === RegistrationStatus.APPROVED
+        ? '已追加报名项目。'
+        : competition.needsRegistrationReview ? '报名已提交，请等待管理员审核。' : '报名已提交并自动通过。',
       registration: this.toCompetitionRegistrationView(registration),
     };
   }
@@ -475,6 +580,142 @@ export class CompetitionsService {
     return registrations.map((registration) => this.toRegistrationView(registration));
   }
 
+  async batchAddAdminPlayers(
+    competitionId: string,
+    dto: AdminBatchCompetitionPlayersDto,
+    reviewedById?: string,
+  ) {
+    const competition = await this.findCompetition(competitionId, true);
+    const event = competition.events.find((item) => item.id === dto.eventId);
+    if (!event) throw new BadRequestException('请选择当前赛事下的参赛项目');
+    if (event.drawLocked) {
+      throw new ConflictException('抽签结果已冻结，请先重新抽签后再调整报名');
+    }
+
+    const players = dto.players.map((item, index) =>
+      this.normalizeAdminBatchPlayer(item, index + 1, event.type),
+    );
+    this.ensureBatchStudentIds(players);
+    await this.ensureNoExistingEventStudentIds(event.id, players);
+
+    const created = await this.prisma.$transaction(async (tx) => {
+      const registrations: RegistrationWithRelations[] = [];
+      for (const item of players) {
+        const primaryPlayer = await tx.player.create({
+          data: {
+            name: item.name,
+            gender: item.gender,
+            affiliation: item.school,
+            contact: item.contact,
+            isTemporary: true,
+          },
+        });
+
+        let secondaryPlayerId: string | null = null;
+        if (this.isDoubleEvent(event.type) && item.partnerName && item.partnerGender) {
+          const secondaryPlayer = await tx.player.create({
+            data: {
+              name: item.partnerName,
+              gender: item.partnerGender,
+              affiliation: item.partnerSchool ?? item.school,
+              contact: item.partnerContact ?? null,
+              isTemporary: true,
+            },
+          });
+          secondaryPlayerId = secondaryPlayer.id;
+        }
+
+        const registration = await tx.registration.create({
+          data: {
+            eventId: event.id,
+            player1Id: primaryPlayer.id,
+            player2Id: secondaryPlayerId,
+            name: secondaryPlayerId && item.partnerName ? `${item.name} / ${item.partnerName}` : item.name,
+            teamName: secondaryPlayerId ? item.teamName ?? null : null,
+            studentId: item.studentId,
+            className: item.className,
+            phone: item.contact,
+            gender: item.gender,
+            eventName: EVENT_TYPE_LABELS[event.type],
+            partnerStudentId: secondaryPlayerId ? item.partnerStudentId ?? null : null,
+            partnerSchool: secondaryPlayerId ? item.partnerSchool ?? null : null,
+            partnerClassName: secondaryPlayerId ? item.partnerClassName ?? null : null,
+            partnerPhone: secondaryPlayerId ? item.partnerContact ?? null : null,
+            status: RegistrationStatus.APPROVED,
+            reviewedAt: new Date(),
+            reviewedBy: reviewedById ?? null,
+          },
+          include: {
+            event: true,
+            player1: true,
+            player2: true,
+            competitionRegistration: {
+              include: {
+                user: true,
+                eventItems: true,
+              },
+            },
+          },
+        });
+        registrations.push(registration);
+      }
+      return registrations;
+    });
+
+    return {
+      createdCount: created.length,
+      players: created.map((registration) => this.toRegistrationView(registration)),
+    };
+  }
+
+  async removeAdminPlayerRegistration(
+    competitionId: string,
+    registrationId: string,
+    reviewedById?: string,
+  ) {
+    const registration = await this.prisma.registration.findUnique({
+      where: { id: registrationId },
+      include: {
+        event: true,
+      },
+    });
+    if (!registration || registration.event.tournamentId !== competitionId) {
+      throw new NotFoundException('报名记录不存在');
+    }
+    if (registration.competitionRegistrationId) {
+      return this.removeRegistration(registration.competitionRegistrationId, reviewedById);
+    }
+    if (registration.event.drawLocked) {
+      throw new ConflictException('抽签结果已冻结，请先重新抽签后再调整报名');
+    }
+
+    const updated = await this.prisma.registration.update({
+      where: { id: registration.id },
+      data: {
+        status: RegistrationStatus.REMOVED,
+        reviewedAt: new Date(),
+        reviewedBy: reviewedById ?? null,
+        rejectReason: null,
+        groupName: null,
+        isSeed: false,
+        seedRank: null,
+      },
+      include: {
+        event: true,
+        player1: true,
+        player2: true,
+        competitionRegistration: {
+          include: {
+            user: true,
+            eventItems: true,
+          },
+        },
+      },
+    });
+
+    return this.toRegistrationView(updated);
+  }
+
   async approveRegistration(competitionRegistrationId: string, reviewedById?: string) {
     const competitionRegistration = await this.ensureCompetitionRegistration(competitionRegistrationId);
 
@@ -518,6 +759,8 @@ export class CompetitionsService {
       return registration;
     });
 
+    this.notifyRegistrationEmail(updated, 'registration_approved');
+
     return this.toCompetitionRegistrationView(updated);
   }
 
@@ -548,6 +791,9 @@ export class CompetitionsService {
     });
 
     const updated = await this.ensureCompetitionRegistration(competitionRegistration.id);
+
+    this.notifyRegistrationEmail(updated, 'registration_rejected', updated.rejectReason);
+
     return this.toCompetitionRegistrationView(updated);
   }
 
@@ -579,6 +825,26 @@ export class CompetitionsService {
 
     const updated = await this.ensureCompetitionRegistration(competitionRegistration.id);
     return this.toCompetitionRegistrationView(updated);
+  }
+
+  /**
+   * 报名状态变化后异步发送邮件通知。
+   * 是否真正发送由 EmailService 统一门控（SMTP / 全局开关 / 模板开关 / 赛事开关），
+   * 发送失败或被跳过都只写入邮件日志，不影响业务主流程。
+   */
+  private notifyRegistrationEmail(
+    registration: CompetitionRegistrationWithRelations,
+    templateKey: 'registration_submitted' | 'registration_approved' | 'registration_rejected',
+    rejectReason?: string | null,
+  ) {
+    void this.emailService.sendRegistrationNotification({
+      templateKey,
+      tournamentId: registration.competitionId,
+      to: registration.user.email,
+      playerName: registration.name,
+      eventNames: registration.eventItems.map((item) => EVENT_TYPE_LABELS[item.event.type]),
+      rejectReason,
+    });
   }
 
   private async findCompetition(id: string, includeArchived: boolean) {
@@ -682,10 +948,15 @@ export class CompetitionsService {
                 { name: { contains: search } },
                 { studentId: { contains: search } },
                 { className: { contains: search } },
+                { partnerStudentId: { contains: search } },
+                { partnerClassName: { contains: search } },
+                { partnerSchool: { contains: search } },
                 { competitionRegistration: { user: { email: { contains: search } } } },
                 { competitionRegistration: { school: { contains: search } } },
                 { player1: { name: { contains: search } } },
                 { player1: { affiliation: { contains: search } } },
+                { player2: { name: { contains: search } } },
+                { player2: { affiliation: { contains: search } } },
               ],
             }
           : {}),
@@ -709,9 +980,12 @@ export class CompetitionsService {
     tx: Prisma.TransactionClient,
     registration: CompetitionRegistrationWithRelations,
     reviewedById: string | null,
+    eventIds?: string[],
   ) {
     const schoolName = registration.school?.trim() || '未填写学校';
+    const eventIdSet = eventIds?.length ? new Set(eventIds) : null;
     for (const item of registration.eventItems) {
+      if (eventIdSet && !eventIdSet.has(item.eventId)) continue;
       const primaryPlayer = await tx.player.create({
         data: {
           name: registration.name,
@@ -727,10 +1001,9 @@ export class CompetitionsService {
         const secondaryPlayer = await tx.player.create({
           data: {
             name: item.partnerName,
-            gender: this.resolvePartnerGender(item.event.type, registration.gender),
-            // Partner shares the same school as primary registrant.
-            affiliation: schoolName,
-            contact: null,
+            gender: item.partnerGender ?? this.resolvePartnerGender(item.event.type, registration.gender),
+            affiliation: item.partnerSchool?.trim() || schoolName,
+            contact: item.partnerContact?.trim() || null,
             notes: null,
           },
         });
@@ -750,6 +1023,10 @@ export class CompetitionsService {
           phone: registration.contact,
           gender: registration.gender,
           eventName: EVENT_TYPE_LABELS[item.event.type],
+          partnerStudentId: secondaryPlayerId ? item.partnerStudentId?.trim() || null : null,
+          partnerSchool: secondaryPlayerId ? item.partnerSchool?.trim() || null : null,
+          partnerClassName: secondaryPlayerId ? item.partnerClassName?.trim() || null : null,
+          partnerPhone: secondaryPlayerId ? item.partnerContact?.trim() || null : null,
           remark: registration.remark,
           status: RegistrationStatus.APPROVED,
           reviewedAt: new Date(),
@@ -757,6 +1034,158 @@ export class CompetitionsService {
         },
       });
     }
+  }
+
+  private normalizeAdminBatchPlayer(
+    item: AdminBatchCompetitionPlayerDto,
+    rowNumber: number,
+    eventType: EventType,
+  ): NormalizedAdminBatchPlayer {
+    const name = this.requiredBatchField(item.name, rowNumber, '姓名');
+    const gender = this.normalizeBatchGender(item.gender, rowNumber, '性别');
+    const studentId = this.requiredBatchField(item.studentId, rowNumber, '学号');
+    const school = this.requiredBatchField(item.school, rowNumber, '学校');
+    const className = this.requiredBatchField(item.className, rowNumber, '学院班级');
+    const contact = this.requiredBatchField(item.contact, rowNumber, '联系方式');
+
+    if (!this.isDoubleEvent(eventType)) {
+      this.ensureRegistrationGender(eventType, gender);
+      return {
+        name,
+        gender,
+        studentId,
+        school,
+        className,
+        contact,
+      };
+    }
+
+    const teamName = this.requiredBatchField(item.teamName, rowNumber, '队伍名称');
+    const partnerName = this.requiredBatchField(item.partnerName, rowNumber, '搭档姓名');
+    const partnerGender = this.normalizeBatchGender(item.partnerGender, rowNumber, '搭档性别');
+    const partnerStudentId = this.requiredBatchField(item.partnerStudentId, rowNumber, '搭档学号');
+    const partnerSchool = this.requiredBatchField(item.partnerSchool, rowNumber, '搭档学校');
+    const partnerClassName = this.requiredBatchField(item.partnerClassName, rowNumber, '搭档学院班级');
+    const partnerContact = this.requiredBatchField(item.partnerContact, rowNumber, '搭档联系方式');
+
+    try {
+      this.ensureRegistrationGender(eventType, gender, partnerGender);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '双打性别填写有误';
+      throw new BadRequestException(`第 ${rowNumber} 行：${message}`);
+    }
+
+    return {
+      name,
+      gender,
+      studentId,
+      school,
+      className,
+      contact,
+      teamName,
+      partnerName,
+      partnerGender,
+      partnerStudentId,
+      partnerSchool,
+      partnerClassName,
+      partnerContact,
+    };
+  }
+
+  private requiredBatchField(value: string | undefined, rowNumber: number, label: string) {
+    const trimmed = value?.trim();
+    if (!trimmed) throw new BadRequestException(`第 ${rowNumber} 行缺少${label}`);
+    return trimmed;
+  }
+
+  private normalizeBatchGender(
+    value: string | undefined,
+    rowNumber: number,
+    label: string,
+  ) {
+    try {
+      return this.normalizeGender(this.requiredBatchField(value, rowNumber, label));
+    } catch {
+      throw new BadRequestException(`第 ${rowNumber} 行${label}填写有误`);
+    }
+  }
+
+  private ensureBatchStudentIds(players: NormalizedAdminBatchPlayer[]) {
+    const seen = new Map<string, string>();
+    players.forEach((player, index) => {
+      const rowLabel = `第 ${index + 1} 行`;
+      const studentIds = [
+        { value: player.studentId, label: `${rowLabel}学号` },
+        ...(player.partnerStudentId
+          ? [{ value: player.partnerStudentId, label: `${rowLabel}搭档学号` }]
+          : []),
+      ];
+
+      studentIds.forEach((item) => {
+        const existing = seen.get(item.value);
+        if (existing) {
+          throw new ConflictException(`${item.label}与${existing}重复：${item.value}`);
+        }
+        seen.set(item.value, item.label);
+      });
+    });
+  }
+
+  private async ensureNoExistingEventStudentIds(
+    eventId: string,
+    players: NormalizedAdminBatchPlayer[],
+  ) {
+    const studentIds = [
+      ...new Set(
+        players.flatMap((player) =>
+          [player.studentId, player.partnerStudentId].filter(Boolean) as string[],
+        ),
+      ),
+    ];
+    if (!studentIds.length) return;
+
+    const existingRegistrations = await this.prisma.registration.findMany({
+      where: {
+        eventId,
+        status: { not: RegistrationStatus.REMOVED },
+        OR: [
+          { studentId: { in: studentIds } },
+          { partnerStudentId: { in: studentIds } },
+          {
+            competitionRegistration: {
+              eventItems: {
+                some: {
+                  eventId,
+                  partnerStudentId: { in: studentIds },
+                },
+              },
+            },
+          },
+        ],
+      },
+      select: {
+        studentId: true,
+        partnerStudentId: true,
+        competitionRegistration: {
+          select: {
+            eventItems: {
+              where: { eventId },
+              select: { partnerStudentId: true },
+            },
+          },
+        },
+      },
+    });
+
+    const existingIds = new Set(
+      existingRegistrations.flatMap((registration) => [
+        registration.studentId,
+        registration.partnerStudentId,
+        ...(registration.competitionRegistration?.eventItems.map((item) => item.partnerStudentId) ?? []),
+      ]).filter(Boolean) as string[],
+    );
+    const duplicated = studentIds.find((studentId) => existingIds.has(studentId));
+    if (duplicated) throw new ConflictException(`学号 ${duplicated} 已在该项目报名`);
   }
 
   private toCompetitionView(competition: CompetitionWithRelations, detailed = false) {
@@ -823,8 +1252,12 @@ export class CompetitionsService {
         eventType: item.event.type,
         eventName: EVENT_TYPE_LABELS[item.event.type],
         partnerName: item.partnerName,
+        partnerGender: item.partnerGender,
+        partnerGenderLabel: item.partnerGender === Gender.MALE ? '男' : item.partnerGender === Gender.FEMALE ? '女' : null,
         partnerStudentId: item.partnerStudentId,
+        partnerSchool: item.partnerSchool,
         partnerClassName: item.partnerClassName,
+        partnerContact: item.partnerContact,
         teamName: item.teamName,
       })),
       eventNames: registration.eventItems.map((item) => EVENT_TYPE_LABELS[item.event.type]),
@@ -854,12 +1287,12 @@ export class CompetitionsService {
     const partner = registration.player2
       ? {
           name: registration.player2.name,
-          studentId: eventItem?.partnerStudentId ?? '',
+          studentId: registration.partnerStudentId ?? eventItem?.partnerStudentId ?? '',
           gender: registration.player2.gender,
           genderLabel: registration.player2.gender === Gender.MALE ? '男' : '女',
-          school,
-          className: eventItem?.partnerClassName ?? '',
-          phone: registration.player2.contact ?? '',
+          school: registration.partnerSchool ?? eventItem?.partnerSchool ?? registration.player2.affiliation ?? school,
+          className: registration.partnerClassName ?? eventItem?.partnerClassName ?? '',
+          phone: registration.partnerPhone ?? eventItem?.partnerContact ?? registration.player2.contact ?? '',
         }
       : null;
     return {
@@ -874,6 +1307,7 @@ export class CompetitionsService {
       primaryName,
       partner,
       teamName: registration.teamName ?? null,
+      isTemporary: registration.player1.isTemporary || Boolean(registration.player2?.isTemporary),
       studentId: registration.studentId ?? '',
       school,
       className,
@@ -972,21 +1406,53 @@ export class CompetitionsService {
     );
   }
 
+  private ensureRegistrationGender(eventType: EventType, primaryGender: Gender, partnerGenderValue?: string) {
+    const partnerGender = partnerGenderValue ? this.normalizeGender(partnerGenderValue) : null;
+    if (eventType === EventType.MENS_SINGLES && primaryGender !== Gender.MALE) {
+      throw new BadRequestException('男子单打报名性别必须为男');
+    }
+    if (eventType === EventType.WOMENS_SINGLES && primaryGender !== Gender.FEMALE) {
+      throw new BadRequestException('女子单打报名性别必须为女');
+    }
+    if (eventType === EventType.MENS_DOUBLES && (primaryGender !== Gender.MALE || partnerGender !== Gender.MALE)) {
+      throw new BadRequestException('男子双打必须两名队员均为男');
+    }
+    if (eventType === EventType.WOMENS_DOUBLES && (primaryGender !== Gender.FEMALE || partnerGender !== Gender.FEMALE)) {
+      throw new BadRequestException('女子双打必须两名队员均为女');
+    }
+    if (
+      eventType === EventType.MIXED_DOUBLES &&
+      (!partnerGender || primaryGender === partnerGender)
+    ) {
+      throw new BadRequestException('混合双打必须为一男一女');
+    }
+  }
+
   private ensurePartnerFields(
     eventType: EventType,
     partnerName?: string,
+    partnerGender?: string,
     partnerStudentId?: string,
+    partnerSchool?: string,
     partnerClassName?: string,
+    partnerContact?: string,
     teamName?: string,
   ) {
     if (!this.isDoubleEvent(eventType)) {
       return;
     }
-    if (!partnerName?.trim() || !partnerStudentId?.trim() || !partnerClassName?.trim()) {
-      throw new BadRequestException('双打项目必须填写搭档姓名、学号和学院班级');
-    }
     if (!teamName?.trim()) {
       throw new BadRequestException('双打项目必须填写队伍名称');
+    }
+    if (
+      !partnerName?.trim() ||
+      !partnerGender ||
+      !partnerStudentId?.trim() ||
+      !partnerSchool?.trim() ||
+      !partnerClassName?.trim() ||
+      !partnerContact?.trim()
+    ) {
+      throw new BadRequestException('双打项目必须完整填写搭档姓名、性别、学号、学校、学院班级和联系方式');
     }
   }
 

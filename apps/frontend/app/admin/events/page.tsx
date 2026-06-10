@@ -5,6 +5,7 @@ import { useSession } from 'next-auth/react';
 import {
   Table,
   Button,
+  Divider,
   Modal,
   Form,
   InputNumber,
@@ -43,6 +44,21 @@ const SCORING_MODE_LABELS: Record<string, string> = {
   STANDARD_GOLDEN: '标准金球制',
 };
 
+// 与后端 Match.round 标签一致的淘汰赛阶段
+const STAGE_DEFS = [
+  { key: 'QF', label: '八强（1/4决赛）', short: '八强' },
+  { key: 'SF', label: '半决赛', short: '半决赛' },
+  { key: 'BRONZE', label: '季军赛', short: '季军赛' },
+  { key: 'F', label: '决赛', short: '决赛' },
+] as const;
+
+type StageScoringRule = {
+  scoringRule?: string;
+  customGamePoint?: number | null;
+  customGameCap?: number | null;
+  customGamesToWin?: number | null;
+};
+
 interface Tournament {
   id: string;
   name: string;
@@ -60,7 +76,24 @@ interface Event {
   customGamePoint?: number | null;
   customGameCap?: number | null;
   customGamesToWin?: number | null;
+  stageScoringRules?: Record<string, StageScoringRule> | null;
   defaultMatchMinutes?: number | null;
+}
+
+function customRuleSummary(point: number, cap?: number | null, gamesToWin?: number | null) {
+  const capText = cap && cap > point ? `（封顶${cap}）` : '';
+  const gamesText = gamesToWin && gamesToWin > 1 ? `，${gamesToWin * 2 - 1}局${gamesToWin}胜` : '，单局制';
+  return `${point}分/局${capText}${gamesText}`;
+}
+
+function stageRuleSummary(stage: StageScoringRule) {
+  if (stage.customGamePoint) {
+    return customRuleSummary(stage.customGamePoint, stage.customGameCap, stage.customGamesToWin);
+  }
+  if (stage.scoringRule) {
+    return SCORING_RULE_LABELS[stage.scoringRule] ?? stage.scoringRule;
+  }
+  return '同默认';
 }
 
 export default function EventsPage() {
@@ -109,27 +142,70 @@ export default function EventsPage() {
 
   const openEdit = (e: Event) => {
     setEditing(e);
+    form.resetFields();
+    const stageValues: Record<string, unknown> = {};
+    for (const def of STAGE_DEFS) {
+      const stage = e.stageScoringRules?.[def.key];
+      if (stage?.customGamePoint) {
+        stageValues[`stage_${def.key}_mode`] = 'custom';
+        stageValues[`stage_${def.key}_point`] = stage.customGamePoint;
+        stageValues[`stage_${def.key}_cap`] = stage.customGameCap ?? undefined;
+        stageValues[`stage_${def.key}_games`] = stage.customGamesToWin ?? 1;
+      } else if (stage?.scoringRule) {
+        stageValues[`stage_${def.key}_mode`] = stage.scoringRule;
+      } else {
+        stageValues[`stage_${def.key}_mode`] = 'default';
+      }
+    }
     form.setFieldsValue({
       ...e,
       scoringMethod: e.customGamePoint ? 'custom' : 'preset',
+      ...stageValues,
     });
     setModalOpen(true);
   };
 
   const handleSubmit = async () => {
     const values = await form.validateFields();
-    const { scoringMethod, ...rest } = values as typeof values & { scoringMethod: 'preset' | 'custom' };
-    const payload =
+    const { scoringMethod, ...others } = values as Record<string, unknown> & {
+      scoringMethod: 'preset' | 'custom';
+    };
+
+    // 组装分阶段规则；所有阶段都是"同默认"时传 null 清空
+    const stageRules: Record<string, StageScoringRule> = {};
+    for (const def of STAGE_DEFS) {
+      const mode = (others[`stage_${def.key}_mode`] as string | undefined) ?? 'default';
+      if (mode === 'default') continue;
+      if (mode === 'custom') {
+        const point = others[`stage_${def.key}_point`] as number | undefined;
+        if (!point) continue;
+        stageRules[def.key] = {
+          customGamePoint: point,
+          customGameCap: (others[`stage_${def.key}_cap`] as number | undefined) ?? null,
+          customGamesToWin: (others[`stage_${def.key}_games`] as number | undefined) ?? 1,
+        };
+      } else {
+        stageRules[def.key] = { scoringRule: mode };
+      }
+    }
+
+    const rest = Object.fromEntries(
+      Object.entries(others).filter(([key]) => !key.startsWith('stage_')),
+    );
+    const stageScoringRules = Object.keys(stageRules).length ? stageRules : null;
+    const payload: Record<string, unknown> =
       scoringMethod === 'custom'
         ? {
             ...rest,
             scoringRule: rest.scoringRule ?? 'TWENTYONE_BO3',
+            stageScoringRules,
           }
         : {
             ...rest,
             customGamePoint: null,
             customGameCap: null,
             customGamesToWin: null,
+            stageScoringRules,
           };
     setSubmitting(true);
     try {
@@ -171,13 +247,21 @@ export default function EventsPage() {
       title: '计分规则',
       key: 'scoringRule',
       render: (_: unknown, r: Event) => {
-        const base = SCORING_RULE_LABELS[r.scoringRule] || r.scoringRule;
-        if (r.customGamePoint) {
-          const cap = r.customGameCap && r.customGameCap > r.customGamePoint ? `（封顶${r.customGameCap}）` : '';
-          const gtw = r.customGamesToWin && r.customGamesToWin > 1 ? `，${r.customGamesToWin * 2 - 1}局${r.customGamesToWin}胜` : '，单局制';
-          return `自定义：${r.customGamePoint}分/局${cap}${gtw}`;
-        }
-        return base;
+        const base = r.customGamePoint
+          ? `自定义：${customRuleSummary(r.customGamePoint, r.customGameCap, r.customGamesToWin)}`
+          : SCORING_RULE_LABELS[r.scoringRule] || r.scoringRule;
+        const stages = STAGE_DEFS.filter((def) => r.stageScoringRules?.[def.key]);
+        if (!stages.length) return base;
+        return (
+          <Space direction="vertical" size={0}>
+            <span>默认（四强前）：{base}</span>
+            {stages.map((def) => (
+              <Typography.Text key={def.key} type="secondary" style={{ fontSize: 12 }}>
+                {def.short}：{stageRuleSummary(r.stageScoringRules![def.key])}
+              </Typography.Text>
+            ))}
+          </Space>
+        );
       },
     },
     { title: '计分模式', dataIndex: 'scoringMode', render: (v: string) => SCORING_MODE_LABELS[v] || v },
@@ -228,6 +312,7 @@ export default function EventsPage() {
         confirmLoading={submitting}
         okText="保存"
         cancelText="取消"
+        width={640}
       >
         <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
           {!editing && (
@@ -303,6 +388,67 @@ export default function EventsPage() {
               options={Object.entries(SCORING_MODE_LABELS).map(([v, l]) => ({ value: v, label: l }))}
             />
           </Form.Item>
+
+          <Divider plain style={{ margin: '8px 0 12px' }}>
+            分阶段规则（可选）
+          </Divider>
+          <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 12 }}>
+            四强之前的比赛（含小组赛、早期轮次）使用上方默认规则；以下阶段可单独设置一套完整规则。
+            修改会立即影响该阶段未结束的比赛，已结束的比分不变。
+          </Typography.Paragraph>
+          {STAGE_DEFS.map((def) => (
+            <div key={def.key}>
+              <Form.Item
+                name={`stage_${def.key}_mode`}
+                label={def.label}
+                initialValue="default"
+                style={{ marginBottom: 8 }}
+              >
+                <Select
+                  options={[
+                    { value: 'default', label: '同默认规则' },
+                    ...Object.entries(SCORING_RULE_LABELS).map(([v, l]) => ({ value: v, label: l })),
+                    { value: 'custom', label: '自定义局点' },
+                  ]}
+                />
+              </Form.Item>
+              <Form.Item
+                noStyle
+                shouldUpdate={(prev, cur) =>
+                  prev[`stage_${def.key}_mode`] !== cur[`stage_${def.key}_mode`]
+                }
+              >
+                {({ getFieldValue }) =>
+                  getFieldValue(`stage_${def.key}_mode`) === 'custom' ? (
+                    <Space align="baseline" wrap style={{ marginBottom: 8 }}>
+                      <Form.Item
+                        name={`stage_${def.key}_point`}
+                        rules={[{ required: true, message: '请输入每局分数' }]}
+                        style={{ marginBottom: 0 }}
+                      >
+                        <InputNumber min={1} max={999} placeholder="每局分数" style={{ width: 120 }} />
+                      </Form.Item>
+                      <Form.Item name={`stage_${def.key}_cap`} style={{ marginBottom: 0 }}>
+                        <InputNumber min={1} max={999} placeholder="封顶分(可选)" style={{ width: 120 }} />
+                      </Form.Item>
+                      <Form.Item
+                        name={`stage_${def.key}_games`}
+                        rules={[{ required: true, message: '请输入胜出局数' }]}
+                        initialValue={2}
+                        style={{ marginBottom: 0 }}
+                      >
+                        <InputNumber min={1} max={9} placeholder="胜出局数" style={{ width: 120 }} />
+                      </Form.Item>
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        胜出局数：1=单局，2=三局两胜，3=五局三胜
+                      </Typography.Text>
+                    </Space>
+                  ) : null
+                }
+              </Form.Item>
+            </div>
+          ))}
+
           <Form.Item
             name="defaultMatchMinutes"
             label="单场预估时长（分钟）"

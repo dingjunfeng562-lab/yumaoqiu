@@ -29,7 +29,8 @@ import {
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 
 const MAX_FILES = 20;
-const MAX_FILE_SIZE_MB = 10;
+// 50MB matches the backend limit so high-resolution photos of any size upload.
+const MAX_FILE_SIZE_MB = 50;
 const MAX_FILE_SIZE = MAX_FILE_SIZE_MB * 1024 * 1024;
 const ACCEPTED = /^image\/(png|jpe?g)$/;
 

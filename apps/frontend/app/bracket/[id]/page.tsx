@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { PortalFeaturePage } from '@/components/home/PortalFeaturePage';
-import { KnockoutBracket } from '@/components/bracket/KnockoutBracket';
+import { LiveBracket } from '@/components/bracket/LiveBracket';
 import { getBracketList } from '../data';
 
 export const dynamic = 'force-dynamic';
@@ -44,7 +44,7 @@ export default async function BracketDetailPage({ params }: { params: Promise<{ 
           </div>
         </div>
 
-        <KnockoutBracket data={bracket} />
+        <LiveBracket initial={bracket} />
       </div>
     </PortalFeaturePage>
   );

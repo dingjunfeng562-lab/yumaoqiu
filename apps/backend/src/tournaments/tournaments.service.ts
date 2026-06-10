@@ -17,7 +17,6 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateTournamentDto, UpdateTournamentDto } from './dto/tournament.dto';
-import { effectiveTournamentStatus } from './tournament-status';
 
 export type AuthUser = {
   id: string;
@@ -432,6 +431,10 @@ export class TournamentsService {
     if (new Set(items).size !== items.length) throw new BadRequestException(message);
   }
 
+  // Admin endpoints surface the raw stored status so the SUPER_ADMIN's manual
+  // override in 赛事配置 takes effect immediately — public-facing callers
+  // apply effectiveTournamentStatus() themselves where time-based auto-advance
+  // is desired.
   private withEffectiveStatus<T extends {
     status: TournamentStatus;
     registrationStartDate: Date | null;
@@ -439,10 +442,7 @@ export class TournamentsService {
     startDate: Date;
     endDate: Date;
   }>(tournament: T): T {
-    return {
-      ...tournament,
-      status: effectiveTournamentStatus(tournament),
-    };
+    return tournament;
   }
 
   private listInclude() {

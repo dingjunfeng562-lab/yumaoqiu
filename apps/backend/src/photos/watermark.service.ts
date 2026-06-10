@@ -33,6 +33,27 @@ export class WatermarkService {
   private readonly OPACITY = 0.85;
   private readonly THUMB_WIDTH = 500;
 
+  /**
+   * Decode options shared by every pipeline that reads an uploaded photo.
+   * - `limitInputPixels`: lifted well past sharp's ~268MP default so any
+   *   resolution (large DSLR / phone panoramas) can be processed.
+   * - `failOn: 'none'`: tolerate truncated / slightly malformed files instead
+   *   of throwing, so one odd photo in a batch still uploads.
+   */
+  private readonly INPUT_OPTS = { failOn: 'none' as const, limitInputPixels: 1_000_000_000 };
+
+  /**
+   * Visual width/height after EXIF auto-orientation. `sharp.metadata()` reports
+   * the raw stored pixels, so for orientation tags 5-8 (90°/270° rotations) the
+   * stored width/height are swapped relative to how the image actually displays.
+   */
+  private orientedSize(meta: sharp.Metadata): { width: number; height: number } {
+    const swap = (meta.orientation ?? 0) >= 5;
+    const w = meta.width ?? 0;
+    const h = meta.height ?? 0;
+    return swap ? { width: h, height: w } : { width: w, height: h };
+  }
+
   /** Clamp the logo-height percent into the supported range. */
   private clampPercent(percent?: number | null): number {
     const value = percent ?? WatermarkService.DEFAULT_LOGO_HEIGHT_PERCENT;
@@ -125,17 +146,24 @@ export class WatermarkService {
     logoGapPercent?: number,
     position?: WatermarkPosition,
   ): Promise<Buffer> {
+    // `.rotate()` (no args) bakes the EXIF orientation into the pixels. sharp
+    // strips the orientation tag on output, so without this a phone portrait
+    // photo would come out sideways. The full-res image is never downscaled, so
+    // the watermarked download keeps the original resolution.
     if (logos.length === 0) {
-      return sharp(imageBuffer).jpeg({ quality: 95 }).toBuffer();
+      return sharp(imageBuffer, this.INPUT_OPTS).rotate().jpeg({ quality: 95 }).toBuffer();
     }
 
-    const meta = await sharp(imageBuffer).metadata();
-    const imgW = meta.width || 1000;
-    const imgH = meta.height || 1000;
+    const meta = await sharp(imageBuffer, this.INPUT_OPTS).metadata();
+    // Use post-orientation dimensions so the logo lands in the visually-correct
+    // corner and is sized against the displayed height.
+    const { width: imgW, height: imgH } = this.orientedSize(meta);
+    const safeW = imgW || 1000;
+    const safeH = imgH || 1000;
 
     const watermark = await this.buildWatermark(
       logos,
-      imgH,
+      safeH,
       this.clampPercent(logoHeightPercent),
       this.clampGap(logoGapPercent),
     );
@@ -145,7 +173,7 @@ export class WatermarkService {
     const pos = WATERMARK_POSITIONS.includes(position as WatermarkPosition)
       ? (position as WatermarkPosition)
       : WatermarkService.DEFAULT_POSITION;
-    const { left, top } = this.resolveCornerOffset(pos, imgW, imgH, wmW, wmH);
+    const { left, top } = this.resolveCornerOffset(pos, safeW, safeH, wmW, wmH);
 
     // Multiply the whole strip's alpha by OPACITY via a tiled dest-in blend.
     const transparentWm = await sharp(watermark)
@@ -160,7 +188,10 @@ export class WatermarkService {
       .png()
       .toBuffer();
 
-    return sharp(imageBuffer)
+    // Auto-orient first so the composite coordinates match the visual image,
+    // then composite the watermark onto the rotated canvas at full resolution.
+    return sharp(imageBuffer, this.INPUT_OPTS)
+      .rotate()
       .composite([
         {
           input: transparentWm,
@@ -173,17 +204,20 @@ export class WatermarkService {
       .toBuffer();
   }
 
-  /** 500px-wide thumbnail of an already-watermarked JPEG. */
+  /**
+   * 500px-wide thumbnail of an already-watermarked JPEG. `fit: 'inside'` keeps
+   * the aspect ratio, so landscape stays landscape and portrait stays portrait.
+   */
   async generateThumbnail(watermarkedBuffer: Buffer): Promise<Buffer> {
-    return sharp(watermarkedBuffer)
+    return sharp(watermarkedBuffer, this.INPUT_OPTS)
       .resize(this.THUMB_WIDTH, null, { fit: 'inside', withoutEnlargement: true })
       .jpeg({ quality: 82 })
       .toBuffer();
   }
 
-  /** Dimensions of an image buffer. */
+  /** Visual (post EXIF auto-orientation) dimensions of an image buffer. */
   async dimensions(buffer: Buffer): Promise<{ width: number; height: number }> {
-    const meta = await sharp(buffer).metadata();
-    return { width: meta.width || 0, height: meta.height || 0 };
+    const meta = await sharp(buffer, this.INPUT_OPTS).metadata();
+    return this.orientedSize(meta);
   }
 }

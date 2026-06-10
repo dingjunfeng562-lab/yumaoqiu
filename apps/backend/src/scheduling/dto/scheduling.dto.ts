@@ -50,7 +50,7 @@ export class AutoScheduleDto {
   @IsOptional()
   @Type(() => Number)
   @IsInt()
-  @Min(5)
+  @Min(1)
   matchMinutes?: number;
 
   @IsOptional()
@@ -86,6 +86,6 @@ export class UpdateMatchScheduleDto {
   @IsOptional()
   @Type(() => Number)
   @IsInt()
-  @Min(5)
+  @Min(1)
   durationMinutes?: number;
 }

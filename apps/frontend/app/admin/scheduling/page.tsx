@@ -474,8 +474,7 @@ export default function AdminSchedulingPage() {
                 <InputNumber
                   key={`${row.id}-${value}`}
                   size="small"
-                  min={5}
-                  max={600}
+                  min={1}
                   defaultValue={value}
                   onBlur={(e) => {
                     const next = Number((e.target as HTMLInputElement).value);
@@ -522,7 +521,7 @@ export default function AdminSchedulingPage() {
             <DatePicker showTime format="YYYY-MM-DD HH:mm" style={{ width: '100%' }} />
           </Form.Item>
           <Form.Item name="matchMinutes" label="单场预估时长（分钟）" rules={[{ required: true }]}>
-            <InputNumber min={5} style={{ width: '100%' }} />
+            <InputNumber min={1} style={{ width: '100%' }} />
           </Form.Item>
           <Form.Item name="breakMinutes" label="场间间隔（分钟）" rules={[{ required: true }]}>
             <InputNumber min={0} style={{ width: '100%' }} />
@@ -556,7 +555,7 @@ export default function AdminSchedulingPage() {
             <DatePicker showTime format="YYYY-MM-DD HH:mm" style={{ width: '100%' }} />
           </Form.Item>
           <Form.Item name="durationMinutes" label="预估时长（分钟）" rules={[{ required: true, message: '请输入预估时长' }]}>
-            <InputNumber min={5} max={600} style={{ width: '100%' }} />
+            <InputNumber min={1} style={{ width: '100%' }} />
           </Form.Item>
         </Form>
       </Modal>

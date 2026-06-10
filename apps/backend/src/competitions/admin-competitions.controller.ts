@@ -1,10 +1,13 @@
-import { Body, Controller, Get, Param, Patch, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { CompetitionsService } from './competitions.service';
-import { RejectRegistrationDto } from './dto/competition-registration.dto';
+import {
+  AdminBatchCompetitionPlayersDto,
+  RejectRegistrationDto,
+} from './dto/competition-registration.dto';
 
 type AuthRequest = {
   user?: {
@@ -47,6 +50,32 @@ export class AdminCompetitionsController {
     @Query('search') search?: string,
   ) {
     return this.competitionsService.listAdminPlayers(id, eventName, search);
+  }
+
+  @Post('competitions/:id/players/batch')
+  batchAddPlayers(
+    @Param('id') id: string,
+    @Body() dto: AdminBatchCompetitionPlayersDto,
+    @Req() req: AuthRequest,
+  ) {
+    return this.competitionsService.batchAddAdminPlayers(
+      id,
+      dto,
+      req.user?.id,
+    );
+  }
+
+  @Patch('competitions/:competitionId/players/:registrationId/remove')
+  removePlayerRegistration(
+    @Param('competitionId') competitionId: string,
+    @Param('registrationId') registrationId: string,
+    @Req() req: AuthRequest,
+  ) {
+    return this.competitionsService.removeAdminPlayerRegistration(
+      competitionId,
+      registrationId,
+      req.user?.id,
+    );
   }
 
   @Patch('competition-registrations/:registrationId/approve')

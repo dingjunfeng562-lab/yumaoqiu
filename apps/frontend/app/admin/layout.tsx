@@ -38,6 +38,7 @@ import {
   KeyOutlined,
   AuditOutlined,
   MenuOutlined,
+  MailOutlined,
 } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 
@@ -61,6 +62,7 @@ const baseMenuItems: MenuItem[] = [
   { key: '/admin/scheduling', icon: <CalendarOutlined />, label: '场地排程' },
   { key: '/admin/scoring', icon: <FieldTimeOutlined />, label: '裁判分配' },
   { key: '/admin/announcements', icon: <NotificationOutlined />, label: '公告管理', superOnly: true },
+  { key: '/admin/email', icon: <MailOutlined />, label: '邮件通知设置', superOnly: true },
   { key: '/admin/exports', icon: <DownloadOutlined />, label: '数据导出' },
 ];
 

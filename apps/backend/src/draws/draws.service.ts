@@ -692,7 +692,16 @@ export class DrawsService {
 
       await tx.event.update({
         where: { id: eventId },
-        data: { drawPublished: false },
+        data: {
+          drawPublished: false,
+          // Unpublishing rolls the bracket back to DRAWN, so the event-level
+          // editing lock must also lift — otherwise downstream actions like
+          // batch-adding players still report "抽签结果已冻结". The
+          // lockedPlayableMatchWhere guard above already ensures no scheduled
+          // or played match depends on the current draw, so this is safe and
+          // mirrors unfreezeDraw.
+          drawLocked: false,
+        },
       });
 
       await this.drawLogService.create(tx, {
@@ -702,7 +711,7 @@ export class DrawsService {
         operatorId,
         operatorNameSnapshot: operatorName,
         beforeData: { status: draw.status } as Prisma.InputJsonValue,
-        afterData: { status: DrawStatus.DRAWN, drawPublished: false } as Prisma.InputJsonValue,
+        afterData: { status: DrawStatus.DRAWN, drawPublished: false, drawLocked: false } as Prisma.InputJsonValue,
         remark: 'UNPUBLISH',
       });
 

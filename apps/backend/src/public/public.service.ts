@@ -43,6 +43,22 @@ const FORMAT_LABELS: Record<string, string> = {
   GROUP_PLUS_KNOCKOUT: '小组赛+淘汰',
 };
 
+const COURT_SWAP_NOTE_PREFIX = 'COURT_SWAP:';
+const COURT_SWAP_REQUIRED_NOTE_PREFIX = 'COURT_SWAP_REQUIRED:';
+const RETIRE_NOTE_PREFIX = 'RETIRE:';
+const BLACK_CARD_NOTE_PREFIX = 'BLACK_CARD:';
+const INTERVAL_REST_NOTE_PREFIX = 'INTERVAL_REST:';
+
+type ForfeitKind = 'normal' | 'retire' | 'black_card';
+
+type ForfeitDecode = {
+  kind: ForfeitKind;
+  reason: string | null;
+  label: '弃权' | '退赛' | '黑牌取消资格';
+};
+
+type CourtSide = 'left' | 'right';
+
 type StandingRow = {
   id: string;
   name: string;
@@ -302,7 +318,7 @@ export class PublicService {
           venue: true,
           games: { orderBy: { gameNo: 'asc' } },
           events: {
-            where: { type: MatchEventType.TIMEOUT },
+            where: { type: { in: [MatchEventType.TIMEOUT, MatchEventType.SERVE_CHANGE] } },
             orderBy: { createdAt: 'asc' },
           },
         },
@@ -320,7 +336,7 @@ export class PublicService {
           venue: true,
           games: { orderBy: { gameNo: 'asc' } },
           events: {
-            where: { type: MatchEventType.TIMEOUT },
+            where: { type: { in: [MatchEventType.TIMEOUT, MatchEventType.SERVE_CHANGE] } },
             orderBy: { createdAt: 'asc' },
           },
         },
@@ -334,7 +350,7 @@ export class PublicService {
           venue: true,
           games: { orderBy: { gameNo: 'asc' } },
           events: {
-            where: { type: MatchEventType.TIMEOUT },
+            where: { type: { in: [MatchEventType.TIMEOUT, MatchEventType.SERVE_CHANGE] } },
             orderBy: { createdAt: 'asc' },
           },
         },
@@ -470,11 +486,11 @@ export class PublicService {
                     MatchEventType.WARNING,
                     MatchEventType.YELLOW_CARD,
                     MatchEventType.FORFEIT,
+                    MatchEventType.SERVE_CHANGE,
                   ],
                 },
               },
               orderBy: { createdAt: 'desc' },
-              take: 20,
             },
           },
           orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }],
@@ -699,6 +715,13 @@ export class PublicService {
       participants,
       matches: event.matches.map((match: any) => {
         const pauseState = this.computePublicPauseState(match.events ?? [], match.finishedAt);
+        const courtDisplayState = this.computePublicCourtDisplayState(match.events ?? []);
+        const forfeitedSideName = match.forfeitedSide === 1
+          ? this.sideName(match.side1Id, registrationMap)
+          : match.forfeitedSide === 2
+            ? this.sideName(match.side2Id, registrationMap)
+            : null;
+        const forfeit = this.decodeForfeit(match.forfeitReason);
         return {
         id: match.id,
         roundNo: match.roundNo,
@@ -710,7 +733,9 @@ export class PublicService {
         winnerSide: match.winnerSide,
         winnerId: match.winnerSide === 1 ? match.side1Id : match.winnerSide === 2 ? match.side2Id : null,
         forfeitedSide: match.forfeitedSide ?? null,
-        forfeitReason: match.forfeitReason ?? null,
+        forfeitKind: match.forfeitedSide ? forfeit.kind : null,
+        forfeitLabel: match.forfeitedSide ? forfeit.label : null,
+        forfeitReason: match.forfeitedSide ? forfeit.reason : null,
         venueName: match.venue?.name ?? '待排场地',
         refereeName: match.referee?.username ?? null,
         scheduledAt: match.scheduledAt?.toISOString?.() ?? null,
@@ -719,18 +744,20 @@ export class PublicService {
         durationMinutes: match.durationMinutes ?? null,
         matchPaused: pauseState.paused,
         pausedAt: pauseState.pausedAt?.toISOString?.() ?? null,
+        courtDisplayState,
         actualDurationSeconds: this.publicActualDurationSeconds(match.startedAt, match.finishedAt, match.status, pauseState),
         latestEvents: match.events
           ?.filter((event: any) => this.decodePublicMatchPauseNote(event.note) !== 'END')
+          .filter((event: any) => !this.isPublicCourtEvent(event))
           .slice(0, 3)
           .map((event: any) => this.publicMatchEventView(event, match, registrationMap)) ?? [],
         score: match.forfeitedSide
-          ? '弃权'
+          ? forfeit.label
           : match.games.length
             ? `${match.games.at(-1)?.side1Score ?? 0}:${match.games.at(-1)?.side2Score ?? 0}`
             : '0:0',
         gamesText: match.forfeitedSide
-          ? `选手 ${match.forfeitedSide} 弃权`
+          ? `${forfeitedSideName ?? `选手 ${match.forfeitedSide}`} ${forfeit.label}`
           : match.games.length
             ? match.games.map((game: any) => `${game.side1Score}:${game.side2Score}`).join(' / ')
             : '-',
@@ -794,6 +821,60 @@ export class PublicService {
     };
   }
 
+  private computePublicCourtDisplayState(events: Array<{ note: string | null; createdAt: Date }>): {
+    side1CourtSide: CourtSide;
+    side2CourtSide: CourtSide;
+    swapCount: number;
+  } {
+    const swapCount = [...events]
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+      .filter((event) => this.decodePublicCourtSwapNote(event.note) !== null)
+      .length;
+    const swapped = swapCount % 2 === 1;
+    return {
+      side1CourtSide: swapped ? 'right' : 'left',
+      side2CourtSide: swapped ? 'left' : 'right',
+      swapCount,
+    };
+  }
+
+  private isPublicCourtEvent(event: { note?: string | null }) {
+    return this.decodePublicCourtSwapNote(event.note) !== null || this.decodePublicCourtSwapRequiredNote(event.note) !== null;
+  }
+
+  private decodePublicCourtSwapNote(note?: string | null) {
+    if (!note?.startsWith(COURT_SWAP_NOTE_PREFIX)) return null;
+    const gameNo = Number(note.slice(COURT_SWAP_NOTE_PREFIX.length));
+    return Number.isFinite(gameNo) ? gameNo : null;
+  }
+
+  private decodePublicCourtSwapRequiredNote(note?: string | null) {
+    if (!note?.startsWith(COURT_SWAP_REQUIRED_NOTE_PREFIX)) return null;
+    const gameNo = Number(note.slice(COURT_SWAP_REQUIRED_NOTE_PREFIX.length));
+    return Number.isFinite(gameNo) ? gameNo : null;
+  }
+
+  // Classify how a match ended so the bracket / live screen can distinguish
+  // 退赛 / 黑牌取消资格 / 普通弃权. The prefix lives in match.forfeitReason
+  // and is set by the scoring service when forfeitMatch is invoked.
+  private decodeForfeit(reason?: string | null): ForfeitDecode {
+    if (reason?.startsWith(BLACK_CARD_NOTE_PREFIX)) {
+      return {
+        kind: 'black_card',
+        reason: reason.slice(BLACK_CARD_NOTE_PREFIX.length).trim() || '黑牌取消资格',
+        label: '黑牌取消资格',
+      };
+    }
+    if (reason?.startsWith(RETIRE_NOTE_PREFIX)) {
+      return {
+        kind: 'retire',
+        reason: reason.slice(RETIRE_NOTE_PREFIX.length).trim() || '伤退/退赛',
+        label: '退赛',
+      };
+    }
+    return { kind: 'normal', reason: reason ?? null, label: '弃权' };
+  }
+
   private publicActualDurationSeconds(
     startedAt: Date | null,
     finishedAt: Date | null,
@@ -807,8 +888,16 @@ export class PublicService {
   }
 
   private decodePublicMatchPauseNote(note?: string | null): 'START' | 'END' | null {
-    if (note === 'MATCH_PAUSE:START') return 'START';
-    if (note === 'MATCH_PAUSE:END') return 'END';
+    if (
+      note?.startsWith('MATCH_PAUSE:START') ||
+      note?.startsWith('TECHNICAL_PAUSE:START') ||
+      note?.startsWith(`${INTERVAL_REST_NOTE_PREFIX}START`)
+    ) return 'START';
+    if (
+      note?.startsWith('MATCH_PAUSE:END') ||
+      note?.startsWith('TECHNICAL_PAUSE:END') ||
+      note?.startsWith(`${INTERVAL_REST_NOTE_PREFIX}END`)
+    ) return 'END';
     return null;
   }
 
@@ -875,6 +964,8 @@ export class PublicService {
       null;
     const pauseState = this.computePublicPauseState(match.events ?? [], match.finishedAt);
     const matchPaused = pauseState.paused;
+    const courtDisplayState = this.computePublicCourtDisplayState(match.events ?? []);
+    const forfeit = this.decodeForfeit(match.forfeitReason);
 
     return {
       id: match.id,
@@ -891,17 +982,22 @@ export class PublicService {
       finishedAt: match.finishedAt?.toISOString?.() ?? null,
       matchPaused,
       pausedAt: pauseState.pausedAt?.toISOString?.() ?? null,
+      courtDisplayState,
       actualDurationSeconds: this.publicActualDurationSeconds(match.startedAt, match.finishedAt, match.status, pauseState),
       venueName: match.venue?.name ?? '待排场地',
       side1: this.sideName(match.side1Id, registrationMap),
       side2: this.sideName(match.side2Id, registrationMap),
-      score: currentGame ? `${currentGame.side1Score}:${currentGame.side2Score}` : '0:0',
+      score: match.forfeitedSide
+        ? forfeit.label
+        : currentGame ? `${currentGame.side1Score}:${currentGame.side2Score}` : '0:0',
       games: games.map((game: { gameNo: number; side1Score: number; side2Score: number; winnerSide: number | null }) => ({
         gameNo: game.gameNo,
         score: `${game.side1Score}:${game.side2Score}`,
         winnerSide: game.winnerSide,
       })),
-      gamesText: games.length
+      gamesText: match.forfeitedSide
+        ? `${this.sideName(match.forfeitedSide === 1 ? match.side1Id : match.side2Id, registrationMap)} ${forfeit.label}`
+        : games.length
         ? games.map((game: { side1Score: number; side2Score: number }) => `${game.side1Score}:${game.side2Score}`).join(' / ')
         : '-',
       winnerSide: match.winnerSide,
@@ -909,7 +1005,9 @@ export class PublicService {
         ? this.sideName(match.winnerSide === 1 ? match.side1Id : match.side2Id, registrationMap)
         : null,
       forfeitedSide: match.forfeitedSide ?? null,
-      forfeitReason: match.forfeitReason ?? null,
+      forfeitKind: match.forfeitedSide ? forfeit.kind : null,
+      forfeitLabel: match.forfeitedSide ? forfeit.label : null,
+      forfeitReason: match.forfeitedSide ? forfeit.reason : null,
       updatedAt: match.updatedAt?.toISOString?.() ?? null,
     };
   }

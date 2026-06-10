@@ -166,6 +166,12 @@ function MatchCard({ bracket, match }: { bracket: KnockoutBracketData; match: Br
   const status = normalizeStatus(String(match.status));
   const paused = Boolean(match.matchPaused);
   const score = parseScore(match);
+  const displaySwapped = status === 'LIVE' && match.courtDisplayState?.side1CourtSide === 'right';
+  const leftSide = displaySwapped ? side2 : side1;
+  const rightSide = displaySwapped ? side1 : side2;
+  const displayScore = displaySwapped
+    ? { left: score.right, right: score.left, detail: score.detail }
+    : score;
   const side1Winner = match.winnerSide === 1 || match.winnerId === match.side1Id;
   const side2Winner = match.winnerSide === 2 || match.winnerId === match.side2Id;
 
@@ -187,10 +193,10 @@ function MatchCard({ bracket, match }: { bracket: KnockoutBracketData; match: Br
 
       <div className="grid grid-cols-[1fr_auto_1fr] items-stretch gap-3">
         <ScoreSide
-          name={playerName(side1)}
-          players={playersFor(side1)}
-          score={score.left}
-          winner={side1Winner}
+          name={playerName(leftSide)}
+          players={playersFor(leftSide)}
+          score={displayScore.left}
+          winner={displaySwapped ? side2Winner : side1Winner}
           align="left"
         />
         <div className="flex min-w-[58px] flex-col items-center justify-center rounded-lg bg-slate-950/56 px-2">
@@ -201,10 +207,10 @@ function MatchCard({ bracket, match }: { bracket: KnockoutBracketData; match: Br
           </span>
         </div>
         <ScoreSide
-          name={playerName(side2)}
-          players={playersFor(side2)}
-          score={score.right}
-          winner={side2Winner}
+          name={playerName(rightSide)}
+          players={playersFor(rightSide)}
+          score={displayScore.right}
+          winner={displaySwapped ? side1Winner : side2Winner}
           align="right"
         />
       </div>
@@ -304,6 +310,10 @@ export function LiveScreenClient({
     socket.on('disconnect', () => setSocketState('offline'));
     socket.on('connect_error', () => setSocketState('offline'));
     socket.on('scoreboard:update', () => {
+      void reload();
+    });
+    // Bracket advance / forfeit / clear events from the scoring service.
+    socket.on('bracket:update', () => {
       void reload();
     });
     const timer = window.setInterval(() => {

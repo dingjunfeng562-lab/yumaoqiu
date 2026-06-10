@@ -6,6 +6,7 @@ import { useSession } from 'next-auth/react';
 import { Button, Popconfirm, Select, Space, Table, Tag, Typography, message, Modal, Input } from 'antd';
 import { CheckOutlined, CloseOutlined, TeamOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
+import CompetitionEmailSettingsCard from '@/components/admin/CompetitionEmailSettingsCard';
 
 type Competition = {
   id: string;
@@ -71,6 +72,25 @@ export default function AdminCompetitionRegistrationsPage() {
   const [loading, setLoading] = useState(false);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState('');
+
+  // 邮件通知设置模块仅总管理员可见；普通管理员既不渲染也无法调用相关接口（后端 403）
+  const sessionRole = (session?.user as { role?: string } | undefined)?.role;
+  const [liveRole, setLiveRole] = useState<string | undefined>(sessionRole);
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    apiFetch<{ role?: string }>('/auth/me', { token })
+      .then((me) => {
+        if (!cancelled && me?.role) setLiveRole(me.role);
+      })
+      .catch(() => {
+        /* 保持 session 中的角色 */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+  const isSuperAdmin = (liveRole ?? sessionRole) === 'SUPER_ADMIN';
 
   const loadData = useCallback(async () => {
     if (!token || !id) return;
@@ -245,6 +265,9 @@ export default function AdminCompetitionRegistrationsPage() {
         loading={loading}
         pagination={{ pageSize: 20 }}
       />
+      {isSuperAdmin && token && id ? (
+        <CompetitionEmailSettingsCard competitionId={id} token={token} />
+      ) : null}
       <Modal
         title="填写驳回原因"
         open={Boolean(rejectingId)}

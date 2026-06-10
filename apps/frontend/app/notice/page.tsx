@@ -1,4 +1,5 @@
 import { PortalFeaturePage } from '@/components/home/PortalFeaturePage';
+import { isRichAnnouncementContent, sanitizeAnnouncementHtml } from '@/lib/announcement-html';
 
 export const dynamic = 'force-dynamic';
 
@@ -64,9 +65,16 @@ export default async function NoticePage() {
                 </time>
               </div>
               <h2 className="mt-4 text-xl font-black text-slate-950">{announcement.title}</h2>
-              <p className="mt-3 whitespace-pre-line text-sm font-semibold leading-7 text-slate-600">
-                {announcement.content}
-              </p>
+              {isRichAnnouncementContent(announcement.content) ? (
+                <div
+                  className="global-announcement-modal__content--rich mt-3 text-sm leading-7 text-slate-600"
+                  dangerouslySetInnerHTML={{ __html: sanitizeAnnouncementHtml(announcement.content) }}
+                />
+              ) : (
+                <p className="mt-3 whitespace-pre-line text-sm font-semibold leading-7 text-slate-600">
+                  {announcement.content}
+                </p>
+              )}
             </article>
           ))}
         </div>

@@ -1,7 +1,8 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { PortalFeaturePage } from '@/components/home/PortalFeaturePage';
-import { KnockoutBracket, type KnockoutBracketData } from '@/components/bracket/KnockoutBracket';
+import type { KnockoutBracketData } from '@/components/bracket/KnockoutBracket';
+import { LiveBracketsSection } from '@/components/bracket/LiveBracketsSection';
 
 export const dynamic = 'force-dynamic';
 
@@ -142,11 +143,11 @@ export default async function CompetitionDetailPage({ params }: { params: Promis
           </article>
 
           <section className="rounded-xl border border-blue-100 bg-white p-5 shadow-sm sm:p-6">
-            <div className="flex items-baseline justify-between">
+            <div className="flex flex-col items-center text-center">
               <h3 className="text-lg font-black text-slate-900">赛事简介</h3>
-              <span className="text-xs font-semibold text-slate-400">Introduction</span>
+              <span className="mt-1 text-xs font-semibold text-slate-400">Introduction</span>
             </div>
-            <div className="mt-4 whitespace-pre-wrap text-sm font-medium leading-7 text-slate-700">
+            <div className="mx-auto mt-4 max-w-3xl whitespace-pre-wrap text-center text-sm font-medium leading-7 text-slate-700">
               {description || <span className="text-slate-400">暂无简介,后台未填写说明。</span>}
             </div>
           </section>
@@ -250,16 +251,7 @@ export default async function CompetitionDetailPage({ params }: { params: Promis
             {brackets.length ? `共 ${brackets.length} 个项目` : ''}
           </span>
         </div>
-        {brackets.length ? (
-          brackets.map((bracket) => <KnockoutBracket key={bracket.id} data={bracket} />)
-        ) : (
-          <div className="rounded-xl border border-dashed border-blue-200 bg-white px-5 py-8 text-center shadow-sm sm:py-10">
-            <p className="text-sm font-black text-slate-700">该赛事未发布对阵表</p>
-            <p className="mt-1 text-xs font-semibold text-slate-500">
-              报名截止并完成抽签后,这里会自动展示完整的淘汰赛签表。
-            </p>
-          </div>
-        )}
+        <LiveBracketsSection tournamentId={competition.id} initialBrackets={brackets} />
       </section>
     </PortalFeaturePage>
   );

@@ -2,7 +2,14 @@ import { Injectable } from '@nestjs/common';
 
 @Injectable()
 export class AppService {
-  getHello(): string {
-    return 'Hello World!';
+  getFrontendUrl(): string {
+    return process.env.FRONTEND_URL ?? 'http://localhost:3000';
+  }
+
+  getHealth() {
+    return {
+      status: 'ok',
+      service: 'backend',
+    };
   }
 }

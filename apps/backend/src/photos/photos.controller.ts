@@ -26,7 +26,9 @@ type AuthedRequest = {
 };
 
 const MAX_FILES = 20;
-const MAX_FILE_SIZE = 10 * 1024 * 1024;
+// 50MB per file so high-resolution DSLR / phone photos of any size upload
+// without being rejected.
+const MAX_FILE_SIZE = 50 * 1024 * 1024;
 
 @Controller()
 export class PhotosController {

@@ -41,6 +41,8 @@ export type BracketMatch = {
   winnerId?: string | null;
   winnerSide?: 1 | 2 | number | null;
   forfeitedSide?: 1 | 2 | number | null;
+  forfeitKind?: 'normal' | 'retire' | 'black_card' | null;
+  forfeitLabel?: '弃权' | '退赛' | '黑牌取消资格' | null;
   forfeitReason?: string | null;
   score?: string | null;
   gamesText?: string | null;
@@ -52,6 +54,11 @@ export type BracketMatch = {
   durationMinutes?: number | null;
   matchPaused?: boolean;
   pausedAt?: string | null;
+  courtDisplayState?: {
+    side1CourtSide: 'left' | 'right';
+    side2CourtSide: 'left' | 'right';
+    swapCount: number;
+  } | null;
   actualDurationSeconds?: number | null;
   latestEvents?: BracketMatchEvent[];
   detailLines?: string[];
@@ -1537,7 +1544,7 @@ function MatchDetailModal({
           <dl className="grid grid-cols-2 gap-2.5 text-sm">
             <ModalFact
               label="状态"
-              value={match.forfeitedSide ? '弃权' : isPaused ? '比赛暂停' : statusText(match.status)}
+              value={match.forfeitedSide ? (match.forfeitLabel ?? '弃权') : isPaused ? '比赛暂停' : statusText(match.status)}
               highlight={isLive || !!match.forfeitedSide}
               highlightTone={isPaused ? 'amber' : 'red'}
             />
@@ -1578,7 +1585,7 @@ function MatchDetailModal({
               </svg>
               <div className="min-w-0">
                 <p className="text-xs font-black text-red-700">
-                  {match.forfeitedSide === 1 ? side1?.name : side2?.name} 弃权
+                  {match.forfeitedSide === 1 ? side1?.name : side2?.name} {match.forfeitLabel ?? '弃权'}
                 </p>
                 {match.forfeitReason ? (
                   <p className="mt-0.5 text-xs font-semibold text-red-600/80">{match.forfeitReason}</p>

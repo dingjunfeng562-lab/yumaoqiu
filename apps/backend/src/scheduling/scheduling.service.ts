@@ -388,12 +388,20 @@ export class SchedulingService {
     return matches.map<ScheduleMatch>((match) => {
       const dependencyMatchIds = this.dependencyMatches(match, matchMap).map((item) => item.id);
       const dependenciesReady = this.dependenciesReady(match, matchMap);
-      const hasFullSchedule = Boolean(match.scheduledAt && match.venueId && match.side1Id && match.side2Id && dependenciesReady);
+      // Dependency readiness is informational only — future-round matches can
+      // be auto-scheduled before upstream finishes (autoSchedule projects the
+      // release time from upstream scheduledAt + duration + break). We only
+      // flag the truly inconsistent "COMPLETED without ready dependencies"
+      // case as WAITING_SCHEDULE; everything else just tracks slot+time
+      // assignment, which is what the bracket fill / referee actually depends
+      // on.
+      const hasFullSchedule = Boolean(match.scheduledAt && match.venueId);
       const scheduleStatus =
-        (match.status === MatchStatus.PENDING && !hasFullSchedule) ||
-        (match.status === MatchStatus.COMPLETED && !dependenciesReady)
+        match.status === MatchStatus.PENDING && !hasFullSchedule
           ? 'WAITING_SCHEDULE'
-          : match.status;
+          : match.status === MatchStatus.COMPLETED && !dependenciesReady
+            ? 'WAITING_SCHEDULE'
+            : match.status;
       return {
         id: match.id,
         eventId: match.eventId,
@@ -424,6 +432,8 @@ export class SchedulingService {
     const conflicts: ConflictItem[] = [];
 
     for (const match of matches) {
+      // Real data inconsistency: a match was recorded as finished but the
+      // upstream slot is no longer ready (e.g. an earlier match got reset).
       if (match.status === MatchStatus.COMPLETED && !match.dependenciesReady) {
         conflicts.push({
           type: 'DEPENDENCY',
@@ -435,16 +445,11 @@ export class SchedulingService {
 
       if (match.status !== MatchStatus.PENDING) continue;
 
-      const lacksSides = !match.side1Id || !match.side2Id;
+      // Future-round matches are allowed to lack side1/side2 — they will be
+      // filled by advanceSingleEliminationWinner once upstream finishes. Only
+      // surface UNSCHEDULED when neither a time slot nor a venue is assigned,
+      // so admins still see what's truly waiting for a manual / auto slot.
       const lacksSchedule = !match.scheduledAt || !match.venueId;
-      if (!match.dependenciesReady || lacksSides) {
-        conflicts.push({
-          type: match.scheduledAt || match.venueId ? 'DEPENDENCY' : 'UNSCHEDULED',
-          matchIds: [match.id],
-          message: `${match.eventTypeLabel} ${match.round} 第${match.matchNo}场前置未完成或选手未确定`,
-        });
-        continue;
-      }
       if (lacksSchedule) {
         conflicts.push({
           type: 'UNSCHEDULED',

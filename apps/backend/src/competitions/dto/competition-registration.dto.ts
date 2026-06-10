@@ -11,12 +11,24 @@ export class CompetitionRegistrationEventItemDto {
   partnerName?: string;
 
   @IsOptional()
+  @IsIn(['MALE', 'FEMALE', '男', '女'])
+  partnerGender?: 'MALE' | 'FEMALE' | '男' | '女';
+
+  @IsOptional()
   @IsString()
   partnerStudentId?: string;
 
   @IsOptional()
   @IsString()
+  partnerSchool?: string;
+
+  @IsOptional()
+  @IsString()
   partnerClassName?: string;
+
+  @IsOptional()
+  @IsString()
+  partnerContact?: string;
 
   @IsOptional()
   @IsString()
@@ -57,6 +69,72 @@ export class SubmitCompetitionRegistrationDto {
   @ValidateNested({ each: true })
   @Type(() => CompetitionRegistrationEventItemDto)
   items: CompetitionRegistrationEventItemDto[];
+}
+
+export class AdminBatchCompetitionPlayerDto {
+  @IsString()
+  @MinLength(1)
+  name: string;
+
+  @IsIn(['MALE', 'FEMALE', '男', '女'])
+  gender: 'MALE' | 'FEMALE' | '男' | '女';
+
+  @IsString()
+  @MinLength(1)
+  studentId: string;
+
+  @IsString()
+  @MinLength(1)
+  school: string;
+
+  @IsString()
+  @MinLength(1)
+  className: string;
+
+  @IsString()
+  @MinLength(1)
+  contact: string;
+
+  @IsOptional()
+  @IsString()
+  teamName?: string;
+
+  @IsOptional()
+  @IsString()
+  partnerName?: string;
+
+  @IsOptional()
+  @IsIn(['MALE', 'FEMALE', '男', '女'])
+  partnerGender?: 'MALE' | 'FEMALE' | '男' | '女';
+
+  @IsOptional()
+  @IsString()
+  partnerStudentId?: string;
+
+  @IsOptional()
+  @IsString()
+  partnerSchool?: string;
+
+  @IsOptional()
+  @IsString()
+  partnerClassName?: string;
+
+  @IsOptional()
+  @IsString()
+  partnerContact?: string;
+}
+
+export class AdminBatchCompetitionPlayersDto {
+  @IsString()
+  @MinLength(1)
+  eventId: string;
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(500)
+  @ValidateNested({ each: true })
+  @Type(() => AdminBatchCompetitionPlayerDto)
+  players: AdminBatchCompetitionPlayerDto[];
 }
 
 export class RejectRegistrationDto {
