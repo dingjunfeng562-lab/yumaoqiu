@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { message } from 'antd';
 
 // 公告富文本编辑器（仿 timidc.cn 公告后台）。
@@ -30,11 +30,23 @@ type RichTextEditorProps = {
   value?: string;
   onChange?: (html: string) => void;
   placeholder?: string;
+  imageUploadUrl?: string;
+  imageUploadHeaders?: HeadersInit;
+  imageUploadMaxSizeMb?: number;
 };
 
-export function RichTextEditor({ value, onChange, placeholder }: RichTextEditorProps) {
+export function RichTextEditor({
+  value,
+  onChange,
+  placeholder,
+  imageUploadUrl,
+  imageUploadHeaders,
+  imageUploadMaxSizeMb = 2,
+}: RichTextEditorProps) {
   const editorRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const savedRangeRef = useRef<Range | null>(null);
+  const [uploadingImage, setUploadingImage] = useState(false);
 
   // 外部值变化时同步进编辑器；编辑中（值相同）不动 DOM，避免光标跳走。
   useEffect(() => {
@@ -80,6 +92,90 @@ export function RichTextEditor({ value, onChange, placeholder }: RichTextEditorP
     range.selectNodeContents(node);
     sel.addRange(range);
     savedRangeRef.current = range.cloneRange();
+  }
+
+  function insertImage(src: string) {
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    const restored = restoreRange();
+    const range = restored ?? document.createRange();
+    if (!restored) {
+      range.selectNodeContents(editor);
+      range.collapse(false);
+    }
+
+    const wrapper = document.createElement('div');
+    wrapper.style.textAlign = 'center';
+
+    const image = document.createElement('img');
+    image.src = src;
+    image.alt = '';
+    image.loading = 'lazy';
+    image.style.maxWidth = '100%';
+    image.style.height = 'auto';
+    image.style.borderRadius = '8px';
+    image.style.display = 'inline-block';
+    image.style.margin = '8px auto';
+
+    wrapper.appendChild(image);
+    range.deleteContents();
+    range.insertNode(wrapper);
+
+    const nextLine = document.createElement('p');
+    nextLine.appendChild(document.createElement('br'));
+    wrapper.after(nextLine);
+    reselect(nextLine);
+    emitChange();
+  }
+
+  function resolveUploadedImageUrl(url: string) {
+    const trimmed = url.trim();
+    if (!trimmed || !imageUploadUrl) return trimmed;
+    if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith('//')) return trimmed;
+    if (!trimmed.startsWith('/')) return trimmed;
+    try {
+      return `${new URL(imageUploadUrl, window.location.href).origin}${trimmed}`;
+    } catch {
+      return trimmed;
+    }
+  }
+
+  async function handleImageUpload(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || !imageUploadUrl) return;
+
+    if (!/^image\/(png|jpe?g)$/.test(file.type)) {
+      message.error('仅支持 jpg / png 图片');
+      return;
+    }
+
+    if (file.size / 1024 / 1024 > imageUploadMaxSizeMb) {
+      message.error(`图片需小于 ${imageUploadMaxSizeMb}MB`);
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', file);
+    setUploadingImage(true);
+    try {
+      const res = await fetch(imageUploadUrl, {
+        method: 'POST',
+        headers: imageUploadHeaders,
+        body: formData,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.url) {
+        throw new Error(data?.message ?? '图片上传失败');
+      }
+      insertImage(resolveUploadedImageUrl(String(data.url)));
+      message.success('图片已插入');
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '图片上传失败');
+    } finally {
+      setUploadingImage(false);
+    }
   }
 
   function closestBlock(node: Node, editor: HTMLElement) {
@@ -200,6 +296,25 @@ export function RichTextEditor({ value, onChange, placeholder }: RichTextEditorP
         <button type="button" onMouseDown={keepSelection} onClick={() => applyAlignment('center')}>
           居中
         </button>
+        {imageUploadUrl ? (
+          <>
+            <button
+              type="button"
+              onMouseDown={keepSelection}
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploadingImage}
+            >
+              {uploadingImage ? '上传中...' : '插入图片'}
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/jpeg,image/png"
+              hidden
+              onChange={handleImageUpload}
+            />
+          </>
+        ) : null}
         {COLOR_PRESETS.map((color) => (
           <button
             key={color.value}

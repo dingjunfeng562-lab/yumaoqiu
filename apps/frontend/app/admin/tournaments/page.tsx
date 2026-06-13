@@ -35,6 +35,7 @@ import {
   UploadOutlined,
 } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
+import { RichTextEditor } from '@/components/RichTextEditor';
 import dayjs, { Dayjs } from 'dayjs';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL!;
@@ -761,7 +762,11 @@ export default function TournamentsPage() {
               </Upload>
             </Form.Item>
             <Form.Item name="description" label="赛事简介">
-              <Input.TextArea rows={5} placeholder="显示在公开页，可填写赛事背景、参赛对象、奖励设置等内容。" />
+              <RichTextEditor
+                placeholder="显示在公开页，可填写赛事背景、参赛对象、奖励设置等内容；选中文字可设置样式，也可插入图片"
+                imageUploadUrl={`${API_BASE}/tournaments/upload-cover`}
+                imageUploadHeaders={token ? { Authorization: `Bearer ${token}` } : undefined}
+              />
             </Form.Item>
             {isSuperAdmin ? (
               <Form.Item name="showOnHome" label="首页展示" valuePropName="checked">

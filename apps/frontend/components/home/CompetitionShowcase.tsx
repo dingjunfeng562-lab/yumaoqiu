@@ -1,6 +1,7 @@
 import Image from 'next/image';
 import Link from 'next/link';
 import type { PlatformCompetition } from './types';
+import { announcementPlainText } from '@/lib/announcement-html';
 
 const statusClass: Record<string, string> = {
   报名中: 'bg-emerald-100 text-emerald-700 ring-emerald-200',
@@ -23,7 +24,7 @@ function formatSummary(competition: PlatformCompetition) {
 }
 
 function introSummary(competition: PlatformCompetition) {
-  const text = competition.description?.replace(/\s+/g, ' ').trim();
+  const text = announcementPlainText(competition.description ?? '').replace(/\s+/g, ' ').trim();
   if (text) return text;
   return '查看比赛项目、报名状态、参赛选手与后续赛程安排。';
 }

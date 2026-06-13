@@ -18,6 +18,7 @@ const ALLOWED_TAGS = new Set([
   'ul',
   'ol',
   'li',
+  'img',
 ]);
 
 const ALLOWED_STYLE_PROPS = new Set([
@@ -27,6 +28,12 @@ const ALLOWED_STYLE_PROPS = new Set([
   'font-size',
   'text-decoration',
   'text-align',
+  'max-width',
+  'width',
+  'height',
+  'border-radius',
+  'display',
+  'margin',
 ]);
 
 function escapeAttr(value: string) {
@@ -57,6 +64,14 @@ function sanitizeHref(href: string) {
   return null;
 }
 
+function sanitizeImageSrc(src: string) {
+  const trimmed = src.trim();
+  if (/^(https?:)?\/\//i.test(trimmed) || trimmed.startsWith('/api/uploads/') || trimmed.startsWith('/uploads/')) {
+    return trimmed;
+  }
+  return null;
+}
+
 export function sanitizeAnnouncementContent(html: string) {
   let out = html
     .replace(/<!--[\s\S]*?-->/g, '')
@@ -67,7 +82,7 @@ export function sanitizeAnnouncementContent(html: string) {
     (match, rawTag: string, rawAttrs: string) => {
       const tag = rawTag.toLowerCase();
       if (!ALLOWED_TAGS.has(tag)) return '';
-      if (match.startsWith('</')) return `</${tag}>`;
+      if (match.startsWith('</')) return tag === 'img' ? '' : `</${tag}>`;
 
       const attrs: string[] = [];
       const attrRe = /([a-zA-Z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g;
@@ -88,8 +103,18 @@ export function sanitizeAnnouncementContent(html: string) {
               attrs.push('target="_blank"', 'rel="noopener noreferrer"');
             }
           }
+        } else if (tag === 'img' && name === 'src') {
+          const safe = sanitizeImageSrc(value);
+          if (safe) attrs.push(`src="${escapeAttr(safe)}"`);
+        } else if (tag === 'img' && (name === 'alt' || name === 'title')) {
+          attrs.push(`${name}="${escapeAttr(value.slice(0, 120))}"`);
+        } else if (tag === 'img' && name === 'loading') {
+          if (value === 'lazy' || value === 'eager') attrs.push(`loading="${value}"`);
+        } else if (tag === 'img' && (name === 'width' || name === 'height')) {
+          if (/^\d{1,4}$/.test(value)) attrs.push(`${name}="${value}"`);
         }
       }
+      if (tag === 'img' && !attrs.some((attr) => attr.startsWith('src='))) return '';
       return `<${tag}${attrs.length ? ` ${attrs.join(' ')}` : ''}>`;
     },
   );

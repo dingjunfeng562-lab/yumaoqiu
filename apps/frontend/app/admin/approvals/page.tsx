@@ -21,6 +21,7 @@ import {
 import { CheckCircleOutlined, CloseCircleOutlined, ReloadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { apiFetch } from '@/lib/api';
+import { announcementPlainText } from '@/lib/announcement-html';
 
 const SUPER_ADMIN_ROLE = 'SUPER_ADMIN';
 
@@ -326,7 +327,7 @@ export default function ApprovalsPage() {
                         ellipsis={{ rows: 2, expandable: true, symbol: '展开' }}
                         style={{ marginTop: 12, marginBottom: 0 }}
                       >
-                        {record.description}
+                        {announcementPlainText(record.description)}
                       </Typography.Paragraph>
                     ) : null}
 

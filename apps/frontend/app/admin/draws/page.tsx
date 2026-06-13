@@ -516,6 +516,22 @@ export default function DrawsPage() {
     }
   }
 
+  function updateEventDrawState(
+    eventId: string,
+    nextState: Partial<Pick<EventItem, 'drawLocked' | 'drawPublished' | 'drawGeneratedAt'>>,
+  ) {
+    setEvents((prev) =>
+      prev.map((event) =>
+        event.id === eventId
+          ? {
+              ...event,
+              ...nextState,
+            }
+          : event,
+      ),
+    );
+  }
+
   async function refreshDraw() {
     if (!token || !selectedEventId) return;
     const [registrationData, bracketData] = await Promise.all([
@@ -525,18 +541,11 @@ export default function DrawsPage() {
     setRegistrations(registrationData);
     setBracket(bracketData);
     loadRedrawRequests(selectedEventId);
-    setEvents((prev) =>
-      prev.map((event) =>
-        event.id === selectedEventId
-          ? {
-              ...event,
-              drawLocked: bracketData.event.drawLocked,
-              drawPublished: bracketData.event.drawPublished,
-              drawGeneratedAt: bracketData.event.drawGeneratedAt,
-            }
-          : event,
-      ),
-    );
+    updateEventDrawState(selectedEventId, {
+      drawLocked: bracketData.event.drawLocked,
+      drawPublished: bracketData.event.drawPublished,
+      drawGeneratedAt: bracketData.event.drawGeneratedAt,
+    });
   }
 
   useEffect(() => {
@@ -645,10 +654,15 @@ export default function DrawsPage() {
     if (!selectedEventId) return;
     setLoading(true);
     try {
-      await apiFetch(`/events/${selectedEventId}/draw`, {
+      await apiFetch(force ? `/events/${selectedEventId}/draw/redraw` : `/events/${selectedEventId}/draw`, {
         method: 'POST',
         token,
-        body: JSON.stringify({ force }),
+        body: JSON.stringify(force ? { confirm: true } : { force }),
+      });
+      updateEventDrawState(selectedEventId, {
+        drawLocked: false,
+        drawPublished: false,
+        drawGeneratedAt: new Date().toISOString(),
       });
       await refreshDraw();
       setSwapPosA(undefined);
@@ -668,6 +682,10 @@ export default function DrawsPage() {
         method: 'POST',
         token,
         body: JSON.stringify({ drawId: bracket.currentDraw.id }),
+      });
+      updateEventDrawState(selectedEventId, {
+        drawLocked: publish,
+        drawPublished: publish,
       });
       await refreshDraw();
       message.success(publish ? '对阵图已发布，公众可查看' : '已取消发布，对阵图不再公开显示');
@@ -700,6 +718,11 @@ export default function DrawsPage() {
       await apiFetch(`/draw/redraw-requests/${request.id}/approve`, {
         method: 'POST',
         token,
+      });
+      updateEventDrawState(request.eventItemId, {
+        drawLocked: false,
+        drawPublished: false,
+        drawGeneratedAt: new Date().toISOString(),
       });
       message.success('已同意申请，重抽已完成（未发布）');
       await refreshDraw();

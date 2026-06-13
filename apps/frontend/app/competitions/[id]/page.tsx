@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation';
 import { PortalFeaturePage } from '@/components/home/PortalFeaturePage';
 import type { KnockoutBracketData } from '@/components/bracket/KnockoutBracket';
 import { LiveBracketsSection } from '@/components/bracket/LiveBracketsSection';
+import { isRichAnnouncementContent, sanitizeAnnouncementHtml } from '@/lib/announcement-html';
 
 export const dynamic = 'force-dynamic';
 
@@ -100,6 +101,9 @@ export default async function CompetitionDetailPage({ params }: { params: Promis
     [];
 
   const description = (competition.description ?? '').trim();
+  const richDescription = description && isRichAnnouncementContent(description)
+    ? sanitizeAnnouncementHtml(description)
+    : null;
   const notice = (competition.registrationNotice ?? '').trim();
   const cover = normalizeCover(competition.coverImage);
 
@@ -147,9 +151,16 @@ export default async function CompetitionDetailPage({ params }: { params: Promis
               <h3 className="text-lg font-black text-slate-900">赛事简介</h3>
               <span className="mt-1 text-xs font-semibold text-slate-400">Introduction</span>
             </div>
-            <div className="mx-auto mt-4 max-w-3xl whitespace-pre-wrap text-center text-sm font-medium leading-7 text-slate-700">
-              {description || <span className="text-slate-400">暂无简介,后台未填写说明。</span>}
-            </div>
+            {richDescription ? (
+              <div
+                className="rich-public-content mx-auto mt-4 max-w-3xl text-sm font-medium leading-7 text-slate-700"
+                dangerouslySetInnerHTML={{ __html: richDescription }}
+              />
+            ) : (
+              <div className="mx-auto mt-4 max-w-3xl whitespace-pre-wrap text-center text-sm font-medium leading-7 text-slate-700">
+                {description || <span className="text-slate-400">暂无简介,后台未填写说明。</span>}
+              </div>
+            )}
           </section>
 
           {notice ? (

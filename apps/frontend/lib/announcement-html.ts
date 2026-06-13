@@ -18,6 +18,7 @@ const ALLOWED_TAGS = new Set([
   'ul',
   'ol',
   'li',
+  'img',
 ]);
 
 const ALLOWED_STYLE_PROPS = new Set([
@@ -27,6 +28,12 @@ const ALLOWED_STYLE_PROPS = new Set([
   'font-size',
   'text-decoration',
   'text-align',
+  'max-width',
+  'width',
+  'height',
+  'border-radius',
+  'display',
+  'margin',
 ]);
 
 function escapeAttr(value: string) {
@@ -57,6 +64,14 @@ function sanitizeHref(href: string) {
   return null;
 }
 
+function sanitizeImageSrc(src: string) {
+  const trimmed = src.trim();
+  if (/^(https?:)?\/\//i.test(trimmed) || trimmed.startsWith('/api/uploads/') || trimmed.startsWith('/uploads/')) {
+    return trimmed;
+  }
+  return null;
+}
+
 /** 判断公告内容是否为富文本 HTML（旧公告是纯文本，按原样式渲染） */
 export function isRichAnnouncementContent(content: string) {
   return /<([a-z][a-z0-9]*)\b[^>]*>/i.test(content);
@@ -68,34 +83,48 @@ export function sanitizeAnnouncementHtml(html: string) {
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/<(script|style|iframe|object|embed|textarea|title)\b[\s\S]*?<\/\1\s*>/gi, '');
 
-  out = out.replace(/<\/?([a-zA-Z][a-zA-Z0-9]*)((?:[^>"']|"[^"]*"|'[^']*')*)\/?>/g, (match, rawTag: string, rawAttrs: string) => {
-    const tag = rawTag.toLowerCase();
-    if (!ALLOWED_TAGS.has(tag)) return '';
-    if (match.startsWith('</')) return `</${tag}>`;
+  out = out.replace(
+    /<\/?([a-zA-Z][a-zA-Z0-9]*)((?:[^>"']|"[^"]*"|'[^']*')*)\/?>/g,
+    (match, rawTag: string, rawAttrs: string) => {
+      const tag = rawTag.toLowerCase();
+      if (!ALLOWED_TAGS.has(tag)) return '';
+      if (match.startsWith('</')) return tag === 'img' ? '' : `</${tag}>`;
 
-    const attrs: string[] = [];
-    const attrRe = /([a-zA-Z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g;
-    let m: RegExpExecArray | null;
-    while ((m = attrRe.exec(rawAttrs))) {
-      const name = m[1].toLowerCase();
-      const value = m[2] ?? m[3] ?? m[4] ?? '';
-      if (name === 'style') {
-        const cleaned = sanitizeStyle(value);
-        if (cleaned) attrs.push(`style="${escapeAttr(cleaned)}"`);
-      } else if (name === 'color' && tag === 'font') {
-        if (/^#?[a-zA-Z0-9(),.%\s-]+$/.test(value)) attrs.push(`color="${escapeAttr(value)}"`);
-      } else if (name === 'href' && tag === 'a') {
-        const safe = sanitizeHref(value);
-        if (safe) {
-          attrs.push(`href="${escapeAttr(safe)}"`);
-          if (!safe.startsWith('/') && !safe.startsWith('#')) {
-            attrs.push('target="_blank"', 'rel="noopener noreferrer"');
+      const attrs: string[] = [];
+      const attrRe = /([a-zA-Z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g;
+      let m: RegExpExecArray | null;
+      while ((m = attrRe.exec(rawAttrs))) {
+        const name = m[1].toLowerCase();
+        const value = m[2] ?? m[3] ?? m[4] ?? '';
+        if (name === 'style') {
+          const cleaned = sanitizeStyle(value);
+          if (cleaned) attrs.push(`style="${escapeAttr(cleaned)}"`);
+        } else if (name === 'color' && tag === 'font') {
+          if (/^#?[a-zA-Z0-9(),.%\s-]+$/.test(value)) attrs.push(`color="${escapeAttr(value)}"`);
+        } else if (name === 'href' && tag === 'a') {
+          const safe = sanitizeHref(value);
+          if (safe) {
+            attrs.push(`href="${escapeAttr(safe)}"`);
+            if (!safe.startsWith('/') && !safe.startsWith('#')) {
+              attrs.push('target="_blank"', 'rel="noopener noreferrer"');
+            }
           }
+        } else if (tag === 'img' && name === 'src') {
+          const safe = sanitizeImageSrc(value);
+          if (safe) attrs.push(`src="${escapeAttr(safe)}"`);
+        } else if (tag === 'img' && (name === 'alt' || name === 'title')) {
+          attrs.push(`${name}="${escapeAttr(value.slice(0, 120))}"`);
+        } else if (tag === 'img' && name === 'loading') {
+          if (value === 'lazy' || value === 'eager') attrs.push(`loading="${value}"`);
+        } else if (tag === 'img' && (name === 'width' || name === 'height')) {
+          if (/^\d{1,4}$/.test(value)) attrs.push(`${name}="${value}"`);
         }
       }
-    }
-    return `<${tag}${attrs.length ? ` ${attrs.join(' ')}` : ''}>`;
-  });
+
+      if (tag === 'img' && !attrs.some((attr) => attr.startsWith('src='))) return '';
+      return `<${tag}${attrs.length ? ` ${attrs.join(' ')}` : ''}>`;
+    },
+  );
 
   return out;
 }

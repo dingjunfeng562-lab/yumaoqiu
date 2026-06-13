@@ -17,6 +17,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateTournamentDto, UpdateTournamentDto } from './dto/tournament.dto';
+import { sanitizeAnnouncementContent } from '../announcements/announcement-content';
 
 export type AuthUser = {
   id: string;
@@ -218,6 +219,12 @@ export class TournamentsService {
     if (dto.registrationStartDate) data.registrationStartDate = new Date(dto.registrationStartDate);
     if (dto.registrationEndDate) data.registrationEndDate = new Date(dto.registrationEndDate);
     if (dto.allowCrossEventRegistration === false) data.maxRegistrationEvents = 1;
+    if (typeof dto.description === 'string') {
+      data.description = sanitizeAnnouncementContent(dto.description.trim());
+    }
+    if (typeof dto.rules === 'string') {
+      data.rules = sanitizeAnnouncementContent(dto.rules.trim());
+    }
     return data;
   }
 
