@@ -2,8 +2,11 @@ import { IsString, IsEnum, IsOptional, IsInt, Min, Max, ValidateNested } from 'c
 import { Type } from 'class-transformer';
 import { EventType, Format, ScoringRule, ScoringMode } from '@prisma/client';
 
-/** 支持分阶段规则的淘汰赛阶段（与 Match.round 标签一致） */
-export const STAGE_SCORING_KEYS = ['QF', 'SF', 'BRONZE', 'F'] as const;
+/**
+ * 支持分阶段规则的键。
+ * QF/TOP4/SF/BRONZE/F 是后台单项管理的可见阶段；BEFORE_TOP4 为旧两段配置兼容键。
+ */
+export const STAGE_SCORING_KEYS = ['BEFORE_TOP4', 'TOP4', 'QF', 'SF', 'BRONZE', 'F'] as const;
 export type StageScoringKey = (typeof STAGE_SCORING_KEYS)[number];
 
 /**
@@ -36,6 +39,16 @@ export class StageScoringRuleDto {
 }
 
 export class StageScoringRulesDto {
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => StageScoringRuleDto)
+  BEFORE_TOP4?: StageScoringRuleDto;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => StageScoringRuleDto)
+  TOP4?: StageScoringRuleDto;
+
   @IsOptional()
   @ValidateNested()
   @Type(() => StageScoringRuleDto)

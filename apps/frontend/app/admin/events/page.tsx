@@ -47,12 +47,13 @@ const SCORING_MODE_LABELS: Record<string, string> = {
   STANDARD_GOLDEN: '标准金球制',
 };
 
-// 与后端 Match.round 标签一致的淘汰赛阶段
+// 分阶段规则按由粗到细的顺序展示；后端按更具体的阶段优先生效。
 const STAGE_DEFS = [
-  { key: 'QF', label: '八强（1/4决赛）', short: '八强' },
-  { key: 'SF', label: '半决赛', short: '半决赛' },
-  { key: 'BRONZE', label: '季军赛', short: '季军赛' },
-  { key: 'F', label: '决赛', short: '决赛' },
+  { key: 'QF', label: '八强', short: '八强', inheritLabel: '默认规则', description: '1/4 决赛、前 8 排名区' },
+  { key: 'TOP4', label: '四强', short: '四强', inheritLabel: '默认规则', description: '半决赛、季军赛、决赛的上级规则' },
+  { key: 'SF', label: '半决赛', short: '半决赛', inheritLabel: '四强规则', description: '未设置时继承四强' },
+  { key: 'BRONZE', label: '季军赛', short: '季军赛', inheritLabel: '四强规则', description: '未设置时继承四强' },
+  { key: 'F', label: '决赛', short: '决赛', inheritLabel: '四强规则', description: '未设置时继承四强' },
 ] as const;
 
 type StageScoringRule = {
@@ -97,6 +98,16 @@ function stageRuleSummary(stage: StageScoringRule) {
     return SCORING_RULE_LABELS[stage.scoringRule] ?? stage.scoringRule;
   }
   return '同默认';
+}
+
+function stageRuleForForm(
+  rules: Record<string, StageScoringRule> | null | undefined,
+  key: (typeof STAGE_DEFS)[number]['key'],
+) {
+  if (!rules) return undefined;
+  if (rules[key]) return rules[key];
+  if (key === 'QF') return rules.BEFORE_TOP4;
+  return undefined;
 }
 
 export default function EventsPage() {
@@ -148,7 +159,7 @@ export default function EventsPage() {
     form.resetFields();
     const stageValues: Record<string, unknown> = {};
     for (const def of STAGE_DEFS) {
-      const stage = e.stageScoringRules?.[def.key];
+      const stage = stageRuleForForm(e.stageScoringRules, def.key);
       if (stage?.customGamePoint) {
         stageValues[`stage_${def.key}_mode`] = 'custom';
         stageValues[`stage_${def.key}_point`] = stage.customGamePoint;
@@ -253,14 +264,17 @@ export default function EventsPage() {
         const base = r.customGamePoint
           ? `自定义：${customRuleSummary(r.customGamePoint, r.customGameCap, r.customGamesToWin)}`
           : SCORING_RULE_LABELS[r.scoringRule] || r.scoringRule;
-        const stages = STAGE_DEFS.filter((def) => r.stageScoringRules?.[def.key]);
+        const stages = STAGE_DEFS.map((def) => ({
+          ...def,
+          rule: stageRuleForForm(r.stageScoringRules, def.key),
+        })).filter((def) => def.rule);
         if (!stages.length) return base;
         return (
           <Space direction="vertical" size={0}>
-            <span>默认（四强前）：{base}</span>
+            <span>默认：{base}</span>
             {stages.map((def) => (
               <Typography.Text key={def.key} type="secondary" style={{ fontSize: 12 }}>
-                {def.short}：{stageRuleSummary(r.stageScoringRules![def.key])}
+                {def.short}：{stageRuleSummary(def.rule!)}
               </Typography.Text>
             ))}
           </Space>
@@ -396,20 +410,20 @@ export default function EventsPage() {
             分阶段规则（可选）
           </Divider>
           <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 12 }}>
-            四强之前的比赛（含小组赛、早期轮次）使用上方默认规则；以下阶段可单独设置一套完整规则。
-            修改会立即影响该阶段未结束的比赛，已结束的比分不变。
+            八强、四强、半决赛、季军赛、决赛可分别设置每局分数、封顶分与胜出局数。
+            半决赛、季军赛、决赛未设置时继承四强；四强和八强未设置时继承默认规则。
           </Typography.Paragraph>
           {STAGE_DEFS.map((def) => (
             <div key={def.key}>
               <Form.Item
                 name={`stage_${def.key}_mode`}
-                label={def.label}
+                label={`${def.label}（${def.description}）`}
                 initialValue="default"
                 style={{ marginBottom: 8 }}
               >
                 <Select
                   options={[
-                    { value: 'default', label: '同默认规则' },
+                    { value: 'default', label: `同${def.inheritLabel}` },
                     ...Object.entries(SCORING_RULE_LABELS).map(([v, l]) => ({ value: v, label: l })),
                     { value: 'custom', label: '自定义局点' },
                   ]}

@@ -72,6 +72,15 @@ type SecondStageEntrant = {
   name: string | null;
 };
 
+type MatchScoringConfig = {
+  scoringRule: ScoringRule;
+  scoringMode: ScoringMode;
+  customGamePoint: number | null;
+  customGameCap: number | null;
+  customGamesToWin: number | null;
+  appliedStage: string | null;
+};
+
 const EVENT_TYPE_LABELS: Record<string, string> = {
   MENS_SINGLES: '男子单打',
   WOMENS_SINGLES: '女子单打',
@@ -156,7 +165,7 @@ export class ScoringService {
     const side1Games = match.games.filter((game) => game.winnerSide === 1).length;
     const side2Games = match.games.filter((game) => game.winnerSide === 2).length;
     const eventType = match.event?.type ?? match.teamCompetitionItem?.eventType ?? 'TEAM_COMPETITION';
-    // 按比赛阶段（QF/SF/BRONZE/F）解析实际生效规则，裁判端与大屏直接显示该场规则
+    // 按比赛阶段解析实际生效规则，裁判端与大屏直接显示该场规则
     const effectiveScoring = this.resolveMatchScoring(match);
     const scoringRule = effectiveScoring.scoringRule;
     const scoringMode = effectiveScoring.scoringMode;
@@ -2094,12 +2103,13 @@ export class ScoringService {
 
   /**
    * 解析某场比赛实际生效的计分规则。
-   * 单项可按淘汰赛阶段（QF/SF/BRONZE/F，与 Match.round 标签一致）覆盖默认规则；
-   * 阶段覆盖是一套独立完整的规则，不继承单项级自定义分数。
-   * 未命中阶段（小组赛、更早轮次、团体赛）使用单项默认规则。
+   * 生效顺序：具体阶段（半决赛/季军赛/决赛）→ 四强 → 八强/默认。
+   * BEFORE_TOP4 是旧两段配置的兼容键。
    */
   private resolveMatchScoring(match: {
     round?: string | null;
+    roundNo?: number | null;
+    matchNo?: number | null;
     event?: {
       scoringRule: ScoringRule;
       scoringMode: ScoringMode;
@@ -2108,15 +2118,8 @@ export class ScoringService {
       customGamesToWin: number | null;
       stageScoringRules?: Prisma.JsonValue | null;
     } | null;
-  }): {
-    scoringRule: ScoringRule;
-    scoringMode: ScoringMode;
-    customGamePoint: number | null;
-    customGameCap: number | null;
-    customGamesToWin: number | null;
-    appliedStage: string | null;
-  } {
-    const base = {
+  }): MatchScoringConfig {
+    const base: MatchScoringConfig = {
       scoringRule: match.event?.scoringRule ?? ScoringRule.TWENTYONE_BO3,
       scoringMode: match.event?.scoringMode ?? ScoringMode.CAPPED_30,
       customGamePoint: match.event?.customGamePoint ?? null,
@@ -2125,11 +2128,86 @@ export class ScoringService {
       appliedStage: null as string | null,
     };
 
-    const round = match.round;
     const raw = match.event?.stageScoringRules;
-    if (!round || !raw || typeof raw !== 'object' || Array.isArray(raw)) return base;
-    const stageRaw = (raw as Record<string, unknown>)[round];
-    if (!stageRaw || typeof stageRaw !== 'object' || Array.isArray(stageRaw)) return base;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return base;
+
+    const rules = raw as Record<string, unknown>;
+    for (const key of this.stageRuleLookupKeys(match)) {
+      const resolved = this.resolveStageScoringRule(rules[key], base, key);
+      if (resolved) return resolved;
+    }
+
+    return base;
+  }
+
+  private stageRuleLookupKeys(match: {
+    round?: string | null;
+    roundNo?: number | null;
+    matchNo?: number | null;
+  }) {
+    const keys: string[] = [];
+    const exactStage = this.exactScoringStageKey(match);
+    if (exactStage) keys.push(exactStage);
+    if (exactStage && ['SF', 'BRONZE', 'F'].includes(exactStage)) keys.push('TOP4');
+    if (exactStage === 'QF') keys.push('BEFORE_TOP4');
+    if (!exactStage && this.isTop4Match(match)) keys.push('TOP4');
+    if (!exactStage && !this.isTop4Match(match)) keys.push('BEFORE_TOP4');
+    return [...new Set(keys)];
+  }
+
+  private exactScoringStageKey(match: {
+    round?: string | null;
+    roundNo?: number | null;
+    matchNo?: number | null;
+  }) {
+    if (
+      typeof match.roundNo === 'number' &&
+      isSecondStageFormalRoundNo(match.roundNo) &&
+      typeof match.matchNo === 'number'
+    ) {
+      if ([5, 6].includes(match.matchNo)) return 'SF';
+      if (match.matchNo === 7) return 'F';
+      if (match.matchNo === 8) return 'BRONZE';
+      return 'QF';
+    }
+
+    const round = match.round?.trim();
+    if (!round || round === 'TOP4' || round === 'BEFORE_TOP4') return null;
+    if (['QF', 'SF', 'BRONZE', 'F'].includes(round)) return round;
+    if (round === '决赛') return 'F';
+    if (round === '三四名决赛') return 'BRONZE';
+    if (round.startsWith('1-4名')) return 'SF';
+    if (round.startsWith('前8') || round.startsWith('5-8名') || round === '五六名决赛' || round === '七八名决赛') {
+      return 'QF';
+    }
+    return null;
+  }
+
+  private isTop4Match(match: {
+    round?: string | null;
+    roundNo?: number | null;
+    matchNo?: number | null;
+  }) {
+    if (
+      typeof match.roundNo === 'number' &&
+      isSecondStageFormalRoundNo(match.roundNo) &&
+      typeof match.matchNo === 'number'
+    ) {
+      return [5, 6, 7, 8].includes(match.matchNo);
+    }
+
+    const round = match.round?.trim();
+    if (!round) return false;
+    if (['SF', 'BRONZE', 'F'].includes(round)) return true;
+    return round === '决赛' || round === '三四名决赛' || round.startsWith('1-4名');
+  }
+
+  private resolveStageScoringRule(
+    stageRaw: unknown,
+    base: MatchScoringConfig,
+    appliedStage: string,
+  ): MatchScoringConfig | null {
+    if (!stageRaw || typeof stageRaw !== 'object' || Array.isArray(stageRaw)) return null;
     const stage = stageRaw as Record<string, unknown>;
 
     const stageRule =
@@ -2143,7 +2221,7 @@ export class ScoringService {
     const customGameCap = toPositiveInt(stage.customGameCap);
     const customGamesToWin = toPositiveInt(stage.customGamesToWin);
 
-    if (!stageRule && !customGamePoint) return base;
+    if (!stageRule && !customGamePoint) return null;
 
     return {
       scoringRule: stageRule ?? base.scoringRule,
@@ -2152,7 +2230,7 @@ export class ScoringService {
       customGamePoint,
       customGameCap,
       customGamesToWin,
-      appliedStage: round,
+      appliedStage,
     };
   }
 

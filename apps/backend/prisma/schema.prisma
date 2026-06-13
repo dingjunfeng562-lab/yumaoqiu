@@ -419,9 +419,9 @@ model Event {
   customGamePoint    Int?
   customGameCap      Int?
   customGamesToWin   Int?
-  /// 分阶段计分规则覆盖（仅单项淘汰赛）：{ QF?: {...}, SF?: {...}, BRONZE?: {...}, F?: {...} }
+  /// 分阶段计分规则覆盖：{ QF?: {...}, TOP4?: {...}, SF?: {...}, BRONZE?: {...}, F?: {...} }；BEFORE_TOP4 为旧两段兼容键
   /// 每个阶段为独立完整规则：{ scoringRule? } 或 { customGamePoint, customGameCap?, customGamesToWin }
-  /// 未配置的阶段（含小组赛、更早轮次）使用上方默认规则
+  /// 未配置的阶段使用上方默认规则
   stageScoringRules  Json?
   defaultMatchMinutes Int?
   groupSize          Int?

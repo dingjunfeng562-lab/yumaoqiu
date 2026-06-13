@@ -74,6 +74,7 @@ export class EventsService {
    * 清洗分阶段规则：
    * - 丢弃没有任何有效内容的阶段（既无预设规则也无自定义分数）
    * - 自定义分数时校验封顶分不小于每局分数
+   * - 可见阶段使用 QF/TOP4/SF/BRONZE/F；BEFORE_TOP4 旧两段键继续兼容
    * - 全部为空时存 JSON null（与"未配置"等价）
    */
   private normalizeStageScoringRules(
