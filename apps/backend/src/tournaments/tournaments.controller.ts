@@ -13,8 +13,9 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { extname, join } from 'node:path';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { mkdirSync } from 'node:fs';
+import sharp from 'sharp';
 import { TournamentsService } from './tournaments.service';
 import { CreateTournamentDto, UpdateTournamentDto } from './dto/tournament.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -41,13 +42,17 @@ export class TournamentsController {
       limits: { fileSize: 2 * 1024 * 1024 },
     }),
   )
-  uploadCover(@UploadedFile() file: any) {
+  async uploadCover(@UploadedFile() file: any) {
     if (!file?.buffer) throw new BadRequestException('请上传有效的图片文件');
     const dir = join(process.cwd(), 'uploads', 'covers');
     mkdirSync(dir, { recursive: true });
-    const safeExt = extname(file.originalname || '').toLowerCase() || '.png';
-    const filename = `${Date.now()}-${Math.random().toString(16).slice(2)}${safeExt}`;
-    writeFileSync(join(dir, filename), file.buffer);
+    // 封面只作展示用,统一压成 ≤1600px 宽的 WebP,2MB 级原图会缩到约 100-300KB
+    const filename = `${Date.now()}-${Math.random().toString(16).slice(2)}.webp`;
+    await sharp(file.buffer)
+      .rotate()
+      .resize({ width: 1600, withoutEnlargement: true })
+      .webp({ quality: 82 })
+      .toFile(join(dir, filename));
     return {
       url: `/api/uploads/covers/${filename}`,
       filename,

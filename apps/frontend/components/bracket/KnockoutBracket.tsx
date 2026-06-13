@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from 'react';
+import { SecondStageBracket, type SecondStageData } from './SecondStageBracket';
 
 // ─────────────────────────────────────────────────────────────────────
 // Types — kept compatible with previous callers
@@ -67,11 +68,14 @@ export type BracketMatch = {
 export type KnockoutBracketData = {
   id: string;
   tournamentId?: string;
+  tournamentName?: string;
+  groupLabel?: string;
   title: string;
   subtitle?: string;
   generatedAt?: string | null;
   participants: BracketParticipant[];
   matches: BracketMatch[];
+  secondStage?: SecondStageData | null;
 };
 
 type LayoutMatch = BracketMatch & {
@@ -435,6 +439,7 @@ export function KnockoutBracket({
   }
 
   return (
+    <div className="space-y-4 sm:space-y-5">
     <section className="overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-sm">
       {/* ── Header ───────────────────────────────────────────── */}
       <header className="border-b border-blue-100 bg-gradient-to-r from-[#052163] via-[#0a5dd1] to-[#03205c] px-4 py-4 text-white sm:px-6">
@@ -595,6 +600,8 @@ export function KnockoutBracket({
         />
       ) : null}
     </section>
+    {data.secondStage ? <SecondStageBracket data={data.secondStage} /> : null}
+    </div>
   );
 }
 

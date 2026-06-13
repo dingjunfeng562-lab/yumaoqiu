@@ -16,7 +16,11 @@ export const WATERMARK_POSITIONS: WatermarkPosition[] = [
  *  - logos scaled to 8% of the image height
  *  - multiple logos joined by a white "×" separator, 16px gaps
  *  - composited in the top-right corner, 24px from the top/right edges
- *  - overall 85% opacity, output as JPEG quality 95
+ *  - overall 85% opacity
+ *
+ * 输出不做压缩：未配置 logo 时原文件字节原样直出；合成 logo 时必须重编码一次
+ * （像素已改变），JPEG 走质量 100 + 4:4:4 无色度抽样，PNG 输入保持无损 PNG 输出，
+ * 分辨率始终不变。
  */
 @Injectable()
 export class WatermarkService {
@@ -31,7 +35,7 @@ export class WatermarkService {
   static readonly DEFAULT_POSITION: WatermarkPosition = 'TOP_RIGHT';
   private readonly EDGE_MARGIN = 24;
   private readonly OPACITY = 0.85;
-  private readonly THUMB_WIDTH = 500;
+  private readonly THUMB_WIDTH = 400;
 
   /**
    * Decode options shared by every pipeline that reads an uploaded photo.
@@ -118,7 +122,7 @@ export class WatermarkService {
 
   /**
    * Produce the watermarked JPEG. When no logos are configured the original is
-   * simply re-encoded so every photo lives under the public `watermark/` path.
+   * simply re-encoded so every photo lives under the public `full/` path.
    */
   /** Resolve corner position to absolute (left, top) on the source image. */
   private resolveCornerOffset(
@@ -145,16 +149,15 @@ export class WatermarkService {
     logoHeightPercent?: number,
     logoGapPercent?: number,
     position?: WatermarkPosition,
-  ): Promise<Buffer> {
-    // `.rotate()` (no args) bakes the EXIF orientation into the pixels. sharp
-    // strips the orientation tag on output, so without this a phone portrait
-    // photo would come out sideways. The full-res image is never downscaled, so
-    // the watermarked download keeps the original resolution.
-    if (logos.length === 0) {
-      return sharp(imageBuffer, this.INPUT_OPTS).rotate().jpeg({ quality: 95 }).toBuffer();
-    }
-
+  ): Promise<{ buffer: Buffer; ext: '.jpg' | '.png' }> {
     const meta = await sharp(imageBuffer, this.INPUT_OPTS).metadata();
+    const ext: '.jpg' | '.png' = meta.format === 'png' ? '.png' : '.jpg';
+
+    // 未配置 logo：原文件字节原样直出，零重编码、零压缩。EXIF 方向标签保留，
+    // 浏览器与相册会按标签正确显示方向。
+    if (logos.length === 0) {
+      return { buffer: imageBuffer, ext };
+    }
     // Use post-orientation dimensions so the logo lands in the visually-correct
     // corner and is sized against the displayed height.
     const { width: imgW, height: imgH } = this.orientedSize(meta);
@@ -188,9 +191,11 @@ export class WatermarkService {
       .png()
       .toBuffer();
 
-    // Auto-orient first so the composite coordinates match the visual image,
-    // then composite the watermark onto the rotated canvas at full resolution.
-    return sharp(imageBuffer, this.INPUT_OPTS)
+    // Auto-orient first so the composite coordinates match the visual image
+    // (`.rotate()` bakes the EXIF orientation into pixels), then composite the
+    // watermark at full resolution. 合成必须重编码：JPEG 用质量 100 + 4:4:4
+    // 无色度抽样（视觉无损），PNG 保持无损输出，分辨率不变。
+    const pipeline = sharp(imageBuffer, this.INPUT_OPTS)
       .rotate()
       .composite([
         {
@@ -199,17 +204,23 @@ export class WatermarkService {
           top,
           blend: 'over',
         },
-      ])
-      .jpeg({ quality: 95 })
-      .toBuffer();
+      ]);
+    const buffer =
+      ext === '.png'
+        ? await pipeline.png().toBuffer()
+        : await pipeline.jpeg({ quality: 100, chromaSubsampling: '4:4:4' }).toBuffer();
+    return { buffer, ext };
   }
 
   /**
-   * 500px-wide thumbnail of an already-watermarked JPEG. `fit: 'inside'` keeps
+   * 400px-wide thumbnail of the public full variant. `fit: 'inside'` keeps
    * the aspect ratio, so landscape stays landscape and portrait stays portrait.
+   * `.rotate()` bakes EXIF orientation: the no-logo passthrough keeps the
+   * original EXIF tag, so the thumb pipeline must orient pixels itself.
    */
   async generateThumbnail(watermarkedBuffer: Buffer): Promise<Buffer> {
     return sharp(watermarkedBuffer, this.INPUT_OPTS)
+      .rotate()
       .resize(this.THUMB_WIDTH, null, { fit: 'inside', withoutEnlargement: true })
       .jpeg({ quality: 82 })
       .toBuffer();

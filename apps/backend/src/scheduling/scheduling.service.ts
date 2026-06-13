@@ -6,6 +6,11 @@ import {
 import { MatchStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AutoScheduleDto, CreateVenueDto, UpdateMatchScheduleDto, UpdateVenueDto } from './dto/scheduling.dto';
+import {
+  isSecondStageFormalRoundNo,
+  secondStageDependencyMatchNos,
+  secondStageFormalRoundNo,
+} from '../common/second-stage-bracket';
 
 const EVENT_TYPE_LABELS: Record<string, string> = {
   MENS_SINGLES: '男子单打',
@@ -628,7 +633,17 @@ export class SchedulingService {
     match: { eventId: string | null; round?: string | null; roundNo: number; matchNo: number },
     matchMap: Map<string, T>,
   ) {
-    if (!match.eventId || match.roundNo <= 1) return true;
+    if (!match.eventId) return true;
+    if (isSecondStageFormalRoundNo(match.roundNo)) {
+      const expectedDependencies = secondStageDependencyMatchNos(match.matchNo);
+      if (!expectedDependencies.length) return true;
+      const dependencies = this.dependencyMatches(match, matchMap);
+      return dependencies.length === expectedDependencies.length && dependencies.every(
+        (dependency) =>
+          dependency?.status === MatchStatus.COMPLETED && Boolean(dependency.winnerSide),
+      );
+    }
+    if (match.roundNo <= 1) return true;
     const dependencies = this.dependencyMatches(match, matchMap);
     return dependencies.length === 2 && dependencies.every(
       (dependency) =>
@@ -640,7 +655,15 @@ export class SchedulingService {
     match: { eventId: string | null; round?: string | null; roundNo: number; matchNo: number },
     matchMap: Map<string, T>,
   ) {
-    if (!match.eventId || match.roundNo <= 1) return [];
+    if (!match.eventId) return [];
+    if (isSecondStageFormalRoundNo(match.roundNo)) {
+      return secondStageDependencyMatchNos(match.matchNo)
+        .map((matchNo) =>
+          matchMap.get(this.matchKey(match.eventId!, secondStageFormalRoundNo(matchNo), matchNo)),
+        )
+        .filter((item): item is T => Boolean(item));
+    }
+    if (match.roundNo <= 1) return [];
     if (match.round === 'BRONZE') {
       return [
         matchMap.get(this.matchKey(match.eventId, match.roundNo - 1, 1)),

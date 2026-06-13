@@ -59,8 +59,8 @@ export function Header({ activeHref }: { activeHref?: string }) {
   const closeMenu = () => setMenuOpen(false);
 
   return (
-    <header className="sticky top-0 z-30 h-16 border-b border-white/10 bg-gradient-to-r from-[#052163] via-[#0a5dd1] to-[#03205c] shadow-[0_10px_32px_rgba(0,44,120,0.18)] sm:h-[72px]">
-      <div className="mx-auto flex h-full max-w-[1440px] items-center justify-between gap-3 px-3 sm:gap-4 sm:px-6 lg:gap-6 lg:px-8">
+    <header className="sticky top-0 z-30 border-b border-white/10 bg-gradient-to-r from-[#052163] via-[#0a5dd1] to-[#03205c] shadow-[0_10px_32px_rgba(0,44,120,0.18)]">
+      <div className="mx-auto flex h-16 max-w-[1440px] items-center justify-between gap-3 px-3 sm:h-[72px] sm:gap-4 sm:px-6 lg:gap-6 lg:px-8">
         <Link
           href="/"
           className="flex min-w-0 shrink items-center gap-2 sm:w-[250px] sm:shrink-0 sm:gap-3"
@@ -169,6 +169,31 @@ export function Header({ activeHref }: { activeHref?: string }) {
           </button>
         </div>
       </div>
+
+      {/* Mobile quick nav: 汉堡菜单里的页面入口平铺成顶部横向滑动条，免开抽屉一键直达 */}
+      <nav
+        aria-label="快捷导航"
+        className="scrollbar-none flex gap-2 overflow-x-auto border-t border-white/10 px-3 py-2 lg:hidden"
+      >
+        {navItems.map((item) => {
+          const active = isActiveNavItem(item.href, currentPath);
+          return (
+            <Link
+              key={item.label}
+              href={item.href}
+              onClick={closeMenu}
+              style={{ color: active ? '#03205c' : '#fff' }}
+              className={`tappable inline-flex h-9 shrink-0 items-center whitespace-nowrap rounded-full px-3.5 text-xs font-bold transition ${
+                active
+                  ? 'bg-amber-300 shadow-[0_4px_14px_rgba(245,158,11,0.35)]'
+                  : 'border border-white/25 bg-white/10 hover:bg-white/16'
+              }`}
+            >
+              {item.label}
+            </Link>
+          );
+        })}
+      </nav>
 
       {/* Mobile drawer */}
       <div

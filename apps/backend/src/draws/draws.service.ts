@@ -17,6 +17,9 @@ import {
   Registration,
   RegistrationStatus,
   Role,
+  SecondStageMode,
+  SecondStageRankingMode,
+  SecondStageStatus,
   EventType,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -24,11 +27,18 @@ import { DrawAlgorithmService } from './draw-algorithm.service';
 import { DrawLogService } from './draw-log.service';
 import {
   CreateRegistrationDto,
+  ConfirmSecondStageDto,
   GenerateDrawDto,
   GetDrawLogsQueryDto,
   SeedItemDto,
   UpdateRegistrationDto,
 } from './dto/draw.dto';
+import {
+  SECOND_STAGE_FORMAL_ROUND_NO_BASE,
+  isSecondStageFormalRoundNo,
+  secondStageFormalRoundNo,
+} from '../common/second-stage-bracket';
+import { SecondStageProgressService } from '../common/second-stage-progress.service';
 
 type RegistrationWithPlayers = Registration & {
   player1: { id: string; name: string; gender: string; affiliation: string };
@@ -45,12 +55,32 @@ type MatchDraft = {
   winnerSide: number | null;
 };
 
+const SECOND_STAGE_SLOTS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'] as const;
+type SecondStageSlotCode = (typeof SECOND_STAGE_SLOTS)[number];
+
+type SecondStageEntrant = {
+  id: string | null;
+  name: string | null;
+};
+
+type SecondStageMatchTemplate = {
+  matchNo: number;
+  roundName: string;
+  area: string;
+  slotInfo?: string | null;
+  side1Source?: string | null;
+  side2Source?: string | null;
+  side1?: SecondStageEntrant;
+  side2?: SecondStageEntrant;
+};
+
 @Injectable()
 export class DrawsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly drawAlgorithmService: DrawAlgorithmService,
     private readonly drawLogService: DrawLogService,
+    private readonly secondStageProgress: SecondStageProgressService,
   ) {}
 
   async listRegistrations(eventId: string) {
@@ -65,7 +95,7 @@ export class DrawsService {
   async createRegistration(eventId: string, dto: CreateRegistrationDto) {
     const event = await this.ensureEvent(eventId);
     if (event.drawLocked) {
-      throw new ConflictException('抽签结果已冻结，请先重新抽签后再调整报名');
+      throw new ConflictException('签表已冻结或对阵已发布，请先取消发布后再调整报名');
     }
     await this.validateRegistrationPlayers(event.type, dto.player1Id, dto.player2Id);
     await this.ensureRegistrationLimit(dto.player1Id, eventId);
@@ -100,7 +130,7 @@ export class DrawsService {
     });
     if (!registration) throw new NotFoundException('报名不存在');
     if (registration.event.drawLocked) {
-      throw new ConflictException('抽签结果已冻结，请先重新抽签后再调整报名');
+      throw new ConflictException('签表已冻结或对阵已发布，请先取消发布后再调整报名');
     }
 
     const player1Id = dto.player1Id ?? registration.player1Id;
@@ -126,7 +156,7 @@ export class DrawsService {
     });
     if (!registration) throw new NotFoundException('报名不存在');
     if (registration.event.drawLocked) {
-      throw new ConflictException('抽签结果已冻结，请先重新抽签后再调整报名');
+      throw new ConflictException('签表已冻结或对阵已发布，请先取消发布后再调整报名');
     }
     return this.prisma.registration.delete({ where: { id } });
   }
@@ -247,11 +277,7 @@ export class DrawsService {
     operatorId: string,
     operatorName: string | null,
   ) {
-    const event = await this.ensureEvent(eventId);
-    if (event.drawLocked && !dto.force) {
-      throw new ConflictException('抽签结果已冻结，如需覆盖请使用重新抽签');
-    }
-
+    await this.ensureEvent(eventId);
     return this.executeDraw(eventId, operatorId, operatorName, dto.force ?? false);
   }
 
@@ -267,8 +293,8 @@ export class DrawsService {
     const existingCurrent = await this.prisma.drawBracket.findFirst({
       where: { eventItemId: eventId, isCurrent: true },
     });
-    if (existingCurrent && existingCurrent.status === DrawStatus.FROZEN && !force) {
-      throw new ConflictException('当前签表已冻结，请使用重新抽签');
+    if (existingCurrent && !force) {
+      throw new ConflictException('已有当前签表，请使用重新抽签覆盖');
     }
 
     const registrations = await this.prisma.registration.findMany({
@@ -298,10 +324,12 @@ export class DrawsService {
         data: { isCurrent: false, updatedBy: operatorId },
       });
 
-      const format =
-        event.format === Format.GROUP_PLUS_KNOCKOUT
-          ? DrawFormat.group_then_elim
-          : DrawFormat.single_elim;
+      // 重新生成第一阶段对阵会让既有第二阶段（手动 A-H 签位 + 排位赛对阵）失效：正式赛 Match
+      // （roundNo ≥ 100）在 materialize 时按 eventId 一并删除，这里同步清空 SecondStage 实体
+      // （级联删 slots/matches/rankings），要求重抽后重新指定 A-H。首次抽签时无第二阶段，空操作。
+      await tx.secondStage.deleteMany({ where: { eventId } });
+
+      const format = this.drawFormatForEvent(event.format);
 
       let bracketSize = registrations.length;
       let byeCount = 0;
@@ -365,14 +393,26 @@ export class DrawsService {
 
         await this.materializeSingleElimination(tx, eventId, built.slots);
       } else {
-        const groups = this.drawAlgorithmService.buildGroups(
-          registrations.map((registration) => ({
-            id: registration.id,
-            name: this.registrationName(registration),
-          })),
-          seedSettings.map((seed) => ({ entrantId: seed.entrantId, seedNo: seed.seedNo })),
-          event.groupSize ?? 4,
-        );
+        const entrants = registrations.map((registration) => ({
+          id: registration.id,
+          name: this.registrationName(registration),
+        }));
+        const seedInputs = seedSettings.map((seed) => ({
+          entrantId: seed.entrantId,
+          seedNo: seed.seedNo,
+        }));
+
+        const groups =
+          format === DrawFormat.round_robin
+            ? this.drawAlgorithmService.buildSingleRoundRobin(entrants, seedInputs)
+            : this.drawAlgorithmService.buildGroups(
+                entrants,
+                seedInputs,
+                // 交叉排位赛固定分 2 个组：用 ceil(n/2) 作为组容量即可保证组数为 2。
+                format === DrawFormat.group_then_playoff
+                  ? Math.ceil(entrants.length / 2)
+                  : event.groupSize ?? 4,
+              );
 
         await tx.drawBracket.update({
           where: { id: draw.id },
@@ -405,12 +445,16 @@ export class DrawsService {
           });
         }
 
-        await this.materializeGroupStage(tx, eventId, groups);
+        if (format === DrawFormat.group_then_playoff) {
+          await this.materializeGroupPlusPlayoff(tx, eventId, groups);
+        } else {
+          await this.materializeGroupStage(tx, eventId, groups);
+        }
       }
 
       await tx.event.update({
         where: { id: eventId },
-        data: { drawLocked: true, drawPublished: false, drawGeneratedAt: new Date() },
+        data: { drawLocked: false, drawPublished: false, drawGeneratedAt: new Date() },
       });
 
       await this.drawLogService.create(tx, {
@@ -451,26 +495,10 @@ export class DrawsService {
       const draw = await tx.drawBracket.findUnique({
         where: { id: drawId },
       });
-      const originalDrawStatus = draw?.status;
-      if (draw && draw.status !== DrawStatus.DRAWN) {
-        const event = await tx.event.findUnique({
-          where: { id: eventId },
-          select: { drawPublished: true },
-        });
-        const lockedMatches = await tx.match.count({
-          where: this.lockedPlayableMatchWhere(eventId),
-        });
-        if (draw.status !== DrawStatus.FROZEN || event?.drawPublished || lockedMatches > 0) {
-          throw new ConflictException('褰撳墠绛捐〃涓嶅彲璋冩暣');
-        }
-        await tx.drawBracket.update({
-          where: { id: drawId },
-          data: { status: DrawStatus.DRAWN, frozenAt: null, updatedBy: operatorId },
-        });
-        draw.status = DrawStatus.DRAWN;
-      }
       if (!draw || draw.eventItemId !== eventId) throw new NotFoundException('签表不存在');
-      if (draw.status !== DrawStatus.DRAWN) throw new ConflictException('当前签表不可调整');
+      if (draw.status !== DrawStatus.DRAWN) {
+        throw new ConflictException('当前签表已冻结或已发布，不可调整');
+      }
       if (draw.format !== DrawFormat.single_elim) {
         throw new BadRequestException('当前仅支持单淘汰签位交换');
       }
@@ -525,7 +553,7 @@ export class DrawsService {
         beforeData: {
           slotA: this.drawSlotLogSnapshot(slotA),
           slotB: this.drawSlotLogSnapshot(slotB),
-          status: originalDrawStatus ?? draw.status,
+          status: draw.status,
         } as Prisma.InputJsonValue,
         afterData: {
           status: DrawStatus.DRAWN,
@@ -592,6 +620,11 @@ export class DrawsService {
     if (!draw || draw.eventItemId !== eventId) throw new NotFoundException('签表不存在');
     if (draw.status !== DrawStatus.FROZEN) throw new ConflictException('当前签表尚未冻结');
 
+    const event = await this.ensureEvent(eventId);
+    if (event.drawPublished) {
+      throw new ConflictException('对阵已发布，请先取消发布');
+    }
+
     const lockedMatches = await this.prisma.match.count({
       where: this.lockedPlayableMatchWhere(eventId),
     });
@@ -636,14 +669,22 @@ export class DrawsService {
     operatorName: string | null,
   ) {
     if (!operatorId) throw new BadRequestException('缺少操作人信息');
+    const event = await this.ensureEvent(eventId);
+    if (event.drawPublished) throw new ConflictException('对阵已发布，无需重复发布');
     const draw = await this.prisma.drawBracket.findUnique({ where: { id: drawId } });
     if (!draw || draw.eventItemId !== eventId) throw new NotFoundException('签表不存在');
-    if (draw.status !== DrawStatus.DRAWN) throw new ConflictException('只有已抽签状态才能发布');
+    if (draw.status !== DrawStatus.DRAWN && draw.status !== DrawStatus.FROZEN) {
+      throw new ConflictException('只有已抽签或已冻结的签表才能发布');
+    }
 
     return this.prisma.$transaction(async (tx) => {
       const published = await tx.drawBracket.update({
         where: { id: drawId },
-        data: { status: DrawStatus.FROZEN, frozenAt: new Date(), updatedBy: operatorId },
+        data: {
+          status: DrawStatus.FROZEN,
+          frozenAt: draw.frozenAt ?? new Date(),
+          updatedBy: operatorId,
+        },
       });
 
       await tx.event.update({
@@ -673,9 +714,10 @@ export class DrawsService {
     operatorName: string | null,
   ) {
     if (!operatorId) throw new BadRequestException('缺少操作人信息');
+    const event = await this.ensureEvent(eventId);
+    if (!event.drawPublished) throw new ConflictException('对阵尚未发布，无需取消发布');
     const draw = await this.prisma.drawBracket.findUnique({ where: { id: drawId } });
     if (!draw || draw.eventItemId !== eventId) throw new NotFoundException('签表不存在');
-    if (draw.status !== DrawStatus.FROZEN) throw new ConflictException('只有已发布状态才能取消发布');
 
     const lockedMatches = await this.prisma.match.count({
       where: this.lockedPlayableMatchWhere(eventId),
@@ -694,12 +736,6 @@ export class DrawsService {
         where: { id: eventId },
         data: {
           drawPublished: false,
-          // Unpublishing rolls the bracket back to DRAWN, so the event-level
-          // editing lock must also lift — otherwise downstream actions like
-          // batch-adding players still report "抽签结果已冻结". The
-          // lockedPlayableMatchWhere guard above already ensures no scheduled
-          // or played match depends on the current draw, so this is safe and
-          // mirrors unfreezeDraw.
           drawLocked: false,
         },
       });
@@ -979,6 +1015,14 @@ export class DrawsService {
       where: { eventItemId: eventId, isCurrent: true },
       orderBy: { version: 'desc' },
     });
+    const secondStage = await this.prisma.secondStage.findUnique({
+      where: { eventId },
+      include: {
+        slots: { orderBy: { sortOrder: 'asc' } },
+        matches: { orderBy: { matchNo: 'asc' } },
+        rankings: { orderBy: { rank: 'asc' } },
+      },
+    });
 
     const hydrateMatch = (match: (typeof matches)[number]) => ({
       ...match,
@@ -987,7 +1031,7 @@ export class DrawsService {
     });
 
     const rounds = matches
-      .filter((match) => match.roundNo > 0)
+      .filter((match) => match.roundNo > 0 && !isSecondStageFormalRoundNo(match.roundNo))
       .reduce<Array<{ roundNo: number; round: string; matches: ReturnType<typeof hydrateMatch>[] }>>(
         (acc, match) => {
           let round = acc.find((item) => item.roundNo === match.roundNo);
@@ -1024,7 +1068,341 @@ export class DrawsService {
       group.matches = matches.filter((match) => match.round === group.name).map((match) => hydrateMatch(match));
     }
 
-    return { event, currentDraw, registrations, rounds, groups };
+    // 第二阶段的正式比赛（roundNo≥100）单独返回——它们不属于一阶段对阵图，但
+    // 必须出现在管理端记分页才能被分配裁判、正常记分（记分后会同步回 second_stage_match，
+    // 前台对阵表与抽签编排随之显示结果）。
+    const secondStageFormalMatches = matches
+      .filter((match) => isSecondStageFormalRoundNo(match.roundNo))
+      .map((match) => hydrateMatch(match));
+
+    return {
+      event,
+      currentDraw,
+      registrations,
+      rounds,
+      groups,
+      secondStage: this.secondStageView(secondStage, event.format),
+      secondStageFormalMatches,
+    };
+  }
+
+  async getSecondStage(eventId: string) {
+    const event = await this.ensureEvent(eventId);
+    const stage = await this.prisma.secondStage.findUnique({
+      where: { eventId },
+      include: {
+        slots: { orderBy: { sortOrder: 'asc' } },
+        matches: { orderBy: { matchNo: 'asc' } },
+        rankings: { orderBy: { rank: 'asc' } },
+      },
+    });
+    return this.secondStageView(stage, event.format);
+  }
+
+  async confirmSecondStage(
+    eventId: string,
+    dto: ConfirmSecondStageDto,
+    operatorId: string,
+    operatorName: string | null,
+  ) {
+    if (!operatorId) throw new BadRequestException('缺少操作人信息');
+    const event = await this.ensureEvent(eventId);
+    if (event.format !== Format.SINGLE_ELIMINATION_PLUS_GROUP_RANKING) {
+      throw new BadRequestException('当前单项不是“单淘汰+小组赛排位赛”赛制');
+    }
+
+    // A-H 签位允许留空（轮空）：留空/未选的签位无选手，对应初始赛由对手不战而胜。
+    const seenSlots = new Set<SecondStageSlotCode>();
+    const normalizedSlots = dto.slots.map((item) => {
+      const slot = this.normalizeSecondStageSlot(item.slot);
+      if (seenSlots.has(slot)) {
+        throw new BadRequestException('A-H 签位不能重复');
+      }
+      seenSlots.add(slot);
+      const entrantId = item.entrantId?.trim() ? item.entrantId.trim() : null;
+      return { slot, entrantId };
+    });
+
+    const assigned = normalizedSlots.filter(
+      (item): item is { slot: SecondStageSlotCode; entrantId: string } => Boolean(item.entrantId),
+    );
+    if (assigned.length < 2) {
+      throw new BadRequestException('至少需要指定 2 名选手，其余签位可留空（轮空）');
+    }
+    const entrantIds = assigned.map((item) => item.entrantId);
+    if (new Set(entrantIds).size !== entrantIds.length) {
+      throw new BadRequestException('A-H 签位不能重复选择同一名选手');
+    }
+
+    const registrations = await this.prisma.registration.findMany({
+      where: {
+        eventId,
+        id: { in: entrantIds },
+        status: RegistrationStatus.APPROVED,
+      },
+      include: { player1: true, player2: true },
+    });
+    if (registrations.length !== entrantIds.length) {
+      throw new BadRequestException('签位选手必须来自当前单项已通过报名名单');
+    }
+    const registrationMap = new Map(registrations.map((registration) => [registration.id, registration]));
+    const slotMap = new Map<SecondStageSlotCode, SecondStageEntrant>();
+    for (const item of assigned) {
+      const registration = registrationMap.get(item.entrantId);
+      if (!registration) continue;
+      slotMap.set(item.slot, {
+        id: registration.id,
+        name: this.registrationName(registration),
+      });
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.secondStage.deleteMany({ where: { eventId } });
+      const stage = await tx.secondStage.create({
+        data: {
+          eventId,
+          status: SecondStageStatus.CONFIRMED,
+          mode: SecondStageMode.MANUAL_BY_REFEREE,
+          rankingMode: dto.rankingMode,
+          confirmedAt: new Date(),
+          createdBy: operatorId,
+          updatedBy: operatorName ?? operatorId,
+        },
+      });
+
+      await tx.secondStageSlot.createMany({
+        data: SECOND_STAGE_SLOTS.map((slot, index) => {
+          const entrant = slotMap.get(slot);
+          return {
+            secondStageId: stage.id,
+            slot,
+            sortOrder: index + 1,
+            entrantId: entrant?.id ?? null,
+            entrantNameSnapshot: entrant?.name ?? null,
+          };
+        }),
+      });
+
+      const matchTemplates = this.secondStageMatchTemplates(slotMap, dto.rankingMode);
+      await tx.secondStageMatch.createMany({
+        data: matchTemplates.map((match) => ({
+          secondStageId: stage.id,
+          matchNo: match.matchNo,
+          roundName: match.roundName,
+          area: match.area,
+          slotInfo: match.slotInfo ?? null,
+          side1Source: match.side1Source ?? null,
+          side2Source: match.side2Source ?? null,
+          side1Id: match.side1?.id ?? null,
+          side2Id: match.side2?.id ?? null,
+          side1NameSnapshot: match.side1?.name ?? null,
+          side2NameSnapshot: match.side2?.name ?? null,
+          status: MatchStatus.PENDING,
+        })),
+      });
+      await tx.match.deleteMany({
+        where: { eventId, roundNo: { gte: SECOND_STAGE_FORMAL_ROUND_NO_BASE } },
+      });
+      await this.createSecondStageFormalMatches(tx, eventId, matchTemplates);
+
+      // 解析轮空：一侧空一侧有人 → 不战而胜并向下级联；双方皆空 → 标记取消。
+      // planning 与正式赛两表一并更新。无轮空时为幂等空操作。
+      await this.secondStageProgress.progress(tx, {
+        secondStageId: stage.id,
+        eventId,
+        rankingMode: dto.rankingMode,
+      });
+    });
+
+    return this.getSecondStage(eventId);
+  }
+
+  private normalizeSecondStageSlot(slot: string): SecondStageSlotCode {
+    const normalized = String(slot).trim().toUpperCase();
+    if ((SECOND_STAGE_SLOTS as readonly string[]).includes(normalized)) {
+      return normalized as SecondStageSlotCode;
+    }
+    throw new BadRequestException('第二阶段签位必须为 A-H');
+  }
+
+  private secondStageMatchTemplates(
+    slotMap: Map<SecondStageSlotCode, SecondStageEntrant>,
+    rankingMode: SecondStageRankingMode,
+  ): SecondStageMatchTemplate[] {
+    const slot = (code: SecondStageSlotCode) => slotMap.get(code) ?? { id: null, name: null };
+    const templates: SecondStageMatchTemplate[] = [
+      {
+        matchNo: 1,
+        roundName: '前8初始赛',
+        area: '前8初始赛',
+        slotInfo: 'A vs B',
+        side1Source: 'A',
+        side2Source: 'B',
+        side1: slot('A'),
+        side2: slot('B'),
+      },
+      {
+        matchNo: 2,
+        roundName: '前8初始赛',
+        area: '前8初始赛',
+        slotInfo: 'C vs D',
+        side1Source: 'C',
+        side2Source: 'D',
+        side1: slot('C'),
+        side2: slot('D'),
+      },
+      {
+        matchNo: 3,
+        roundName: '前8初始赛',
+        area: '前8初始赛',
+        slotInfo: 'E vs F',
+        side1Source: 'E',
+        side2Source: 'F',
+        side1: slot('E'),
+        side2: slot('F'),
+      },
+      {
+        matchNo: 4,
+        roundName: '前8初始赛',
+        area: '前8初始赛',
+        slotInfo: 'G vs H',
+        side1Source: 'G',
+        side2Source: 'H',
+        side1: slot('G'),
+        side2: slot('H'),
+      },
+      {
+        matchNo: 5,
+        roundName: '1-4名半决赛',
+        area: '1-4名争夺区',
+        side1Source: '第1场胜者',
+        side2Source: '第2场胜者',
+      },
+      {
+        matchNo: 6,
+        roundName: '1-4名半决赛',
+        area: '1-4名争夺区',
+        side1Source: '第3场胜者',
+        side2Source: '第4场胜者',
+      },
+      {
+        matchNo: 7,
+        roundName: '决赛',
+        area: '1-4名争夺区',
+        side1Source: '第5场胜者',
+        side2Source: '第6场胜者',
+      },
+      {
+        matchNo: 8,
+        roundName: '三四名决赛',
+        area: '1-4名争夺区',
+        side1Source: '第5场负者',
+        side2Source: '第6场负者',
+      },
+      {
+        matchNo: 9,
+        roundName: rankingMode === SecondStageRankingMode.TOP_8 ? '5-8名半决赛' : '5-6名资格赛',
+        area: rankingMode === SecondStageRankingMode.TOP_8 ? '5-8名争夺区' : '5-6名争夺区',
+        side1Source: '第1场负者',
+        side2Source: '第2场负者',
+      },
+      {
+        matchNo: 10,
+        roundName: rankingMode === SecondStageRankingMode.TOP_8 ? '5-8名半决赛' : '5-6名资格赛',
+        area: rankingMode === SecondStageRankingMode.TOP_8 ? '5-8名争夺区' : '5-6名争夺区',
+        side1Source: '第3场负者',
+        side2Source: '第4场负者',
+      },
+      {
+        matchNo: 11,
+        roundName: '五六名决赛',
+        area: rankingMode === SecondStageRankingMode.TOP_8 ? '5-8名争夺区' : '5-6名争夺区',
+        side1Source: '第9场胜者',
+        side2Source: '第10场胜者',
+      },
+    ];
+
+    if (rankingMode === SecondStageRankingMode.TOP_8) {
+      templates.push({
+        matchNo: 12,
+        roundName: '七八名决赛',
+        area: '5-8名争夺区',
+        side1Source: '第9场负者',
+        side2Source: '第10场负者',
+      });
+    }
+
+    return templates;
+  }
+
+  private secondStageView(stage: any | null, eventFormat?: Format) {
+    if (!stage) {
+      if (eventFormat !== Format.SINGLE_ELIMINATION_PLUS_GROUP_RANKING) return null;
+      return {
+        status: SecondStageStatus.NOT_STARTED,
+        secondStageStatus: SecondStageStatus.NOT_STARTED,
+        mode: SecondStageMode.MANUAL_BY_REFEREE,
+        secondStageMode: SecondStageMode.MANUAL_BY_REFEREE,
+        modeText: '裁判手动指定',
+        rankingMode: SecondStageRankingMode.TOP_8,
+        rankingModeText: '取前8名',
+        slots: [],
+        matches: [],
+        rankings: [],
+      };
+    }
+
+    const rankingMode = stage.rankingMode as SecondStageRankingMode;
+    return {
+      id: stage.id,
+      status: stage.status,
+      secondStageStatus: stage.status,
+      mode: stage.mode,
+      secondStageMode: stage.mode,
+      modeText: '裁判手动指定',
+      rankingMode,
+      rankingModeText: rankingMode === SecondStageRankingMode.TOP_6 ? '取前6名' : '取前8名',
+      slotSourceText: '组委会手动安排',
+      confirmedAt: stage.confirmedAt?.toISOString?.() ?? null,
+      finishedAt: stage.finishedAt?.toISOString?.() ?? null,
+      slots: (stage.slots ?? []).map((slot: any) => ({
+        slot: slot.slot,
+        playerId: slot.entrantId,
+        playerName: slot.entrantNameSnapshot ?? '轮空',
+      })),
+      matches: (stage.matches ?? []).map((match: any) => {
+        const player1Name = match.side1NameSnapshot ?? match.side1Source ?? '待定';
+        const player2Name = match.side2NameSnapshot ?? match.side2Source ?? '待定';
+        return {
+          id: match.id,
+          matchNo: match.matchNo,
+          stageName: '第二阶段：小组赛排位赛',
+          roundName: match.roundName,
+          area: match.area,
+          slotInfo: match.slotInfo,
+          source1: match.side1Source,
+          source2: match.side2Source,
+          player1Id: match.side1Id,
+          player2Id: match.side2Id,
+          player1Name,
+          player2Name,
+          score: match.score,
+          winnerSide: match.winnerSide,
+          winnerId: match.winnerId,
+          winnerName: match.winnerNameSnapshot,
+          status: this.publicSecondStageMatchStatus(match.status),
+        };
+      }),
+      rankings: (stage.rankings ?? []).map((ranking: any) => ({
+        rank: ranking.rank,
+        playerId: ranking.entrantId,
+        playerName: ranking.entrantNameSnapshot ?? '待定',
+      })),
+    };
+  }
+
+  private publicSecondStageMatchStatus(status: MatchStatus) {
+    return status === MatchStatus.COMPLETED ? 'FINISHED' : status;
   }
 
   private async ensureEvent(eventId: string) {
@@ -1204,6 +1582,53 @@ export class DrawsService {
     await this.createMatchDrafts(tx, eventId, drafts);
   }
 
+  private drawFormatForEvent(eventFormat: Format): DrawFormat {
+    switch (eventFormat) {
+      case Format.GROUP_PLUS_KNOCKOUT:
+        return DrawFormat.group_then_elim;
+      case Format.ROUND_ROBIN:
+        return DrawFormat.round_robin;
+      case Format.GROUP_PLUS_PLAYOFF:
+        return DrawFormat.group_then_playoff;
+      default:
+        return DrawFormat.single_elim;
+    }
+  }
+
+  /**
+   * 小组循环 + 交叉排位赛：先生成两组组内循环（roundNo = 0），再追加排位赛
+   * 占位场（round = `P{名次}`，roundNo = 1）。排位赛对阵在小组赛全部完赛后由
+   * 记分模块（scoring.service.fillPlayoffMatchesIfReady）按各组名次自动填充：
+   *   第 k 场 = A 组第 k 名 vs B 组第 k 名，决出第 (2k-1) 名与第 2k 名。
+   */
+  private async materializeGroupPlusPlayoff(
+    tx: Prisma.TransactionClient,
+    eventId: string,
+    groups: Array<{
+      groupCode: string;
+      members: Array<{ entrantId: string }>;
+    }>,
+  ) {
+    await this.materializeGroupStage(tx, eventId, groups);
+
+    const playoffRounds = Math.max(0, ...groups.map((group) => group.members.length));
+    const drafts: MatchDraft[] = [];
+    for (let k = 1; k <= playoffRounds; k += 1) {
+      drafts.push({
+        round: `P${2 * k - 1}`,
+        roundNo: 1,
+        matchNo: k,
+        side1Id: null,
+        side2Id: null,
+        status: MatchStatus.PENDING,
+        winnerSide: null,
+      });
+    }
+    if (drafts.length) {
+      await this.createMatchDrafts(tx, eventId, drafts);
+    }
+  }
+
   private async createMatchDrafts(
     tx: Prisma.TransactionClient,
     eventId: string,
@@ -1226,6 +1651,34 @@ export class DrawsService {
           side2Id: draft.side2Id,
           status: draft.status,
           winnerSide: draft.winnerSide,
+          durationMinutes: minutes,
+        },
+      });
+    }
+  }
+
+  private async createSecondStageFormalMatches(
+    tx: Prisma.TransactionClient,
+    eventId: string,
+    templates: SecondStageMatchTemplate[],
+  ) {
+    const event = await tx.event.findUnique({
+      where: { id: eventId },
+      select: { defaultMatchMinutes: true, tournament: { select: { defaultMatchMinutes: true } } },
+    });
+    const minutes =
+      event?.defaultMatchMinutes ?? event?.tournament?.defaultMatchMinutes ?? 45;
+
+    for (const template of templates) {
+      await tx.match.create({
+        data: {
+          eventId,
+          round: template.roundName,
+          roundNo: secondStageFormalRoundNo(template.matchNo),
+          matchNo: template.matchNo,
+          side1Id: template.side1?.id ?? null,
+          side2Id: template.side2?.id ?? null,
+          status: MatchStatus.PENDING,
           durationMinutes: minutes,
         },
       });

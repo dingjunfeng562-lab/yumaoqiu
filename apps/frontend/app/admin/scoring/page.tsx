@@ -60,6 +60,8 @@ interface MatchItem {
 interface BracketData {
   rounds: Array<{ roundNo: number; round: string; matches: MatchItem[] }>;
   groups: Array<{ name: string; matches: MatchItem[] }>;
+  // 第二阶段（小组赛排位赛）的正式比赛，需在此分配裁判 / 记分。
+  secondStageFormalMatches?: MatchItem[];
 }
 
 function sideName(side?: Registration | null) {
@@ -84,6 +86,7 @@ export default function AdminScoringPage() {
     return [
       ...bracket.rounds.flatMap((round) => round.matches.map((match) => ({ ...match, round: round.round }))),
       ...bracket.groups.flatMap((group) => group.matches.map((match) => ({ ...match, round: group.name }))),
+      ...(bracket.secondStageFormalMatches ?? []),
     ];
   }, [bracket]);
 

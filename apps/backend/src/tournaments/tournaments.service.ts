@@ -145,20 +145,26 @@ export class TournamentsService {
     if (dto.status !== undefined && !isSuperAdmin(user)) {
       throw new ForbiddenException('仅总管理员可修改赛事状态');
     }
+    // showOnHome is super-admin-only (same as create) — silently keep the
+    // current value for other roles instead of letting an ADMIN edit take
+    // over the home feature card.
+    if (!isSuperAdmin(user)) {
+      delete dto.showOnHome;
+    }
 
     const current = await this.findOne(id);
     this.validateTournamentInput(dto, current);
 
+    // Only an APPROVED tournament can be published / shown on home.
+    const isApproved = current.approvalStatus === TournamentApprovalStatus.APPROVED;
     return this.prisma.$transaction(async (tx) => {
-      if (dto.showOnHome) {
+      if (dto.showOnHome && isApproved) {
         await tx.tournament.updateMany({
           where: { id: { not: id } },
           data: { showOnHome: false },
         });
       }
 
-      // Only an APPROVED tournament can be published / shown on home.
-      const isApproved = current.approvalStatus === TournamentApprovalStatus.APPROVED;
       await tx.tournament.update({
         where: { id },
         data: {

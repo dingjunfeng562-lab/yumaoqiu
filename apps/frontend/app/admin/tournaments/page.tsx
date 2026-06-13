@@ -392,7 +392,7 @@ export default function TournamentsPage() {
       subtitle: values.subtitle?.trim() || undefined,
       coverImageUrl: values.coverImageUrl,
       location: values.location?.trim() || undefined,
-      showOnHome: Boolean(values.showOnHome),
+      showOnHome: isSuperAdmin ? Boolean(values.showOnHome) : undefined,
       status: isSuperAdmin ? values.status : undefined,
       startDate: values.startDate.startOf('day').toISOString(),
       endDate: values.endDate.endOf('day').toISOString(),
@@ -726,7 +726,7 @@ export default function TournamentsPage() {
                 rules={[{ required: true, message: '请选择赛事开始日期' }]}
                 style={{ flex: 1 }}
               >
-                <DatePicker style={{ width: '100%' }} disabledDate={disabledPastDate} />
+                <DatePicker style={{ width: '100%' }} disabledDate={editing ? undefined : disabledPastDate} />
               </Form.Item>
               <Form.Item
                 name="endDate"
@@ -744,7 +744,10 @@ export default function TournamentsPage() {
                 ]}
                 style={{ flex: 1 }}
               >
-                <DatePicker style={{ width: '100%' }} disabledDate={(current) => disabledPastDate(current) || (startDate && current.isBefore(startDate, 'day'))} />
+                <DatePicker
+                  style={{ width: '100%' }}
+                  disabledDate={(current) => (!editing && disabledPastDate(current)) || (startDate && current.isBefore(startDate, 'day'))}
+                />
               </Form.Item>
             </Space>
             <Form.Item label="赛事 LOGO / 封面图">
@@ -760,9 +763,11 @@ export default function TournamentsPage() {
             <Form.Item name="description" label="赛事简介">
               <Input.TextArea rows={5} placeholder="显示在公开页，可填写赛事背景、参赛对象、奖励设置等内容。" />
             </Form.Item>
-            <Form.Item name="showOnHome" label="首页展示" valuePropName="checked">
-              <Switch checkedChildren="展示" unCheckedChildren="不展示" />
-            </Form.Item>
+            {isSuperAdmin ? (
+              <Form.Item name="showOnHome" label="首页展示" valuePropName="checked">
+                <Switch checkedChildren="展示" unCheckedChildren="不展示" />
+              </Form.Item>
+            ) : null}
             {isSuperAdmin ? (
               <Form.Item name="status" label="赛事状态" rules={[{ required: true, message: '请选择赛事状态' }]}>
                 <Select options={STATUS_OPTIONS} />
@@ -779,28 +784,47 @@ export default function TournamentsPage() {
             </Form.Item>
             {includeTeamCompetition && (
               <>
-                <Form.Item name="teamWinThreshold" label="团体赛胜场规则" rules={[{ required: true }]}>
+                <Form.Item
+                  name="teamWinThreshold"
+                  label="团体赛胜场规则"
+                  rules={[{ required: true }]}
+                  extra="团体赛单项只能从上方「包含的单项」中选择:3 项 2 胜需要至少 3 个单项,5 项 3 胜需要全部 5 个单项。"
+                >
                   <Radio.Group
                     options={[
-                      { label: '3 项 2 胜', value: 2 },
-                      { label: '5 项 3 胜', value: 3 },
+                      { label: '3 项 2 胜', value: 2, disabled: eventTypes.length < 3 },
+                      { label: '5 项 3 胜', value: 3, disabled: eventTypes.length < 5 },
                     ]}
                   />
                 </Form.Item>
                 <Form.Item
                   name="teamEventTypes"
                   label="团体赛包含的单项"
+                  dependencies={['eventTypes', 'teamWinThreshold']}
+                  extra={teamWinThreshold === 3 ? '5 项 3 胜固定包含全部 5 个单项,无需手动勾选。' : undefined}
                   rules={[
                     {
                       validator(_, value: EventType[]) {
                         const requiredCount = teamWinThreshold === 3 ? 5 : 3;
+                        if (availableTeamOptions.length < requiredCount) {
+                          return Promise.reject(
+                            new Error(
+                              teamWinThreshold === 3
+                                ? '「5 项 3 胜」需要赛事包含全部 5 个单项,请先补全「包含的单项」或改用 3 项 2 胜'
+                                : '「3 项 2 胜」需要「包含的单项」中至少勾选 3 项',
+                            ),
+                          );
+                        }
                         if (value?.length === requiredCount) return Promise.resolve();
                         return Promise.reject(new Error(`请选择 ${requiredCount} 个团体赛单项`));
                       },
                     },
                   ]}
                 >
-                  <Checkbox.Group options={availableTeamOptions as unknown as Array<{ label: string; value: string }>} />
+                  <Checkbox.Group
+                    disabled={teamWinThreshold === 3}
+                    options={availableTeamOptions as unknown as Array<{ label: string; value: string }>}
+                  />
                 </Form.Item>
                 <Form.Item label="团体赛单项出场顺序">
                   <Space direction="vertical" style={{ width: '100%' }}>
@@ -838,7 +862,22 @@ export default function TournamentsPage() {
 
           <Card title="报名设置" size="small" style={{ marginBottom: 16 }}>
             <Space style={{ display: 'flex' }} align="start">
-              <Form.Item name="registrationStartDate" label="报名开始时间" rules={[{ required: true, message: '请选择报名开始时间' }]} style={{ flex: 1 }}>
+              <Form.Item
+                name="registrationStartDate"
+                label="报名开始时间"
+                dependencies={['startDate']}
+                rules={[
+                  { required: true, message: '请选择报名开始时间' },
+                  ({ getFieldValue }) => ({
+                    validator(_, value: Dayjs) {
+                      const competitionStart = getFieldValue('startDate') as Dayjs | undefined;
+                      if (!value || !competitionStart || value.isBefore(competitionStart.startOf('day'))) return Promise.resolve();
+                      return Promise.reject(new Error('报名开始时间必须早于赛事开始日期'));
+                    },
+                  }),
+                ]}
+                style={{ flex: 1 }}
+              >
                 <DatePicker showTime style={{ width: '100%' }} />
               </Form.Item>
               <Form.Item
@@ -899,7 +938,17 @@ export default function TournamentsPage() {
                       <Button icon={<DeleteOutlined />} onClick={() => remove(field.name)} disabled={fields.length <= 1} />
                     </Space>
                   ))}
-                  <Button type="dashed" icon={<PlusOutlined />} onClick={() => add({ name: `${fields.length + 1} 号场` })}>
+                  <Button
+                    type="dashed"
+                    icon={<PlusOutlined />}
+                    onClick={() => {
+                      const existing: Array<{ name?: string } | undefined> = form.getFieldValue('venueNames') ?? [];
+                      const used = new Set(existing.map((item) => item?.name?.trim()).filter(Boolean));
+                      let next = existing.length + 1;
+                      while (used.has(`${next} 号场`)) next += 1;
+                      add({ name: `${next} 号场` });
+                    }}
+                  >
                     添加场地
                   </Button>
                   <Form.ErrorList errors={errors} />
@@ -914,7 +963,19 @@ export default function TournamentsPage() {
                 <InputNumber min={0} style={{ width: '100%' }} />
               </Form.Item>
             </Space>
-            <Form.Item name="dailyTimes" label="每日比赛时段" rules={[{ required: true, message: '请选择每日比赛时段' }]}>
+            <Form.Item
+              name="dailyTimes"
+              label="每日比赛时段"
+              rules={[
+                { required: true, message: '请选择每日比赛时段' },
+                {
+                  validator(_, value: [Dayjs, Dayjs] | undefined) {
+                    if (!value?.[0] || !value?.[1] || value[1].isAfter(value[0])) return Promise.resolve();
+                    return Promise.reject(new Error('每日比赛结束时间必须晚于开始时间'));
+                  },
+                },
+              ]}
+            >
               <TimePicker.RangePicker format="HH:mm" style={{ width: '100%' }} />
             </Form.Item>
           </Card>

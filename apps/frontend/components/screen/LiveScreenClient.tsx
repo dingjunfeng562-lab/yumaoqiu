@@ -8,6 +8,7 @@ import type {
   BracketParticipant,
   KnockoutBracketData,
 } from '@/components/bracket/KnockoutBracket';
+import type { SecondStageData, SecondStageMatch } from '@/components/bracket/SecondStageBracket';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 const SOCKET_BASE = API_BASE.replace(/\/api\/?$/, '');
@@ -51,16 +52,15 @@ function formatTime(value?: string | null) {
   });
 }
 
-function parseScore(match: BracketMatch) {
-  if (match.forfeitedSide) return { left: 'WO', right: 'WO', detail: match.gamesText || '弃权' };
-  const text = match.score || match.gamesText || '0:0';
-  const last = text.split(/[/,]/).map((item) => item.trim()).filter(Boolean).pop() ?? text;
-  const parts = last.match(/^(\d+)\s*[:：-]\s*(\d+)/);
-  return {
-    left: parts?.[1] ?? '0',
-    right: parts?.[2] ?? '0',
-    detail: match.gamesText && match.gamesText !== '-' ? match.gamesText : '当前局',
-  };
+type ParsedGame = { side1: number; side2: number };
+
+function parseGames(text: string) {
+  const games: ParsedGame[] = [];
+  for (const segment of text.split(/[/,]/)) {
+    const parts = segment.trim().match(/^(\d+)\s*[:：-]\s*(\d+)/);
+    if (parts) games.push({ side1: Number(parts[1]), side2: Number(parts[2]) });
+  }
+  return games;
 }
 
 function playerName(participant?: BracketParticipant | null) {
@@ -130,58 +130,54 @@ function LivePill({ state }: { state: SocketState }) {
   );
 }
 
-function PlayerGrid({ participants }: { participants: BracketParticipant[] }) {
-  const players = participants.filter((participant) => !participant.isBye);
-  return (
-    <section className="rounded-lg border border-white/10 bg-white/[0.07] p-4">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <h2 className="text-lg font-black text-white">选手名单</h2>
-        <span className="text-xs font-black text-cyan-100">{players.length} 人 / 每排 6 个</span>
-      </div>
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
-        {players.map((participant) => (
-          <div
-            key={participant.id}
-            className="min-h-[74px] rounded-lg border border-white/10 bg-slate-950/46 px-3 py-2"
-          >
-            <p className="truncate text-sm font-black text-white">{participant.name}</p>
-            {participant.members?.length ? (
-              <p className="mt-1 truncate text-xs font-semibold text-white/48">{participant.members.join(' / ')}</p>
-            ) : null}
-            {participant.seed ? (
-              <span className="mt-2 inline-flex rounded-full bg-amber-300 px-2 py-0.5 text-[10px] font-black text-slate-950">
-                种子 {participant.seed}
-              </span>
-            ) : null}
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
 function MatchCard({ bracket, match }: { bracket: KnockoutBracketData; match: BracketMatch }) {
   const side1 = sideFor(bracket, match.side1Id);
   const side2 = sideFor(bracket, match.side2Id);
   const status = normalizeStatus(String(match.status));
   const paused = Boolean(match.matchPaused);
-  const score = parseScore(match);
+  const forfeit = Boolean(match.forfeitedSide);
   const displaySwapped = status === 'LIVE' && match.courtDisplayState?.side1CourtSide === 'right';
+
+  const sourceText =
+    match.gamesText && match.gamesText !== '-'
+      ? match.gamesText
+      : status === 'LIVE'
+        ? match.score ?? ''
+        : '';
+  const games = forfeit ? [] : parseGames(sourceText);
+  const decided = Boolean(match.winnerSide || match.winnerId);
+  const currentGameIndex = status === 'LIVE' && !decided && games.length ? games.length - 1 : -1;
+  let side1Sets = 0;
+  let side2Sets = 0;
+  games.forEach((game, index) => {
+    if (index === currentGameIndex) return;
+    if (game.side1 > game.side2) side1Sets += 1;
+    else if (game.side2 > game.side1) side2Sets += 1;
+  });
+
+  const orient = (game: ParsedGame) =>
+    displaySwapped ? { left: game.side2, right: game.side1 } : { left: game.side1, right: game.side2 };
   const leftSide = displaySwapped ? side2 : side1;
   const rightSide = displaySwapped ? side1 : side2;
-  const displayScore = displaySwapped
-    ? { left: score.right, right: score.left, detail: score.detail }
-    : score;
+  const sets = displaySwapped
+    ? { left: side2Sets, right: side1Sets }
+    : { left: side1Sets, right: side2Sets };
   const side1Winner = match.winnerSide === 1 || match.winnerId === match.side1Id;
   const side2Winner = match.winnerSide === 2 || match.winnerId === match.side2Id;
+  const currentGame = currentGameIndex >= 0 ? orient(games[currentGameIndex]) : null;
+  const lastGame = games.length ? orient(games[games.length - 1]) : null;
 
   return (
     <article className={`rounded-lg border p-3 shadow-[0_18px_44px_rgba(0,0,0,0.22)] ${statusClasses(String(match.status), paused)}`}>
       <div className="mb-3 flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <p className="truncate text-xs font-black text-cyan-100">{roundTitle(match)}</p>
-          <p className="mt-0.5 text-[11px] font-semibold text-white/45">
-            第 {match.matchNo} 场 · {formatTime(match.scheduledAt)}
+          <p className="truncate text-xs font-black text-cyan-100">
+            {roundTitle(match)} · 第 {match.matchNo} 场 · {match.venueName || '待排场地'}
+          </p>
+          <p className="mt-0.5 truncate text-[11px] font-semibold tabular-nums text-white/45">
+            {status === 'LIVE' && currentGameIndex >= 0
+              ? `局数 ${sets.left}:${sets.right} · 第 ${games.length} 局`
+              : formatTime(match.scheduledAt)}
           </p>
         </div>
         <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-black ${
@@ -191,69 +187,111 @@ function MatchCard({ bracket, match }: { bracket: KnockoutBracketData; match: Br
         </span>
       </div>
 
-      <div className="grid grid-cols-[1fr_auto_1fr] items-stretch gap-3">
-        <ScoreSide
+      <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3">
+        <SideName
           name={playerName(leftSide)}
           players={playersFor(leftSide)}
-          score={displayScore.left}
           winner={displaySwapped ? side2Winner : side1Winner}
-          align="left"
+          align="right"
         />
-        <div className="flex min-w-[58px] flex-col items-center justify-center rounded-lg bg-slate-950/56 px-2">
-          <span className="text-[10px] font-black uppercase text-white/36">VS</span>
-          <span className="mt-1 h-px w-8 bg-white/12" />
-          <span className="mt-1 max-w-[56px] truncate text-[10px] font-semibold text-white/42">
-            {match.venueName || '待排场地'}
-          </span>
+        <div className="text-center">
+          {forfeit ? (
+            <>
+              <strong className="block text-3xl font-black leading-none text-amber-300">WO</strong>
+              <p className="mt-1 text-xs font-semibold text-white/45">{match.forfeitLabel ?? '弃权'}</p>
+            </>
+          ) : status === 'LIVE' && currentGame ? (
+            <strong className="block whitespace-nowrap text-4xl font-black leading-none tabular-nums text-amber-300 sm:text-5xl">
+              {currentGame.left}
+              <span className="px-1.5 text-white/30">:</span>
+              {currentGame.right}
+            </strong>
+          ) : (status === 'COMPLETED' || decided) && games.length ? (
+            <>
+              <strong className="block whitespace-nowrap text-4xl font-black leading-none tabular-nums text-amber-300 sm:text-5xl">
+                {sets.left}
+                <span className="px-1.5 text-white/30">:</span>
+                {sets.right}
+              </strong>
+              {lastGame ? (
+                <p className="mt-1 text-xs font-semibold tabular-nums text-white/45">
+                  末局 {lastGame.left}:{lastGame.right}
+                </p>
+              ) : null}
+            </>
+          ) : (
+            <span className="block px-2 text-2xl font-black leading-none text-white/30">VS</span>
+          )}
         </div>
-        <ScoreSide
+        <SideName
           name={playerName(rightSide)}
           players={playersFor(rightSide)}
-          score={displayScore.right}
           winner={displaySwapped ? side1Winner : side2Winner}
-          align="right"
+          align="left"
         />
       </div>
 
-      <div className="mt-3 flex items-center justify-between gap-3 border-t border-white/10 pt-2 text-[11px] font-semibold text-white/45">
-        <span className="truncate">局分：{score.detail}</span>
-        {match.latestEvents?.[0]?.text ? <span className="max-w-[45%] truncate">{match.latestEvents[0].text}</span> : null}
-      </div>
+      {games.length && !forfeit ? (
+        <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+          {games.map((game, index) => {
+            const view = orient(game);
+            const isCurrent = index === currentGameIndex;
+            const leftWon = !isCurrent && view.left > view.right;
+            const rightWon = !isCurrent && view.right > view.left;
+            return (
+              <span
+                key={index}
+                className={`rounded-lg border px-2.5 py-1 text-sm font-black tabular-nums ${
+                  isCurrent
+                    ? 'border-emerald-300/60 bg-emerald-400/10 text-emerald-200'
+                    : 'border-white/15 bg-white/[0.04]'
+                }`}
+              >
+                <span className={isCurrent ? '' : leftWon ? 'text-amber-300' : 'text-white/45'}>{view.left}</span>
+                <span className={isCurrent ? 'text-emerald-200/70' : 'text-white/30'}>:</span>
+                <span className={isCurrent ? '' : rightWon ? 'text-amber-300' : 'text-white/45'}>{view.right}</span>
+                {isCurrent ? <span className="ml-1 align-middle text-[10px]">●</span> : null}
+              </span>
+            );
+          })}
+        </div>
+      ) : null}
+
+      {forfeit && match.gamesText ? (
+        <p className="mt-3 truncate border-t border-white/10 pt-2 text-[11px] font-semibold text-white/45">
+          {match.gamesText}
+        </p>
+      ) : match.latestEvents?.[0]?.text ? (
+        <p className="mt-3 truncate border-t border-white/10 pt-2 text-[11px] font-semibold text-white/45">
+          {match.latestEvents[0].text}
+        </p>
+      ) : null}
     </article>
   );
 }
 
-function ScoreSide({
+function SideName({
   name,
   players,
-  score,
   winner,
   align,
 }: {
   name: string;
   players: string[];
-  score: string;
   winner: boolean;
   align: 'left' | 'right';
 }) {
   return (
-    <div className={`min-w-0 rounded-lg bg-white/[0.055] p-3 ${align === 'right' ? 'text-right' : 'text-left'}`}>
-      <div className={`flex items-start gap-3 ${align === 'right' ? 'flex-row-reverse' : ''}`}>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-base font-black text-white">{name}</p>
-          {players.length > 1 ? (
-            <p className="mt-1 truncate text-xs font-semibold text-white/48">{players.join(' / ')}</p>
-          ) : null}
-          {winner ? (
-            <span className="mt-2 inline-flex rounded-full bg-amber-300 px-2 py-0.5 text-[10px] font-black text-slate-950">
-              胜
-            </span>
-          ) : null}
-        </div>
-        <strong className="shrink-0 text-5xl font-black leading-none text-amber-300 sm:text-6xl">
-          {score}
-        </strong>
-      </div>
+    <div className={`min-w-0 ${align === 'right' ? 'text-right' : 'text-left'}`}>
+      <p className="truncate text-lg font-black text-white">{name}</p>
+      {players.length > 1 ? (
+        <p className="mt-0.5 truncate text-xs font-semibold text-white/48">{players.join(' / ')}</p>
+      ) : null}
+      {winner ? (
+        <span className="mt-1.5 inline-flex rounded-full bg-amber-300 px-2 py-0.5 text-[10px] font-black text-slate-950">
+          胜
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -273,6 +311,130 @@ function EmptyState({ brackets }: { brackets: KnockoutBracketData[] }) {
   );
 }
 
+const SECOND_STAGE_STATUS_TEXT: Record<string, string> = {
+  FINISHED: '已完成',
+  COMPLETED: '已完成',
+  LIVE: '进行中',
+  PENDING: '待开始',
+  CANCELLED: '已取消',
+};
+
+function secondStageMatchStatus(status?: string | null) {
+  return SECOND_STAGE_STATUS_TEXT[String(status ?? 'PENDING').toUpperCase()] ?? '待开始';
+}
+
+function secondStageScore(score?: string | null) {
+  if (!score) return '';
+  return score.replace(/\s*[:：]\s*/g, ' : ');
+}
+
+function secondStageGroups(data: SecondStageData) {
+  const matches = [...(data.matches ?? [])].sort((a, b) => a.matchNo - b.matchNo);
+  const top6 = (data.rankingMode ?? 'TOP_8') === 'TOP_6';
+  return [
+    { title: '前8初始赛', matches: matches.filter((m) => m.matchNo >= 1 && m.matchNo <= 4) },
+    { title: '1—4名争夺区', matches: matches.filter((m) => m.matchNo >= 5 && m.matchNo <= 8) },
+    { title: top6 ? '5—6名争夺区' : '5—8名争夺区', matches: matches.filter((m) => m.matchNo >= 9) },
+  ].filter((group) => group.matches.length > 0);
+}
+
+function SecondStageMatchCard({ match }: { match: SecondStageMatch }) {
+  const normalized = String(match.status ?? 'PENDING').toUpperCase();
+  const live = normalized === 'LIVE';
+  const decided = normalized === 'FINISHED' || normalized === 'COMPLETED' || Boolean(match.winnerSide);
+  const score = secondStageScore(match.score);
+  return (
+    <article className={`rounded-lg border p-3 ${statusClasses(normalized === 'FINISHED' ? 'COMPLETED' : match.status)}`}>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <p className="truncate text-xs font-black text-emerald-100">
+          第 {match.matchNo} 场{match.roundName ? ` · ${match.roundName}` : match.area ? ` · ${match.area}` : ''}
+        </p>
+        <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-black ${
+          live ? 'bg-emerald-300 text-slate-950' : 'bg-white/12 text-white/72'
+        }`}>
+          {secondStageMatchStatus(match.status)}
+        </span>
+      </div>
+      <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3">
+        <SideName name={match.player1Name ?? match.source1 ?? '待定'} players={[]} winner={match.winnerSide === 1} align="right" />
+        <div className="text-center">
+          {decided && score ? (
+            <strong className="block whitespace-nowrap text-2xl font-black leading-none tabular-nums text-amber-300 sm:text-3xl">
+              {score}
+            </strong>
+          ) : (
+            <span className="block px-2 text-2xl font-black leading-none text-white/30">VS</span>
+          )}
+        </div>
+        <SideName name={match.player2Name ?? match.source2 ?? '待定'} players={[]} winner={match.winnerSide === 2} align="left" />
+      </div>
+      {decided && match.winnerName ? (
+        <p className="mt-3 truncate border-t border-white/10 pt-2 text-[11px] font-semibold text-white/45">
+          胜者：{match.winnerName}
+        </p>
+      ) : null}
+    </article>
+  );
+}
+
+function SecondStageWall({ data }: { data: SecondStageData }) {
+  const status = String(data.secondStageStatus ?? data.status ?? '').toUpperCase();
+  if (status !== 'CONFIRMED' && status !== 'FINISHED') return null;
+  const groups = secondStageGroups(data);
+  if (!groups.length) return null;
+  const rankings = [...(data.rankings ?? [])].sort((a, b) => a.rank - b.rank);
+  return (
+    <section className="rounded-lg border border-emerald-300/25 bg-emerald-400/[0.06] p-4">
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-200/80">Second Stage</p>
+          <h2 className="mt-1 truncate text-2xl font-black text-white">第二阶段：小组赛排位赛</h2>
+        </div>
+        <span className="shrink-0 rounded-full bg-emerald-300 px-3 py-1 text-xs font-black text-slate-950">
+          {data.rankingModeText ?? '取前8名'}
+        </span>
+      </div>
+      <div className="space-y-5">
+        {groups.map((group) => (
+          <section key={group.title}>
+            <div className="mb-2 flex items-center gap-3">
+              <h3 className="shrink-0 text-sm font-black text-emerald-100">{group.title}</h3>
+              <span className="h-px flex-1 bg-white/10" />
+              <span className="text-xs font-semibold text-white/38">{group.matches.length} 场</span>
+            </div>
+            <div className="grid gap-3 xl:grid-cols-2 2xl:grid-cols-3">
+              {group.matches.map((match) => (
+                <SecondStageMatchCard key={match.matchNo} match={match} />
+              ))}
+            </div>
+          </section>
+        ))}
+        {rankings.length ? (
+          <section>
+            <div className="mb-2 flex items-center gap-3">
+              <h3 className="shrink-0 text-sm font-black text-amber-200">最终排名</h3>
+              <span className="h-px flex-1 bg-white/10" />
+            </div>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4">
+              {rankings.map((ranking) => (
+                <div
+                  key={ranking.rank}
+                  className="flex items-center justify-between rounded-lg border border-white/10 bg-slate-950/46 px-3 py-2"
+                >
+                  <span className="text-sm font-black text-amber-300">第{ranking.rank}名</span>
+                  <span className="min-w-0 truncate text-right text-sm font-black text-white">
+                    {ranking.playerName ?? '待定'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 export function LiveScreenClient({
   initialBrackets,
   initialTournamentId,
@@ -281,13 +443,50 @@ export function LiveScreenClient({
   initialTournamentId?: string | null;
 }) {
   const [brackets, setBrackets] = useState(initialBrackets);
+  const [selectedTournamentId, setSelectedTournamentId] = useState(initialBrackets[0]?.tournamentId ?? '');
   const [selectedId, setSelectedId] = useState(initialBrackets[0]?.id ?? '');
   const [socketState, setSocketState] = useState<SocketState>('connecting');
   const [updatedAt, setUpdatedAt] = useState(new Date());
 
+  // 一级：赛事（按 tournamentId 去重，保留后端顺序）。
+  const tournaments = useMemo(() => {
+    const seen = new Map<string, { id: string; name: string }>();
+    for (const bracket of brackets) {
+      const tid = bracket.tournamentId;
+      if (!tid || seen.has(tid)) continue;
+      seen.set(tid, { id: tid, name: bracket.tournamentName ?? bracket.title });
+    }
+    return [...seen.values()];
+  }, [brackets]);
+
+  // 用「有效值」兜底渲染：所选失效（数据刷新/越界）时自动回退首项，无需副作用纠偏。
+  const effectiveTournamentId =
+    selectedTournamentId && tournaments.some((t) => t.id === selectedTournamentId)
+      ? selectedTournamentId
+      : tournaments[0]?.id ?? '';
+
+  // 二级：该赛事下的组别（项目）。
+  const events = useMemo(
+    () => brackets.filter((bracket) => bracket.tournamentId === effectiveTournamentId),
+    [brackets, effectiveTournamentId],
+  );
+
+  const effectiveEventId =
+    selectedId && events.some((e) => e.id === selectedId) ? selectedId : events[0]?.id ?? '';
+
   const selected = useMemo(
-    () => brackets.find((bracket) => bracket.id === selectedId) ?? brackets[0] ?? null,
-    [brackets, selectedId],
+    () => brackets.find((bracket) => bracket.id === effectiveEventId) ?? null,
+    [brackets, effectiveEventId],
+  );
+
+  // 切赛事时，组别默认落到该赛事第一个项目。
+  const handleTournamentChange = useCallback(
+    (tid: string) => {
+      setSelectedTournamentId(tid);
+      const first = brackets.find((bracket) => bracket.tournamentId === tid);
+      setSelectedId(first?.id ?? '');
+    },
+    [brackets],
   );
 
   const reload = useCallback(async () => {
@@ -295,7 +494,7 @@ export function LiveScreenClient({
       const next = await fetchBrackets();
       setBrackets(next);
       setUpdatedAt(new Date());
-      setSelectedId((current) => (next.some((bracket) => bracket.id === current) ? current : (next[0]?.id ?? '')));
+      // 选择保持不变；若刷新后所选已不存在，渲染时的「有效值」会自动回退首项。
     } catch {
       setSocketState('offline');
     }
@@ -383,24 +582,44 @@ export function LiveScreenClient({
         </header>
 
         <section className="grid gap-3 rounded-lg border border-white/10 bg-white/[0.07] p-4 lg:grid-cols-[1fr_auto] lg:items-center">
-          <label className="min-w-0">
-            <span className="mb-2 block text-xs font-black text-white/52">选择比赛</span>
-            <select
-              value={selected?.id ?? ''}
-              onChange={(event) => setSelectedId(event.target.value)}
-              className="h-12 w-full rounded-lg border border-white/14 bg-slate-950/72 px-4 text-sm font-black text-white outline-none transition focus:border-cyan-200"
-            >
-              {brackets.length ? (
-                brackets.map((bracket) => (
-                  <option key={bracket.id} value={bracket.id}>
-                    {bracket.title}
-                  </option>
-                ))
-              ) : (
-                <option value="">暂无比赛</option>
-              )}
-            </select>
-          </label>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="min-w-0">
+              <span className="mb-2 block text-xs font-black text-white/52">选择比赛</span>
+              <select
+                value={effectiveTournamentId}
+                onChange={(event) => handleTournamentChange(event.target.value)}
+                className="h-12 w-full rounded-lg border border-white/14 bg-slate-950/72 px-4 text-sm font-black text-white outline-none transition focus:border-cyan-200"
+              >
+                {tournaments.length ? (
+                  tournaments.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))
+                ) : (
+                  <option value="">暂无比赛</option>
+                )}
+              </select>
+            </label>
+            <label className="min-w-0">
+              <span className="mb-2 block text-xs font-black text-white/52">选择组别</span>
+              <select
+                value={effectiveEventId}
+                onChange={(event) => setSelectedId(event.target.value)}
+                className="h-12 w-full rounded-lg border border-white/14 bg-slate-950/72 px-4 text-sm font-black text-white outline-none transition focus:border-cyan-200"
+              >
+                {events.length ? (
+                  events.map((ev) => (
+                    <option key={ev.id} value={ev.id}>
+                      {ev.groupLabel ?? ev.title}
+                    </option>
+                  ))
+                ) : (
+                  <option value="">暂无组别</option>
+                )}
+              </select>
+            </label>
+          </div>
           <div className="grid grid-cols-4 gap-2 lg:min-w-[520px]">
             {[
               ['总场次', stats.total],
@@ -418,16 +637,8 @@ export function LiveScreenClient({
 
         {selected ? (
           <>
-            <PlayerGrid participants={selected.participants} />
-
             <section className="min-h-0 flex-1 rounded-lg border border-white/10 bg-slate-950/46 p-4">
-              <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
-                <div className="min-w-0">
-                  <h2 className="truncate text-2xl font-black text-white">{selected.title}</h2>
-                  {selected.subtitle ? (
-                    <p className="mt-1 truncate text-sm font-semibold text-white/48">{selected.subtitle}</p>
-                  ) : null}
-                </div>
+              <div className="mb-4 flex justify-end">
                 <p className="text-xs font-semibold text-white/42">
                   更新 {updatedAt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}
                 </p>
@@ -450,6 +661,8 @@ export function LiveScreenClient({
                 ))}
               </div>
             </section>
+
+            {selected.secondStage ? <SecondStageWall data={selected.secondStage} /> : null}
           </>
         ) : (
           <EmptyState brackets={brackets} />

@@ -90,7 +90,7 @@ function formatTime(value?: string | null) {
 
 function displayMatch(match: PublicMatch) {
   const shouldSwap = match.status === 'LIVE' && match.courtDisplayState?.side1CourtSide === 'right';
-  const scoreParts = match.score.match(/^(\D*)(\d+)\s*[:锛?]\s*(\d+)(\D*)$/);
+  const scoreParts = match.score.match(/^(\D*)(\d+)\s*[:：]\s*(\d+)(\D*)$/);
   const score = shouldSwap && scoreParts
     ? `${scoreParts[1]}${scoreParts[3]}:${scoreParts[2]}${scoreParts[4]}`
     : match.score;

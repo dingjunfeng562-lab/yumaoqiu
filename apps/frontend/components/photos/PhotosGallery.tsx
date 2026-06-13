@@ -149,7 +149,7 @@ export function PhotosGallery() {
 
   function downloadPhoto(item: PhotoItem) {
     // Go through the download endpoint, not the raw /uploads URL: the server
-    // streams the high-res watermarked version with a 赛事名-分类-序号.jpg filename.
+    // streams the high-res watermarked version with a 赛事名-分类-序号.ext filename.
     const a = document.createElement('a');
     a.href = `${API_BASE}/photos/${item.id}/download`;
     document.body.appendChild(a);

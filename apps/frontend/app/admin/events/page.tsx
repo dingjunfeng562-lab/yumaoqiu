@@ -30,6 +30,9 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
 const FORMAT_LABELS: Record<string, string> = {
   SINGLE_ELIMINATION: '单淘汰制',
   GROUP_PLUS_KNOCKOUT: '小组赛+淘汰',
+  ROUND_ROBIN: '单循环排名赛',
+  GROUP_PLUS_PLAYOFF: '小组循环+交叉排位',
+  SINGLE_ELIMINATION_PLUS_GROUP_RANKING: '单淘汰+小组赛排位赛',
 };
 
 const SCORING_RULE_LABELS: Record<string, string> = {

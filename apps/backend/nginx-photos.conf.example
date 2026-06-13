@@ -1,41 +1,65 @@
 # ============================================================================
-# 赛事图片功能 —— 生产环境 Nginx 参考配置(本地开发不生效)
+# 赛事图片功能 —— 生产环境 Nginx 参考配置（本地开发不生效）
 #
-# 本仓库在开发环境通过 NestJS 控制器(uploads.controller.ts)直接分发图片,
-# 无需 Nginx。下述配置仅供生产部署参考:让 Nginx 直接提供水印版 / 缩略图 /
-# Logo 等公开静态资源,同时严格隔离 original/ 原图目录(仅后端 API 可读)。
+# 作用：让 Nginx 直接发布【已带 logo 水印】的公开静态图（full / thumb / logos）
+#       与赛事封面（covers）。这些请求不再进入 NestJS（Node），把 Node 的单线程
+#       事件循环留给记分 / 接口 / WebSocket；仅其余 /api 反代到后端。
+#       original/（无水印原图）严格隔离，只能走后端鉴权 API。
 #
-# 假设磁盘布局:
-#   /var/www/yzy-tournament/uploads/photos/{tournamentId}/original/
-#   /var/www/yzy-tournament/uploads/photos/{tournamentId}/watermark/
-#   /var/www/yzy-tournament/uploads/photos/{tournamentId}/thumb/
-#   /var/www/yzy-tournament/uploads/photos/{tournamentId}/logos/
+# ★ 关键：应用实际生成的图片 URL 带 /api 前缀，形如
+#     /api/uploads/photos/{tournamentId}/{full|thumb|logos}/{uuid}.jpg
+#     /api/uploads/covers/{filename}
+#   （见 photos.service 的 url() = /api/uploads/... 加全局前缀 api、uploads.controller 路由）。
+#   所以下面用「正则 + alias」把 /api/uploads 前缀映射到磁盘 uploads 目录——
+#   不能用早期那种 ^/uploads/... 规则，那样匹配不上、会被反代回 Node。
+#
+# ★ 路径：ALIAS 基准目录必须指向【后端进程 process.cwd() 下的 uploads/】，
+#   即后端启动目录里的 uploads（uploadsRoot() = join(process.cwd(), 'uploads')）。
+#   本仓库布局通常是  .../apps/backend/uploads 。
+#   下面用 /ABSOLUTE/PATH/TO/apps/backend 占位，请改成你的真实绝对路径，
+#   并确保 Nginx 运行用户（如 www-data）对该目录有读权限。
+#
+# 磁盘布局（占位根目录下）：
+#   uploads/covers/
+#   uploads/photos/{tournamentId}/original/   ← 无水印原图，禁止直发
+#   uploads/photos/{tournamentId}/full/       ← 高清，logo 已烤进像素
+#   uploads/photos/{tournamentId}/thumb/      ← 400px 缩略图，logo 已烤进像素
+#   uploads/photos/{tournamentId}/logos/      ← 水印 logo 源文件（公开）
 # ============================================================================
 
 server {
     listen 80;
+    # 想要极致首屏并发：在 TLS 终止处改用 HTTP/2，可突破浏览器同域 ~6 并发限制：
+    #   listen 443 ssl http2;
     server_name your-domain.example.com;
 
-    # 上传相关:批量上传 20 张、单张 50MB,放宽请求体与超时。
+    # 批量上传 20 张 / 单张 50MB：放宽请求体与超时（上传走下面的 /api 反代）。
     client_max_body_size 100M;
     client_body_timeout 300s;
 
-    # ---- 公开静态资源:水印版 / 缩略图 / Logo ----
-    # 只暴露 watermark、thumb、logos 三个子目录,original 不在其列。
-    location ~ ^/uploads/photos/[^/]+/(watermark|thumb|logos)/ {
-        root /var/www/yzy-tournament;
-        expires 30d;
-        add_header Cache-Control "public";
-        try_files $uri =404;
-    }
-
-    # ---- 显式拒绝直接访问原图目录 ----
-    location ~ ^/uploads/photos/[^/]+/original/ {
+    # ---- 先拒绝：无水印原图绝不直发（只能走后端鉴权 /api/admin/photos/:id/original） ----
+    location ~ ^/api/uploads/photos/[^/]+/original/ {
         deny all;
         return 404;
     }
 
-    # ---- 其余 /api 反向代理到 NestJS(含 /api/admin/photos/:id/original 鉴权读原图) ----
+    # ---- 公开静态图：仅 full / thumb / logos（均已带 logo 水印），Node 不经手 ----
+    # 文件名唯一(UUID)、内容永不原地覆盖 → 可长期 immutable 强缓存（换图 = 新 URL，天然失效）。
+    # $1 捕获 /api/uploads/ 之后的相对路径，alias 拼到真实 uploads 目录。
+    location ~ ^/api/uploads/(photos/[^/]+/(?:full|thumb|logos)/[^/]+)$ {
+        alias /ABSOLUTE/PATH/TO/apps/backend/uploads/$1;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        access_log off;
+    }
+
+    # ---- 赛事封面（公开静态） ----
+    location ~ ^/api/uploads/(covers/[^/]+)$ {
+        alias /ABSOLUTE/PATH/TO/apps/backend/uploads/$1;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        access_log off;
+    }
+
+    # ---- 其余 /api 反向代理到 NestJS（含上传、鉴权读原图等动态接口） ----
     location /api/ {
         proxy_pass http://127.0.0.1:4000;
         proxy_set_header Host $host;
@@ -43,7 +67,7 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
-        # 大文件上传:延长读写超时,避免水印合成期间断开。
+        # 大文件上传：延长读写超时、关闭请求缓冲，避免水印合成期间断开。
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
         proxy_request_buffering off;

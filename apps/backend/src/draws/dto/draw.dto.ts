@@ -3,12 +3,15 @@ import {
   ArrayMaxSize,
   IsArray,
   IsBoolean,
+  IsEnum,
   IsInt,
+  IsIn,
   IsOptional,
   IsString,
   Min,
   ValidateNested,
 } from 'class-validator';
+import { SecondStageRankingMode } from '@prisma/client';
 
 export class CreateRegistrationDto {
   @IsString()
@@ -146,4 +149,24 @@ export class GetDrawLogsQueryDto {
   @IsInt()
   @Min(1)
   pageSize?: number = 20;
+}
+
+export class SecondStageSlotDto {
+  @IsIn(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'])
+  slot: string;
+
+  // 留空 / 未选 = 该签位轮空（无选手）。
+  @IsOptional()
+  @IsString()
+  entrantId?: string | null;
+}
+
+export class ConfirmSecondStageDto {
+  @IsEnum(SecondStageRankingMode)
+  rankingMode: SecondStageRankingMode;
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => SecondStageSlotDto)
+  slots: SecondStageSlotDto[];
 }

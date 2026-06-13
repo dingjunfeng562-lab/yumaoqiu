@@ -31,7 +31,7 @@ type WatermarkLogo = { order: number; path: string; filename?: string };
 
 const PHOTO_LOG_RETENTION_DAYS = 90;
 
-/** Chinese labels used in download filenames: 赛事名-分类-序号.jpg */
+/** Chinese labels used in download filenames: 赛事名-分类-序号.ext */
 const PHOTO_CATEGORY_LABELS: Record<PhotoCategory, string> = {
   PLAYER: '选手照',
   MATCH: '现场照',
@@ -194,7 +194,6 @@ export class PhotosService {
             const origExt = isPng ? '.png' : '.jpg';
 
             const originalPath = `photos/${tournamentId}/original/${uuid}${origExt}`;
-            const fullPath = `photos/${tournamentId}/full/${uuid}.jpg`;
             const thumbnailPath = `photos/${tournamentId}/thumb/${uuid}.jpg`;
 
             const { width, height } = await this.watermark.dimensions(file.buffer);
@@ -205,10 +204,11 @@ export class PhotosService {
               logoGapPercent,
               position,
             );
-            const thumb = await this.watermark.generateThumbnail(watermarked);
+            const fullPath = `photos/${tournamentId}/full/${uuid}${watermarked.ext}`;
+            const thumb = await this.watermark.generateThumbnail(watermarked.buffer);
 
             this.writeRelative(originalPath, file.buffer);
-            this.writeRelative(fullPath, watermarked);
+            this.writeRelative(fullPath, watermarked.buffer);
             this.writeRelative(thumbnailPath, thumb);
 
             await this.prisma.photo.create({
@@ -485,7 +485,7 @@ export class PhotosService {
   /**
    * Public download of the high-res watermarked version. Routed through the API
    * (rather than a raw /uploads URL) so the filename is server-controlled and
-   * future access control / counting can hook in here. Filename: 赛事名-分类-序号.jpg.
+   * future access control / counting can hook in here. Filename: 赛事名-分类-序号.ext.
    */
   async getDownload(photoId: string) {
     const photo = await this.prisma.photo.findUnique({
@@ -498,7 +498,9 @@ export class PhotosService {
 
     const name = this.safeFileName(photo.tournament?.name ?? '赛事');
     const category = PHOTO_CATEGORY_LABELS[photo.category] ?? photo.category;
-    const filename = `${name}-${category}-${photo.seq}.jpg`;
+    const dot = photo.fullPath.lastIndexOf('.');
+    const ext = dot >= 0 ? photo.fullPath.slice(dot) : '.jpg';
+    const filename = `${name}-${category}-${photo.seq}${ext}`;
     return { absolutePath: abs, filename };
   }
 

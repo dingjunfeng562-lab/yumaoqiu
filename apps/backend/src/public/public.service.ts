@@ -5,6 +5,8 @@ import { TeamCompetitionsService } from '../team-competitions/team-competitions.
 import { AnnouncementsService } from '../announcements/announcements.service';
 import { effectiveTournamentStatus } from '../tournaments/tournament-status';
 
+const SECOND_STAGE_FORMAL_ROUND_NO_BASE = 100;
+
 const EVENT_TYPE_LABELS: Record<string, string> = {
   MENS_SINGLES: '男子单打',
   WOMENS_SINGLES: '女子单打',
@@ -41,6 +43,9 @@ function deriveTournamentDisplayStatus(tournament: {
 const FORMAT_LABELS: Record<string, string> = {
   SINGLE_ELIMINATION: '单淘汰制',
   GROUP_PLUS_KNOCKOUT: '小组赛+淘汰',
+  ROUND_ROBIN: '单循环排名赛',
+  GROUP_PLUS_PLAYOFF: '小组循环+交叉排位',
+  SINGLE_ELIMINATION_PLUS_GROUP_RANKING: '单淘汰+小组赛排位赛',
 };
 
 const COURT_SWAP_NOTE_PREFIX = 'COURT_SWAP:';
@@ -201,7 +206,7 @@ export class PublicService {
           where: { tournamentId: competition.id },
           include: {
             matches: {
-              where: { roundNo: { gt: 0 } },
+              where: { roundNo: { gt: 0, lt: SECOND_STAGE_FORMAL_ROUND_NO_BASE } },
               orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }],
               take: 4,
             },
@@ -462,7 +467,7 @@ export class PublicService {
           approvalStatus: 'APPROVED',
         },
         drawPublished: true,
-        matches: { some: { roundNo: { gt: 0 } } },
+        matches: { some: { roundNo: { gt: 0, lt: SECOND_STAGE_FORMAL_ROUND_NO_BASE } } },
       },
       include: {
         tournament: true,
@@ -472,7 +477,7 @@ export class PublicService {
           orderBy: [{ isSeed: 'desc' }, { seedRank: 'asc' }, { createdAt: 'asc' }],
         },
         matches: {
-          where: { roundNo: { gt: 0 } },
+          where: { roundNo: { gt: 0, lt: SECOND_STAGE_FORMAL_ROUND_NO_BASE } },
           include: {
             venue: true,
             referee: { select: { username: true } },
@@ -494,6 +499,13 @@ export class PublicService {
             },
           },
           orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }],
+        },
+        secondStage: {
+          include: {
+            slots: { orderBy: { sortOrder: 'asc' } },
+            matches: { orderBy: { matchNo: 'asc' } },
+            rankings: { orderBy: { rank: 'asc' } },
+          },
         },
       },
       orderBy: [{ tournament: { startDate: 'desc' } }, { type: 'asc' }],
@@ -524,6 +536,12 @@ export class PublicService {
                 games: { orderBy: { gameNo: 'asc' } },
               },
               orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }],
+            },
+            secondStage: {
+              include: {
+                slots: { orderBy: { sortOrder: 'asc' } },
+                rankings: { orderBy: { rank: 'asc' } },
+              },
             },
           },
           orderBy: { type: 'asc' },
@@ -617,6 +635,12 @@ export class PublicService {
               },
               orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }],
             },
+            secondStage: {
+              include: {
+                slots: { orderBy: { sortOrder: 'asc' } },
+                rankings: { orderBy: { rank: 'asc' } },
+              },
+            },
           },
           orderBy: { type: 'asc' },
         },
@@ -684,7 +708,8 @@ export class PublicService {
     const registrationMap = new Map<string, any>(
       event.registrations.map((item: any) => [item.id, item]),
     );
-    const firstRound = event.matches
+    const bracketMatches = event.matches.filter((match: any) => !this.isSecondStageFormalMatch(match));
+    const firstRound = bracketMatches
       .filter((match: any) => match.roundNo === 1)
       .sort((a: any, b: any) => a.matchNo - b.matchNo);
     const participants = firstRound.length
@@ -709,11 +734,13 @@ export class PublicService {
     return {
       id: event.id,
       tournamentId: event.tournament.id,
+      tournamentName: event.tournament.name,
+      groupLabel: EVENT_TYPE_LABELS[event.type] ?? event.type,
       title: `${event.tournament.name} · ${EVENT_TYPE_LABELS[event.type] ?? event.type}`,
       subtitle: `${FORMAT_LABELS[event.format] ?? event.format} · ${participants.filter((item: any) => !item.isBye).length} 个签位`,
       generatedAt: event.drawGeneratedAt?.toISOString?.() ?? null,
       participants,
-      matches: event.matches.map((match: any) => {
+      matches: bracketMatches.map((match: any) => {
         const pauseState = this.computePublicPauseState(match.events ?? [], match.finishedAt);
         const courtDisplayState = this.computePublicCourtDisplayState(match.events ?? []);
         const forfeitedSideName = match.forfeitedSide === 1
@@ -763,6 +790,74 @@ export class PublicService {
             : '-',
         };
       }),
+      secondStage: this.publicSecondStageView(event.secondStage, event.format),
+    };
+  }
+
+  private isSecondStageFormalMatch(match: { roundNo: number }) {
+    return match.roundNo >= SECOND_STAGE_FORMAL_ROUND_NO_BASE;
+  }
+
+  private publicSecondStageView(stage: any | null | undefined, eventFormat: Format) {
+    if (!stage) {
+      if (eventFormat !== Format.SINGLE_ELIMINATION_PLUS_GROUP_RANKING) return null;
+      return {
+        status: 'NOT_STARTED',
+        secondStageStatus: 'NOT_STARTED',
+        mode: 'MANUAL_BY_REFEREE',
+        secondStageMode: 'MANUAL_BY_REFEREE',
+        modeText: '裁判手动指定',
+        rankingMode: 'TOP_8',
+        rankingModeText: '取前8名',
+        slotSourceText: '组委会手动安排',
+        slots: [],
+        matches: [],
+        rankings: [],
+      };
+    }
+
+    const rankingMode = String(stage.rankingMode ?? 'TOP_8');
+    return {
+      id: stage.id,
+      status: stage.status,
+      secondStageStatus: stage.status,
+      mode: stage.mode,
+      secondStageMode: stage.mode,
+      modeText: '裁判手动指定',
+      rankingMode,
+      rankingModeText: rankingMode === 'TOP_6' ? '取前6名' : '取前8名',
+      slotSourceText: '组委会手动安排',
+      confirmedAt: stage.confirmedAt?.toISOString?.() ?? null,
+      finishedAt: stage.finishedAt?.toISOString?.() ?? null,
+      slots: (stage.slots ?? []).map((slot: any) => ({
+        slot: slot.slot,
+        playerId: slot.entrantId,
+        playerName: slot.entrantNameSnapshot ?? '轮空',
+      })),
+      matches: (stage.matches ?? []).map((match: any) => ({
+        id: match.id,
+        matchNo: match.matchNo,
+        stageName: '第二阶段：小组赛排位赛',
+        roundName: match.roundName,
+        area: match.area,
+        slotInfo: match.slotInfo,
+        source1: match.side1Source,
+        source2: match.side2Source,
+        player1Id: match.side1Id,
+        player2Id: match.side2Id,
+        player1Name: match.side1NameSnapshot ?? match.side1Source ?? '待定',
+        player2Name: match.side2NameSnapshot ?? match.side2Source ?? '待定',
+        score: match.score,
+        winnerSide: match.winnerSide,
+        winnerId: match.winnerId,
+        winnerName: match.winnerNameSnapshot,
+        status: match.status === MatchStatus.COMPLETED ? 'FINISHED' : match.status,
+      })),
+      rankings: (stage.rankings ?? []).map((ranking: any) => ({
+        rank: ranking.rank,
+        playerId: ranking.entrantId,
+        playerName: ranking.entrantNameSnapshot ?? '待定',
+      })),
     };
   }
 
@@ -911,6 +1006,12 @@ export class PublicService {
       R3: '1/32 决赛',
       BRONZE: '季军赛',
     };
+    // 交叉排位赛：round = `P{高位名次}`，例如 P1 = 1-2 名决赛、P3 = 3-4 名决赛。
+    const playoff = /^P(\d+)$/.exec(round);
+    if (playoff) {
+      const hi = Number(playoff[1]);
+      return `${hi}-${hi + 1} 名决赛`;
+    }
     return labels[round] ?? round;
   }
 
@@ -1013,10 +1114,161 @@ export class PublicService {
   }
 
   private eventStandings(event: any, registrationMap: Map<string, any>) {
+    if (event.format === Format.SINGLE_ELIMINATION_PLUS_GROUP_RANKING) {
+      return this.singleEliminationPlusGroupRankingStandings(event, registrationMap);
+    }
     if (event.format === Format.SINGLE_ELIMINATION) {
       return this.singleEliminationStandings(event, registrationMap);
     }
+    if (event.format === Format.GROUP_PLUS_PLAYOFF) {
+      return this.groupPlusPlayoffStandings(event, registrationMap);
+    }
+    // ROUND_ROBIN（单组循环）与 GROUP_PLUS_KNOCKOUT 都按组内循环战绩排名。
     return this.groupStageStandings(event, registrationMap);
+  }
+
+  private singleEliminationPlusGroupRankingStandings(
+    event: any,
+    registrationMap: Map<string, any>,
+  ): RankedStandingRow[] {
+    const secondStage = event.secondStage;
+    if (!secondStage) return this.singleEliminationStandings(event, registrationMap);
+
+    const rows = this.baseStandingRows(event);
+    const rowMap = new Map<string, StandingRow>(rows.map((row) => [row.id, row]));
+    for (const match of event.matches) {
+      if (match.status !== MatchStatus.COMPLETED || !match.winnerSide) continue;
+      const side1 = match.side1Id ? rowMap.get(match.side1Id) : null;
+      const side2 = match.side2Id ? rowMap.get(match.side2Id) : null;
+      if (!side1 || !side2) continue;
+
+      side1.played += 1;
+      side2.played += 1;
+      if (match.winnerSide === 1) {
+        side1.wins += 1;
+        side2.losses += 1;
+      } else {
+        side2.wins += 1;
+        side1.losses += 1;
+      }
+      for (const game of match.games ?? []) {
+        side1.gameDiff += game.side1Score - game.side2Score;
+        side2.gameDiff += game.side2Score - game.side1Score;
+      }
+    }
+
+    const rankLimit = secondStage.rankingMode === 'TOP_6' ? 6 : 8;
+    const slotIds = new Set(
+      (secondStage.slots ?? [])
+        .map((slot: any) => slot.entrantId)
+        .filter((id: string | null | undefined): id is string => Boolean(id)),
+    );
+    const rankMap = new Map<string, number>();
+    for (const ranking of secondStage.rankings ?? []) {
+      if (ranking.entrantId && ranking.rank <= rankLimit) {
+        rankMap.set(ranking.entrantId, ranking.rank);
+      }
+    }
+
+    const eligibleRows = rows.filter((row) => !slotIds.size || slotIds.has(row.id));
+    const usedRanks = new Set(rankMap.values());
+    let fallbackRank = 1;
+    const nextFallbackRank = () => {
+      while (usedRanks.has(fallbackRank) && fallbackRank <= rankLimit) fallbackRank += 1;
+      const rank = fallbackRank;
+      usedRanks.add(rank);
+      fallbackRank += 1;
+      return rank;
+    };
+
+    return eligibleRows
+      .sort((a, b) => {
+        const rankA = rankMap.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+        const rankB = rankMap.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+        return (
+          rankA - rankB ||
+          b.wins - a.wins ||
+          b.gameDiff - a.gameDiff ||
+          a.losses - b.losses ||
+          a.name.localeCompare(b.name, 'zh-CN')
+        );
+      })
+      .map((row) => {
+        const rank = rankMap.get(row.id) ?? nextFallbackRank();
+        return {
+          rank,
+          ...row,
+          displayName: registrationMap.has(row.id) ? row.name : row.name,
+        };
+      })
+      .filter((row) => row.rank <= rankLimit)
+      .sort((a, b) => a.rank - b.rank);
+  }
+
+  /**
+   * 小组循环 + 交叉排位赛的最终名次：
+   * 每场排位赛 P{2k-1}（matchNo = k）决出第 (2k-1) 名（胜者）与第 2k 名（负者）；
+   * 排位赛尚未打完时，未定名次的选手按小组赛战绩接在已定名次之后展示。
+   */
+  private groupPlusPlayoffStandings(event: any, registrationMap: Map<string, any>): RankedStandingRow[] {
+    const rows = this.baseStandingRows(event);
+    const rowMap = new Map<string, StandingRow>(rows.map((row) => [row.id, row]));
+
+    // 个人战绩（含小组赛与排位赛的真实对局）用于表格展示；轮空场不计入。
+    for (const match of event.matches) {
+      if (match.status !== MatchStatus.COMPLETED || !match.winnerSide) continue;
+      const side1 = match.side1Id ? rowMap.get(match.side1Id) : null;
+      const side2 = match.side2Id ? rowMap.get(match.side2Id) : null;
+      if (!side1 || !side2) continue;
+      side1.played += 1;
+      side2.played += 1;
+      if (match.winnerSide === 1) {
+        side1.wins += 1;
+        side2.losses += 1;
+      } else {
+        side2.wins += 1;
+        side1.losses += 1;
+      }
+      for (const game of match.games ?? []) {
+        side1.gameDiff += game.side1Score - game.side2Score;
+        side2.gameDiff += game.side2Score - game.side1Score;
+      }
+    }
+
+    const rankMap = new Map<string, number>();
+    for (const match of event.matches) {
+      if (match.roundNo !== 1 || !String(match.round ?? '').startsWith('P')) continue;
+      if (match.status !== MatchStatus.COMPLETED || !match.winnerSide) continue;
+      const hi = match.matchNo * 2 - 1;
+      const winnerId = match.winnerSide === 1 ? match.side1Id : match.side2Id;
+      const loserId = match.winnerSide === 1 ? match.side2Id : match.side1Id;
+      if (winnerId) rankMap.set(winnerId, hi);
+      if (loserId) rankMap.set(loserId, hi + 1);
+    }
+
+    const ranked = [...rows].sort((a, b) => {
+      const rankA = rankMap.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+      const rankB = rankMap.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+      return (
+        rankA - rankB ||
+        b.wins - a.wins ||
+        b.gameDiff - a.gameDiff ||
+        a.losses - b.losses ||
+        a.name.localeCompare(b.name, 'zh-CN')
+      );
+    });
+
+    const fixedRanks = [...rankMap.values()];
+    let fallbackRank = fixedRanks.length ? Math.max(...fixedRanks) + 1 : 1;
+    return ranked.map((row) => {
+      const fixedRank = rankMap.get(row.id);
+      const rank = fixedRank ?? fallbackRank++;
+      return {
+        rank,
+        ...row,
+        displayName: registrationMap.has(row.id) ? row.name : row.name,
+      };
+    });
   }
 
   private baseStandingRows(event: any) {

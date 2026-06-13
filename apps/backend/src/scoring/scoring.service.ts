@@ -1,20 +1,26 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import {
+  Format,
   MatchEventType,
   MatchStatus,
   Prisma,
   Role,
   ScoringMode,
   ScoringRule,
+  SecondStageRankingMode,
+  SecondStageStatus,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TeamCompetitionsService } from '../team-competitions/team-competitions.service';
 import { ScoringGateway } from './scoring.gateway';
+import { isSecondStageFormalRoundNo } from '../common/second-stage-bracket';
+import { SecondStageProgressService } from '../common/second-stage-progress.service';
 
 type AuthUser = {
   id: string;
@@ -61,6 +67,11 @@ type MatchPauseState = {
   pauseReason: string | null;
 };
 
+type SecondStageEntrant = {
+  id: string | null;
+  name: string | null;
+};
+
 const EVENT_TYPE_LABELS: Record<string, string> = {
   MENS_SINGLES: '男子单打',
   WOMENS_SINGLES: '女子单打',
@@ -93,6 +104,7 @@ export class ScoringService {
     private prisma: PrismaService,
     private teamCompetitionsService: TeamCompetitionsService,
     private gateway: ScoringGateway,
+    private secondStageProgress: SecondStageProgressService,
   ) {}
 
   async listRefereeMatches(user: AuthUser) {
@@ -174,9 +186,13 @@ export class ScoringService {
       where: { matchId, type: MatchEventType.TIMEOUT },
       orderBy: { createdAt: 'asc' },
     });
-    const pauseState = this.computePauseState(pauseEvents, match.finishedAt);
+    const isTechnicalPauseGame = (gameNo: number) =>
+      this.shouldUseTechnicalPauseInGame(gameNo, scoringRule, effectiveScoring);
+    const pauseState = this.computePauseState(pauseEvents, match.finishedAt, isTechnicalPauseGame);
     const courtDisplayState = this.computeCourtDisplayState(courtEvents);
-    const courtSwapRequired = this.computeCourtSwapRequired(courtEvents);
+    const courtSwapRequired = this.computeCourtSwapRequired(courtEvents, (gameNo) =>
+      this.shouldRequireCourtSwapInGame(gameNo, scoringRule, effectiveScoring),
+    );
     const currentGame = match.games.find((game) => !game.winnerSide) ?? match.games.at(-1) ?? null;
     const servingState = this.buildServingState(
       match.games,
@@ -391,13 +407,14 @@ export class ScoringService {
         },
       });
 
-      if (!gameWinner && this.shouldTriggerTechnicalPause(game.side1Score, game.side2Score)) {
-        const decidingGame = this.isDecidingGame(
+      const reachedMidGameEleven = game.side1Score === 11 || game.side2Score === 11;
+      if (!gameWinner && reachedMidGameEleven) {
+        const requiresCourtSwap = this.shouldRequireCourtSwapInGame(
           game.gameNo,
           matchScoring.scoringRule,
           matchScoring,
         );
-        if (decidingGame && !this.hasCourtSwapForGame(courtEventsBeforePoint, game.gameNo)) {
+        if (requiresCourtSwap && !this.hasCourtSwapForGame(courtEventsBeforePoint, game.gameNo)) {
           if (!this.hasCourtSwapRequiredForGame(courtEventsBeforePoint, game.gameNo)) {
             await tx.matchEvent.create({
               data: {
@@ -411,7 +428,16 @@ export class ScoringService {
               },
             });
           }
-        } else if (!this.hasTechnicalPauseForGame(pauseEventsBeforePoint, game.gameNo)) {
+        } else if (
+          this.shouldTriggerTechnicalPause(
+            game.gameNo,
+            game.side1Score,
+            game.side2Score,
+            matchScoring.scoringRule,
+            matchScoring,
+          ) &&
+          !this.hasTechnicalPauseForGame(pauseEventsBeforePoint, game.gameNo)
+        ) {
           await tx.matchEvent.create({
             data: {
               matchId,
@@ -597,10 +623,14 @@ export class ScoringService {
         },
       });
 
-      const required = this.computeCourtSwapRequired(courtEvents);
+      const matchScoring = this.resolveMatchScoring(match);
+      const required = this.computeCourtSwapRequired(courtEvents, (gameNo) =>
+        this.shouldRequireCourtSwapInGame(gameNo, matchScoring.scoringRule, matchScoring),
+      );
       if (
         required.required &&
         required.gameNo === currentGame.gameNo &&
+        this.shouldUseTechnicalPauseInGame(currentGame.gameNo, matchScoring.scoringRule, matchScoring) &&
         !this.hasTechnicalPauseForGame(pauseEvents, currentGame.gameNo)
       ) {
         await tx.matchEvent.create({
@@ -741,7 +771,11 @@ export class ScoringService {
           finishedAt: new Date(),
         },
       });
-      await this.advanceSingleEliminationWinner(tx, match, winner);
+      const secondStageSynced = await this.syncSecondStageFormalMatchResult(tx, match, winner);
+      if (!secondStageSynced) {
+        await this.advanceSingleEliminationWinner(tx, match, winner);
+        await this.fillPlayoffMatchesIfReady(tx, match.eventId);
+      }
       await this.teamCompetitionsService.updateTeamMatchAggregate(tx, matchId);
     });
 
@@ -926,7 +960,11 @@ export class ScoringService {
         },
       });
 
-      await this.advanceSingleEliminationWinner(tx, match, winnerSide);
+      const secondStageSynced = await this.syncSecondStageFormalMatchResult(tx, match, winnerSide);
+      if (!secondStageSynced) {
+        await this.advanceSingleEliminationWinner(tx, match, winnerSide);
+        await this.fillPlayoffMatchesIfReady(tx, match.eventId);
+      }
       await this.teamCompetitionsService.updateTeamMatchAggregate(tx, matchId);
     });
 
@@ -975,8 +1013,10 @@ export class ScoringService {
 
       // Propagate the "bye" to the next round: clear the corresponding slot
       // on the next match so the bracket renders it as a 轮空.
-      if (match.eventId) {
+      const secondStageSynced = await this.syncSecondStageFormalMatchCancellation(tx, match);
+      if (match.eventId && !secondStageSynced) {
         await this.clearSingleEliminationAdvancement(tx, match);
+        await this.fillPlayoffMatchesIfReady(tx, match.eventId);
       }
 
       await this.teamCompetitionsService.updateTeamMatchAggregate(tx, matchId);
@@ -1024,6 +1064,7 @@ export class ScoringService {
   private computePauseState(
     events: Array<{ note: string | null; createdAt: Date }>,
     finishedAt?: Date | null,
+    isTechnicalPauseGame: (gameNo: number) => boolean = () => true,
   ): MatchPauseState {
     let pauseStartedAt: Date | null = null;
     let pausedDurationMs = 0;
@@ -1034,6 +1075,12 @@ export class ScoringService {
     for (const event of events) {
       if (endLimit !== null && event.createdAt.getTime() > endLimit) continue;
       const pauseNote = this.decodeMatchPauseNote(event.note);
+      if (
+        pauseNote?.kind === 'technical' &&
+        (!pauseNote.gameNo || !isTechnicalPauseGame(pauseNote.gameNo))
+      ) {
+        continue;
+      }
       if (pauseNote?.action === 'START' && !pauseStartedAt) {
         pauseStartedAt = event.createdAt;
         pauseKind = pauseNote.kind;
@@ -1058,12 +1105,32 @@ export class ScoringService {
   }
 
   private async isMatchPaused(matchId: string) {
-    const events = await this.prisma.matchEvent.findMany({
-      where: { matchId, type: MatchEventType.TIMEOUT },
-      orderBy: { createdAt: 'asc' },
-      select: { note: true, createdAt: true },
-    });
-    return this.computePauseState(events).paused;
+    const [match, events] = await Promise.all([
+      this.prisma.match.findUnique({
+        where: { id: matchId },
+        include: {
+          event: {
+            select: {
+              scoringRule: true,
+              scoringMode: true,
+              customGamePoint: true,
+              customGameCap: true,
+              customGamesToWin: true,
+              stageScoringRules: true,
+            },
+          },
+        },
+      }),
+      this.prisma.matchEvent.findMany({
+        where: { matchId, type: MatchEventType.TIMEOUT },
+        orderBy: { createdAt: 'asc' },
+        select: { note: true, createdAt: true },
+      }),
+    ]);
+    const matchScoring = this.resolveMatchScoring(match ?? {});
+    return this.computePauseState(events, null, (gameNo) =>
+      this.shouldUseTechnicalPauseInGame(gameNo, matchScoring.scoringRule, matchScoring),
+    ).paused;
   }
 
   private encodeMatchPauseNote(action: 'START' | 'END', reason?: string) {
@@ -1117,8 +1184,32 @@ export class ScoringService {
     return null;
   }
 
-  private shouldTriggerTechnicalPause(side1Score: number, side2Score: number) {
-    return side1Score === 11 || side2Score === 11;
+  private shouldTriggerTechnicalPause(
+    gameNo: number,
+    side1Score: number,
+    side2Score: number,
+    rule: ScoringRule,
+    eventOverrides?: {
+      customGamePoint?: number | null;
+      customGameCap?: number | null;
+      customGamesToWin?: number | null;
+    } | null,
+  ) {
+    if (side1Score !== 11 && side2Score !== 11) return false;
+    return this.shouldUseTechnicalPauseInGame(gameNo, rule, eventOverrides);
+  }
+
+  private shouldUseTechnicalPauseInGame(
+    gameNo: number,
+    rule: ScoringRule,
+    eventOverrides?: {
+      customGamePoint?: number | null;
+      customGameCap?: number | null;
+      customGamesToWin?: number | null;
+    } | null,
+  ) {
+    const { target, gamesToWin } = this.ruleConfig(rule, eventOverrides);
+    return gamesToWin === 1 && target === 31 && gameNo === 1;
   }
 
   private hasTechnicalPauseForGame(events: Array<{ note: string | null }>, gameNo: number) {
@@ -1138,10 +1229,13 @@ export class ScoringService {
     };
   }
 
-  private computeCourtSwapRequired(events: Array<{ note: string | null }>) {
+  private computeCourtSwapRequired(
+    events: Array<{ note: string | null }>,
+    isRequiredGame: (gameNo: number) => boolean = () => true,
+  ) {
     const requiredGameNos = events
       .map((event) => this.decodeCourtSwapRequiredNote(event.note))
-      .filter((gameNo): gameNo is number => typeof gameNo === 'number');
+      .filter((gameNo): gameNo is number => typeof gameNo === 'number' && isRequiredGame(gameNo));
     if (!requiredGameNos.length) return { required: false, gameNo: null as number | null };
     const latestGameNo = requiredGameNos.at(-1)!;
     return {
@@ -1151,19 +1245,39 @@ export class ScoringService {
   }
 
   private async isCourtSwapRequired(matchId: string) {
-    const events = await this.prisma.matchEvent.findMany({
-      where: {
-        matchId,
-        type: MatchEventType.SERVE_CHANGE,
-        OR: [
-          { note: { startsWith: COURT_SWAP_NOTE_PREFIX } },
-          { note: { startsWith: COURT_SWAP_REQUIRED_NOTE_PREFIX } },
-        ],
-      },
-      orderBy: { createdAt: 'asc' },
-      select: { note: true },
-    });
-    return this.computeCourtSwapRequired(events).required;
+    const [match, events] = await Promise.all([
+      this.prisma.match.findUnique({
+        where: { id: matchId },
+        include: {
+          event: {
+            select: {
+              scoringRule: true,
+              scoringMode: true,
+              customGamePoint: true,
+              customGameCap: true,
+              customGamesToWin: true,
+              stageScoringRules: true,
+            },
+          },
+        },
+      }),
+      this.prisma.matchEvent.findMany({
+        where: {
+          matchId,
+          type: MatchEventType.SERVE_CHANGE,
+          OR: [
+            { note: { startsWith: COURT_SWAP_NOTE_PREFIX } },
+            { note: { startsWith: COURT_SWAP_REQUIRED_NOTE_PREFIX } },
+          ],
+        },
+        orderBy: { createdAt: 'asc' },
+        select: { note: true },
+      }),
+    ]);
+    const matchScoring = this.resolveMatchScoring(match ?? {});
+    return this.computeCourtSwapRequired(events, (gameNo) =>
+      this.shouldRequireCourtSwapInGame(gameNo, matchScoring.scoringRule, matchScoring),
+    ).required;
   }
 
   private hasCourtSwapForGame(events: Array<{ note: string | null }>, gameNo: number) {
@@ -1192,7 +1306,7 @@ export class ScoringService {
     return Number(note.slice(COURT_SWAP_NOTE_PREFIX.length)) || null;
   }
 
-  private isDecidingGame(
+  private shouldRequireCourtSwapInGame(
     gameNo: number,
     rule: ScoringRule,
     eventOverrides?: {
@@ -1201,7 +1315,8 @@ export class ScoringService {
       customGamesToWin?: number | null;
     } | null,
   ) {
-    const { gamesToWin } = this.ruleConfig(rule, eventOverrides);
+    const { target, gamesToWin } = this.ruleConfig(rule, eventOverrides);
+    if (gamesToWin === 1) return target === 31 && gameNo === 1;
     return gameNo === gamesToWin * 2 - 1;
   }
 
@@ -1670,6 +1785,215 @@ export class ScoringService {
     return null;
   }
 
+  /**
+   * 小组循环 + 交叉排位赛专用：当某单项的全部小组赛（roundNo = 0）都结束后，
+   * 按各组名次自动填充排位赛占位场——第 k 场 = A 组第 k 名 vs B 组第 k 名。
+   * 仅填充尚未开打（PENDING）的排位赛；某组缺第 k 名时另一组轮空直接晋级。
+   */
+  private async fillPlayoffMatchesIfReady(
+    tx: Prisma.TransactionClient,
+    eventId: string | null,
+  ) {
+    if (!eventId) return;
+    const event = await tx.event.findUnique({
+      where: { id: eventId },
+      select: { format: true },
+    });
+    if (event?.format !== Format.GROUP_PLUS_PLAYOFF) return;
+
+    const groupMatches = await tx.match.findMany({
+      where: { eventId, roundNo: 0 },
+      include: { games: true },
+    });
+    if (!groupMatches.length) return;
+    const allSettled = groupMatches.every(
+      (m) => m.status === MatchStatus.COMPLETED || m.status === MatchStatus.CANCELLED,
+    );
+    if (!allSettled) return;
+
+    const playoffMatches = await tx.match.findMany({
+      where: { eventId, roundNo: 1, round: { startsWith: 'P' }, status: MatchStatus.PENDING },
+      orderBy: { matchNo: 'asc' },
+    });
+    if (!playoffMatches.length) return;
+
+    const rankedByGroup = this.computeGroupRanking(groupMatches);
+    const codes = [...rankedByGroup.keys()].sort();
+    const groupA = rankedByGroup.get(codes[0]) ?? [];
+    const groupB = rankedByGroup.get(codes[1]) ?? [];
+
+    for (const pm of playoffMatches) {
+      const aId = groupA[pm.matchNo - 1] ?? null;
+      const bId = groupB[pm.matchNo - 1] ?? null;
+      // 某组缺第 k 名（两组人数不等）：另一组的第 k 名轮空，直接获得该名次段高位。
+      const walkoverWinner = aId && !bId ? 1 : bId && !aId ? 2 : null;
+      await tx.match.update({
+        where: { id: pm.id },
+        data: {
+          side1Id: aId,
+          side2Id: bId,
+          ...(walkoverWinner
+            ? { status: MatchStatus.COMPLETED, winnerSide: walkoverWinner, finishedAt: new Date() }
+            : {}),
+        },
+      });
+    }
+  }
+
+  /** 按组统计组内循环战绩（胜场→净小分→负场），返回每组按名次排序的选手 id 列表。 */
+  private computeGroupRanking(
+    groupMatches: Array<{
+      round: string;
+      side1Id: string | null;
+      side2Id: string | null;
+      status: MatchStatus;
+      winnerSide: number | null;
+      games: Array<{ side1Score: number; side2Score: number }>;
+    }>,
+  ): Map<string, string[]> {
+    type Stat = { id: string; wins: number; losses: number; gameDiff: number };
+    const groups = new Map<string, Map<string, Stat>>();
+    const ensure = (code: string, id: string) => {
+      let group = groups.get(code);
+      if (!group) {
+        group = new Map();
+        groups.set(code, group);
+      }
+      let stat = group.get(id);
+      if (!stat) {
+        stat = { id, wins: 0, losses: 0, gameDiff: 0 };
+        group.set(id, stat);
+      }
+      return stat;
+    };
+
+    for (const m of groupMatches) {
+      if (!m.side1Id || !m.side2Id) continue;
+      const a = ensure(m.round, m.side1Id);
+      const b = ensure(m.round, m.side2Id);
+      if (m.status === MatchStatus.COMPLETED && m.winnerSide) {
+        if (m.winnerSide === 1) {
+          a.wins += 1;
+          b.losses += 1;
+        } else {
+          b.wins += 1;
+          a.losses += 1;
+        }
+        for (const game of m.games) {
+          a.gameDiff += game.side1Score - game.side2Score;
+          b.gameDiff += game.side2Score - game.side1Score;
+        }
+      }
+    }
+
+    const ranked = new Map<string, string[]>();
+    for (const [code, members] of groups) {
+      const sorted = [...members.values()].sort(
+        (x, y) => y.wins - x.wins || y.gameDiff - x.gameDiff || x.losses - y.losses,
+      );
+      ranked.set(
+        code,
+        sorted.map((stat) => stat.id),
+      );
+    }
+    return ranked;
+  }
+
+  private async syncSecondStageFormalMatchResult(
+    tx: Prisma.TransactionClient,
+    match: {
+      id: string;
+      eventId: string | null;
+      roundNo: number;
+      matchNo: number;
+      side1Id: string | null;
+      side2Id: string | null;
+    },
+    winnerSide: 1 | 2,
+  ) {
+    if (!match.eventId || !isSecondStageFormalRoundNo(match.roundNo)) return false;
+
+    const stage = await tx.secondStage.findUnique({
+      where: { eventId: match.eventId },
+      include: { matches: { orderBy: { matchNo: 'asc' } } },
+    });
+    if (!stage) return true;
+
+    const stageMatch = stage.matches.find((item) => item.matchNo === match.matchNo);
+    if (!stageMatch) return true;
+
+    const games = await tx.game.findMany({
+      where: { matchId: match.id },
+      orderBy: { gameNo: 'asc' },
+    });
+    const winnerId = winnerSide === 1 ? match.side1Id : match.side2Id;
+    const winnerName =
+      winnerSide === 1 ? stageMatch.side1NameSnapshot : stageMatch.side2NameSnapshot;
+
+    await tx.secondStageMatch.update({
+      where: { id: stageMatch.id },
+      data: {
+        score: this.scoreTextFromGames(games),
+        status: MatchStatus.COMPLETED,
+        winnerSide,
+        winnerId,
+        winnerNameSnapshot: winnerName,
+      },
+    });
+
+    await this.secondStageProgress.progress(tx, {
+      secondStageId: stage.id,
+      eventId: match.eventId,
+      rankingMode: stage.rankingMode,
+    });
+    await tx.secondStage.update({
+      where: { id: stage.id },
+      data: { updatedBy: 'system' },
+    });
+    return true;
+  }
+
+  private async syncSecondStageFormalMatchCancellation(
+    tx: Prisma.TransactionClient,
+    match: {
+      eventId: string | null;
+      roundNo: number;
+      matchNo: number;
+    },
+  ) {
+    if (!match.eventId || !isSecondStageFormalRoundNo(match.roundNo)) return false;
+
+    const stage = await tx.secondStage.findUnique({
+      where: { eventId: match.eventId },
+      include: { matches: { where: { matchNo: match.matchNo } } },
+    });
+    if (!stage) return true;
+    const stageMatch = stage.matches[0];
+    if (!stageMatch) return true;
+
+    await tx.secondStageMatch.update({
+      where: { id: stageMatch.id },
+      data: {
+        score: null,
+        status: MatchStatus.CANCELLED,
+        winnerSide: null,
+        winnerId: null,
+        winnerNameSnapshot: null,
+      },
+    });
+    await tx.secondStage.update({
+      where: { id: stage.id },
+      data: { status: SecondStageStatus.CONFIRMED, finishedAt: null, updatedBy: 'system' },
+    });
+    return true;
+  }
+
+  private scoreTextFromGames(games: Array<{ side1Score: number; side2Score: number }>) {
+    return games.length
+      ? games.map((game) => `${game.side1Score}:${game.side2Score}`).join(' / ')
+      : '';
+  }
+
   private async advanceSingleEliminationWinner(
     tx: Prisma.TransactionClient,
     match: {
@@ -1682,7 +2006,7 @@ export class ScoringService {
     },
     winnerSide: 1 | 2,
   ) {
-    if (!match.eventId || match.roundNo < 1) return;
+    if (!match.eventId || match.roundNo < 1 || isSecondStageFormalRoundNo(match.roundNo)) return;
 
     const winnerId = winnerSide === 1 ? match.side1Id : match.side2Id;
     const loserId = winnerSide === 1 ? match.side2Id : match.side1Id;
@@ -1732,7 +2056,7 @@ export class ScoringService {
       matchNo: number;
     },
   ) {
-    if (!match.eventId || match.roundNo < 1) return;
+    if (!match.eventId || match.roundNo < 1 || isSecondStageFormalRoundNo(match.roundNo)) return;
 
     const targetSide = match.matchNo % 2 === 1 ? 'side1Id' : 'side2Id';
     const nextMatches = await tx.match.findMany({

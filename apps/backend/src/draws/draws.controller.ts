@@ -19,6 +19,7 @@ import { DrawsService } from './draws.service';
 import {
   CreateRedrawRequestDto,
   CreateRegistrationDto,
+  ConfirmSecondStageDto,
   FreezeDrawDto,
   GenerateDrawDto,
   GetDrawLogsQueryDto,
@@ -262,4 +263,26 @@ export class DrawsController {
   getBracket(@Param('eventId') eventId: string) {
     return this.drawsService.getBracket(eventId);
   }
+
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.REFEREE)
+  @Get('events/:eventId/second-stage')
+  getSecondStage(@Param('eventId') eventId: string) {
+    return this.drawsService.getSecondStage(eventId);
+  }
+
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.REFEREE)
+  @Post('events/:eventId/second-stage/confirm')
+  confirmSecondStage(
+    @Param('eventId') eventId: string,
+    @Body() dto: ConfirmSecondStageDto,
+    @Req() req: AuthRequest,
+  ) {
+    return this.drawsService.confirmSecondStage(
+      eventId,
+      dto,
+      req.user?.id ?? '',
+      req.user?.username ?? req.user?.id ?? null,
+    );
+  }
+
 }

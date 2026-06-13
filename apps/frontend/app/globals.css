@@ -1123,6 +1123,14 @@ a {
   text-align: left;
 }
 
+.scrollbar-none {
+  scrollbar-width: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
 .global-announcement-modal__body::-webkit-scrollbar {
   width: 5px;
 }

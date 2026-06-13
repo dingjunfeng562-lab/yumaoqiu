@@ -43,6 +43,7 @@ import {
   type BracketParticipant,
   type KnockoutBracketData,
 } from '@/components/bracket/KnockoutBracket';
+import { SecondStageBracket, type SecondStageData } from '@/components/bracket/SecondStageBracket';
 
 const EVENT_TYPE_LABELS: Record<string, string> = {
   MENS_SINGLES: '男子单打',
@@ -55,6 +56,9 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
 const FORMAT_LABELS: Record<string, string> = {
   SINGLE_ELIMINATION: '单淘汰制',
   GROUP_PLUS_KNOCKOUT: '小组赛 + 淘汰赛',
+  ROUND_ROBIN: '单循环排名赛',
+  GROUP_PLUS_PLAYOFF: '小组循环 + 交叉排位',
+  SINGLE_ELIMINATION_PLUS_GROUP_RANKING: '单淘汰 + 小组赛排位赛',
 };
 
 
@@ -66,6 +70,9 @@ const STATUS_LABELS: Record<string, { label: string; color: string }> = {
 };
 
 const CIRCLED_SEEDS = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩', '⑪', '⑫', '⑬', '⑭', '⑮', '⑯'];
+const SECOND_STAGE_SLOT_CODES = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+// 选中此哨兵值或留空，表示该 A-H 签位轮空（无选手）。
+const SECOND_STAGE_BYE = '__BYE__';
 
 interface Tournament {
   id: string;
@@ -138,6 +145,7 @@ interface BracketData {
   registrations: Registration[];
   rounds: RoundItem[];
   groups: GroupItem[];
+  secondStage?: SecondStageData | null;
 }
 
 interface RedrawRequestItem {
@@ -189,7 +197,7 @@ function isDoublesEvent(type?: string) {
 }
 
 function isSingleElimination(event?: EventItem) {
-  return event?.format === 'SINGLE_ELIMINATION';
+  return ['SINGLE_ELIMINATION', 'SINGLE_ELIMINATION_PLUS_GROUP_RANKING'].includes(event?.format ?? '');
 }
 
 function statusMeta(status: string) {
@@ -350,14 +358,28 @@ function BracketRenderer({ data }: { data?: BracketData | null }) {
   if (!data.rounds.length && !data.groups.length) return <Empty description="暂无抽签结果，请先点击抽签" />;
 
   if (data.groups.length) {
+    const format = data.event?.format;
+    const alertMeta =
+      format === 'ROUND_ROBIN'
+        ? {
+            message: '单循环排名赛已生成',
+            description:
+              '所有选手在同一循环组内两两对战，按胜场 → 净小分直接排出全部名次，无需再生成淘汰赛。',
+          }
+        : format === 'GROUP_PLUS_PLAYOFF'
+          ? {
+              message: '小组循环已生成（含交叉排位赛）',
+              description:
+                '两组组内循环全部结束后，系统会自动按各组名次生成交叉排位赛（A 组第 k 名 vs B 组第 k 名），逐对决出每个名次。',
+            }
+          : {
+              message: '小组循环已生成',
+              description:
+                '当前阶段显示小组分组与组内循环赛。小组赛完成后，可按出线名额继续生成淘汰赛对阵。',
+            };
     return (
       <Space direction="vertical" size={16} style={{ width: '100%' }}>
-        <Alert
-          type="info"
-          showIcon
-          message="小组循环已生成"
-          description="当前阶段显示小组分组与组内循环赛。小组赛完成后，可按出线名额继续生成淘汰赛对阵。"
-        />
+        <Alert type="info" showIcon message={alertMeta.message} description={alertMeta.description} />
         <Row gutter={[16, 16]}>
           {data.groups.map((group) => (
             <Col xs={24} lg={12} key={group.name}>
@@ -415,6 +437,7 @@ export default function DrawsPage() {
   const [requestForm] = Form.useForm();
   const [rejectingRequest, setRejectingRequest] = useState<RedrawRequestItem | null>(null);
   const [rejectForm] = Form.useForm();
+  const [secondStageForm] = Form.useForm();
 
   const selectedEvent = useMemo(
     () => events.find((event) => event.id === selectedEventId),
@@ -429,6 +452,7 @@ export default function DrawsPage() {
     });
   }, [registrations, selectedEventId]);
   const visibleBracket = selectedEventId ? bracket : null;
+  const isSecondStageFormat = selectedEvent?.format === 'SINGLE_ELIMINATION_PLUS_GROUP_RANKING';
   const unplacedRegistrations = useMemo(() => {
     if (!visibleBracket?.rounds.length) return [];
     const placedIds = new Set(
@@ -465,7 +489,7 @@ export default function DrawsPage() {
       !selectedEvent?.drawPublished &&
       isSingleElimination(selectedEvent) &&
       slotOptions.length > 0 &&
-      ['DRAWN', 'FROZEN'].includes(bracket.currentDraw.status),
+      bracket.currentDraw.status === 'DRAWN',
   );
 
   async function loadEvents(tournamentId: string) {
@@ -574,6 +598,21 @@ export default function DrawsPage() {
       alive = false;
     };
   }, [token, selectedEventId]);
+
+  useEffect(() => {
+    const secondStage = visibleBracket?.secondStage;
+    if (!secondStage) {
+      secondStageForm.resetFields();
+      secondStageForm.setFieldsValue({ rankingMode: 'TOP_8' });
+      return;
+    }
+    secondStageForm.setFieldsValue({
+      rankingMode: secondStage.rankingMode ?? 'TOP_8',
+      slots: Object.fromEntries(
+        (secondStage.slots ?? []).map((slot) => [slot.slot, slot.playerId ?? undefined]),
+      ),
+    });
+  }, [secondStageForm, visibleBracket?.secondStage]);
 
   async function handleAddRegistration() {
     const values = await registrationForm.validateFields();
@@ -715,6 +754,30 @@ export default function DrawsPage() {
       message.success('签位已交换');
     } catch (error) {
       message.error(error instanceof Error ? error.message : '签位交换失败');
+    }
+  }
+
+  async function handleConfirmSecondStage() {
+    if (!token || !selectedEventId) return;
+    const values = await secondStageForm.validateFields();
+    const slots = SECOND_STAGE_SLOT_CODES.map((slot) => {
+      const value = values.slots?.[slot];
+      // 留空或选“轮空”哨兵 → 该签位无选手（轮空）。
+      return { slot, entrantId: value && value !== SECOND_STAGE_BYE ? value : null };
+    });
+    try {
+      await apiFetch(`/events/${selectedEventId}/second-stage/confirm`, {
+        method: 'POST',
+        token,
+        body: JSON.stringify({
+          rankingMode: values.rankingMode ?? 'TOP_8',
+          slots,
+        }),
+      });
+      await refreshDraw();
+      message.success('第二阶段已确认生成，前台对阵表会同步显示');
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '第二阶段生成失败');
     }
   }
 
@@ -937,7 +1000,7 @@ export default function DrawsPage() {
                   type="warning"
                   showIcon
                   style={{ marginBottom: 12 }}
-                  message={`未排位选手：${unplacedRegistrations.map(sideName).join('、')}`}
+                  message={`未排位选手：${unplacedRegistrations.map(sideName).join('、')}（重新抽签后才会进入对阵）`}
                 />
               )}
               <Table
@@ -1005,6 +1068,72 @@ export default function DrawsPage() {
                 </div>
                 <BracketRenderer data={visibleBracket} />
               </section>
+              {isSecondStageFormat && (
+                <section style={{ border: '1px solid #d9f7be', borderRadius: 8, padding: 16, background: '#fff' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12, flexWrap: 'wrap' }}>
+                    <div>
+                      <Typography.Title level={5} style={{ margin: 0 }}>第二阶段：小组赛排位赛</Typography.Title>
+                      <Typography.Text type="secondary">分组方式：裁判手动指定；签位来源：组委会手动安排。</Typography.Text>
+                    </div>
+                    <Button type="primary" icon={<TrophyOutlined />} onClick={handleConfirmSecondStage} disabled={!selectedEventId || visibleRegistrations.length < 8}>
+                      确认生成第二阶段
+                    </Button>
+                  </div>
+                  <Alert
+                    type="info"
+                    showIcon
+                    style={{ marginBottom: 12 }}
+                    message="请手动指定 A-H 签位（可留空＝轮空）"
+                    description="确认后会生成 A vs B、C vs D、E vs F、G vs H，并按 TOP_6 / TOP_8 自动准备后续排位赛。签位可留空或选“轮空”（至少需 2 名选手），轮空位的对手不战自动晋级。重新抽签会清空已指定的 A-H 签位，需重新指定。"
+                  />
+                  <Form form={secondStageForm} layout="vertical" initialValues={{ rankingMode: 'TOP_8' }}>
+                    <Form.Item name="rankingMode" label="排名范围" rules={[{ required: true, message: '请选择排名范围' }]}>
+                      <Select
+                        options={[
+                          { value: 'TOP_8', label: '取前8名' },
+                          { value: 'TOP_6', label: '取前6名' },
+                        ]}
+                      />
+                    </Form.Item>
+                    <Row gutter={[12, 0]}>
+                      {SECOND_STAGE_SLOT_CODES.map((slot) => (
+                        <Col xs={24} sm={12} md={6} key={slot}>
+                          <Form.Item
+                            name={['slots', slot]}
+                            label={`${slot} 签位`}
+                          >
+                            <Select
+                              showSearch
+                              allowClear
+                              placeholder="留空 = 轮空"
+                              optionFilterProp="label"
+                              options={[
+                                { value: SECOND_STAGE_BYE, label: '轮空（空位，对手不战晋级）' },
+                                ...visibleRegistrations.map((registration) => ({
+                                  value: registration.id,
+                                  label: sideName(registration),
+                                })),
+                              ]}
+                            />
+                          </Form.Item>
+                        </Col>
+                      ))}
+                    </Row>
+                  </Form>
+                  {visibleBracket?.secondStage ? (
+                    <div style={{ marginTop: 8 }}>
+                      <SecondStageBracket data={visibleBracket.secondStage} />
+                      <Alert
+                        type="success"
+                        showIcon
+                        style={{ marginTop: 12 }}
+                        message="第二阶段对阵已自动生成"
+                        description="A-H 签位确认后，系统会生成正式比赛；后续比分由赛程/裁判记分同步，胜负关系自动推进，不需要在这里手动录入。"
+                      />
+                    </div>
+                  ) : null}
+                </section>
+              )}
             </Space>
           </Col>
         </Row>

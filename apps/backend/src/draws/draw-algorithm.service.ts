@@ -160,6 +160,39 @@ export class DrawAlgorithmService {
     return groups;
   }
 
+  /**
+   * 单循环排名赛：所有选手编入一个组（组别代码 A），组内两两对战，
+   * 直接按战绩排出全部名次。种子在前、其余随机，决定组内默认呈现顺序。
+   */
+  buildSingleRoundRobin(
+    entrants: DrawEntrantInput[],
+    seedSettings: DrawSeedSettingInput[],
+  ): BuiltDrawGroup[] {
+    const entrantMap = new Map(entrants.map((item) => [item.id, item]));
+    const seedMap = new Map(seedSettings.map((item) => [item.entrantId, item.seedNo]));
+
+    const seededOrdered = [...seedSettings]
+      .sort((a, b) => a.seedNo - b.seedNo)
+      .map((seed) => entrantMap.get(seed.entrantId))
+      .filter((entrant): entrant is DrawEntrantInput => Boolean(entrant));
+    const seededIds = new Set(seedSettings.map((item) => item.entrantId));
+    const rest = this.shuffle(entrants.filter((item) => !seededIds.has(item.id)));
+
+    return [
+      {
+        groupCode: 'A',
+        sortOrder: 0,
+        members: [...seededOrdered, ...rest].map((entrant) => ({
+          entrantId: entrant.id,
+          entrantNameSnapshot: entrant.name,
+          seedNoSnapshot: seedMap.get(entrant.id) ?? null,
+          groupRank: null,
+          isQualified: false,
+        })),
+      },
+    ];
+  }
+
   roundLabel(slotCount: number) {
     if (slotCount === 2) return 'F';
     if (slotCount === 4) return 'SF';

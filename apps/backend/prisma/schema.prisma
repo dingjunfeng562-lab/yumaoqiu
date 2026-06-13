@@ -42,6 +42,25 @@ enum EventType {
 enum Format {
   SINGLE_ELIMINATION
   GROUP_PLUS_KNOCKOUT
+  ROUND_ROBIN
+  GROUP_PLUS_PLAYOFF
+  SINGLE_ELIMINATION_PLUS_GROUP_RANKING
+}
+
+enum SecondStageStatus {
+  NOT_STARTED
+  DRAFT
+  CONFIRMED
+  FINISHED
+}
+
+enum SecondStageMode {
+  MANUAL_BY_REFEREE
+}
+
+enum SecondStageRankingMode {
+  TOP_6
+  TOP_8
 }
 
 enum ScoringRule {
@@ -98,6 +117,8 @@ enum RegistrationStatus {
 enum DrawFormat {
   single_elim
   group_then_elim
+  round_robin
+  group_then_playoff
 }
 
 enum DrawStatus {
@@ -415,8 +436,91 @@ model Event {
   drawSeedSettings   DrawSeedSetting[]
   drawOperationLogs  DrawOperationLog[] @relation("drawOperationLogEvent")
   drawRedrawRequests DrawRedrawRequest[]
+  secondStage        SecondStage?
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
+}
+
+model SecondStage {
+  id           String                 @id @default(cuid())
+  eventId      String                 @unique @map("event_id")
+  event        Event                  @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  status       SecondStageStatus      @default(NOT_STARTED)
+  mode         SecondStageMode        @default(MANUAL_BY_REFEREE)
+  rankingMode  SecondStageRankingMode @default(TOP_8) @map("ranking_mode")
+  confirmedAt  DateTime?              @map("confirmed_at")
+  finishedAt   DateTime?              @map("finished_at")
+  createdBy    String?                @map("created_by")
+  updatedBy    String?                @map("updated_by")
+  createdAt    DateTime               @default(now()) @map("created_at")
+  updatedAt    DateTime               @updatedAt @map("updated_at")
+  slots        SecondStageSlot[]
+  matches      SecondStageMatch[]
+  rankings     SecondStageRanking[]
+
+  @@index([eventId, status])
+  @@map("second_stage")
+}
+
+model SecondStageSlot {
+  id                  String      @id @default(cuid())
+  secondStageId       String      @map("second_stage_id")
+  secondStage         SecondStage @relation(fields: [secondStageId], references: [id], onDelete: Cascade)
+  slot                String      @db.VarChar(1)
+  sortOrder           Int         @map("sort_order")
+  entrantId           String?     @map("entrant_id")
+  entrantNameSnapshot String?     @db.VarChar(128) @map("entrant_name_snapshot")
+  createdAt           DateTime    @default(now()) @map("created_at")
+  updatedAt           DateTime    @updatedAt @map("updated_at")
+
+  @@unique([secondStageId, slot])
+  @@index([entrantId])
+  @@map("second_stage_slot")
+}
+
+model SecondStageMatch {
+  id                 String      @id @default(cuid())
+  secondStageId      String      @map("second_stage_id")
+  secondStage        SecondStage @relation(fields: [secondStageId], references: [id], onDelete: Cascade)
+  matchNo            Int         @map("match_no")
+  roundName          String      @db.VarChar(32) @map("round_name")
+  area               String      @db.VarChar(32)
+  slotInfo           String?     @db.VarChar(32) @map("slot_info")
+  side1Source        String?     @db.VarChar(32) @map("side1_source")
+  side2Source        String?     @db.VarChar(32) @map("side2_source")
+  side1Id            String?     @map("side1_id")
+  side2Id            String?     @map("side2_id")
+  side1NameSnapshot  String?     @db.VarChar(128) @map("side1_name_snapshot")
+  side2NameSnapshot  String?     @db.VarChar(128) @map("side2_name_snapshot")
+  score              String?     @db.VarChar(64)
+  status             MatchStatus @default(PENDING)
+  winnerSide         Int?        @map("winner_side")
+  winnerId           String?     @map("winner_id")
+  winnerNameSnapshot String?     @db.VarChar(128) @map("winner_name_snapshot")
+  createdAt          DateTime    @default(now()) @map("created_at")
+  updatedAt          DateTime    @updatedAt @map("updated_at")
+
+  @@unique([secondStageId, matchNo])
+  @@index([secondStageId, status])
+  @@index([side1Id])
+  @@index([side2Id])
+  @@index([winnerId])
+  @@map("second_stage_match")
+}
+
+model SecondStageRanking {
+  id                  String      @id @default(cuid())
+  secondStageId       String      @map("second_stage_id")
+  secondStage         SecondStage @relation(fields: [secondStageId], references: [id], onDelete: Cascade)
+  rank                Int
+  entrantId           String?     @map("entrant_id")
+  entrantNameSnapshot String?     @db.VarChar(128) @map("entrant_name_snapshot")
+  createdAt           DateTime    @default(now()) @map("created_at")
+  updatedAt           DateTime    @updatedAt @map("updated_at")
+
+  @@unique([secondStageId, rank])
+  @@index([entrantId])
+  @@map("second_stage_ranking")
 }
 
 model Registration {

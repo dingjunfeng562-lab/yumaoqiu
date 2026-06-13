@@ -589,7 +589,7 @@ export class CompetitionsService {
     const event = competition.events.find((item) => item.id === dto.eventId);
     if (!event) throw new BadRequestException('请选择当前赛事下的参赛项目');
     if (event.drawLocked) {
-      throw new ConflictException('抽签结果已冻结，请先重新抽签后再调整报名');
+      throw new ConflictException('签表已冻结或对阵已发布，请先取消发布后再调整报名');
     }
 
     const players = dto.players.map((item, index) =>
@@ -686,7 +686,7 @@ export class CompetitionsService {
       return this.removeRegistration(registration.competitionRegistrationId, reviewedById);
     }
     if (registration.event.drawLocked) {
-      throw new ConflictException('抽签结果已冻结，请先重新抽签后再调整报名');
+      throw new ConflictException('签表已冻结或对阵已发布，请先取消发布后再调整报名');
     }
 
     const updated = await this.prisma.registration.update({
