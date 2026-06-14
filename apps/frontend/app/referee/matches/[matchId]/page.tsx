@@ -542,7 +542,7 @@ export default function RefereeScoringPage() {
   useEffect(() => {
     if (!matchId) return;
     const socket: Socket = io(`${SOCKET_BASE}/scores`, {
-      transports: ['websocket'],
+      transports: ['polling', 'websocket'],
       withCredentials: true,
     });
     socket.on('connect', () => {

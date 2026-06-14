@@ -16,6 +16,7 @@ import {
   ScoringRule,
   TournamentStatus,
 } from '@prisma/client';
+import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../mail/email.service';
 import {
@@ -598,74 +599,66 @@ export class CompetitionsService {
     this.ensureBatchStudentIds(players);
     await this.ensureNoExistingEventStudentIds(event.id, players);
 
-    const created = await this.prisma.$transaction(async (tx) => {
-      const registrations: RegistrationWithRelations[] = [];
-      for (const item of players) {
-        const primaryPlayer = await tx.player.create({
-          data: {
-            name: item.name,
-            gender: item.gender,
-            affiliation: item.school,
-            contact: item.contact,
-            isTemporary: true,
-          },
-        });
+    // 预生成 id 后用两次 createMany 批量入库（选手 + 报名），而不是逐条 await。
+    // 逐条创建会在一个交互式事务里堆叠数百次往返、轻易超过 Prisma 默认 5s 事务超时
+    // 导致整批回滚、前端一直 loading（“冻结”）。前端只用 createdCount，无需逐条返回。
+    const reviewedAt = new Date();
+    const playerRows: Prisma.PlayerCreateManyInput[] = [];
+    const registrationRows: Prisma.RegistrationCreateManyInput[] = [];
+    for (const item of players) {
+      const primaryId = randomUUID();
+      playerRows.push({
+        id: primaryId,
+        name: item.name,
+        gender: item.gender,
+        affiliation: item.school,
+        contact: item.contact,
+        isTemporary: true,
+      });
 
-        let secondaryPlayerId: string | null = null;
-        if (this.isDoubleEvent(event.type) && item.partnerName && item.partnerGender) {
-          const secondaryPlayer = await tx.player.create({
-            data: {
-              name: item.partnerName,
-              gender: item.partnerGender,
-              affiliation: item.partnerSchool ?? item.school,
-              contact: item.partnerContact ?? null,
-              isTemporary: true,
-            },
-          });
-          secondaryPlayerId = secondaryPlayer.id;
-        }
-
-        const registration = await tx.registration.create({
-          data: {
-            eventId: event.id,
-            player1Id: primaryPlayer.id,
-            player2Id: secondaryPlayerId,
-            name: secondaryPlayerId && item.partnerName ? `${item.name} / ${item.partnerName}` : item.name,
-            teamName: secondaryPlayerId ? item.teamName ?? null : null,
-            studentId: item.studentId,
-            className: item.className,
-            phone: item.contact,
-            gender: item.gender,
-            eventName: EVENT_TYPE_LABELS[event.type],
-            partnerStudentId: secondaryPlayerId ? item.partnerStudentId ?? null : null,
-            partnerSchool: secondaryPlayerId ? item.partnerSchool ?? null : null,
-            partnerClassName: secondaryPlayerId ? item.partnerClassName ?? null : null,
-            partnerPhone: secondaryPlayerId ? item.partnerContact ?? null : null,
-            status: RegistrationStatus.APPROVED,
-            reviewedAt: new Date(),
-            reviewedBy: reviewedById ?? null,
-          },
-          include: {
-            event: true,
-            player1: true,
-            player2: true,
-            competitionRegistration: {
-              include: {
-                user: true,
-                eventItems: true,
-              },
-            },
-          },
+      let secondaryPlayerId: string | null = null;
+      if (this.isDoubleEvent(event.type) && item.partnerName && item.partnerGender) {
+        secondaryPlayerId = randomUUID();
+        playerRows.push({
+          id: secondaryPlayerId,
+          name: item.partnerName,
+          gender: item.partnerGender,
+          affiliation: item.partnerSchool ?? item.school,
+          contact: item.partnerContact ?? null,
+          isTemporary: true,
         });
-        registrations.push(registration);
       }
-      return registrations;
-    });
 
-    return {
-      createdCount: created.length,
-      players: created.map((registration) => this.toRegistrationView(registration)),
-    };
+      registrationRows.push({
+        eventId: event.id,
+        player1Id: primaryId,
+        player2Id: secondaryPlayerId,
+        name: secondaryPlayerId && item.partnerName ? `${item.name} / ${item.partnerName}` : item.name,
+        teamName: secondaryPlayerId ? item.teamName ?? null : null,
+        studentId: item.studentId,
+        className: item.className,
+        phone: item.contact,
+        gender: item.gender,
+        eventName: EVENT_TYPE_LABELS[event.type],
+        partnerStudentId: secondaryPlayerId ? item.partnerStudentId ?? null : null,
+        partnerSchool: secondaryPlayerId ? item.partnerSchool ?? null : null,
+        partnerClassName: secondaryPlayerId ? item.partnerClassName ?? null : null,
+        partnerPhone: secondaryPlayerId ? item.partnerContact ?? null : null,
+        status: RegistrationStatus.APPROVED,
+        reviewedAt,
+        reviewedBy: reviewedById ?? null,
+      });
+    }
+
+    await this.prisma.$transaction(
+      async (tx) => {
+        await tx.player.createMany({ data: playerRows });
+        await tx.registration.createMany({ data: registrationRows });
+      },
+      { timeout: 30000, maxWait: 10000 },
+    );
+
+    return { createdCount: registrationRows.length };
   }
 
   async removeAdminPlayerRegistration(

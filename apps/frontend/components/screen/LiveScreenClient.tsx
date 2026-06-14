@@ -502,7 +502,7 @@ export function LiveScreenClient({
 
   useEffect(() => {
     const socket: Socket = io(`${SOCKET_BASE}/scores`, {
-      transports: ['websocket'],
+      transports: ['polling', 'websocket'],
       withCredentials: true,
     });
     socket.on('connect', () => setSocketState('synced'));
