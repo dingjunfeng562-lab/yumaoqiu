@@ -589,9 +589,8 @@ export class CompetitionsService {
     const competition = await this.findCompetition(competitionId, true);
     const event = competition.events.find((item) => item.id === dto.eventId);
     if (!event) throw new BadRequestException('请选择当前赛事下的参赛项目');
-    if (event.drawLocked) {
-      throw new ConflictException('签表已冻结或对阵已发布，请先取消发布后再调整报名');
-    }
+    // 不再因签表已冻结/已发布而拦截批量新增：新增报名只是把选手作为「未排位选手」加入，
+    // 不会改动既有对阵图或比赛结果，需待下次重新抽签才纳入对阵。这样有结果的赛事也能继续补录选手而不必先清空结果。
 
     const players = dto.players.map((item, index) =>
       this.normalizeAdminBatchPlayer(item, index + 1, event.type),

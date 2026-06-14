@@ -361,6 +361,7 @@ export default function AdminCompetitionPlayersPage() {
       title: '学校',
       dataIndex: 'school',
       key: 'school',
+      width: 180,
       render: (value: string | undefined, record: Player) => (
         <Space direction="vertical" size={0}>
           <Typography.Text>{value || '-'}</Typography.Text>
@@ -485,6 +486,7 @@ export default function AdminCompetitionPlayersPage() {
     {
       title: '学校',
       key: 'school',
+      width: 160,
       render: (_: unknown, record: ParsedBatchRow) => (
         <Space direction="vertical" size={0}>
           <Typography.Text>{record.school || '-'}</Typography.Text>
