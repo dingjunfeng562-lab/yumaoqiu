@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { Alert, Button, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography, message } from 'antd';
-import { AuditOutlined, DownloadOutlined, RollbackOutlined, StopOutlined, UsergroupAddOutlined } from '@ant-design/icons';
+import { Alert, Button, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography, message } from 'antd';
+import { AuditOutlined, DownloadOutlined, EditOutlined, PlusOutlined, RollbackOutlined, StopOutlined, UsergroupAddOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 
 type CompetitionEventOption = {
@@ -23,6 +23,7 @@ type Competition = {
 type Player = {
   id: string;
   competitionRegistrationId?: string | null;
+  eventId?: string;
   email: string;
   name: string;
   primaryName?: string;
@@ -87,6 +88,34 @@ function genderText(value?: string) {
   if (value === 'FEMALE') return '女';
   return value || '-';
 }
+
+function genderLabelToValue(value?: string): 'MALE' | 'FEMALE' | undefined {
+  if (value === '男' || value === 'MALE') return 'MALE';
+  if (value === '女' || value === 'FEMALE') return 'FEMALE';
+  return undefined;
+}
+
+type PlayerFormValues = {
+  eventId: string;
+  name: string;
+  gender: 'MALE' | 'FEMALE';
+  studentId: string;
+  school: string;
+  className: string;
+  contact: string;
+  teamName?: string;
+  partnerName?: string;
+  partnerGender?: 'MALE' | 'FEMALE';
+  partnerStudentId?: string;
+  partnerSchool?: string;
+  partnerClassName?: string;
+  partnerContact?: string;
+};
+
+const GENDER_OPTIONS = [
+  { value: 'MALE', label: '男' },
+  { value: 'FEMALE', label: '女' },
+];
 
 function splitClipboardLine(line: string) {
   return line
@@ -187,6 +216,11 @@ export default function AdminCompetitionPlayersPage() {
   const [batchEventId, setBatchEventId] = useState<string>();
   const [batchText, setBatchText] = useState('');
   const [batchSubmitting, setBatchSubmitting] = useState(false);
+  const [form] = Form.useForm<PlayerFormValues>();
+  const [formModalOpen, setFormModalOpen] = useState(false);
+  const [editingPlayer, setEditingPlayer] = useState<Player | null>(null);
+  const [formSubmitting, setFormSubmitting] = useState(false);
+  const watchedFormEventId = Form.useWatch('eventId', form);
 
   const query = useMemo(() => {
     const params = new URLSearchParams();
@@ -207,6 +241,10 @@ export default function AdminCompetitionPlayersPage() {
   const selectedBatchEvent = useMemo(
     () => competition?.eventOptions?.find((event) => event.id === batchEventId),
     [competition, batchEventId],
+  );
+  const formIsDouble = useMemo(
+    () => Boolean(competition?.eventOptions?.find((event) => event.id === watchedFormEventId)?.isDouble),
+    [competition, watchedFormEventId],
   );
   const parsedBatchRows = useMemo(
     () => parseBatchRows(batchText, Boolean(selectedBatchEvent?.isDouble)),
@@ -311,6 +349,97 @@ export default function AdminCompetitionPlayersPage() {
       message.error(error instanceof Error ? error.message : '批量新增失败');
     } finally {
       setBatchSubmitting(false);
+    }
+  }
+
+  function openCreateModal() {
+    if (!competition?.eventOptions?.length) {
+      message.warning('当前赛事暂无参赛项目');
+      return;
+    }
+    setEditingPlayer(null);
+    const defaultEvent =
+      competition.eventOptions.find((event) => event.label === eventName) ?? competition.eventOptions[0];
+    form.resetFields();
+    form.setFieldsValue({ eventId: defaultEvent?.id, gender: 'MALE' });
+    setFormModalOpen(true);
+  }
+
+  function openEditModal(record: Player) {
+    setEditingPlayer(record);
+    form.resetFields();
+    form.setFieldsValue({
+      eventId: record.eventId,
+      name: record.primaryName || record.name,
+      gender: genderLabelToValue(record.genderLabel) ?? 'MALE',
+      studentId: record.studentId,
+      school: record.school ?? '',
+      className: record.className,
+      contact: record.phone,
+      teamName: record.teamName ?? undefined,
+      partnerName: record.partner?.name,
+      partnerGender: genderLabelToValue(record.partner?.genderLabel),
+      partnerStudentId: record.partner?.studentId,
+      partnerSchool: record.partner?.school,
+      partnerClassName: record.partner?.className,
+      partnerContact: record.partner?.phone,
+    });
+    setFormModalOpen(true);
+  }
+
+  async function submitPlayerForm() {
+    if (!token || !id) return;
+    let values: PlayerFormValues;
+    try {
+      values = await form.validateFields();
+    } catch {
+      return;
+    }
+    const isDouble = Boolean(
+      competition?.eventOptions?.find((event) => event.id === values.eventId)?.isDouble,
+    );
+    const payload: Record<string, string | undefined> = {
+      eventId: values.eventId,
+      name: values.name.trim(),
+      gender: values.gender,
+      studentId: values.studentId.trim(),
+      school: values.school.trim(),
+      className: values.className.trim(),
+      contact: values.contact.trim(),
+    };
+    if (isDouble) {
+      payload.teamName = values.teamName?.trim();
+      payload.partnerName = values.partnerName?.trim();
+      payload.partnerGender = values.partnerGender;
+      payload.partnerStudentId = values.partnerStudentId?.trim();
+      payload.partnerSchool = values.partnerSchool?.trim();
+      payload.partnerClassName = values.partnerClassName?.trim();
+      payload.partnerContact = values.partnerContact?.trim();
+    }
+
+    setFormSubmitting(true);
+    try {
+      if (editingPlayer) {
+        await apiFetch(`/admin/competitions/${id}/players/${editingPlayer.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify(payload),
+          token,
+        });
+        message.success('已更新参赛选手信息');
+      } else {
+        await apiFetch(`/admin/competitions/${id}/players`, {
+          method: 'POST',
+          body: JSON.stringify(payload),
+          token,
+        });
+        message.success('已新增参赛选手');
+      }
+      setFormModalOpen(false);
+      await loadData();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '保存失败');
+    } finally {
+      setFormSubmitting(false);
     }
   }
 
@@ -432,11 +561,16 @@ export default function AdminCompetitionPlayersPage() {
     {
       title: '操作',
       key: 'actions',
-      width: 120,
+      width: 170,
       render: (_: unknown, record: Player) => (
-        <Popconfirm title="确认移除该报名？" onConfirm={() => removePlayer(record)}>
-          <Button size="small" danger icon={<StopOutlined />}>移除</Button>
-        </Popconfirm>
+        <Space>
+          <Button size="small" icon={<EditOutlined />} onClick={() => openEditModal(record)}>
+            编辑
+          </Button>
+          <Popconfirm title="确认移除该报名？" onConfirm={() => removePlayer(record)}>
+            <Button size="small" danger icon={<StopOutlined />}>移除</Button>
+          </Popconfirm>
+        </Space>
       ),
     },
   ];
@@ -566,6 +700,13 @@ export default function AdminCompetitionPlayersPage() {
           />
           <Button
             type="primary"
+            icon={<PlusOutlined />}
+            onClick={openCreateModal}
+            disabled={!competition?.eventOptions?.length}
+          >
+            新增选手
+          </Button>
+          <Button
             icon={<UsergroupAddOutlined />}
             onClick={openBatchModal}
             disabled={!competition?.eventOptions?.length}
@@ -636,6 +777,117 @@ export default function AdminCompetitionPlayersPage() {
             scroll={{ x: 980, y: 260 }}
           />
         </Space>
+      </Modal>
+      <Modal
+        title={editingPlayer ? '编辑参赛选手' : '新增参赛选手'}
+        open={formModalOpen}
+        onCancel={() => setFormModalOpen(false)}
+        onOk={submitPlayerForm}
+        okText="保存"
+        confirmLoading={formSubmitting}
+        forceRender
+        width={formIsDouble ? 720 : 480}
+      >
+        <Form form={form} layout="vertical">
+          <Form.Item
+            label="参赛项目"
+            name="eventId"
+            rules={[{ required: true, message: '请选择参赛项目' }]}
+          >
+            <Select options={eventOptions} placeholder="选择参赛项目" />
+          </Form.Item>
+          <Typography.Text strong>{formIsDouble ? '队员一' : '选手信息'}</Typography.Text>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+              columnGap: 12,
+              marginTop: 8,
+            }}
+          >
+            <Form.Item label="姓名" name="name" rules={[{ required: true, message: '请填写姓名' }]}>
+              <Input placeholder="姓名" />
+            </Form.Item>
+            <Form.Item label="性别" name="gender" rules={[{ required: true, message: '请选择性别' }]}>
+              <Select options={GENDER_OPTIONS} placeholder="性别" />
+            </Form.Item>
+            <Form.Item label="学号" name="studentId" rules={[{ required: true, message: '请填写学号' }]}>
+              <Input placeholder="学号" />
+            </Form.Item>
+            <Form.Item label="学校" name="school" rules={[{ required: true, message: '请填写学校' }]}>
+              <Input placeholder="学校" />
+            </Form.Item>
+            <Form.Item label="学院班级" name="className" rules={[{ required: true, message: '请填写学院班级' }]}>
+              <Input placeholder="学院班级" />
+            </Form.Item>
+            <Form.Item label="联系方式" name="contact" rules={[{ required: true, message: '请填写联系方式' }]}>
+              <Input placeholder="联系方式" />
+            </Form.Item>
+          </div>
+          {formIsDouble ? (
+            <>
+              <Form.Item
+                label="队伍名称"
+                name="teamName"
+                rules={[{ required: true, message: '请填写队伍名称' }]}
+              >
+                <Input placeholder="队伍名称" />
+              </Form.Item>
+              <Typography.Text strong>队员二（搭档）</Typography.Text>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                  columnGap: 12,
+                  marginTop: 8,
+                }}
+              >
+                <Form.Item
+                  label="搭档姓名"
+                  name="partnerName"
+                  rules={[{ required: true, message: '请填写搭档姓名' }]}
+                >
+                  <Input placeholder="搭档姓名" />
+                </Form.Item>
+                <Form.Item
+                  label="搭档性别"
+                  name="partnerGender"
+                  rules={[{ required: true, message: '请选择搭档性别' }]}
+                >
+                  <Select options={GENDER_OPTIONS} placeholder="搭档性别" />
+                </Form.Item>
+                <Form.Item
+                  label="搭档学号"
+                  name="partnerStudentId"
+                  rules={[{ required: true, message: '请填写搭档学号' }]}
+                >
+                  <Input placeholder="搭档学号" />
+                </Form.Item>
+                <Form.Item
+                  label="搭档学校"
+                  name="partnerSchool"
+                  rules={[{ required: true, message: '请填写搭档学校' }]}
+                >
+                  <Input placeholder="搭档学校" />
+                </Form.Item>
+                <Form.Item
+                  label="搭档学院班级"
+                  name="partnerClassName"
+                  rules={[{ required: true, message: '请填写搭档学院班级' }]}
+                >
+                  <Input placeholder="搭档学院班级" />
+                </Form.Item>
+                <Form.Item
+                  label="搭档联系方式"
+                  name="partnerContact"
+                  rules={[{ required: true, message: '请填写搭档联系方式' }]}
+                >
+                  <Input placeholder="搭档联系方式" />
+                </Form.Item>
+              </div>
+            </>
+          ) : null}
+        </Form>
       </Modal>
     </div>
   );

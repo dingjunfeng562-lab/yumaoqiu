@@ -21,6 +21,17 @@ type ScheduleData = {
   matches: ScheduleMatch[];
 };
 
+function formatScheduleTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 async function getSchedule() {
   try {
     const res = await fetch(`${API_BASE}/public/home`, { cache: 'no-store' });
@@ -33,7 +44,9 @@ async function getSchedule() {
 
 export default async function SchedulePage() {
   const data = await getSchedule();
-  const schedules: Array<{ id: string; time: string; event: string; match: string; court: string; status: string }> = data.schedules ?? [];
+  const schedules: Array<{ id: string; time: string; event: string; match: string; court: string; referee?: string | null; status: string }> = [
+    ...(data.schedules ?? []),
+  ].sort((a, b) => a.time.localeCompare(b.time));
 
   return (
     <PortalFeaturePage
@@ -54,8 +67,9 @@ export default async function SchedulePage() {
                 <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-blue-700">{item.status}</span>
               </div>
               <div className="mt-3 text-sm font-semibold text-slate-600">
-                <p>时间：{item.time}</p>
+                <p>时间：{formatScheduleTime(item.time)}</p>
                 <p>场地：{item.court}</p>
+                <p>本场裁判：{item.referee || '待分配'}</p>
               </div>
             </div>
           ))}

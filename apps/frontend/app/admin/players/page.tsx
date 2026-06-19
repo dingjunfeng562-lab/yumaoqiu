@@ -26,6 +26,7 @@ interface Player {
   affiliation: string;
   contact?: string;
   notes?: string;
+  isTemporary?: boolean;
   createdAt: string;
 }
 
@@ -45,7 +46,9 @@ export default function PlayersPage() {
     if (!token) return;
     setLoading(true);
     try {
-      const q = search ? `?search=${encodeURIComponent(search)}` : '';
+      const params = new URLSearchParams({ includeTemporary: 'true' });
+      if (search) params.set('search', search);
+      const q = `?${params.toString()}`;
       const data = await apiFetch<Player[]>(`/players${q}`, { token });
       setPlayers(data);
     } finally {
@@ -104,7 +107,17 @@ export default function PlayersPage() {
   };
 
   const columns = [
-    { title: '姓名', dataIndex: 'name', key: 'name' },
+    {
+      title: '姓名',
+      dataIndex: 'name',
+      key: 'name',
+      render: (name: string, record: Player) => (
+        <Space size={6}>
+          <Typography.Text>{name}</Typography.Text>
+          {record.isTemporary ? <Tag color="orange">临时参赛</Tag> : null}
+        </Space>
+      ),
+    },
     {
       title: '性别',
       dataIndex: 'gender',
@@ -119,9 +132,20 @@ export default function PlayersPage() {
       key: 'actions',
       render: (_: unknown, record: Player) => (
         <Space>
-          <Button icon={<EditOutlined />} size="small" onClick={() => openEdit(record)}>编辑</Button>
-          <Popconfirm title="确认删除？" onConfirm={() => handleDelete(record.id)}>
-            <Button icon={<DeleteOutlined />} size="small" danger>删除</Button>
+          <Button
+            icon={<EditOutlined />}
+            size="small"
+            disabled={record.isTemporary}
+            onClick={() => openEdit(record)}
+          >
+            编辑
+          </Button>
+          <Popconfirm
+            title="确认删除？"
+            onConfirm={() => handleDelete(record.id)}
+            disabled={record.isTemporary}
+          >
+            <Button icon={<DeleteOutlined />} size="small" danger disabled={record.isTemporary}>删除</Button>
           </Popconfirm>
         </Space>
       ),

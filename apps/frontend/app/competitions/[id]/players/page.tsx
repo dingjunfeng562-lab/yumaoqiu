@@ -155,14 +155,14 @@ export default function CompetitionPlayersPage() {
       title="参赛选手列表"
       description="这里只展示当前赛事中已通过管理员审核的报名人员，待审核和已驳回报名不会出现在这里。"
     >
-      <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-2xl font-black text-slate-950">{competition?.title ?? '赛事选手'}</h2>
+      <div className="mb-5 flex flex-col gap-4 sm:mb-6 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <h2 className="text-xl font-black text-slate-950 sm:text-2xl">{competition?.title ?? '赛事选手'}</h2>
           <p className="mt-1 text-sm font-semibold text-slate-500">
             {competition?.location || '地点待公布'}
           </p>
         </div>
-        <div className="flex gap-3">
+        <div className="grid grid-cols-2 gap-3 sm:flex">
           <Link
             href={`/competitions/${id}/register`}
             className="inline-flex h-10 items-center justify-center rounded-lg bg-amber-400 px-4 text-sm font-black text-white"
@@ -209,8 +209,8 @@ function PlayerGroup({ title, players }: { title: string; players: Player[] }) {
   const teamCount = isDoubles ? players.length : 0;
   return (
     <section className="overflow-hidden rounded-lg border border-blue-100 bg-white shadow-sm">
-      <div className="flex items-center justify-between border-b border-blue-50 bg-blue-50 px-5 py-4">
-        <h3 className="text-lg font-black text-blue-900">{title}</h3>
+      <div className="flex items-center justify-between border-b border-blue-50 bg-blue-50 px-4 py-3.5 sm:px-5 sm:py-4">
+        <h3 className="text-base font-black text-blue-900 sm:text-lg">{title}</h3>
         <span className="rounded-full bg-white px-3 py-1 text-xs font-black text-blue-700">
           {isDoubles ? `${teamCount} 队` : `${players.length} 人`}
         </span>
@@ -222,7 +222,7 @@ function PlayerGroup({ title, players }: { title: string; players: Player[] }) {
           <SinglesTable players={players} />
         )
       ) : (
-        <p className="p-6 text-sm font-semibold text-slate-500">该项目暂无已通过审核的参赛选手。</p>
+        <p className="p-5 text-sm font-semibold text-slate-500 sm:p-6">该项目暂无已通过审核的参赛选手。</p>
       )}
     </section>
   );
@@ -231,31 +231,31 @@ function PlayerGroup({ title, players }: { title: string; players: Player[] }) {
 function SinglesTable({ players }: { players: Player[] }) {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[820px] text-left text-sm">
-        <thead className="bg-white text-xs font-black uppercase text-slate-500">
+      <table className="w-full min-w-[700px] text-left text-[13px] sm:min-w-[800px] sm:text-sm">
+        <thead className="bg-white text-[11px] font-black uppercase text-slate-500 sm:text-xs">
           <tr>
-            <th className="px-4 py-3">姓名</th>
-            <th className="px-4 py-3">性别</th>
-            <th className="px-4 py-3">学校</th>
-            <th className="px-4 py-3">学院班级</th>
-            <th className="px-4 py-3">学号</th>
-            <th className="px-4 py-3">参赛项目</th>
-            <th className="px-4 py-3">报名时间</th>
-            <th className="px-4 py-3">审核状态</th>
+            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">姓名</th>
+            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">性别</th>
+            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">学校</th>
+            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">学院班级</th>
+            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">学号</th>
+            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">参赛项目</th>
+            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">报名时间</th>
+            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">审核状态</th>
           </tr>
         </thead>
         <tbody>
           {players.map((player) => (
             <tr key={player.id} className="border-t border-blue-50">
-              <td className="px-4 py-4 font-bold text-slate-900">{player.primaryName || player.name}</td>
-              <td className="px-4 py-4 text-slate-600">{player.genderLabel ?? '-'}</td>
-              <td className="px-4 py-4 font-semibold text-slate-700">{player.school || '-'}</td>
-              <td className="px-4 py-4 text-slate-600">{player.className || '-'}</td>
-              <td className="px-4 py-4 text-slate-600">{player.studentId || '-'}</td>
-              <td className="px-4 py-4 text-slate-600">{player.eventName}</td>
-              <td className="px-4 py-4 text-slate-600">{formatDateTime(player.createdAt)}</td>
-              <td className="px-4 py-4">
-                <span className="rounded-full bg-green-50 px-3 py-1 text-xs font-black text-green-700">
+              <td className="whitespace-nowrap px-4 py-3 font-bold text-slate-900 sm:px-4 sm:py-4">{player.primaryName || player.name}</td>
+              <td className="whitespace-nowrap px-4 py-3 text-slate-600 sm:px-4 sm:py-4">{player.genderLabel ?? '-'}</td>
+              <td className="whitespace-nowrap px-4 py-3 font-semibold text-slate-700 sm:px-4 sm:py-4">{player.school || '-'}</td>
+              <td className="px-4 py-3 text-slate-600 sm:px-4 sm:py-4">{player.className || '-'}</td>
+              <td className="whitespace-nowrap px-4 py-3 text-slate-600 sm:px-4 sm:py-4">{player.studentId || '-'}</td>
+              <td className="whitespace-nowrap px-4 py-3 text-slate-600 sm:px-4 sm:py-4">{player.eventName}</td>
+              <td className="whitespace-nowrap px-4 py-3 text-slate-600 sm:px-4 sm:py-4">{formatDateTime(player.createdAt)}</td>
+              <td className="px-4 py-3 sm:px-4 sm:py-4">
+                <span className="whitespace-nowrap rounded-full bg-green-50 px-2.5 py-1 text-[11px] font-black text-green-700 sm:px-3 sm:text-xs">
                   {player.statusLabel}
                 </span>
               </td>
@@ -270,15 +270,15 @@ function SinglesTable({ players }: { players: Player[] }) {
 function DoublesTable({ players }: { players: Player[] }) {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[720px] text-left text-sm">
-        <thead className="bg-white text-xs font-black uppercase text-slate-500">
+      <table className="w-full min-w-[600px] text-left text-[13px] sm:min-w-[700px] sm:text-sm">
+        <thead className="bg-white text-[11px] font-black uppercase text-slate-500 sm:text-xs">
           <tr>
-            <th className="px-4 py-3">队伍名称</th>
-            <th className="px-4 py-3">姓名</th>
-            <th className="px-4 py-3">学号</th>
-            <th className="px-4 py-3">性别</th>
-            <th className="px-4 py-3">学校</th>
-            <th className="px-4 py-3">学院班级</th>
+            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">队伍名称</th>
+            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">姓名</th>
+            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">学号</th>
+            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">性别</th>
+            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">学校</th>
+            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">学院班级</th>
           </tr>
         </thead>
         <tbody>
@@ -291,24 +291,24 @@ function DoublesTable({ players }: { players: Player[] }) {
               <Fragment key={player.id}>
                 <tr className="border-t border-blue-50">
                   <td
-                    className="px-4 py-4 align-top font-black text-blue-900"
+                    className="px-4 py-3 align-top font-black text-blue-900 sm:px-4 sm:py-4"
                     rowSpan={hasPartner ? 2 : 1}
                   >
                     {teamLabel}
                   </td>
-                  <td className="px-4 py-4 font-bold text-slate-900">{player.primaryName || player.name}</td>
-                  <td className="px-4 py-4 text-slate-600">{player.studentId || '-'}</td>
-                  <td className="px-4 py-4 text-slate-600">{player.genderLabel ?? '-'}</td>
-                  <td className="px-4 py-4 font-semibold text-slate-700">{school}</td>
-                  <td className="px-4 py-4 text-slate-600">{className}</td>
+                  <td className="whitespace-nowrap px-4 py-3 font-bold text-slate-900 sm:px-4 sm:py-4">{player.primaryName || player.name}</td>
+                  <td className="whitespace-nowrap px-4 py-3 text-slate-600 sm:px-4 sm:py-4">{player.studentId || '-'}</td>
+                  <td className="whitespace-nowrap px-4 py-3 text-slate-600 sm:px-4 sm:py-4">{player.genderLabel ?? '-'}</td>
+                  <td className="whitespace-nowrap px-4 py-3 font-semibold text-slate-700 sm:px-4 sm:py-4">{school}</td>
+                  <td className="px-4 py-3 text-slate-600 sm:px-4 sm:py-4">{className}</td>
                 </tr>
                 {hasPartner ? (
                   <tr className="border-t border-blue-50/60 bg-blue-50/30">
-                    <td className="px-4 py-4 font-bold text-slate-900">{player.partner!.name}</td>
-                    <td className="px-4 py-4 text-slate-600">{player.partner?.studentId || '-'}</td>
-                    <td className="px-4 py-4 text-slate-600">{player.partner!.genderLabel ?? '-'}</td>
-                    <td className="px-4 py-4 font-semibold text-slate-700">{player.partner!.school || school}</td>
-                    <td className="px-4 py-4 text-slate-600">{player.partner?.className || '-'}</td>
+                    <td className="whitespace-nowrap px-4 py-3 font-bold text-slate-900 sm:px-4 sm:py-4">{player.partner!.name}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-slate-600 sm:px-4 sm:py-4">{player.partner?.studentId || '-'}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-slate-600 sm:px-4 sm:py-4">{player.partner!.genderLabel ?? '-'}</td>
+                    <td className="whitespace-nowrap px-4 py-3 font-semibold text-slate-700 sm:px-4 sm:py-4">{player.partner!.school || school}</td>
+                    <td className="px-4 py-3 text-slate-600 sm:px-4 sm:py-4">{player.partner?.className || '-'}</td>
                   </tr>
                 ) : null}
               </Fragment>

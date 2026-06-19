@@ -8,7 +8,8 @@ import type {
   BracketParticipant,
   KnockoutBracketData,
 } from '@/components/bracket/KnockoutBracket';
-import type { SecondStageData, SecondStageMatch } from '@/components/bracket/SecondStageBracket';
+import type { SecondStageData } from '@/components/bracket/SecondStageBracket';
+import { SecondStageCrossBracket } from '@/components/bracket/SecondStageCrossBracket';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 const SOCKET_BASE = API_BASE.replace(/\/api\/?$/, '');
@@ -166,6 +167,9 @@ function MatchCard({ bracket, match }: { bracket: KnockoutBracketData; match: Br
   const side2Winner = match.winnerSide === 2 || match.winnerId === match.side2Id;
   const currentGame = currentGameIndex >= 0 ? orient(games[currentGameIndex]) : null;
   const lastGame = games.length ? orient(games[games.length - 1]) : null;
+  const refereeName = match.refereeName?.trim();
+  // 底部右侧沿用原来的弃权/最新事件说明，裁判固定放在左下角。
+  const footerNote = forfeit && match.gamesText ? match.gamesText : match.latestEvents?.[0]?.text ?? '';
 
   return (
     <article className={`rounded-lg border p-3 shadow-[0_18px_44px_rgba(0,0,0,0.22)] ${statusClasses(String(match.status), paused)}`}>
@@ -257,15 +261,17 @@ function MatchCard({ bracket, match }: { bracket: KnockoutBracketData; match: Br
         </div>
       ) : null}
 
-      {forfeit && match.gamesText ? (
-        <p className="mt-3 truncate border-t border-white/10 pt-2 text-[11px] font-semibold text-white/45">
-          {match.gamesText}
-        </p>
-      ) : match.latestEvents?.[0]?.text ? (
-        <p className="mt-3 truncate border-t border-white/10 pt-2 text-[11px] font-semibold text-white/45">
-          {match.latestEvents[0].text}
-        </p>
-      ) : null}
+      <div className="mt-3 flex items-center justify-between gap-3 border-t border-white/10 pt-2">
+        <span className="flex min-w-0 items-center gap-1.5 text-[11px] font-semibold">
+          <span className="shrink-0 text-white/40">本场裁判</span>
+          <span className="truncate font-black text-cyan-100">{refereeName || '待分配'}</span>
+        </span>
+        {footerNote ? (
+          <span className="min-w-0 truncate text-right text-[11px] font-semibold text-white/45">
+            {footerNote}
+          </span>
+        ) : null}
+      </div>
     </article>
   );
 }
@@ -311,77 +317,10 @@ function EmptyState({ brackets }: { brackets: KnockoutBracketData[] }) {
   );
 }
 
-const SECOND_STAGE_STATUS_TEXT: Record<string, string> = {
-  FINISHED: '已完成',
-  COMPLETED: '已完成',
-  LIVE: '进行中',
-  PENDING: '待开始',
-  CANCELLED: '已取消',
-};
-
-function secondStageMatchStatus(status?: string | null) {
-  return SECOND_STAGE_STATUS_TEXT[String(status ?? 'PENDING').toUpperCase()] ?? '待开始';
-}
-
-function secondStageScore(score?: string | null) {
-  if (!score) return '';
-  return score.replace(/\s*[:：]\s*/g, ' : ');
-}
-
-function secondStageGroups(data: SecondStageData) {
-  const matches = [...(data.matches ?? [])].sort((a, b) => a.matchNo - b.matchNo);
-  const top6 = (data.rankingMode ?? 'TOP_8') === 'TOP_6';
-  return [
-    { title: '前8初始赛', matches: matches.filter((m) => m.matchNo >= 1 && m.matchNo <= 4) },
-    { title: '1—4名争夺区', matches: matches.filter((m) => m.matchNo >= 5 && m.matchNo <= 8) },
-    { title: top6 ? '5—6名争夺区' : '5—8名争夺区', matches: matches.filter((m) => m.matchNo >= 9) },
-  ].filter((group) => group.matches.length > 0);
-}
-
-function SecondStageMatchCard({ match }: { match: SecondStageMatch }) {
-  const normalized = String(match.status ?? 'PENDING').toUpperCase();
-  const live = normalized === 'LIVE';
-  const decided = normalized === 'FINISHED' || normalized === 'COMPLETED' || Boolean(match.winnerSide);
-  const score = secondStageScore(match.score);
-  return (
-    <article className={`rounded-lg border p-3 ${statusClasses(normalized === 'FINISHED' ? 'COMPLETED' : match.status)}`}>
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <p className="truncate text-xs font-black text-emerald-100">
-          第 {match.matchNo} 场{match.roundName ? ` · ${match.roundName}` : match.area ? ` · ${match.area}` : ''}
-        </p>
-        <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-black ${
-          live ? 'bg-emerald-300 text-slate-950' : 'bg-white/12 text-white/72'
-        }`}>
-          {secondStageMatchStatus(match.status)}
-        </span>
-      </div>
-      <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3">
-        <SideName name={match.player1Name ?? match.source1 ?? '待定'} players={[]} winner={match.winnerSide === 1} align="right" />
-        <div className="text-center">
-          {decided && score ? (
-            <strong className="block whitespace-nowrap text-2xl font-black leading-none tabular-nums text-amber-300 sm:text-3xl">
-              {score}
-            </strong>
-          ) : (
-            <span className="block px-2 text-2xl font-black leading-none text-white/30">VS</span>
-          )}
-        </div>
-        <SideName name={match.player2Name ?? match.source2 ?? '待定'} players={[]} winner={match.winnerSide === 2} align="left" />
-      </div>
-      {decided && match.winnerName ? (
-        <p className="mt-3 truncate border-t border-white/10 pt-2 text-[11px] font-semibold text-white/45">
-          胜者：{match.winnerName}
-        </p>
-      ) : null}
-    </article>
-  );
-}
-
 function SecondStageWall({ data }: { data: SecondStageData }) {
   const status = String(data.secondStageStatus ?? data.status ?? '').toUpperCase();
   if (status !== 'CONFIRMED' && status !== 'FINISHED') return null;
-  const groups = secondStageGroups(data);
-  if (!groups.length) return null;
+  if (!data.matches?.length) return null;
   const rankings = [...(data.rankings ?? [])].sort((a, b) => a.rank - b.rank);
   return (
     <section className="rounded-lg border border-emerald-300/25 bg-emerald-400/[0.06] p-4">
@@ -395,20 +334,11 @@ function SecondStageWall({ data }: { data: SecondStageData }) {
         </span>
       </div>
       <div className="space-y-5">
-        {groups.map((group) => (
-          <section key={group.title}>
-            <div className="mb-2 flex items-center gap-3">
-              <h3 className="shrink-0 text-sm font-black text-emerald-100">{group.title}</h3>
-              <span className="h-px flex-1 bg-white/10" />
-              <span className="text-xs font-semibold text-white/38">{group.matches.length} 场</span>
-            </div>
-            <div className="grid gap-3 xl:grid-cols-2 2xl:grid-cols-3">
-              {group.matches.map((match) => (
-                <SecondStageMatchCard key={match.matchNo} match={match} />
-              ))}
-            </div>
-          </section>
-        ))}
+        <SecondStageCrossBracket
+          matches={data.matches}
+          rankingMode={data.rankingMode ?? 'TOP_8'}
+          variant="dark"
+        />
         {rankings.length ? (
           <section>
             <div className="mb-2 flex items-center gap-3">

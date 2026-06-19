@@ -1271,6 +1271,7 @@ function MatchCard({
   const isPlaceholder = match.id.startsWith('placeholder-');
   const time = formatTime(match.scheduledAt);
   const venueName = match.venueName?.trim();
+  const refereeName = match.refereeName?.trim();
   const latestEvent = match.latestEvents?.[0] ?? null;
   const latestEventTime = formatTime(latestEvent?.createdAt);
 
@@ -1353,10 +1354,16 @@ function MatchCard({
       </div>
 
       {/* Footer (only in list variant or when meta exists) */}
-      {(variant === 'list' && (venueName || time)) || (variant === 'tree' && false) ? (
+      {variant === 'list' && (venueName || time) ? (
         <div className="flex items-center justify-between gap-2 border-t border-black/5 px-3 py-1.5 text-[10px] font-bold text-slate-500">
           <span className="truncate">{venueName ?? '待排场地'}</span>
           <span>{time ?? '待排时间'}</span>
+        </div>
+      ) : null}
+      {variant === 'list' && refereeName ? (
+        <div className="flex items-center gap-1.5 border-t border-black/5 px-3 py-1.5 text-[10px] font-bold">
+          <span className="shrink-0 text-slate-400">本场裁判</span>
+          <span className="truncate font-black text-[#0a5dd1]">{refereeName}</span>
         </div>
       ) : null}
     </button>

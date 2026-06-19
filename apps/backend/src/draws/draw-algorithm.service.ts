@@ -256,17 +256,21 @@ export class DrawAlgorithmService {
       tryAssignSeedBye(seedNo);
     }
 
-    const availableByeSlots = this.shuffle(
-      slots.filter((slot) => {
-        if (slot.entrantId || slot.isBye) return false;
-        const opponentPosition = slot.position % 2 === 1 ? slot.position + 1 : slot.position - 1;
-        const opponentSlot = slots[opponentPosition - 1];
-        return Boolean(opponentSlot) && !opponentSlot.isBye;
-      }),
-    );
+    // 轮空必须落在“对手是真实参赛者一侧”的签位上，绝不能让两个轮空相邻——否则会
+    // 形成“轮空 vs 轮空”的空场，使相邻真实队伍卡住无法晋级。报名数恒 > bracketSize/2，
+    // 故 byeCount < 一轮场次数，每个轮空都能独占一场，相邻并非必要。
+    const canPlaceBye = (slot: BuiltDrawSlot) => {
+      if (slot.entrantId || slot.isBye) return false;
+      const opponentPosition = slot.position % 2 === 1 ? slot.position + 1 : slot.position - 1;
+      const opponentSlot = slots[opponentPosition - 1];
+      return Boolean(opponentSlot) && !opponentSlot.isBye;
+    };
 
+    const availableByeSlots = this.shuffle(slots.filter(canPlaceBye));
     for (const slot of availableByeSlots) {
       if (remaining <= 0) break;
+      // 上一次分配可能已把本签位的对手设为轮空，这里重新校验，避免相邻双轮空。
+      if (!canPlaceBye(slot)) continue;
       slot.isBye = true;
       slot.sourceType = DrawSlotSourceType.BYE;
       remaining -= 1;

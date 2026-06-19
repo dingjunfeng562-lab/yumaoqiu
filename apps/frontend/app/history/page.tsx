@@ -12,6 +12,7 @@ type HistoryMatch = {
   matchNo: number;
   statusLabel: string;
   venueName: string;
+  refereeName?: string | null;
   side1: string;
   side2: string;
   gamesText: string;
@@ -166,6 +167,7 @@ export default async function HistoryPage() {
                             </div>
                             <p className="mt-1 text-xs font-semibold text-slate-500">
                               {match.round} · 第 {match.matchNo} 场 · 胜方：{match.winnerName ?? '未产生'}
+                              {match.refereeName ? ` · 裁判：${match.refereeName}` : ''}
                             </p>
                           </div>
                         ))}

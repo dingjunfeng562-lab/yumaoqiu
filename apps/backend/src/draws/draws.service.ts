@@ -1081,22 +1081,36 @@ export class DrawsService {
       registrations,
       rounds,
       groups,
-      secondStage: this.secondStageView(secondStage, event.format),
+      secondStage: this.secondStageView(
+        secondStage,
+        event.format,
+        new Map(registrations.map((registration) => [registration.id, registration])),
+      ),
       secondStageFormalMatches,
     };
   }
 
   async getSecondStage(eventId: string) {
     const event = await this.ensureEvent(eventId);
-    const stage = await this.prisma.secondStage.findUnique({
-      where: { eventId },
-      include: {
-        slots: { orderBy: { sortOrder: 'asc' } },
-        matches: { orderBy: { matchNo: 'asc' } },
-        rankings: { orderBy: { rank: 'asc' } },
-      },
-    });
-    return this.secondStageView(stage, event.format);
+    const [stage, registrations] = await Promise.all([
+      this.prisma.secondStage.findUnique({
+        where: { eventId },
+        include: {
+          slots: { orderBy: { sortOrder: 'asc' } },
+          matches: { orderBy: { matchNo: 'asc' } },
+          rankings: { orderBy: { rank: 'asc' } },
+        },
+      }),
+      this.prisma.registration.findMany({
+        where: { eventId, status: RegistrationStatus.APPROVED },
+        include: { player1: true, player2: true },
+      }),
+    ]);
+    return this.secondStageView(
+      stage,
+      event.format,
+      new Map(registrations.map((registration) => [registration.id, registration])),
+    );
   }
 
   async confirmSecondStage(
@@ -1152,7 +1166,8 @@ export class DrawsService {
       if (!registration) continue;
       slotMap.set(item.slot, {
         id: registration.id,
-        name: this.registrationName(registration),
+        // 优先用队伍名称（双打队伍名），无则回退到选手名；A-H 签位/对阵表统一显示队伍名称。
+        name: registration.teamName?.trim() || this.registrationName(registration),
       });
     }
 
@@ -1335,7 +1350,11 @@ export class DrawsService {
     return templates;
   }
 
-  private secondStageView(stage: any | null, eventFormat?: Format) {
+  private secondStageView(
+    stage: any | null,
+    eventFormat?: Format,
+    registrationMap: Map<string, RegistrationWithPlayers> = new Map(),
+  ) {
     if (!stage) {
       if (eventFormat !== Format.SINGLE_ELIMINATION_PLUS_GROUP_RANKING) return null;
       return {
@@ -1351,6 +1370,18 @@ export class DrawsService {
         rankings: [],
       };
     }
+
+    // 卡片统一显示「队伍名称 + 队员名」：按 entrantId 实时回查报名信息，兼容旧快照。
+    const membersOf = (id: string | null): string[] => {
+      const reg = id ? registrationMap.get(id) : null;
+      if (!reg) return [];
+      return [reg.player1?.name, reg.player2?.name].filter(Boolean) as string[];
+    };
+    const displayName = (id: string | null, snapshot: string | null, source: string | null) => {
+      const reg = id ? registrationMap.get(id) : null;
+      if (reg) return reg.teamName?.trim() || membersOf(id).join(' / ') || snapshot || source || '待定';
+      return snapshot ?? source ?? '待定';
+    };
 
     const rankingMode = stage.rankingMode as SecondStageRankingMode;
     return {
@@ -1368,31 +1399,30 @@ export class DrawsService {
       slots: (stage.slots ?? []).map((slot: any) => ({
         slot: slot.slot,
         playerId: slot.entrantId,
-        playerName: slot.entrantNameSnapshot ?? '轮空',
+        playerName: slot.entrantId ? displayName(slot.entrantId, slot.entrantNameSnapshot, null) : '轮空',
+        playerMembers: membersOf(slot.entrantId),
       })),
-      matches: (stage.matches ?? []).map((match: any) => {
-        const player1Name = match.side1NameSnapshot ?? match.side1Source ?? '待定';
-        const player2Name = match.side2NameSnapshot ?? match.side2Source ?? '待定';
-        return {
-          id: match.id,
-          matchNo: match.matchNo,
-          stageName: '第二阶段：小组赛排位赛',
-          roundName: match.roundName,
-          area: match.area,
-          slotInfo: match.slotInfo,
-          source1: match.side1Source,
-          source2: match.side2Source,
-          player1Id: match.side1Id,
-          player2Id: match.side2Id,
-          player1Name,
-          player2Name,
-          score: match.score,
-          winnerSide: match.winnerSide,
-          winnerId: match.winnerId,
-          winnerName: match.winnerNameSnapshot,
-          status: this.publicSecondStageMatchStatus(match.status),
-        };
-      }),
+      matches: (stage.matches ?? []).map((match: any) => ({
+        id: match.id,
+        matchNo: match.matchNo,
+        stageName: '第二阶段：小组赛排位赛',
+        roundName: match.roundName,
+        area: match.area,
+        slotInfo: match.slotInfo,
+        source1: match.side1Source,
+        source2: match.side2Source,
+        player1Id: match.side1Id,
+        player2Id: match.side2Id,
+        player1Name: displayName(match.side1Id, match.side1NameSnapshot, match.side1Source),
+        player2Name: displayName(match.side2Id, match.side2NameSnapshot, match.side2Source),
+        player1Members: membersOf(match.side1Id),
+        player2Members: membersOf(match.side2Id),
+        score: match.score,
+        winnerSide: match.winnerSide,
+        winnerId: match.winnerId,
+        winnerName: match.winnerNameSnapshot,
+        status: this.publicSecondStageMatchStatus(match.status),
+      })),
       rankings: (stage.rankings ?? []).map((ranking: any) => ({
         rank: ranking.rank,
         playerId: ranking.entrantId,
@@ -1504,6 +1534,7 @@ export class DrawsService {
         const side2Id = side2?.entrantId ?? null;
         const side1IsRealBye = !side1Id && !side1?.isPendingWinner;
         const side2IsRealBye = !side2Id && !side2?.isPendingWinner;
+        const bothByes = side1IsRealBye && side2IsRealBye;
         const hasBye =
           (Boolean(side1Id) && side2IsRealBye) ||
           (Boolean(side2Id) && side1IsRealBye);
@@ -1513,12 +1544,16 @@ export class DrawsService {
           matchNo: i / 2 + 1,
           side1Id,
           side2Id,
-          status: hasBye ? MatchStatus.COMPLETED : MatchStatus.PENDING,
+          // 一方有人一方轮空 → 直接判晋级（COMPLETED）；双方皆轮空 → 是空场，同样
+          // 标记 COMPLETED 但无胜者，绝不能留成永远打不了的 PENDING 把后续卡死。
+          status: hasBye || bothByes ? MatchStatus.COMPLETED : MatchStatus.PENDING,
           winnerSide: hasBye ? (side1Id ? 1 : 2) : null,
         });
         nextSlots.push({
+          // 双方皆轮空时继续向下一轮传递“真实轮空”（isPendingWinner=false），
+          // 让相邻的真实队伍一路轮空晋级，直到遇见真正的对手。
           entrantId: hasBye ? (side1Id ?? side2Id) : null,
-          isPendingWinner: !hasBye,
+          isPendingWinner: !hasBye && !bothByes,
         });
       }
       currentSlots = nextSlots;

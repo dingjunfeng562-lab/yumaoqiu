@@ -22,6 +22,7 @@ import { EmailService } from '../mail/email.service';
 import {
   AdminBatchCompetitionPlayerDto,
   AdminBatchCompetitionPlayersDto,
+  AdminCompetitionPlayerDto,
   SubmitCompetitionRegistrationDto,
 } from './dto/competition-registration.dto';
 import { effectiveTournamentStatus } from '../tournaments/tournament-status';
@@ -93,6 +94,18 @@ type RegistrationWithRelations = Prisma.RegistrationGetPayload<{
     };
   };
 }>;
+
+const REGISTRATION_VIEW_INCLUDE = {
+  event: true,
+  player1: true,
+  player2: true,
+  competitionRegistration: {
+    include: {
+      user: true,
+      eventItems: true,
+    },
+  },
+} satisfies Prisma.RegistrationInclude;
 
 type NormalizedAdminBatchPlayer = {
   name: string;
@@ -660,6 +673,213 @@ export class CompetitionsService {
     return { createdCount: registrationRows.length };
   }
 
+  async createAdminPlayer(
+    competitionId: string,
+    dto: AdminCompetitionPlayerDto,
+    reviewedById?: string,
+  ) {
+    const competition = await this.findCompetition(competitionId, true);
+    const event = competition.events.find((item) => item.id === dto.eventId);
+    if (!event) throw new BadRequestException('请选择当前赛事下的参赛项目');
+
+    // 复用批量录入的字段校验（单/双打必填项、性别合法性），单条按第 1 行处理。
+    const player = this.normalizeAdminBatchPlayer(dto, 1, event.type);
+    await this.ensureNoExistingEventStudentIds(event.id, [player]);
+
+    const isDouble = this.isDoubleEvent(event.type);
+    const reviewedAt = new Date();
+
+    const created = await this.prisma.$transaction(async (tx) => {
+      const primary = await tx.player.create({
+        data: {
+          name: player.name,
+          gender: player.gender,
+          affiliation: player.school,
+          contact: player.contact,
+          isTemporary: true,
+        },
+      });
+
+      let secondaryId: string | null = null;
+      if (isDouble && player.partnerName && player.partnerGender) {
+        const secondary = await tx.player.create({
+          data: {
+            name: player.partnerName,
+            gender: player.partnerGender,
+            affiliation: player.partnerSchool ?? player.school,
+            contact: player.partnerContact ?? null,
+            isTemporary: true,
+          },
+        });
+        secondaryId = secondary.id;
+      }
+
+      return tx.registration.create({
+        data: {
+          eventId: event.id,
+          player1Id: primary.id,
+          player2Id: secondaryId,
+          name: secondaryId && player.partnerName ? `${player.name} / ${player.partnerName}` : player.name,
+          teamName: secondaryId ? player.teamName ?? null : null,
+          studentId: player.studentId,
+          className: player.className,
+          phone: player.contact,
+          gender: player.gender,
+          eventName: EVENT_TYPE_LABELS[event.type],
+          partnerStudentId: secondaryId ? player.partnerStudentId ?? null : null,
+          partnerSchool: secondaryId ? player.partnerSchool ?? null : null,
+          partnerClassName: secondaryId ? player.partnerClassName ?? null : null,
+          partnerPhone: secondaryId ? player.partnerContact ?? null : null,
+          status: RegistrationStatus.APPROVED,
+          reviewedAt,
+          reviewedBy: reviewedById ?? null,
+        },
+        include: REGISTRATION_VIEW_INCLUDE,
+      });
+    });
+
+    return this.toRegistrationView(created);
+  }
+
+  async updateAdminPlayer(
+    competitionId: string,
+    registrationId: string,
+    dto: AdminCompetitionPlayerDto,
+    reviewedById?: string,
+  ) {
+    const registration = await this.prisma.registration.findUnique({
+      where: { id: registrationId },
+      include: {
+        event: true,
+        player1: true,
+        player2: true,
+        competitionRegistration: {
+          include: { eventItems: true },
+        },
+      },
+    });
+    if (!registration || registration.event.tournamentId !== competitionId) {
+      throw new NotFoundException('报名记录不存在');
+    }
+
+    const competition = await this.findCompetition(competitionId, true);
+    const targetEvent = competition.events.find(
+      (item) => item.id === (dto.eventId ?? registration.eventId),
+    );
+    if (!targetEvent) throw new BadRequestException('请选择当前赛事下的参赛项目');
+
+    // 仅信息修改不影响对阵结构，随时可改；只有「改报名项目」才会动到签表，故对已锁定项目拦截。
+    const changingEvent = targetEvent.id !== registration.eventId;
+    if (changingEvent && (registration.event.drawLocked || targetEvent.drawLocked)) {
+      throw new ConflictException('签表已冻结或对阵已发布，请先取消发布后再调整报名项目');
+    }
+
+    const player = this.normalizeAdminBatchPlayer(dto, 1, targetEvent.type);
+    await this.ensureNoExistingEventStudentIds(targetEvent.id, [player], registration.id);
+
+    const isDouble = this.isDoubleEvent(targetEvent.type);
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.player.update({
+        where: { id: registration.player1Id },
+        data: {
+          name: player.name,
+          gender: player.gender,
+          affiliation: player.school,
+          contact: player.contact,
+        },
+      });
+
+      let secondaryId: string | null = null;
+      if (isDouble && player.partnerName && player.partnerGender) {
+        if (registration.player2Id) {
+          await tx.player.update({
+            where: { id: registration.player2Id },
+            data: {
+              name: player.partnerName,
+              gender: player.partnerGender,
+              affiliation: player.partnerSchool ?? player.school,
+              contact: player.partnerContact ?? null,
+            },
+          });
+          secondaryId = registration.player2Id;
+        } else {
+          const secondary = await tx.player.create({
+            data: {
+              name: player.partnerName,
+              gender: player.partnerGender,
+              affiliation: player.partnerSchool ?? player.school,
+              contact: player.partnerContact ?? null,
+              isTemporary: true,
+            },
+          });
+          secondaryId = secondary.id;
+        }
+      }
+
+      await tx.registration.update({
+        where: { id: registration.id },
+        data: {
+          eventId: targetEvent.id,
+          player2Id: secondaryId,
+          name: secondaryId && player.partnerName ? `${player.name} / ${player.partnerName}` : player.name,
+          teamName: secondaryId ? player.teamName ?? null : null,
+          studentId: player.studentId,
+          className: player.className,
+          phone: player.contact,
+          gender: player.gender,
+          eventName: EVENT_TYPE_LABELS[targetEvent.type],
+          partnerStudentId: secondaryId ? player.partnerStudentId ?? null : null,
+          partnerSchool: secondaryId ? player.partnerSchool ?? null : null,
+          partnerClassName: secondaryId ? player.partnerClassName ?? null : null,
+          partnerPhone: secondaryId ? player.partnerContact ?? null : null,
+          reviewedAt: new Date(),
+          reviewedBy: reviewedById ?? null,
+        },
+      });
+
+      // 选手自助报名生成的记录，学校/学院班级在视图里优先取自报名主表，
+      // 因此必须把主表与对应项目一并改掉，前台与后台列表才会随之更新。
+      if (registration.competitionRegistrationId) {
+        await tx.competitionRegistration.update({
+          where: { id: registration.competitionRegistrationId },
+          data: {
+            studentId: player.studentId,
+            name: player.name,
+            gender: player.gender,
+            school: player.school,
+            className: player.className,
+            contact: player.contact,
+          },
+        });
+        const eventItem = registration.competitionRegistration?.eventItems.find(
+          (item) => item.eventId === targetEvent.id,
+        );
+        if (eventItem) {
+          await tx.competitionRegistrationEventItem.update({
+            where: { id: eventItem.id },
+            data: {
+              partnerName: secondaryId ? player.partnerName ?? null : null,
+              partnerGender: secondaryId ? player.partnerGender ?? null : null,
+              partnerStudentId: secondaryId ? player.partnerStudentId ?? null : null,
+              partnerSchool: secondaryId ? player.partnerSchool ?? null : null,
+              partnerClassName: secondaryId ? player.partnerClassName ?? null : null,
+              partnerContact: secondaryId ? player.partnerContact ?? null : null,
+              teamName: secondaryId ? player.teamName ?? null : null,
+            },
+          });
+        }
+      }
+
+      return tx.registration.findUniqueOrThrow({
+        where: { id: registration.id },
+        include: REGISTRATION_VIEW_INCLUDE,
+      });
+    });
+
+    return this.toRegistrationView(updated);
+  }
+
   async removeAdminPlayerRegistration(
     competitionId: string,
     registrationId: string,
@@ -1126,6 +1346,7 @@ export class CompetitionsService {
   private async ensureNoExistingEventStudentIds(
     eventId: string,
     players: NormalizedAdminBatchPlayer[],
+    excludeRegistrationId?: string,
   ) {
     const studentIds = [
       ...new Set(
@@ -1140,6 +1361,7 @@ export class CompetitionsService {
       where: {
         eventId,
         status: { not: RegistrationStatus.REMOVED },
+        ...(excludeRegistrationId ? { id: { not: excludeRegistrationId } } : {}),
         OR: [
           { studentId: { in: studentIds } },
           { partnerStudentId: { in: studentIds } },

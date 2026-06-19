@@ -10,10 +10,10 @@ export class PlayersService {
     return this.prisma.player.create({ data: dto });
   }
 
-  findAll(search?: string) {
+  findAll(search?: string, includeTemporary = false) {
     return this.prisma.player.findMany({
       where: {
-        isTemporary: false,
+        ...(includeTemporary ? {} : { isTemporary: false }),
         ...(search
           ? {
               OR: [

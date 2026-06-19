@@ -28,8 +28,14 @@ export class PlayersController {
   }
 
   @Get()
-  findAll(@Query('search') search?: string) {
-    return this.playersService.findAll(search);
+  findAll(
+    @Query('search') search?: string,
+    @Query('includeTemporary') includeTemporary?: string,
+  ) {
+    return this.playersService.findAll(
+      search,
+      includeTemporary === 'true' || includeTemporary === '1',
+    );
   }
 
   @Get(':id')

@@ -103,6 +103,7 @@ interface Registration {
   id: string;
   player1: Player;
   player2?: Player | null;
+  teamName?: string | null;
   isSeed: boolean;
   seedRank?: number | null;
   groupName?: string | null;
@@ -171,9 +172,12 @@ function seedMark(seed?: number | null) {
 
 function sideName(registration?: Registration | null) {
   if (!registration) return '';
-  const name = registration.player2
+  const players = registration.player2
     ? `${registration.player1.name} / ${registration.player2.name}`
     : registration.player1.name;
+  // 双打有队伍名时优先显示队伍名称，并在括号里附上队员名，便于按队伍名选择。
+  const team = registration.teamName?.trim();
+  const name = team ? `${team}（${players}）` : players;
   return `${name}${registration.isSeed ? ` ${seedMark(registration.seedRank)}` : ''}`;
 }
 
@@ -554,7 +558,7 @@ export default function DrawsPage() {
     async function loadBase() {
       const [tournamentData, playerData] = await Promise.all([
         apiFetch<Tournament[]>('/tournaments', { token }),
-        apiFetch<Player[]>('/players', { token }),
+        apiFetch<Player[]>('/players?includeTemporary=true', { token }),
       ]);
       if (!alive) return;
       setTournaments(tournamentData);

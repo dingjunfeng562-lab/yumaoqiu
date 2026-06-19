@@ -198,6 +198,7 @@ export class PublicService {
           include: {
             event: true,
             venue: true,
+            referee: { select: { username: true } },
           },
           orderBy: [{ scheduledAt: 'asc' }, { roundNo: 'asc' }, { matchNo: 'asc' }],
           take: 6,
@@ -242,14 +243,19 @@ export class PublicService {
         promotedPlayers: promotedMatches,
       },
       teamCompetitions,
-      schedules: scheduleMatches.map((match) => ({
-        id: match.id,
-        time: (match.scheduledAt ?? match.createdAt).toISOString(),
-        event: match.event ? (EVENT_TYPE_LABELS[match.event.type] ?? match.event.type) : '团体赛',
-        match: `${this.sideName(match.side1Id, registrationMap)} VS ${this.sideName(match.side2Id, registrationMap)}`,
-        court: match.venue?.name ?? '待排场地',
-        status: STATUS_LABELS[match.status],
-      })),
+      schedules: scheduleMatches
+        .map((match) => ({
+          id: match.id,
+          time: (match.scheduledAt ?? match.createdAt).toISOString(),
+          event: match.event ? (EVENT_TYPE_LABELS[match.event.type] ?? match.event.type) : '团体赛',
+          match: `${this.sideName(match.side1Id, registrationMap)} VS ${this.sideName(match.side2Id, registrationMap)}`,
+          court: match.venue?.name ?? '待排场地',
+          referee: match.referee?.username ?? null,
+          status: STATUS_LABELS[match.status],
+        }))
+        // 按实际展示的时间（scheduledAt 优先，否则 createdAt）升序，保证前端顺序与显示时间一致。
+        // time 为 ISO 8601 UTC 串，字典序即时间序。
+        .sort((a, b) => a.time.localeCompare(b.time)),
       bracketPreviews: bracketEvents.map((event) => ({
         id: event.id,
         title: `${EVENT_TYPE_LABELS[event.type] ?? event.type}对阵表`,
@@ -533,6 +539,7 @@ export class PublicService {
             matches: {
               include: {
                 venue: true,
+                referee: { select: { username: true } },
                 games: { orderBy: { gameNo: 'asc' } },
               },
               orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }],
@@ -790,7 +797,7 @@ export class PublicService {
             : '-',
         };
       }),
-      secondStage: this.publicSecondStageView(event.secondStage, event.format),
+      secondStage: this.publicSecondStageView(event.secondStage, event.format, registrationMap),
     };
   }
 
@@ -798,7 +805,11 @@ export class PublicService {
     return match.roundNo >= SECOND_STAGE_FORMAL_ROUND_NO_BASE;
   }
 
-  private publicSecondStageView(stage: any | null | undefined, eventFormat: Format) {
+  private publicSecondStageView(
+    stage: any | null | undefined,
+    eventFormat: Format,
+    registrationMap: Map<string, any>,
+  ) {
     if (!stage) {
       if (eventFormat !== Format.SINGLE_ELIMINATION_PLUS_GROUP_RANKING) return null;
       return {
@@ -817,6 +828,18 @@ export class PublicService {
     }
 
     const rankingMode = String(stage.rankingMode ?? 'TOP_8');
+    // 第二阶段对阵卡片统一显示「队伍名称 + 队员名」：按 entrantId 实时回查报名信息，
+    // 既能拿到双打队伍名/队员名，也兼容旧的快照数据（无需重新确认即可显示队伍名）。
+    const membersOf = (id: string | null): string[] => {
+      const reg = id ? registrationMap.get(id) : null;
+      if (!reg) return [];
+      return [reg.player1?.name, reg.player2?.name].filter(Boolean) as string[];
+    };
+    const displayName = (id: string | null, snapshot: string | null, source: string | null) => {
+      const reg = id ? registrationMap.get(id) : null;
+      if (reg) return reg.teamName?.trim() || membersOf(id).join(' / ') || snapshot || source || '待定';
+      return snapshot ?? source ?? '待定';
+    };
     return {
       id: stage.id,
       status: stage.status,
@@ -832,7 +855,8 @@ export class PublicService {
       slots: (stage.slots ?? []).map((slot: any) => ({
         slot: slot.slot,
         playerId: slot.entrantId,
-        playerName: slot.entrantNameSnapshot ?? '轮空',
+        playerName: slot.entrantId ? displayName(slot.entrantId, slot.entrantNameSnapshot, null) : '轮空',
+        playerMembers: membersOf(slot.entrantId),
       })),
       matches: (stage.matches ?? []).map((match: any) => ({
         id: match.id,
@@ -845,8 +869,10 @@ export class PublicService {
         source2: match.side2Source,
         player1Id: match.side1Id,
         player2Id: match.side2Id,
-        player1Name: match.side1NameSnapshot ?? match.side1Source ?? '待定',
-        player2Name: match.side2NameSnapshot ?? match.side2Source ?? '待定',
+        player1Name: displayName(match.side1Id, match.side1NameSnapshot, match.side1Source),
+        player2Name: displayName(match.side2Id, match.side2NameSnapshot, match.side2Source),
+        player1Members: membersOf(match.side1Id),
+        player2Members: membersOf(match.side2Id),
         score: match.score,
         winnerSide: match.winnerSide,
         winnerId: match.winnerId,
@@ -1086,6 +1112,7 @@ export class PublicService {
       courtDisplayState,
       actualDurationSeconds: this.publicActualDurationSeconds(match.startedAt, match.finishedAt, match.status, pauseState),
       venueName: match.venue?.name ?? '待排场地',
+      refereeName: match.referee?.username ?? null,
       side1: this.sideName(match.side1Id, registrationMap),
       side2: this.sideName(match.side2Id, registrationMap),
       score: match.forfeitedSide

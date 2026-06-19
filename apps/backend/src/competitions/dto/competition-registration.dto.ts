@@ -124,6 +124,12 @@ export class AdminBatchCompetitionPlayerDto {
   partnerContact?: string;
 }
 
+export class AdminCompetitionPlayerDto extends AdminBatchCompetitionPlayerDto {
+  @IsOptional()
+  @IsString()
+  eventId?: string;
+}
+
 export class AdminBatchCompetitionPlayersDto {
   @IsString()
   @MinLength(1)
