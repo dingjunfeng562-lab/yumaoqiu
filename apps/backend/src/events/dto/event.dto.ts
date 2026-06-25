@@ -121,6 +121,12 @@ export class CreateEventDto {
 
   @IsOptional()
   @IsInt()
+  @Min(2)
+  @Max(26)
+  groupCount?: number;
+
+  @IsOptional()
+  @IsInt()
   @Min(1)
   qualifiersPerGroup?: number;
 }
@@ -174,6 +180,12 @@ export class UpdateEventDto {
   @IsInt()
   @Min(2)
   groupSize?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(2)
+  @Max(26)
+  groupCount?: number;
 
   @IsOptional()
   @IsInt()

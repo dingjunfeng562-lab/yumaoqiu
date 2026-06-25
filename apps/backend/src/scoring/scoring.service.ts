@@ -784,6 +784,7 @@ export class ScoringService {
       if (!secondStageSynced) {
         await this.advanceSingleEliminationWinner(tx, match, winner);
         await this.fillPlayoffMatchesIfReady(tx, match.eventId);
+        await this.fillGroupKnockoutIfReady(tx, match.eventId);
       }
       await this.teamCompetitionsService.updateTeamMatchAggregate(tx, matchId);
     });
@@ -973,6 +974,7 @@ export class ScoringService {
       if (!secondStageSynced) {
         await this.advanceSingleEliminationWinner(tx, match, winnerSide);
         await this.fillPlayoffMatchesIfReady(tx, match.eventId);
+        await this.fillGroupKnockoutIfReady(tx, match.eventId);
       }
       await this.teamCompetitionsService.updateTeamMatchAggregate(tx, matchId);
     });
@@ -1026,6 +1028,7 @@ export class ScoringService {
       if (match.eventId && !secondStageSynced) {
         await this.clearSingleEliminationAdvancement(tx, match);
         await this.fillPlayoffMatchesIfReady(tx, match.eventId);
+        await this.fillGroupKnockoutIfReady(tx, match.eventId);
       }
 
       await this.teamCompetitionsService.updateTeamMatchAggregate(tx, matchId);
@@ -1906,6 +1909,296 @@ export class ScoringService {
       );
     }
     return ranked;
+  }
+
+  /**
+   * 标准小组循环+淘汰(GROUP_PLUS_KNOCKOUT_STD)专用：小组赛(roundNo=0)全部完赛后，
+   * 按《羽毛球竞赛规则2023》官方名次规则取各组前 N 名，用标准种子交叉编入单淘汰签表
+   * 并落库；之后的晋级推进沿用 advanceSingleEliminationWinner。
+   * 幂等：已存在淘汰赛场次(roundNo>=1)时直接返回，避免重复生成。
+   */
+  private async fillGroupKnockoutIfReady(
+    tx: Prisma.TransactionClient,
+    eventId: string | null,
+  ) {
+    if (!eventId) return;
+    const event = await tx.event.findUnique({
+      where: { id: eventId },
+      select: { format: true, qualifiersPerGroup: true },
+    });
+    if (event?.format !== Format.GROUP_PLUS_KNOCKOUT_STD) return;
+
+    const existingKnockout = await tx.match.count({
+      where: { eventId, roundNo: { gte: 1 } },
+    });
+    if (existingKnockout > 0) return;
+
+    const groupMatches = await tx.match.findMany({
+      where: { eventId, roundNo: 0 },
+      include: { games: true },
+    });
+    if (!groupMatches.length) return;
+    const allSettled = groupMatches.every(
+      (m) => m.status === MatchStatus.COMPLETED || m.status === MatchStatus.CANCELLED,
+    );
+    if (!allSettled) return;
+
+    const rankedByGroup = this.computeOfficialGroupRanking(groupMatches);
+    const qualifiersPerGroup = Math.max(1, event.qualifiersPerGroup ?? 2);
+    const groupCodes = [...rankedByGroup.keys()].sort();
+
+    // 种子序：各组第 1 名(按组别 A,B,C… 顺序)在前，再各组第 2 名……
+    // 配合标准种子位，保证组冠军被尽量分散、且第一轮不会出现同组重赛。
+    const seedList: string[] = [];
+    for (let rank = 0; rank < qualifiersPerGroup; rank += 1) {
+      for (const code of groupCodes) {
+        const id = rankedByGroup.get(code)?.[rank];
+        if (id) seedList.push(id);
+      }
+    }
+    if (seedList.length < 2) return;
+
+    const slots = this.buildCanonicalKnockoutSlots(seedList);
+    const drafts = this.buildEliminationDrafts(slots);
+    await this.createKnockoutMatches(tx, eventId, drafts);
+  }
+
+  /**
+   * 官方名次规则(《羽毛球竞赛规则2023》1.3)：
+   * 胜场 → 相互胜负 → 净胜局 → 净胜分 → 抽签。
+   * 采用「分桶递归」实现官方的级联逻辑：两人并列时先看相互胜负，三人及以上
+   * 并列时先比净胜局/净胜分，缩小到两人再看相互胜负，最终仍相等以稳定序代替抽签。
+   */
+  private computeOfficialGroupRanking(
+    groupMatches: Array<{
+      round: string;
+      side1Id: string | null;
+      side2Id: string | null;
+      status: MatchStatus;
+      winnerSide: number | null;
+      games: Array<{ side1Score: number; side2Score: number; winnerSide: number | null }>;
+    }>,
+  ): Map<string, string[]> {
+    type Stat = { id: string; wins: number; netGames: number; netPoints: number };
+    const groups = new Map<string, Map<string, Stat>>();
+    // 每组的相互胜负：code -> winnerId -> loserId -> 胜场数
+    const head = new Map<string, Map<string, Map<string, number>>>();
+
+    const ensureStat = (code: string, id: string) => {
+      let g = groups.get(code);
+      if (!g) groups.set(code, (g = new Map()));
+      let s = g.get(id);
+      if (!s) g.set(id, (s = { id, wins: 0, netGames: 0, netPoints: 0 }));
+      return s;
+    };
+    const addHead = (code: string, winnerId: string, loserId: string) => {
+      let g = head.get(code);
+      if (!g) head.set(code, (g = new Map()));
+      let w = g.get(winnerId);
+      if (!w) g.set(winnerId, (w = new Map()));
+      w.set(loserId, (w.get(loserId) ?? 0) + 1);
+    };
+
+    for (const m of groupMatches) {
+      if (!m.side1Id || !m.side2Id) continue;
+      const a = ensureStat(m.round, m.side1Id);
+      const b = ensureStat(m.round, m.side2Id);
+      if (m.status !== MatchStatus.COMPLETED || !m.winnerSide) continue;
+      let aGames = 0;
+      let bGames = 0;
+      for (const game of m.games) {
+        if (game.winnerSide === 1) aGames += 1;
+        else if (game.winnerSide === 2) bGames += 1;
+        a.netPoints += game.side1Score - game.side2Score;
+        b.netPoints += game.side2Score - game.side1Score;
+      }
+      a.netGames += aGames - bGames;
+      b.netGames += bGames - aGames;
+      if (m.winnerSide === 1) {
+        a.wins += 1;
+        addHead(m.round, m.side1Id, m.side2Id);
+      } else {
+        b.wins += 1;
+        addHead(m.round, m.side2Id, m.side1Id);
+      }
+    }
+
+    const headBetween = (code: string, x: string, y: string) => {
+      const g = head.get(code);
+      const xy = g?.get(x)?.get(y) ?? 0;
+      const yx = g?.get(y)?.get(x) ?? 0;
+      return xy - yx;
+    };
+
+    const order = (code: string, members: Stat[], stage: 'wins' | 'netGames' | 'netPoints'): Stat[] => {
+      if (members.length <= 1) return members;
+      const keyOf = (s: Stat) =>
+        stage === 'wins' ? s.wins : stage === 'netGames' ? s.netGames : s.netPoints;
+      const sorted = [...members].sort((a, b) => keyOf(b) - keyOf(a));
+      const buckets: Stat[][] = [];
+      for (const s of sorted) {
+        const last = buckets[buckets.length - 1];
+        if (last && keyOf(last[0]) === keyOf(s)) last.push(s);
+        else buckets.push([s]);
+      }
+      const nextStage = (bucket: Stat[]): Stat[] =>
+        stage === 'wins'
+          ? order(code, bucket, 'netGames')
+          : stage === 'netGames'
+            ? order(code, bucket, 'netPoints')
+            : bucket; // 净胜分仍相等：以稳定序代替抽签
+      const result: Stat[] = [];
+      for (const bucket of buckets) {
+        if (bucket.length === 1) {
+          result.push(bucket[0]);
+        } else if (bucket.length === 2) {
+          const h = headBetween(code, bucket[0].id, bucket[1].id);
+          if (h > 0) result.push(bucket[0], bucket[1]);
+          else if (h < 0) result.push(bucket[1], bucket[0]);
+          else result.push(...nextStage(bucket));
+        } else {
+          result.push(...nextStage(bucket));
+        }
+      }
+      return result;
+    };
+
+    const ranked = new Map<string, string[]>();
+    for (const [code, members] of groups) {
+      ranked.set(code, order(code, [...members.values()], 'wins').map((s) => s.id));
+    }
+    return ranked;
+  }
+
+  /** 单淘汰标准种子位序列(递归对折)：返回每个签位对应的种子号。 */
+  private canonicalSeedOrder(bracketSize: number): number[] {
+    let seeds = [1, 2];
+    while (seeds.length < bracketSize) {
+      const sum = seeds.length * 2 + 1;
+      const next: number[] = [];
+      for (const s of seeds) {
+        next.push(s);
+        next.push(sum - s);
+      }
+      seeds = next;
+    }
+    return seeds;
+  }
+
+  /** 按种子序把出线选手放进 2 的幂签表，空位为轮空(null)，轮空落在高种子侧。 */
+  private buildCanonicalKnockoutSlots(seedList: string[]): Array<string | null> {
+    const n = seedList.length;
+    const bracketSize = 2 ** Math.ceil(Math.log2(Math.max(2, n)));
+    return this.canonicalSeedOrder(bracketSize).map((seedNo) =>
+      seedNo <= n ? seedList[seedNo - 1] : null,
+    );
+  }
+
+  /** 由签位顺序生成整张单淘汰签表草稿(含轮空直接晋级、季军赛占位)。 */
+  private buildEliminationDrafts(slots: Array<string | null>): Array<{
+    round: string;
+    roundNo: number;
+    matchNo: number;
+    side1Id: string | null;
+    side2Id: string | null;
+    status: MatchStatus;
+    winnerSide: number | null;
+  }> {
+    const label = (slotCount: number) => {
+      if (slotCount === 2) return 'F';
+      if (slotCount === 4) return 'SF';
+      if (slotCount === 8) return 'QF';
+      return `R${Math.log2(slotCount) - 3}`;
+    };
+    const entrantCount = slots.filter((id) => id).length;
+    const drafts: Array<{
+      round: string;
+      roundNo: number;
+      matchNo: number;
+      side1Id: string | null;
+      side2Id: string | null;
+      status: MatchStatus;
+      winnerSide: number | null;
+    }> = [];
+    let roundNo = 1;
+    let current = slots.map((id) => ({ entrantId: id, isPendingWinner: false }));
+    while (current.length >= 2) {
+      const roundLabel = label(current.length);
+      const next: Array<{ entrantId: string | null; isPendingWinner: boolean }> = [];
+      for (let i = 0; i < current.length; i += 2) {
+        const s1 = current[i];
+        const s2 = current[i + 1];
+        const id1 = s1?.entrantId ?? null;
+        const id2 = s2?.entrantId ?? null;
+        const s1Bye = !id1 && !s1?.isPendingWinner;
+        const s2Bye = !id2 && !s2?.isPendingWinner;
+        const bothByes = s1Bye && s2Bye;
+        const hasBye = (Boolean(id1) && s2Bye) || (Boolean(id2) && s1Bye);
+        drafts.push({
+          round: roundLabel,
+          roundNo,
+          matchNo: i / 2 + 1,
+          side1Id: id1,
+          side2Id: id2,
+          status: hasBye || bothByes ? MatchStatus.COMPLETED : MatchStatus.PENDING,
+          winnerSide: hasBye ? (id1 ? 1 : 2) : null,
+        });
+        next.push({
+          entrantId: hasBye ? (id1 ?? id2) : null,
+          isPendingWinner: !hasBye && !bothByes,
+        });
+      }
+      current = next;
+      roundNo += 1;
+    }
+    const finalRoundNo = roundNo - 1;
+    if (entrantCount >= 4 && finalRoundNo > 1) {
+      drafts.push({
+        round: 'BRONZE',
+        roundNo: finalRoundNo,
+        matchNo: 2,
+        side1Id: null,
+        side2Id: null,
+        status: MatchStatus.PENDING,
+        winnerSide: null,
+      });
+    }
+    return drafts;
+  }
+
+  private async createKnockoutMatches(
+    tx: Prisma.TransactionClient,
+    eventId: string,
+    drafts: Array<{
+      round: string;
+      roundNo: number;
+      matchNo: number;
+      side1Id: string | null;
+      side2Id: string | null;
+      status: MatchStatus;
+      winnerSide: number | null;
+    }>,
+  ) {
+    const event = await tx.event.findUnique({
+      where: { id: eventId },
+      select: { defaultMatchMinutes: true, tournament: { select: { defaultMatchMinutes: true } } },
+    });
+    const minutes = event?.defaultMatchMinutes ?? event?.tournament?.defaultMatchMinutes ?? 45;
+    for (const draft of drafts) {
+      await tx.match.create({
+        data: {
+          eventId,
+          round: draft.round,
+          roundNo: draft.roundNo,
+          matchNo: draft.matchNo,
+          side1Id: draft.side1Id,
+          side2Id: draft.side2Id,
+          status: draft.status,
+          winnerSide: draft.winnerSide,
+          durationMinutes: minutes,
+        },
+      });
+    }
   }
 
   private async syncSecondStageFormalMatchResult(

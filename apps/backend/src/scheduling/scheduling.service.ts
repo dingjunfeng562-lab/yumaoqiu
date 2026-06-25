@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common';
 import { MatchStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { AutoScheduleDto, CreateVenueDto, UpdateMatchScheduleDto, UpdateVenueDto } from './dto/scheduling.dto';
+import { AutoScheduleDto, ClearScheduleDto, CreateVenueDto, UpdateMatchScheduleDto, UpdateVenueDto } from './dto/scheduling.dto';
 import {
   isSecondStageFormalRoundNo,
   secondStageDependencyMatchNos,
@@ -35,6 +35,8 @@ type ScheduleMatch = {
   round: string;
   roundNo: number;
   matchNo: number;
+  // 单个场地内按时间顺序的连续场次序号（第1场、第2场…）；未分配场地时为 null。
+  venueSequence: number | null;
   side1Id: string | null;
   side2Id: string | null;
   side1: RegistrationView | null;
@@ -215,7 +217,25 @@ export class SchedulingService {
       (match) => !adjustableIds.has(match.id) && Boolean(match.scheduledAt),
     );
 
-    const venueBusy = new Map<string, BusyInterval[]>(venues.map((venue) => [venue.id, []]));
+    // 借场:本次排程限定了「固定场地」(venueIds)时,其余启用场地里已经被其他项目占用、
+    // 之后空出来的时段可供本次溢出的场次借用——前提仍是落在每日时段内且选手不冲突。
+    // 只借「已经有其他项目落位」的场地(anchoredVenueIds),避免把尚未排程项目预留的空场抢走。
+    const homeVenueIds = new Set(venues.map((venue) => venue.id));
+    const anchoredVenueIds = new Set(
+      anchors.map((anchor) => anchor.venueId).filter((id): id is string => Boolean(id)),
+    );
+    const borrowVenues = dto.venueIds?.length
+      ? (
+          await this.prisma.venue.findMany({
+            where: { tournamentId: dto.tournamentId, isActive: true },
+            orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+          })
+        ).filter((venue) => !homeVenueIds.has(venue.id) && anchoredVenueIds.has(venue.id))
+      : [];
+
+    const venueBusy = new Map<string, BusyInterval[]>(
+      [...venues, ...borrowVenues].map((venue) => [venue.id, []]),
+    );
     const playerBusy = new Map<string, BusyInterval[]>();
     for (const anchor of anchors) {
       const endAt = this.addMinutes(anchor.scheduledAt!, anchor.durationMinutes).getTime();
@@ -263,21 +283,43 @@ export class SchedulingService {
       const perMatchMinutes = matchMinutes;
       const dependencyReleaseTime = this.dependencyReleaseTime(match, matchMap, scheduledEndByKey);
       const earliestMatchStart = Math.max(earliestScheduleStart, dependencyReleaseTime);
-      const candidates = venues.map((venue) => ({
-        venue,
-        startTime: this.findEarliestStart(
-          venue.id,
-          earliestMatchStart,
-          perMatchMinutes,
-          breakMinutes,
-          dailyWindow,
-          tournament.endDate,
-          playerIds,
-          venueBusy,
-          playerBusy,
-        ),
-      }));
-      candidates.sort((a, b) => a.startTime - b.startTime || a.venue.sortOrder - b.venue.sortOrder);
+      const candidates = [
+        ...venues.map((venue) => ({ venue, isBorrow: false })),
+        ...borrowVenues.map((venue) => ({ venue, isBorrow: true })),
+      ]
+        .map(({ venue, isBorrow }) => ({
+          venue,
+          isBorrow,
+          startTime: this.findEarliestStart(
+            venue.id,
+            earliestMatchStart,
+            perMatchMinutes,
+            breakMinutes,
+            dailyWindow,
+            tournament.endDate,
+            playerIds,
+            venueBusy,
+            playerBusy,
+          ),
+        }))
+        .filter(
+          (
+            candidate,
+          ): candidate is { venue: (typeof venues)[number]; isBorrow: boolean; startTime: number } =>
+            candidate.startTime !== null,
+        );
+      // 借场后仍排不下(超出赛事结束日期)的场次留空,交由冲突检测标记为「待排程」,不再中断整批排程。
+      if (!candidates.length) continue;
+      // 先比「最早能排到哪一天」:固定场地只要当天还排得下,就优先用固定场地;
+      // 只有当固定场地会把这场挤到更晚的某一天、而借用场地当天还排得下时,才借场。
+      // 同一天内再优先固定场地、然后比最早时间、最后比场地序号。
+      candidates.sort(
+        (a, b) =>
+          this.dayKey(a.startTime) - this.dayKey(b.startTime) ||
+          Number(a.isBorrow) - Number(b.isBorrow) ||
+          a.startTime - b.startTime ||
+          a.venue.sortOrder - b.venue.sortOrder,
+      );
       const winner = candidates[0];
       const scheduledAt = new Date(winner.startTime);
       const matchEndAt = this.addMinutes(scheduledAt, perMatchMinutes).getTime();
@@ -331,6 +373,33 @@ export class SchedulingService {
       ),
     ]);
 
+    return this.getSchedule(dto.tournamentId, dto.eventId);
+  }
+
+  /**
+   * 取消场地排程:把所选范围内「未开始」场次的场地与时间清空,使其回到待排程状态。
+   * 自动排程的逆操作。只清空 PENDING 场次,已完赛 / 进行中的场次(及其结果、所在场地)保持不动,
+   * 这样清空后重新自动排程时它们仍作为锚点被避让。durationMinutes(单场预估时长)保留。
+   */
+  async clearSchedule(dto: ClearScheduleDto) {
+    await this.ensureTournament(dto.tournamentId);
+    const matches = await this.prisma.match.findMany({
+      where: {
+        status: MatchStatus.PENDING,
+        event: {
+          tournamentId: dto.tournamentId,
+          ...(dto.eventId ? { id: dto.eventId } : {}),
+        },
+      },
+      select: { id: true },
+    });
+    const ids = matches.map((match) => match.id);
+    if (ids.length) {
+      await this.prisma.match.updateMany({
+        where: { id: { in: ids } },
+        data: { venueId: null, scheduledAt: null },
+      });
+    }
     return this.getSchedule(dto.tournamentId, dto.eventId);
   }
 
@@ -390,6 +459,8 @@ export class SchedulingService {
         .map((match) => [this.matchKey(match.eventId!, match.roundNo, match.matchNo), match]),
     );
 
+    // 场次按场地连续编号：matches 已按 scheduledAt 升序，故同一场地内依次为第1场、第2场……
+    const venueSequence = new Map<string, number>();
     return matches.map<ScheduleMatch>((match) => {
       const dependencyMatchIds = this.dependencyMatches(match, matchMap).map((item) => item.id);
       const dependenciesReady = this.dependenciesReady(match, matchMap);
@@ -407,6 +478,11 @@ export class SchedulingService {
           : match.status === MatchStatus.COMPLETED && !dependenciesReady
             ? 'WAITING_SCHEDULE'
             : match.status;
+      let venueOrder: number | null = null;
+      if (match.venueId) {
+        venueOrder = (venueSequence.get(match.venueId) ?? 0) + 1;
+        venueSequence.set(match.venueId, venueOrder);
+      }
       return {
         id: match.id,
         eventId: match.eventId,
@@ -415,6 +491,7 @@ export class SchedulingService {
         round: match.round,
         roundNo: match.roundNo,
         matchNo: match.matchNo,
+        venueSequence: venueOrder,
         side1Id: match.side1Id,
         side2Id: match.side2Id,
         side1: match.side1Id ? this.registrationView(registrationMap.get(match.side1Id) ?? null) : null,
@@ -506,12 +583,13 @@ export class SchedulingService {
     playerIds: string[],
     venueBusy: Map<string, BusyInterval[]>,
     playerBusy: Map<string, BusyInterval[]>,
-  ) {
+  ): number | null {
     let start = this.normalizeToDailyWindow(earliest, matchMinutes, dailyWindow);
     const latestEnd = this.endOfDay(tournamentEndDate).getTime();
     while (true) {
       if (start + matchMinutes * 60 * 1000 > latestEnd) {
-        throw new BadRequestException('赛程已超出赛事结束日期，请增加场地或调整每日比赛时段');
+        // 已无法在赛事结束日期前安排:返回 null,交由上层留空并标记为冲突。
+        return null;
       }
 
       const venueConflict = this.findOverlap(venueBusy.get(venueId) ?? [], {
@@ -603,6 +681,12 @@ export class SchedulingService {
     const end = new Date(date);
     end.setHours(23, 59, 59, 999);
     return end;
+  }
+
+  // 把时间戳折算成「本地自然日」的可比较序号,用于判断两个候选是否落在不同的比赛日。
+  private dayKey(timestamp: number) {
+    const date = new Date(timestamp);
+    return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
   }
 
   private findOverlap(intervals: BusyInterval[], target: BusyInterval) {

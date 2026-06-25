@@ -118,10 +118,11 @@ export class DrawAlgorithmService {
   buildGroups(
     entrants: DrawEntrantInput[],
     seedSettings: DrawSeedSettingInput[],
-    groupSize: number,
+    groupCount: number,
   ) {
-    const groupCount = Math.max(2, Math.ceil(entrants.length / Math.max(groupSize, 2)));
-    const groups: BuiltDrawGroup[] = Array.from({ length: groupCount }, (_, index) => ({
+    const resolvedGroupCount = this.resolveGroupCount(entrants.length, groupCount);
+    const targetSizes = this.targetGroupSizes(entrants.length, resolvedGroupCount);
+    const groups: BuiltDrawGroup[] = Array.from({ length: resolvedGroupCount }, (_, index) => ({
       groupCode: String.fromCharCode(65 + index),
       sortOrder: index,
       members: [],
@@ -134,7 +135,7 @@ export class DrawAlgorithmService {
     for (const seed of sortedSeeds) {
       const entrant = entrantMap.get(seed.entrantId);
       if (!entrant) continue;
-      const group = groups[this.snakeGroupIndex(seed.seedNo, groupCount)];
+      const group = groups[this.snakeGroupIndex(seed.seedNo, resolvedGroupCount)];
       group.members.push({
         entrantId: entrant.id,
         entrantNameSnapshot: entrant.name,
@@ -147,7 +148,11 @@ export class DrawAlgorithmService {
     const seededIds = new Set(seedSettings.map((item) => item.entrantId));
     const nonSeeds = this.shuffle(entrants.filter((item) => !seededIds.has(item.id)));
     for (const entrant of nonSeeds) {
-      const target = [...groups].sort((a, b) => a.members.length - b.members.length || a.sortOrder - b.sortOrder)[0];
+      const target = [...groups].sort((a, b) => {
+        const aRemaining = targetSizes[a.sortOrder] - a.members.length;
+        const bRemaining = targetSizes[b.sortOrder] - b.members.length;
+        return bRemaining - aRemaining || a.members.length - b.members.length || a.sortOrder - b.sortOrder;
+      })[0];
       target.members.push({
         entrantId: entrant.id,
         entrantNameSnapshot: entrant.name,
@@ -158,6 +163,17 @@ export class DrawAlgorithmService {
     }
 
     return groups;
+  }
+
+  private resolveGroupCount(entrantCount: number, groupCount: number) {
+    const normalized = Number.isFinite(groupCount) ? Math.floor(groupCount) : 2;
+    return Math.min(Math.max(normalized, 2), Math.max(entrantCount, 2));
+  }
+
+  private targetGroupSizes(entrantCount: number, groupCount: number) {
+    const base = Math.floor(entrantCount / groupCount);
+    const remainder = entrantCount % groupCount;
+    return Array.from({ length: groupCount }, (_, index) => base + (index < remainder ? 1 : 0));
   }
 
   /**

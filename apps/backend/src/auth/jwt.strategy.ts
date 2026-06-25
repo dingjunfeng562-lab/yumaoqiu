@@ -1,7 +1,8 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
+import { UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
@@ -36,6 +37,12 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       },
     });
     if (!user) throw new UnauthorizedException();
+    // A ban must take effect immediately, even for a user who is still holding
+    // a previously-issued (not-yet-expired) access token. Rejecting here means
+    // every subsequent request from a disabled account is refused.
+    if (user.status === UserStatus.DISABLED) {
+      throw new ForbiddenException('账号已被禁用');
+    }
     return user;
   }
 }

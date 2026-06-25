@@ -29,6 +29,9 @@ type UploadFile = {
 
 type WatermarkLogo = { order: number; path: string; filename?: string };
 
+const MAX_UPLOAD_FILES = 100;
+const MAX_UPLOAD_FILE_SIZE = 15 * 1024 * 1024;
+const PHOTO_MIME_RE = /^image\/(?!svg\+xml$).+/;
 const PHOTO_LOG_RETENTION_DAYS = 90;
 
 /** Chinese labels used in download filenames: 赛事名-分类-序号.ext */
@@ -77,6 +80,27 @@ export class PhotosService {
     }
   }
 
+  private originalImageExtension(format?: string) {
+    switch (format) {
+      case 'jpeg':
+        return '.jpg';
+      case 'png':
+        return '.png';
+      case 'webp':
+        return '.webp';
+      case 'gif':
+        return '.gif';
+      case 'avif':
+        return '.avif';
+      case 'heif':
+        return '.heic';
+      case 'tiff':
+        return '.tif';
+      default:
+        return '.jpg';
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Tournaments (selectors / tabs)
   // ---------------------------------------------------------------------------
@@ -116,6 +140,7 @@ export class PhotosService {
     logoHeightPercent: number;
     logoGapPercent: number;
     position: WatermarkPosition;
+    portraitPosition: WatermarkPosition;
   }> {
     const config = await this.prisma.tournamentWatermark.findUnique({
       where: { tournamentId },
@@ -126,6 +151,7 @@ export class PhotosService {
         logoHeightPercent: DEFAULT_LOGO_HEIGHT_PERCENT,
         logoGapPercent: DEFAULT_LOGO_GAP_PERCENT,
         position: DEFAULT_WATERMARK_POSITION,
+        portraitPosition: DEFAULT_WATERMARK_POSITION,
       };
     }
     const logos = this.parseLogos(config.logos);
@@ -141,6 +167,7 @@ export class PhotosService {
       logoHeightPercent: config.logoHeightPercent ?? DEFAULT_LOGO_HEIGHT_PERCENT,
       logoGapPercent: config.logoGapPercent ?? DEFAULT_LOGO_GAP_PERCENT,
       position: this.normalizePosition(config.position),
+      portraitPosition: this.normalizePosition(config.portraitPosition ?? config.position),
     };
   }
 
@@ -162,8 +189,11 @@ export class PhotosService {
     });
     if (!tournament) throw new NotFoundException('赛事不存在');
     if (!files?.length) throw new BadRequestException('请至少上传一张图片');
+    if (files.length > MAX_UPLOAD_FILES) {
+      throw new BadRequestException(`每批最多上传 ${MAX_UPLOAD_FILES} 张图片`);
+    }
 
-    const { buffers: logos, logoHeightPercent, logoGapPercent, position } =
+    const { buffers: logos, logoHeightPercent, logoGapPercent, position, portraitPosition } =
       await this.loadLogoConfig(tournamentId);
 
     // Per-tournament upload sequence. New photos continue from the current max
@@ -188,21 +218,27 @@ export class PhotosService {
           const name = file.originalname || 'unknown';
           try {
             if (!file.buffer) throw new Error('空文件');
+            if (!PHOTO_MIME_RE.test(file.mimetype ?? '')) {
+              throw new Error('仅支持图片格式');
+            }
+            if ((file.size ?? file.buffer.length) > MAX_UPLOAD_FILE_SIZE) {
+              throw new Error('单张图片不能超过 15MB');
+            }
             const seq = seqBase + idx + 1;
             const uuid = randomUUID();
-            const isPng = (file.mimetype || '').includes('png');
-            const origExt = isPng ? '.png' : '.jpg';
+            const info = await this.watermark.imageInfo(file.buffer);
+            const origExt = this.originalImageExtension(info.format);
+            const resolvedPosition = info.height > info.width ? portraitPosition : position;
 
             const originalPath = `photos/${tournamentId}/original/${uuid}${origExt}`;
             const thumbnailPath = `photos/${tournamentId}/thumb/${uuid}.jpg`;
 
-            const { width, height } = await this.watermark.dimensions(file.buffer);
             const watermarked = await this.watermark.applyWatermark(
               file.buffer,
               logos,
               logoHeightPercent,
               logoGapPercent,
-              position,
+              resolvedPosition,
             );
             const fullPath = `photos/${tournamentId}/full/${uuid}${watermarked.ext}`;
             const thumb = await this.watermark.generateThumbnail(watermarked.buffer);
@@ -221,8 +257,8 @@ export class PhotosService {
                 fullPath,
                 thumbnailPath,
                 fileSize: file.size ?? file.buffer.length,
-                width,
-                height,
+                width: info.width,
+                height: info.height,
               },
             });
             uploaded += 1;
@@ -325,6 +361,7 @@ export class PhotosService {
       logoHeightPercent: config?.logoHeightPercent ?? DEFAULT_LOGO_HEIGHT_PERCENT,
       logoGapPercent: config?.logoGapPercent ?? DEFAULT_LOGO_GAP_PERCENT,
       position: this.normalizePosition(config?.position),
+      portraitPosition: this.normalizePosition(config?.portraitPosition ?? config?.position),
       updatedAt: config?.updatedAt ?? null,
     };
   }
@@ -339,6 +376,7 @@ export class PhotosService {
       logoHeightPercent: this.clampLogoHeightPercent(dto.logoHeightPercent),
       logoGapPercent: this.clampLogoGapPercent(dto.logoGapPercent),
       position: this.normalizePosition(dto.position),
+      portraitPosition: this.normalizePosition(dto.portraitPosition ?? dto.position),
     };
     await this.prisma.tournamentWatermark.upsert({
       where: { tournamentId },

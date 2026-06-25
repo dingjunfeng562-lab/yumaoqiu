@@ -29,7 +29,7 @@ export default async function BracketDetailPage({ params }: { params: Promise<{ 
           <div className="flex flex-wrap gap-2">
             {bracket.tournamentId ? (
               <Link
-                href={`/competitions/${encodeURIComponent(bracket.tournamentId)}#brackets`}
+                href={`/competitions/${encodeURIComponent(bracket.tournamentId)}`}
                 className="inline-flex h-10 items-center justify-center rounded-lg border border-blue-200 px-4 text-sm font-black text-blue-700 transition hover:bg-blue-50"
               >
                 赛事详情

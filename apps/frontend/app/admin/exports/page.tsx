@@ -32,6 +32,8 @@ const exportKinds = [
   { key: 'schedule', title: '赛程表', description: '按项目、场地、时间输出全部场次。' },
   { key: 'results', title: '成绩册', description: '输出比分、胜负和名次汇总。' },
   { key: 'registrations', title: '报名表', description: '输出选手信息、报名项目和分组种子。' },
+  { key: 'bracket', title: '对阵表', description: '按场地排程输出对阵、时间与场地内场次。' },
+  { key: 'orderbook', title: '秩序册', description: '日程表概览 + 按节次/场地排布的秩序表网格（项目、场次号、组别签位、姓名）。' },
 ];
 
 function fileNameFromDisposition(disposition: string | null, fallback: string) {

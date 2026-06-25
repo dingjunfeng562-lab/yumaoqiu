@@ -22,10 +22,10 @@ import {
 
 /**
  * 邮件通知系统管理接口。
- * 仅总管理员（SUPER_ADMIN）可访问，普通管理员/其他角色一律 403。
+ * 仅超级管理员（ROOT）可访问，总管理员/普通管理员/其他角色一律 403。
  */
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.SUPER_ADMIN)
+@Roles(Role.ROOT)
 @Controller('admin/email')
 export class AdminEmailController {
   constructor(private emailService: EmailService) {}

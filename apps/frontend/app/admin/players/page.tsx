@@ -33,6 +33,9 @@ interface Player {
 export default function PlayersPage() {
   const { data: session } = useSession();
   const token = session?.user?.accessToken as string | undefined;
+  const role = (session?.user as { role?: string } | undefined)?.role;
+  // 选手库写操作:降权后的总管理员(SUPER_ADMIN)只读,仅管理员/超级管理员可增删改。
+  const canManage = role === 'ADMIN' || role === 'ROOT';
 
   const [players, setPlayers] = useState<Player[]>([]);
   const [loading, setLoading] = useState(false);
@@ -130,25 +133,28 @@ export default function PlayersPage() {
     {
       title: '操作',
       key: 'actions',
-      render: (_: unknown, record: Player) => (
-        <Space>
-          <Button
-            icon={<EditOutlined />}
-            size="small"
-            disabled={record.isTemporary}
-            onClick={() => openEdit(record)}
-          >
-            编辑
-          </Button>
-          <Popconfirm
-            title="确认删除？"
-            onConfirm={() => handleDelete(record.id)}
-            disabled={record.isTemporary}
-          >
-            <Button icon={<DeleteOutlined />} size="small" danger disabled={record.isTemporary}>删除</Button>
-          </Popconfirm>
-        </Space>
-      ),
+      render: (_: unknown, record: Player) =>
+        canManage ? (
+          <Space>
+            <Button
+              icon={<EditOutlined />}
+              size="small"
+              disabled={record.isTemporary}
+              onClick={() => openEdit(record)}
+            >
+              编辑
+            </Button>
+            <Popconfirm
+              title="确认删除？"
+              onConfirm={() => handleDelete(record.id)}
+              disabled={record.isTemporary}
+            >
+              <Button icon={<DeleteOutlined />} size="small" danger disabled={record.isTemporary}>删除</Button>
+            </Popconfirm>
+          </Space>
+        ) : (
+          <Typography.Text type="secondary">只读</Typography.Text>
+        ),
     },
   ];
 
@@ -163,7 +169,9 @@ export default function PlayersPage() {
             onSearch={(v) => setSearch(v)}
             style={{ width: 240 }}
           />
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>添加选手</Button>
+          {canManage ? (
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>添加选手</Button>
+          ) : null}
         </Space>
       </div>
 

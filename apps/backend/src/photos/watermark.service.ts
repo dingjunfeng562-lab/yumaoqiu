@@ -156,6 +156,13 @@ export class WatermarkService {
     // 未配置 logo：原文件字节原样直出，零重编码、零压缩。EXIF 方向标签保留，
     // 浏览器与相册会按标签正确显示方向。
     if (logos.length === 0) {
+      if (meta.format && meta.format !== 'jpeg' && meta.format !== 'png') {
+        const buffer = await sharp(imageBuffer, this.INPUT_OPTS)
+          .rotate()
+          .jpeg({ quality: 100, chromaSubsampling: '4:4:4' })
+          .toBuffer();
+        return { buffer, ext: '.jpg' };
+      }
       return { buffer: imageBuffer, ext };
     }
     // Use post-orientation dimensions so the logo lands in the visually-correct
@@ -230,5 +237,10 @@ export class WatermarkService {
   async dimensions(buffer: Buffer): Promise<{ width: number; height: number }> {
     const meta = await sharp(buffer, this.INPUT_OPTS).metadata();
     return this.orientedSize(meta);
+  }
+
+  async imageInfo(buffer: Buffer): Promise<{ width: number; height: number; format?: string }> {
+    const meta = await sharp(buffer, this.INPUT_OPTS).metadata();
+    return { ...this.orientedSize(meta), format: meta.format };
   }
 }

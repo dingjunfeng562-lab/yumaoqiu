@@ -101,7 +101,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     }),
   ],
   callbacks: {
-    async jwt({ token, user }) {
+    async jwt({ token, user, trigger, session }) {
       if (user) {
         token.role = (user as { role: string }).role;
         token.accessToken = (user as { accessToken: string }).accessToken;
@@ -113,6 +113,13 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         token.username = (user as { username?: string }).username;
         token.email = user.email;
         token.authError = undefined;
+      }
+      // After a self-service rename the page calls `update({ name })` so the
+      // new display name propagates app-wide without a full re-login.
+      if (trigger === 'update' && session && typeof (session as { name?: unknown }).name === 'string') {
+        const nextName = (session as { name: string }).name;
+        token.name = nextName;
+        token.username = nextName;
       }
       if (token.accessTokenExpiresAt && Date.now() < (token.accessTokenExpiresAt as number) - 60_000) {
         return token;

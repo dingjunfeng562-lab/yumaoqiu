@@ -66,14 +66,14 @@ export function MobileBottomNav({ activeHref }: { activeHref?: string } = {}) {
       ? '/referee/my-matches'
       : role === 'PLAYER'
         ? '/my-registrations'
-        : role === 'ADMIN' || role === 'SUPER_ADMIN'
+        : role === 'ADMIN' || role === 'SUPER_ADMIN' || role === 'ROOT'
           ? '/admin'
           : authed
             ? '/my-registrations'
             : '/login';
 
   const adminHref =
-    role === 'ADMIN' || role === 'SUPER_ADMIN'
+    role === 'ADMIN' || role === 'SUPER_ADMIN' || role === 'ROOT'
       ? '/admin'
       : role === 'REFEREE'
         ? '/referee/my-matches'

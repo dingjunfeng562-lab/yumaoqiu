@@ -26,10 +26,9 @@ type AuthedRequest = {
   user: { id: string; username?: string | null; role: Role };
 };
 
-const MAX_FILES = 20;
-// 50MB per file so high-resolution DSLR / phone photos of any size upload
-// without being rejected.
-const MAX_FILE_SIZE = 50 * 1024 * 1024;
+const MAX_FILES = 100;
+const MAX_FILE_SIZE = 15 * 1024 * 1024;
+const PHOTO_MIME_RE = /^image\/(?!svg\+xml$).+/;
 
 @Controller()
 export class PhotosController {
@@ -82,7 +81,11 @@ export class PhotosController {
         file: { mimetype: string },
         cb: (error: Error | null, acceptFile: boolean) => void,
       ) => {
-        cb(null, /^image\/(png|jpe?g)$/.test(file.mimetype));
+        if (!PHOTO_MIME_RE.test(file.mimetype)) {
+          cb(new BadRequestException('仅支持图片格式'), false);
+          return;
+        }
+        cb(null, true);
       },
       limits: { fileSize: MAX_FILE_SIZE, files: MAX_FILES },
     }),
@@ -92,7 +95,7 @@ export class PhotosController {
     @Body() dto: UploadPhotosDto,
     @Req() req: AuthedRequest,
   ) {
-    if (!files?.length) throw new BadRequestException('请上传有效的图片(仅支持 JPG / PNG)');
+    if (!files?.length) throw new BadRequestException('请上传有效的图片文件');
     return this.photosService.uploadPhotos(dto.tournamentId, dto.category, files, req.user.id);
   }
 }

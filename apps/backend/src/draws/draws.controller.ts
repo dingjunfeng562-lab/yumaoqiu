@@ -200,6 +200,19 @@ export class DrawsController {
     );
   }
 
+  @Roles(Role.SUPER_ADMIN)
+  @Post('tournaments/:tournamentId/draws/clear')
+  clearAllDraws(
+    @Param('tournamentId') tournamentId: string,
+    @Req() req: AuthRequest,
+  ) {
+    return this.drawsService.clearAllDraws(
+      tournamentId,
+      req.user?.id ?? '',
+      req.user?.username ?? req.user?.id ?? null,
+    );
+  }
+
   @Post('events/:eventId/draw/redraw-request')
   createRedrawRequest(
     @Param('eventId') eventId: string,

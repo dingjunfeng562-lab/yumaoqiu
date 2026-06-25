@@ -23,7 +23,7 @@ const jetbrainsMono = { className: 'font-mono' };
 
 function destinationForRole(role?: string | null) {
   if (role === 'REFEREE') return '/referee/my-matches';
-  if (role === 'ADMIN' || role === 'SUPER_ADMIN') return '/admin';
+  if (role === 'ADMIN' || role === 'SUPER_ADMIN' || role === 'ROOT') return '/admin';
   if (role === 'PLAYER') return '/my-registrations';
   if (role === 'PHOTOGRAPHER') return '/photographer/upload';
   return '/';

@@ -25,8 +25,10 @@ export type AuthUser = {
   role?: Role | null;
 };
 
+// 赛事审核/状态等"总管理员级"能力:降权后的总管理员(SUPER_ADMIN)仍保留,
+// 超级管理员(ROOT)作为最高权限同样拥有。
 function isSuperAdmin(user?: AuthUser | null) {
-  return user?.role === Role.SUPER_ADMIN;
+  return user?.role === Role.SUPER_ADMIN || user?.role === Role.ROOT;
 }
 
 const EVENT_TYPE_LABELS: Record<EventType, string> = {

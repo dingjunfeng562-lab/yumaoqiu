@@ -20,6 +20,12 @@ export type BracketParticipant = {
   members?: string[];
 };
 
+export type BracketGroup = {
+  code: string;
+  label: string;
+  members: BracketParticipant[];
+};
+
 export type BracketMatchEvent = {
   id: string;
   type: string;
@@ -74,6 +80,7 @@ export type KnockoutBracketData = {
   subtitle?: string;
   generatedAt?: string | null;
   participants: BracketParticipant[];
+  groups?: BracketGroup[];
   matches: BracketMatch[];
   secondStage?: SecondStageData | null;
 };
@@ -133,6 +140,15 @@ function defaultRoundLabel(bracketSize: number, roundNo: number) {
   if (incoming === 16) return '1/8 决赛';
   if (incoming === 32) return '1/16 决赛';
   return `${incoming} 强赛`;
+}
+
+function isGroupStageMatch(match: Pick<BracketMatch, 'roundNo'>) {
+  return match.roundNo <= 0;
+}
+
+function roundLabelForMatch(match: Pick<BracketMatch, 'roundNo' | 'roundLabel'>, bracketSize: number) {
+  if (match.roundLabel) return match.roundLabel;
+  return isGroupStageMatch(match) ? '小组赛' : defaultRoundLabel(bracketSize, match.roundNo);
 }
 
 function normalizeStatus(status: BracketStatus): 'PENDING' | 'LIVE' | 'COMPLETED' | 'CANCELLED' {
@@ -296,12 +312,25 @@ export function KnockoutBracket({
   data: KnockoutBracketData;
   allowAdminSwap?: boolean;
 }) {
+  const groupStageInputMatches = useMemo(
+    () => data.matches.filter((match) => isGroupStageMatch(match)),
+    [data.matches],
+  );
+  const bracketInputMatches = useMemo(
+    () => data.matches.filter((match) => !isGroupStageMatch(match)),
+    [data.matches],
+  );
+  const hasGroupStageMatches = groupStageInputMatches.length > 0;
+  const hasBracketMatches = bracketInputMatches.length > 0;
+  const canShowTree = hasBracketMatches && !hasGroupStageMatches;
+  const groupRosters = data.groups ?? [];
+
   // Slots = ordered participants padded to next power of two with byes
   const baseSlots = useMemo(() => {
     const ordered = [...data.participants].sort((a, b) => a.position - b.position);
     const minSize = Math.max(
       ordered.length,
-      data.matches.reduce((max, match) => Math.max(max, 2 ** match.roundNo), 2),
+      bracketInputMatches.reduce((max, match) => Math.max(max, 2 ** match.roundNo), 2),
     );
     const bracketSize = nextPowerOfTwo(minSize);
     const slotMap = new Map(ordered.map((slot) => [slot.position, slot]));
@@ -316,7 +345,7 @@ export function KnockoutBracket({
         }
       );
     });
-  }, [data.matches, data.participants]);
+  }, [bracketInputMatches, data.participants]);
 
   const [slots, setSlots] = useState(baseSlots);
   const [hoveredParticipantId, setHoveredParticipantId] = useState<string | null>(null);
@@ -339,12 +368,16 @@ export function KnockoutBracket({
     setSlots(baseSlots);
   }, [baseSlots]);
 
-  // Switch default view based on viewport once on mount
+  // Switch default view based on viewport once on mount. Group stages are list-first.
   useEffect(() => {
+    if (!canShowTree) {
+      setViewMode('rounds');
+      return;
+    }
     if (typeof window !== 'undefined' && window.matchMedia('(min-width: 768px)').matches) {
       setViewMode('tree');
     }
-  }, []);
+  }, [canShowTree]);
 
   const bracketSize = slots.length;
   const roundCount = roundCountFor(bracketSize);
@@ -355,15 +388,45 @@ export function KnockoutBracket({
   const colStride = CARD_WIDTH + COL_GAP;
 
   const matches = useMemo(() => {
-    const placeholders = buildPlaceholderMatches(roundCount, bracketSize);
+    if (!hasBracketMatches) return [];
+    const placeholders = hasGroupStageMatches ? [] : buildPlaceholderMatches(roundCount, bracketSize);
     const byKey = new Map(placeholders.map((match) => [match.layoutKey, match]));
-    for (const match of data.matches) {
+    for (const match of bracketInputMatches) {
       const index = Math.max(0, match.matchNo - 1);
       const key = `${match.roundNo}-${index}`;
       byKey.set(key, { ...match, index, layoutKey: key });
     }
     return [...byKey.values()].sort((a, b) => a.roundNo - b.roundNo || a.index - b.index);
-  }, [bracketSize, data.matches, roundCount]);
+  }, [bracketInputMatches, bracketSize, hasBracketMatches, hasGroupStageMatches, roundCount]);
+
+  const groupMatches = useMemo(
+    () =>
+      groupStageInputMatches
+        .map((match, index) => ({
+          ...match,
+          index,
+          layoutKey: `group-${match.roundLabel ?? match.roundNo}-${match.matchNo}-${index}`,
+        }))
+        .sort((a, b) => {
+          const labelA = a.roundLabel ?? '';
+          const labelB = b.roundLabel ?? '';
+          return labelA.localeCompare(labelB, 'zh-CN') || a.matchNo - b.matchNo || a.index - b.index;
+        }),
+    [groupStageInputMatches],
+  );
+
+  const roundTabs = useMemo(() => {
+    if (!hasBracketMatches) return [];
+    if (hasGroupStageMatches) {
+      return [...new Set(bracketInputMatches.map((match) => match.roundNo))].sort((a, b) => a - b);
+    }
+    return Array.from({ length: roundCount }, (_, index) => index + 1);
+  }, [bracketInputMatches, hasBracketMatches, hasGroupStageMatches, roundCount]);
+
+  useEffect(() => {
+    if (!roundTabs.length) return;
+    if (!roundTabs.includes(activeRound)) setActiveRound(roundTabs[0]);
+  }, [activeRound, roundTabs]);
 
   const matchByKey = useMemo(() => new Map(matches.map((m) => [m.layoutKey, m])), [matches]);
 
@@ -389,7 +452,7 @@ export function KnockoutBracket({
   }, [hoveredParticipantId, roundCount, slotIndexById]);
 
   function sideFor(match: BracketMatch, side: 1 | 2): BracketParticipant | null {
-    if (match.roundNo === 1) {
+    if (!hasGroupStageMatches && match.roundNo === 1) {
       return slots[(match.matchNo - 1) * 2 + (side === 1 ? 0 : 1)] ?? null;
     }
     const id = side === 1 ? match.side1Id : match.side2Id;
@@ -422,9 +485,9 @@ export function KnockoutBracket({
   }
 
   // ── Stats for header
-  const totalMatches = matches.filter((m) => !m.id.startsWith('placeholder-')).length;
-  const liveCount = matches.filter((m) => normalizeStatus(m.status) === 'LIVE').length;
-  const completedCount = matches.filter((m) => normalizeStatus(m.status) === 'COMPLETED').length;
+  const totalMatches = data.matches.length;
+  const liveCount = data.matches.filter((m) => normalizeStatus(m.status) === 'LIVE').length;
+  const completedCount = data.matches.filter((m) => normalizeStatus(m.status) === 'COMPLETED').length;
 
   // ── Admin swap
   const [draggedSlot, setDraggedSlot] = useState<number | null>(null);
@@ -477,7 +540,7 @@ export function KnockoutBracket({
             {(
               [
                 { key: 'rounds', label: '轮次列表' },
-                { key: 'tree', label: '树形对阵' },
+                ...(canShowTree ? [{ key: 'tree', label: '树形对阵' } as const] : []),
               ] as const
             ).map((tab) => {
               const active = viewMode === tab.key;
@@ -544,7 +607,20 @@ export function KnockoutBracket({
       </header>
 
       {/* ── Body ─────────────────────────────────────────────── */}
-      {viewMode === 'tree' ? (
+      {groupMatches.length ? (
+        <GroupStageView
+          matches={groupMatches}
+          groups={groupRosters}
+          bracketSize={bracketSize}
+          sideFor={sideFor}
+          winnerFor={winnerFor}
+          onOpenMatch={(m) => setSelectedMatch(m)}
+          onHoverParticipant={setHoveredParticipantId}
+          hoveredParticipantId={hoveredParticipantId}
+        />
+      ) : null}
+
+      {hasBracketMatches ? viewMode === 'tree' && canShowTree ? (
         <TreeView
           treeRef={treeRef}
           totalH={totalH}
@@ -573,7 +649,7 @@ export function KnockoutBracket({
         />
       ) : (
         <RoundsView
-          roundCount={roundCount}
+          roundNos={roundTabs}
           bracketSize={bracketSize}
           matches={matches}
           activeRound={activeRound}
@@ -587,12 +663,12 @@ export function KnockoutBracket({
           setZoom={setZoom}
           zoomLimits={{ min: ZOOM_MIN, max: ZOOM_MAX }}
         />
-      )}
+      ) : null}
 
       {selectedMatch ? (
         <MatchDetailModal
           match={selectedMatch}
-          label={selectedMatch.roundLabel ?? defaultRoundLabel(bracketSize, selectedMatch.roundNo)}
+          label={roundLabelForMatch(selectedMatch, bracketSize)}
           side1={sideFor(selectedMatch, 1)}
           side2={sideFor(selectedMatch, 2)}
           winner={winnerFor(selectedMatch)}
@@ -1132,11 +1208,131 @@ function WinnerCard({
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Group stage view
+// ─────────────────────────────────────────────────────────────────────
+
+function GroupStageView({
+  matches,
+  groups,
+  bracketSize,
+  sideFor,
+  winnerFor,
+  onOpenMatch,
+  onHoverParticipant,
+  hoveredParticipantId,
+}: {
+  matches: LayoutMatch[];
+  groups: BracketGroup[];
+  bracketSize: number;
+  sideFor: (match: BracketMatch, side: 1 | 2) => BracketParticipant | null;
+  winnerFor: (match: BracketMatch) => BracketParticipant | null;
+  onOpenMatch: (m: LayoutMatch) => void;
+  onHoverParticipant: (id: string | null) => void;
+  hoveredParticipantId: string | null;
+}) {
+  const matchGroups = useMemo(() => {
+    const result: Array<{ key: string; title: string; matches: LayoutMatch[] }> = [];
+    for (const match of matches) {
+      const title = roundLabelForMatch(match, bracketSize);
+      const key = `${match.roundNo}-${title}`;
+      const group = result.find((item) => item.key === key);
+      if (group) group.matches.push(match);
+      else result.push({ key, title, matches: [match] });
+    }
+    return result;
+  }, [bracketSize, matches]);
+
+  return (
+    <div className="border-b border-blue-100 bg-[#f7f9fd] px-4 py-4 sm:px-6 sm:py-5">
+      <div className="space-y-4">
+        {groups.length ? (
+          <section className="space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-sm font-black text-[#03205c]">分组名单</h3>
+              <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-black text-blue-700">
+                {groups.length} 组
+              </span>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {groups.map((group) => (
+                <article key={group.code} className="overflow-hidden rounded-xl border border-blue-100 bg-white shadow-sm">
+                  <div className="flex items-center justify-between gap-3 border-b border-blue-50 bg-blue-50/55 px-4 py-3">
+                    <h4 className="text-sm font-black text-[#03205c]">{group.label}</h4>
+                    <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-black text-blue-700">
+                      {group.members.length} 人
+                    </span>
+                  </div>
+                  <div className="divide-y divide-blue-50">
+                    {group.members.map((member, index) => (
+                      <div key={member.id} className="flex items-center gap-3 px-4 py-3">
+                        <span className="grid h-6 w-6 shrink-0 place-items-center rounded bg-slate-100 text-[11px] font-black text-slate-500">
+                          {index + 1}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex min-w-0 items-center gap-1.5">
+                            {member.seed ? (
+                              <span className="shrink-0 rounded bg-[#03205c] px-1.5 py-0.5 text-[10px] font-black text-white">
+                                {member.seed}
+                              </span>
+                            ) : null}
+                            <p className="truncate text-sm font-black text-slate-800">{member.name}</p>
+                          </div>
+                          {member.teamName && member.members?.length ? (
+                            <p className="mt-0.5 truncate text-xs font-semibold text-slate-400">
+                              {member.members.join(' / ')}
+                            </p>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
+        {matchGroups.map((group) => (
+          <section key={group.key} className="space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-sm font-black text-[#03205c]">{group.title}</h3>
+              <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-black text-blue-700">
+                {group.matches.length} 场
+              </span>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              {group.matches.map((match) => {
+                const highlighted =
+                  Boolean(hoveredParticipantId) &&
+                  (match.side1Id === hoveredParticipantId || match.side2Id === hoveredParticipantId);
+                return (
+                  <MatchCard
+                    key={match.layoutKey}
+                    match={match}
+                    side1={sideFor(match, 1)}
+                    side2={sideFor(match, 2)}
+                    winner={winnerFor(match)}
+                    highlight={highlighted}
+                    variant="list"
+                    onOpen={() => onOpenMatch(match)}
+                    onHoverParticipant={onHoverParticipant}
+                  />
+                );
+              })}
+            </div>
+          </section>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Rounds view (mobile-first list)
 // ─────────────────────────────────────────────────────────────────────
 
 function RoundsView({
-  roundCount,
+  roundNos,
   bracketSize,
   matches,
   activeRound,
@@ -1150,7 +1346,7 @@ function RoundsView({
   setZoom,
   zoomLimits,
 }: {
-  roundCount: number;
+  roundNos: number[];
   bracketSize: number;
   matches: LayoutMatch[];
   activeRound: number;
@@ -1171,10 +1367,13 @@ function RoundsView({
   return (
     <div className="bg-[#f7f9fd] px-4 py-4 sm:px-6 sm:py-5">
       <div className="-mx-1 mb-4 flex gap-1.5 overflow-x-auto px-1 pb-1 [scrollbar-width:thin]">
-        {Array.from({ length: roundCount }, (_, i) => {
-          const r = i + 1;
-          const count = bracketSize / 2 ** r;
+        {roundNos.map((r) => {
+          const roundMatches = matches.filter((m) => m.roundNo === r);
+          const count = roundMatches.length || bracketSize / 2 ** r;
           const active = activeRound === r;
+          const label = roundMatches[0]
+            ? roundLabelForMatch(roundMatches[0], bracketSize)
+            : defaultRoundLabel(bracketSize, r);
           return (
             <button
               key={r}
@@ -1186,7 +1385,7 @@ function RoundsView({
                   : 'border-blue-100 bg-white text-slate-600 hover:border-blue-300 hover:text-[#0a5dd1]'
               }`}
             >
-              <span>{defaultRoundLabel(bracketSize, r)}</span>
+              <span>{label}</span>
               <span
                 className={`rounded-full px-1.5 text-[10px] ${
                   active ? 'bg-white/20 text-white' : 'bg-blue-50 text-blue-700'

@@ -15,8 +15,9 @@ export class RolesGuard implements CanActivate {
     ]);
     if (!required) return true;
     const { user } = context.switchToHttp().getRequest();
-    // 超级管理员拥有最高权限,通过所有角色检查
-    if (user?.role === Role.SUPER_ADMIN) return true;
+    // 超级管理员(ROOT)拥有最高权限,通过所有角色检查。
+    // 注意:总管理员(SUPER_ADMIN)已降权,不再自动通过,必须在 @Roles 中显式列出。
+    if (user?.role === Role.ROOT) return true;
     return required.includes(user?.role);
   }
 }

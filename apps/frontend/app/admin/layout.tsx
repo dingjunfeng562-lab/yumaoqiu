@@ -45,13 +45,21 @@ import { apiFetch } from '@/lib/api';
 const { Header, Sider, Content } = Layout;
 const MOBILE_QUERY = '(max-width: 1023px)';
 
-type MenuItem = { key: string; icon: React.ReactNode; label: string; superOnly?: boolean };
+// superOnly: 总管理员(SUPER_ADMIN)与超级管理员(ROOT)可见。
+// rootOnly: 仅超级管理员(ROOT)可见 —— 用户管理 / 邀请码 / 邮件设置等敏感项。
+type MenuItem = {
+  key: string;
+  icon: React.ReactNode;
+  label: string;
+  superOnly?: boolean;
+  rootOnly?: boolean;
+};
 
 const baseMenuItems: MenuItem[] = [
   { key: '/admin', icon: <DashboardOutlined />, label: '仪表板' },
-  // Only the super admin can manage users / invite codes / approvals.
-  { key: '/admin/users', icon: <TeamOutlined />, label: '用户管理', superOnly: true },
-  { key: '/admin/invite-codes', icon: <KeyOutlined />, label: '邀请码管理', superOnly: true },
+  // 用户管理 / 邀请码 仅超级管理员可用;赛事审核 总管理员也可用。
+  { key: '/admin/users', icon: <TeamOutlined />, label: '用户管理', rootOnly: true },
+  { key: '/admin/invite-codes', icon: <KeyOutlined />, label: '邀请码管理', rootOnly: true },
   { key: '/admin/approvals', icon: <AuditOutlined />, label: '赛事审核', superOnly: true },
   { key: '/admin/players', icon: <UserOutlined />, label: '选手管理' },
   { key: '/admin/tournaments', icon: <TrophyOutlined />, label: '赛事配置' },
@@ -62,7 +70,7 @@ const baseMenuItems: MenuItem[] = [
   { key: '/admin/scheduling', icon: <CalendarOutlined />, label: '场地排程' },
   { key: '/admin/scoring', icon: <FieldTimeOutlined />, label: '裁判分配' },
   { key: '/admin/announcements', icon: <NotificationOutlined />, label: '公告管理', superOnly: true },
-  { key: '/admin/email', icon: <MailOutlined />, label: '邮件通知设置', superOnly: true },
+  { key: '/admin/email', icon: <MailOutlined />, label: '邮件通知设置', rootOnly: true },
   { key: '/admin/exports', icon: <DownloadOutlined />, label: '数据导出' },
 ];
 
@@ -115,12 +123,14 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   }, [token]);
 
   const role = liveRole ?? sessionRole;
-  const isSuperAdmin = role === 'SUPER_ADMIN';
+  const isRoot = role === 'ROOT';
+  // 总管理员(SUPER_ADMIN)与超级管理员(ROOT)都可见赛事审核/公告。
+  const isSuperOrRoot = role === 'SUPER_ADMIN' || role === 'ROOT';
 
   const [pendingApprovalCount, setPendingApprovalCount] = useState(0);
 
   useEffect(() => {
-    if (!token || !isSuperAdmin) return;
+    if (!token || !isSuperOrRoot) return;
     let cancelled = false;
     async function loadPending() {
       try {
@@ -138,9 +148,11 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [token, pathname, isSuperAdmin]);
+  }, [token, pathname, isSuperOrRoot]);
 
-  const visibleMenuItems = baseMenuItems.filter((item) => !item.superOnly || isSuperAdmin);
+  const visibleMenuItems = baseMenuItems.filter(
+    (item) => (!item.superOnly || isSuperOrRoot) && (!item.rootOnly || isRoot),
+  );
 
   const menuItems = visibleMenuItems.map((item) => {
     if (item.key !== '/admin/approvals') {
@@ -242,9 +254,22 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   );
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
+    <Layout style={{ height: '100vh', minHeight: '100vh', overflow: 'hidden' }}>
       {!isMobile && (
-        <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} theme="dark">
+        <Sider
+          collapsible
+          collapsed={collapsed}
+          onCollapse={setCollapsed}
+          theme="dark"
+          style={{
+            height: '100vh',
+            position: 'sticky',
+            top: 0,
+            overflowY: 'auto',
+            overflowX: 'hidden',
+            flex: '0 0 auto',
+          }}
+        >
           {brandRow(collapsed)}
           {navMenu}
         </Sider>
@@ -266,7 +291,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         {navMenu}
       </Drawer>
 
-      <Layout>
+      <Layout style={{ height: '100vh', minWidth: 0, overflow: 'hidden' }}>
         <Header
           style={{
             background: '#fff',
@@ -279,6 +304,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             position: 'sticky',
             top: 0,
             zIndex: 20,
+            flex: '0 0 auto',
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
@@ -310,6 +336,12 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
               menu={{
                 items: [
                   {
+                    key: 'account',
+                    icon: <UserOutlined />,
+                    label: '账户设置',
+                    onClick: () => router.push('/account'),
+                  },
+                  {
                     key: 'change-password',
                     icon: <LockOutlined />,
                     label: '修改密码',
@@ -337,6 +369,9 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             padding: isMobile ? 12 : 24,
             background: '#fff',
             borderRadius: 8,
+            flex: 1,
+            minHeight: 0,
+            overflow: 'auto',
           }}
         >
           {children}

@@ -8,6 +8,7 @@ datasource db {
 }
 
 enum Role {
+  ROOT
   SUPER_ADMIN
   ADMIN
   REFEREE
@@ -42,6 +43,7 @@ enum EventType {
 enum Format {
   SINGLE_ELIMINATION
   GROUP_PLUS_KNOCKOUT
+  GROUP_PLUS_KNOCKOUT_STD
   ROUND_ROBIN
   GROUP_PLUS_PLAYOFF
   SINGLE_ELIMINATION_PLUS_GROUP_RANKING
@@ -184,6 +186,8 @@ model User {
   lockedUntil       DateTime?
   emailVerifiedAt   DateTime?
   mustChangePassword Boolean           @default(false)
+  nameChangeCount       Int            @default(0)
+  nameChangeWindowStart DateTime?
   inviteCodeId      String?
   inviteCode        InviteCode?        @relation(fields: [inviteCodeId], references: [id], onDelete: SetNull)
   competitionRegistrations CompetitionRegistration[]
@@ -383,14 +387,15 @@ model Photo {
 }
 
 model TournamentWatermark {
-  id           String     @id @default(cuid())
-  tournamentId String     @unique
-  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
-  logos        Json
-  logoHeightPercent Int    @default(8)
-  logoGapPercent    Int    @default(20)
-  position          String @default("TOP_RIGHT") @db.VarChar(16)
-  updatedAt    DateTime   @updatedAt
+  id                String     @id @default(cuid())
+  tournamentId      String     @unique
+  tournament        Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  logos             Json
+  logoHeightPercent Int       @default(8)
+  logoGapPercent    Int       @default(20)
+  position          String    @default("TOP_RIGHT") @db.VarChar(16)
+  portraitPosition  String?   @db.VarChar(16)
+  updatedAt         DateTime  @updatedAt
 }
 
 model PhotoOperationLog {
@@ -425,6 +430,7 @@ model Event {
   stageScoringRules  Json?
   defaultMatchMinutes Int?
   groupSize          Int?
+  groupCount         Int?
   qualifiersPerGroup Int?
   drawLocked         Boolean            @default(false)
   drawPublished      Boolean            @default(false)

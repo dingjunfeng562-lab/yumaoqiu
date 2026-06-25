@@ -5,6 +5,7 @@ import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import {
   AutoScheduleDto,
+  ClearScheduleDto,
   CreateVenueDto,
   UpdateMatchScheduleDto,
   UpdateVenueDto,
@@ -45,6 +46,11 @@ export class SchedulingController {
   @Post('scheduling/auto')
   autoSchedule(@Body() dto: AutoScheduleDto) {
     return this.schedulingService.autoSchedule(dto);
+  }
+
+  @Post('scheduling/clear')
+  clearSchedule(@Body() dto: ClearScheduleDto) {
+    return this.schedulingService.clearSchedule(dto);
   }
 
   @Patch('matches/:id/schedule')

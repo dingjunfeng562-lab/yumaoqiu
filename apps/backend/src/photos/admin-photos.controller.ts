@@ -34,6 +34,18 @@ type AuthedRequest = {
 
 const MAX_LOGO_SIZE = 5 * 1024 * 1024;
 
+function imageContentType(path: string) {
+  const ext = extname(path).toLowerCase();
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.png') return 'image/png';
+  if (ext === '.webp') return 'image/webp';
+  if (ext === '.gif') return 'image/gif';
+  if (ext === '.avif') return 'image/avif';
+  if (ext === '.heic' || ext === '.heif') return 'image/heic';
+  if (ext === '.tif' || ext === '.tiff') return 'image/tiff';
+  return 'application/octet-stream';
+}
+
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(Role.ADMIN, Role.SUPER_ADMIN)
 @Controller('admin')
@@ -87,8 +99,7 @@ export class AdminPhotosController {
   @Get('photos/:id/original')
   async getOriginal(@Param('id') id: string, @Req() req: AuthedRequest) {
     const { absolutePath, filename } = await this.photosService.getOriginal(id, req.user);
-    const ext = extname(absolutePath).toLowerCase();
-    const type = ext === '.png' ? 'image/png' : 'image/jpeg';
+    const type = imageContentType(absolutePath);
     const asciiFallback = filename.replace(/[^\x20-\x7e]/g, '_');
     return new StreamableFile(createReadStream(absolutePath), {
       type,

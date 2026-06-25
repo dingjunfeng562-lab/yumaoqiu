@@ -919,7 +919,8 @@ export default function AdminEmailPage() {
   }, []);
 
   const role = liveRole ?? sessionRole;
-  const isSuperAdmin = role === 'SUPER_ADMIN';
+  // 邮件设置仅超级管理员(ROOT)可用,降权后的总管理员不再可见。
+  const isSuperAdmin = role === 'ROOT';
 
   const tabs = useMemo(() => {
     if (!token) return [];

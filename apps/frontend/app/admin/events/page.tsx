@@ -28,6 +28,7 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
 };
 
 const FORMAT_LABELS: Record<string, string> = {
+  GROUP_PLUS_KNOCKOUT_STD: '小组循环+淘汰(标准2023)',
   SINGLE_ELIMINATION: '单淘汰制',
   GROUP_PLUS_KNOCKOUT: '小组赛+淘汰',
   ROUND_ROBIN: '单循环排名赛',
@@ -46,6 +47,8 @@ const SCORING_MODE_LABELS: Record<string, string> = {
   CAPPED_30: '封顶30分',
   STANDARD_GOLDEN: '标准金球制',
 };
+
+const GROUP_COUNT_FORMATS = new Set(['GROUP_PLUS_KNOCKOUT', 'GROUP_PLUS_KNOCKOUT_STD']);
 
 // 分阶段规则按由粗到细的顺序展示；后端按更具体的阶段优先生效。
 const STAGE_DEFS = [
@@ -82,6 +85,9 @@ interface Event {
   customGamesToWin?: number | null;
   stageScoringRules?: Record<string, StageScoringRule> | null;
   defaultMatchMinutes?: number | null;
+  groupSize?: number | null;
+  groupCount?: number | null;
+  qualifiersPerGroup?: number | null;
 }
 
 function customRuleSummary(point: number, cap?: number | null, gamesToWin?: number | null) {
@@ -108,6 +114,14 @@ function stageRuleForForm(
   if (rules[key]) return rules[key];
   if (key === 'QF') return rules.BEFORE_TOP4;
   return undefined;
+}
+
+function groupConfigSummary(event: Event) {
+  if (!GROUP_COUNT_FORMATS.has(event.format)) return '—';
+  const qualifiers = event.qualifiersPerGroup ?? 2;
+  if (event.groupCount) return `${event.groupCount}组 / 每组出线${qualifiers}`;
+  if (event.groupSize) return `旧规则：每组${event.groupSize}人 / 每组出线${qualifiers}`;
+  return `未设置 / 每组出线${qualifiers}`;
 }
 
 export default function EventsPage() {
@@ -151,6 +165,8 @@ export default function EventsPage() {
     form.resetFields();
     form.setFieldValue('tournamentId', selectedTournamentId);
     form.setFieldValue('scoringMethod', 'preset');
+    form.setFieldValue('groupCount', 4);
+    form.setFieldValue('qualifiersPerGroup', 2);
     setModalOpen(true);
   };
 
@@ -173,6 +189,7 @@ export default function EventsPage() {
     }
     form.setFieldsValue({
       ...e,
+      groupCount: e.groupCount ?? 4,
       scoringMethod: e.customGamePoint ? 'custom' : 'preset',
       ...stageValues,
     });
@@ -206,6 +223,10 @@ export default function EventsPage() {
     const rest = Object.fromEntries(
       Object.entries(others).filter(([key]) => !key.startsWith('stage_')),
     );
+    if (!GROUP_COUNT_FORMATS.has(String(rest.format))) {
+      rest.groupCount = null;
+      rest.qualifiersPerGroup = null;
+    }
     const stageScoringRules = Object.keys(stageRules).length ? stageRules : null;
     const payload: Record<string, unknown> =
       scoringMethod === 'custom'
@@ -282,6 +303,7 @@ export default function EventsPage() {
       },
     },
     { title: '计分模式', dataIndex: 'scoringMode', render: (v: string) => SCORING_MODE_LABELS[v] || v },
+    { title: '分组', key: 'groupConfig', render: (_: unknown, record: Event) => groupConfigSummary(record) },
     {
       title: '单场预估时长',
       dataIndex: 'defaultMatchMinutes',
@@ -348,6 +370,34 @@ export default function EventsPage() {
             <Select
               options={Object.entries(FORMAT_LABELS).map(([v, l]) => ({ value: v, label: l }))}
             />
+          </Form.Item>
+          <Form.Item shouldUpdate={(prev, cur) => prev.format !== cur.format} noStyle>
+            {({ getFieldValue }) =>
+              GROUP_COUNT_FORMATS.has(getFieldValue('format')) ? (
+                <div style={{ display: 'flex', gap: 12 }}>
+                  <Form.Item
+                    name="groupCount"
+                    label="组别数"
+                    tooltip="设置本单项分成几个小组；人数无法均分时，少人的组会排在后面几组。"
+                    initialValue={4}
+                    rules={[{ required: true, message: '请输入组别数' }]}
+                    style={{ flex: 1 }}
+                  >
+                    <InputNumber min={2} max={26} style={{ width: '100%' }} />
+                  </Form.Item>
+                  <Form.Item
+                    name="qualifiersPerGroup"
+                    label="每组出线数"
+                    tooltip="小组赛后每组进入淘汰赛的人数，默认 2"
+                    initialValue={2}
+                    rules={[{ required: true, message: '请输入每组出线数' }]}
+                    style={{ flex: 1 }}
+                  >
+                    <InputNumber min={1} max={8} style={{ width: '100%' }} />
+                  </Form.Item>
+                </div>
+              ) : null
+            }
           </Form.Item>
           <Form.Item name="scoringMethod" label="计分方式" initialValue="preset">
             <Radio.Group

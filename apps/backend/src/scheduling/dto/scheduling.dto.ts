@@ -74,6 +74,15 @@ export class AutoScheduleDto {
   overrideMatchMinutes?: boolean;
 }
 
+export class ClearScheduleDto {
+  @IsString()
+  tournamentId: string;
+
+  @IsOptional()
+  @IsString()
+  eventId?: string;
+}
+
 export class UpdateMatchScheduleDto {
   @IsOptional()
   @IsString()

@@ -53,6 +53,7 @@ type WatermarkConfig = {
   logoHeightPercent: number;
   logoGapPercent: number;
   position: WatermarkPosition;
+  portraitPosition: WatermarkPosition;
   updatedAt: string | null;
 };
 
@@ -67,6 +68,7 @@ export default function WatermarkSettingsPage() {
   const [logoPercent, setLogoPercent] = useState<number>(DEFAULT_LOGO_PERCENT);
   const [logoGap, setLogoGap] = useState<number>(DEFAULT_LOGO_GAP);
   const [position, setPosition] = useState<WatermarkPosition>(DEFAULT_POSITION);
+  const [portraitPosition, setPortraitPosition] = useState<WatermarkPosition>(DEFAULT_POSITION);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -94,6 +96,7 @@ export default function WatermarkSettingsPage() {
       setLogoPercent(data.logoHeightPercent ?? DEFAULT_LOGO_PERCENT);
       setLogoGap(data.logoGapPercent ?? DEFAULT_LOGO_GAP);
       setPosition(data.position ?? DEFAULT_POSITION);
+      setPortraitPosition(data.portraitPosition ?? data.position ?? DEFAULT_POSITION);
       setDirty(false);
     } catch (error) {
       message.error(error instanceof Error ? error.message : '水印配置加载失败');
@@ -139,7 +142,8 @@ export default function WatermarkSettingsPage() {
       setDirty(
         logoPercent !== (data.logoHeightPercent ?? DEFAULT_LOGO_PERCENT) ||
           logoGap !== (data.logoGapPercent ?? DEFAULT_LOGO_GAP) ||
-          position !== (data.position ?? DEFAULT_POSITION),
+          position !== (data.position ?? DEFAULT_POSITION) ||
+          portraitPosition !== (data.portraitPosition ?? data.position ?? DEFAULT_POSITION),
       );
       message.success('Logo 已添加');
     } catch (error) {
@@ -161,7 +165,8 @@ export default function WatermarkSettingsPage() {
       setDirty(
         logoPercent !== (data.logoHeightPercent ?? DEFAULT_LOGO_PERCENT) ||
           logoGap !== (data.logoGapPercent ?? DEFAULT_LOGO_GAP) ||
-          position !== (data.position ?? DEFAULT_POSITION),
+          position !== (data.position ?? DEFAULT_POSITION) ||
+          portraitPosition !== (data.portraitPosition ?? data.position ?? DEFAULT_POSITION),
       );
       message.success('Logo 已删除');
     } catch (error) {
@@ -192,12 +197,14 @@ export default function WatermarkSettingsPage() {
           logoHeightPercent: logoPercent,
           logoGapPercent: logoGap,
           position,
+          portraitPosition,
         }),
       });
       setLogos(data.logos);
       setLogoPercent(data.logoHeightPercent ?? logoPercent);
       setLogoGap(data.logoGapPercent ?? logoGap);
       setPosition(data.position ?? position);
+      setPortraitPosition(data.portraitPosition ?? data.position ?? portraitPosition);
       setDirty(false);
       message.success('水印设置已保存,将应用于后续上传的图片');
     } catch (error) {
@@ -232,14 +239,80 @@ export default function WatermarkSettingsPage() {
     setDirty(true);
   }
 
+  function changePortraitPosition(value: WatermarkPosition) {
+    setPortraitPosition(value);
+    setDirty(true);
+  }
+
   // Preview corner placement (matches backend EDGE_MARGIN ratio, ~4% of edge).
   const previewCornerOffset = '4%';
-  const previewCorner = {
-    top: position.startsWith('TOP_') ? previewCornerOffset : undefined,
-    bottom: position.startsWith('BOTTOM_') ? previewCornerOffset : undefined,
-    left: position.endsWith('_LEFT') ? previewCornerOffset : undefined,
-    right: position.endsWith('_RIGHT') ? previewCornerOffset : undefined,
-  } as const;
+  function previewCornerFor(value: WatermarkPosition) {
+    return {
+      top: value.startsWith('TOP_') ? previewCornerOffset : undefined,
+      bottom: value.startsWith('BOTTOM_') ? previewCornerOffset : undefined,
+      left: value.endsWith('_LEFT') ? previewCornerOffset : undefined,
+      right: value.endsWith('_RIGHT') ? previewCornerOffset : undefined,
+    } as const;
+  }
+
+  function renderPreviewPhoto(value: WatermarkPosition, shape: 'landscape' | 'portrait') {
+    const aspect = shape === 'portrait' ? '66%' : '100%';
+    const paddingTop = shape === 'portrait' ? '136%' : '60%';
+    const corner = previewCornerFor(value);
+    return (
+      <div
+        ref={shape === 'landscape' ? previewRef : undefined}
+        style={{
+          position: 'relative',
+          width: aspect,
+          maxWidth: shape === 'portrait' ? 240 : undefined,
+          margin: shape === 'portrait' ? '0 auto' : undefined,
+          paddingTop,
+          borderRadius: 8,
+          overflow: 'hidden',
+          background: 'linear-gradient(135deg, #1f6feb, #0a2a66)',
+        }}
+      >
+        <div
+          style={{
+            position: 'absolute',
+            ...corner,
+            display: 'flex',
+            alignItems: 'center',
+            gap: previewGap,
+            opacity: 0.85,
+          }}
+        >
+          {previewLogos.length === 0 ? (
+            <Typography.Text style={{ color: 'rgba(255,255,255,0.7)' }}>
+              未配置 Logo
+            </Typography.Text>
+          ) : (
+            previewLogos.map((logo) => (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                key={logo.path}
+                src={`${API_ORIGIN}${logo.url}`}
+                alt={logo.filename ?? 'logo'}
+                style={{ height: previewLogoPx, objectFit: 'contain' }}
+              />
+            ))
+          )}
+        </div>
+        <Typography.Text
+          style={{
+            position: 'absolute',
+            color: 'rgba(255,255,255,0.65)',
+            fontSize: 12,
+            ...(value.startsWith('TOP_') ? { bottom: 12 } : { top: 12 }),
+            ...(value.endsWith('_LEFT') ? { right: 16 } : { left: 16 }),
+          }}
+        >
+          {shape === 'portrait' ? '竖图预览' : '横图预览'} - {POSITION_OPTIONS.find((o) => o.value === value)?.label ?? ''}
+        </Typography.Text>
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -428,7 +501,7 @@ export default function WatermarkSettingsPage() {
 
             <div style={{ marginTop: 16 }}>
               <Typography.Text strong style={{ display: 'block', marginBottom: 6 }}>
-                水印位置
+                横图水印位置
               </Typography.Text>
               <Radio.Group
                 value={position}
@@ -437,6 +510,22 @@ export default function WatermarkSettingsPage() {
                 buttonStyle="solid"
                 options={POSITION_OPTIONS}
               />
+            </div>
+
+            <div style={{ marginTop: 16 }}>
+              <Typography.Text strong style={{ display: 'block', marginBottom: 6 }}>
+                竖图水印位置
+              </Typography.Text>
+              <Radio.Group
+                value={portraitPosition}
+                onChange={(e) => changePortraitPosition(e.target.value as WatermarkPosition)}
+                optionType="button"
+                buttonStyle="solid"
+                options={POSITION_OPTIONS}
+              />
+              <Typography.Text type="secondary" style={{ display: 'block', marginTop: 6, fontSize: 12 }}>
+                当图片高度大于宽度时使用这个位置。
+              </Typography.Text>
             </div>
           </div>
 
@@ -454,7 +543,7 @@ export default function WatermarkSettingsPage() {
             <div
               style={{
                 position: 'absolute',
-                ...previewCorner,
+                ...previewCornerFor(position),
                 display: 'flex',
                 alignItems: 'center',
                 gap: previewGap,
@@ -489,6 +578,9 @@ export default function WatermarkSettingsPage() {
             >
               示例照片 —— 水印显示在{POSITION_OPTIONS.find((o) => o.value === position)?.label ?? ''}
             </Typography.Text>
+          </div>
+          <div style={{ marginTop: 12 }}>
+            {renderPreviewPhoto(portraitPosition, 'portrait')}
           </div>
           {loading && (
             <div style={{ textAlign: 'center', marginTop: 12 }}>

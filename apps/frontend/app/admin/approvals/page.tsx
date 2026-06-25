@@ -100,7 +100,7 @@ export default function ApprovalsPage() {
   }, [token]);
 
   const role = liveRole ?? sessionRole;
-  const isSuperAdmin = role === SUPER_ADMIN_ROLE;
+  const isSuperAdmin = role === SUPER_ADMIN_ROLE || role === 'ROOT';
 
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
   const [loading, setLoading] = useState(false);

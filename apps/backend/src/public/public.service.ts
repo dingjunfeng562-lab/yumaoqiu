@@ -42,6 +42,7 @@ function deriveTournamentDisplayStatus(tournament: {
 
 const FORMAT_LABELS: Record<string, string> = {
   SINGLE_ELIMINATION: '单淘汰制',
+  GROUP_PLUS_KNOCKOUT_STD: '小组循环+淘汰(标准2023)',
   GROUP_PLUS_KNOCKOUT: '小组赛+淘汰',
   ROUND_ROBIN: '单循环排名赛',
   GROUP_PLUS_PLAYOFF: '小组循环+交叉排位',
@@ -473,7 +474,7 @@ export class PublicService {
           approvalStatus: 'APPROVED',
         },
         drawPublished: true,
-        matches: { some: { roundNo: { gt: 0, lt: SECOND_STAGE_FORMAL_ROUND_NO_BASE } } },
+        matches: { some: { roundNo: { lt: SECOND_STAGE_FORMAL_ROUND_NO_BASE } } },
       },
       include: {
         tournament: true,
@@ -483,7 +484,7 @@ export class PublicService {
           orderBy: [{ isSeed: 'desc' }, { seedRank: 'asc' }, { createdAt: 'asc' }],
         },
         matches: {
-          where: { roundNo: { gt: 0, lt: SECOND_STAGE_FORMAL_ROUND_NO_BASE } },
+          where: { roundNo: { lt: SECOND_STAGE_FORMAL_ROUND_NO_BASE } },
           include: {
             venue: true,
             referee: { select: { username: true } },
@@ -715,7 +716,9 @@ export class PublicService {
     const registrationMap = new Map<string, any>(
       event.registrations.map((item: any) => [item.id, item]),
     );
-    const bracketMatches = event.matches.filter((match: any) => !this.isSecondStageFormalMatch(match));
+    const bracketMatches = event.matches
+      .filter((match: any) => !this.isSecondStageFormalMatch(match))
+      .sort((a: any, b: any) => this.publicBracketMatchCompare(a, b));
     const firstRound = bracketMatches
       .filter((match: any) => match.roundNo === 1)
       .sort((a: any, b: any) => a.matchNo - b.matchNo);
@@ -737,6 +740,7 @@ export class PublicService {
             isBye: false,
           };
         });
+    const groups = this.publicGroupsView(event.registrations);
 
     return {
       id: event.id,
@@ -747,6 +751,7 @@ export class PublicService {
       subtitle: `${FORMAT_LABELS[event.format] ?? event.format} · ${participants.filter((item: any) => !item.isBye).length} 个签位`,
       generatedAt: event.drawGeneratedAt?.toISOString?.() ?? null,
       participants,
+      groups,
       matches: bracketMatches.map((match: any) => {
         const pauseState = this.computePublicPauseState(match.events ?? [], match.finishedAt);
         const courtDisplayState = this.computePublicCourtDisplayState(match.events ?? []);
@@ -1038,7 +1043,69 @@ export class PublicService {
       const hi = Number(playoff[1]);
       return `${hi}-${hi + 1} 名决赛`;
     }
+    if (/^[A-Z]$/.test(round)) return this.publicGroupLabel(round);
     return labels[round] ?? round;
+  }
+
+  private publicBracketMatchCompare(
+    a: { round: string; roundNo: number; matchNo: number; id: string },
+    b: { round: string; roundNo: number; matchNo: number; id: string },
+  ) {
+    if (a.roundNo === 0 || b.roundNo === 0) {
+      return a.roundNo - b.roundNo
+        || this.publicGroupNameCompare(a.round, b.round)
+        || a.matchNo - b.matchNo
+        || a.id.localeCompare(b.id);
+    }
+    return a.roundNo - b.roundNo
+      || a.matchNo - b.matchNo
+      || a.id.localeCompare(b.id);
+  }
+
+  private publicGroupNameCompare(a: string, b: string) {
+    return this.publicGroupNameSortValue(a) - this.publicGroupNameSortValue(b)
+      || a.localeCompare(b, 'zh-CN', { numeric: true });
+  }
+
+  private publicGroupNameSortValue(value: string) {
+    const letters = /^[A-Z]+/.exec(value.trim().toUpperCase())?.[0];
+    if (!letters) return Number.MAX_SAFE_INTEGER;
+    return [...letters].reduce((sum, char) => sum * 26 + char.charCodeAt(0) - 64, 0);
+  }
+
+  private publicGroupLabel(groupName: string) {
+    return groupName.endsWith('组') ? groupName : `${groupName}组`;
+  }
+
+  private publicGroupsView(registrations: any[]) {
+    const groupMap = new Map<string, any[]>();
+    for (const registration of registrations) {
+      const groupName = String(registration.groupName ?? '').trim();
+      if (!groupName) continue;
+      const members = groupMap.get(groupName) ?? [];
+      members.push(registration);
+      groupMap.set(groupName, members);
+    }
+
+    return [...groupMap.entries()]
+      .sort(([a], [b]) => this.publicGroupNameCompare(a, b))
+      .map(([groupName, members]) => ({
+        code: groupName,
+        label: this.publicGroupLabel(groupName),
+        members: members.map((registration, index) => {
+          const teamName = registration.teamName?.trim() || null;
+          const playerNames = [registration.player1?.name, registration.player2?.name].filter(Boolean) as string[];
+          return {
+            id: registration.id,
+            position: index + 1,
+            name: teamName || this.registrationName(registration),
+            teamName,
+            members: playerNames,
+            seed: registration.seedRank,
+            isBye: false,
+          };
+        }),
+      }));
   }
 
   private bracketParticipant(
@@ -1150,8 +1217,123 @@ export class PublicService {
     if (event.format === Format.GROUP_PLUS_PLAYOFF) {
       return this.groupPlusPlayoffStandings(event, registrationMap);
     }
+    if (event.format === Format.GROUP_PLUS_KNOCKOUT_STD) {
+      return this.groupPlusKnockoutStdStandings(event, registrationMap);
+    }
     // ROUND_ROBIN（单组循环）与 GROUP_PLUS_KNOCKOUT 都按组内循环战绩排名。
     return this.groupStageStandings(event, registrationMap);
+  }
+
+  /**
+   * 标准小组循环+淘汰(GROUP_PLUS_KNOCKOUT_STD)的最终名次：
+   * - 淘汰赛尚未生成(仍在小组阶段)时，回退到小组循环战绩排名；
+   * - 淘汰赛已生成后：出线选手按淘汰赛成绩排在前(决赛定冠亚军、季军赛定三四名，
+   *   其余按被淘汰轮次越晚越靠前)，未出线选手按小组循环战绩接在其后。
+   */
+  private groupPlusKnockoutStdStandings(
+    event: any,
+    registrationMap: Map<string, any>,
+  ): RankedStandingRow[] {
+    const knockoutMatches = (event.matches as any[]).filter((m) => m.roundNo >= 1);
+    if (!knockoutMatches.length) {
+      return this.groupStageStandings(event, registrationMap);
+    }
+
+    const rows = this.baseStandingRows(event);
+    const rowMap = new Map<string, StandingRow>(rows.map((row) => [row.id, row]));
+
+    // 累计全部场次(小组循环 + 淘汰赛)的战绩，用于展示与同档并列时的细分。
+    for (const match of event.matches) {
+      if (match.status !== MatchStatus.COMPLETED || !match.winnerSide) continue;
+      const side1 = match.side1Id ? rowMap.get(match.side1Id) : null;
+      const side2 = match.side2Id ? rowMap.get(match.side2Id) : null;
+      if (!side1 || !side2) continue;
+      side1.played += 1;
+      side2.played += 1;
+      if (match.winnerSide === 1) {
+        side1.wins += 1;
+        side2.losses += 1;
+      } else {
+        side2.wins += 1;
+        side1.losses += 1;
+      }
+      for (const game of match.games ?? []) {
+        side1.gameDiff += game.side1Score - game.side2Score;
+        side2.gameDiff += game.side2Score - game.side1Score;
+      }
+    }
+
+    // 淘汰赛参赛者与被淘汰轮次（轮次越大=越晚被淘汰=名次越前）。
+    const knockoutIds = new Set<string>();
+    const eliminatedRound = new Map<string, number>();
+    for (const m of knockoutMatches) {
+      if (m.side1Id) knockoutIds.add(m.side1Id);
+      if (m.side2Id) knockoutIds.add(m.side2Id);
+      if (m.status === MatchStatus.COMPLETED && m.winnerSide && m.side1Id && m.side2Id) {
+        const loserId = m.winnerSide === 1 ? m.side2Id : m.side1Id;
+        eliminatedRound.set(loserId, m.roundNo);
+      }
+    }
+
+    // 决赛定冠亚军、季军赛定三四名。
+    const rankMap = new Map<string, number>();
+    const finalMatch = knockoutMatches.find(
+      (m) => m.round === 'F' && m.status === MatchStatus.COMPLETED && m.winnerSide,
+    );
+    if (finalMatch) {
+      const champ = finalMatch.winnerSide === 1 ? finalMatch.side1Id : finalMatch.side2Id;
+      const runner = finalMatch.winnerSide === 1 ? finalMatch.side2Id : finalMatch.side1Id;
+      if (champ) rankMap.set(champ, 1);
+      if (runner) rankMap.set(runner, 2);
+    }
+    const bronzeMatch = knockoutMatches.find(
+      (m) => m.round === 'BRONZE' && m.status === MatchStatus.COMPLETED && m.winnerSide,
+    );
+    if (bronzeMatch) {
+      const third = bronzeMatch.winnerSide === 1 ? bronzeMatch.side1Id : bronzeMatch.side2Id;
+      const fourth = bronzeMatch.winnerSide === 1 ? bronzeMatch.side2Id : bronzeMatch.side1Id;
+      if (third) rankMap.set(third, 3);
+      if (fourth) rankMap.set(fourth, 4);
+    }
+
+    const sorted = [...rows].sort((a, b) => {
+      const aIn = knockoutIds.has(a.id);
+      const bIn = knockoutIds.has(b.id);
+      if (aIn !== bIn) return aIn ? -1 : 1; // 出线(淘汰赛)选手整体排在未出线之前
+      if (aIn && bIn) {
+        const ra = rankMap.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+        const rb = rankMap.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+        if (ra !== rb) return ra - rb;
+        const ea = eliminatedRound.get(a.id) ?? 0;
+        const eb = eliminatedRound.get(b.id) ?? 0;
+        if (eb !== ea) return eb - ea;
+      }
+      return (
+        b.wins - a.wins ||
+        b.gameDiff - a.gameDiff ||
+        a.losses - b.losses ||
+        a.name.localeCompare(b.name, 'zh-CN')
+      );
+    });
+
+    // 决出名次（决赛定冠亚、季军赛定三四）之外的选手不再依次排序，而是并列：
+    // 进了淘汰赛但未决出名次的并列同一档（如并列第 5），未出线的再并列到其后一档。
+    const fixedRanks = [...rankMap.values()];
+    const tiedKnockoutPlace = fixedRanks.length ? Math.max(...fixedRanks) + 1 : 1;
+    const tiedKnockoutCount = sorted.filter(
+      (row) => knockoutIds.has(row.id) && !rankMap.has(row.id),
+    ).length;
+    const tiedNonQualifierPlace = tiedKnockoutPlace + tiedKnockoutCount;
+    return sorted.map((row) => {
+      const fixedRank = rankMap.get(row.id);
+      const rank =
+        fixedRank ?? (knockoutIds.has(row.id) ? tiedKnockoutPlace : tiedNonQualifierPlace);
+      return {
+        rank,
+        ...row,
+        displayName: registrationMap.has(row.id) ? row.name : row.name,
+      };
+    });
   }
 
   private singleEliminationPlusGroupRankingStandings(

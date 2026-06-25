@@ -1,10 +1,11 @@
 'use client';
 
+import type { Key } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { Alert, Button, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography, message } from 'antd';
-import { AuditOutlined, DownloadOutlined, EditOutlined, PlusOutlined, RollbackOutlined, StopOutlined, UsergroupAddOutlined } from '@ant-design/icons';
+import { AuditOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, PlusOutlined, RollbackOutlined, StopOutlined, UsergroupAddOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 
 type CompetitionEventOption = {
@@ -117,6 +118,10 @@ const GENDER_OPTIONS = [
   { value: 'FEMALE', label: '女' },
 ];
 
+function normalizeRouteParam(value?: string | string[]) {
+  return Array.isArray(value) ? value[0] : value;
+}
+
 function splitClipboardLine(line: string) {
   return line
     .trim()
@@ -203,10 +208,29 @@ function parseBatchRows(text: string, isDouble: boolean): ParsedBatchRow[] {
 
 export default function AdminCompetitionPlayersPage() {
   const params = useParams<{ id: string }>();
-  const id = params?.id;
+  const id = normalizeRouteParam(params?.id);
   const router = useRouter();
   const { data: session } = useSession();
   const token = session?.user?.accessToken as string | undefined;
+  const sessionRole = (session?.user as { role?: string } | undefined)?.role;
+  const [liveRole, setLiveRole] = useState<string | undefined>(sessionRole);
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    apiFetch<{ role?: string }>('/auth/me', { token })
+      .then((me) => {
+        if (!cancelled && me?.role) setLiveRole(me.role);
+      })
+      .catch(() => {
+        /* fall back to session role */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+  const role = liveRole ?? sessionRole;
+  // 参赛选手写操作:降权后的总管理员(SUPER_ADMIN)只读,仅管理员/超级管理员可增删改。
+  const canManage = role === 'ADMIN' || role === 'ROOT';
   const [competition, setCompetition] = useState<Competition | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
   const [eventName, setEventName] = useState('all');
@@ -220,6 +244,8 @@ export default function AdminCompetitionPlayersPage() {
   const [formModalOpen, setFormModalOpen] = useState(false);
   const [editingPlayer, setEditingPlayer] = useState<Player | null>(null);
   const [formSubmitting, setFormSubmitting] = useState(false);
+  const [selectedPlayerIds, setSelectedPlayerIds] = useState<Key[]>([]);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   const watchedFormEventId = Form.useWatch('eventId', form);
 
   const query = useMemo(() => {
@@ -273,24 +299,61 @@ export default function AdminCompetitionPlayersPage() {
     loadData();
   }, [loadData]);
 
+  useEffect(() => {
+    setSelectedPlayerIds([]);
+  }, [eventName, search]);
+
+  useEffect(() => {
+    if (!canManage) setSelectedPlayerIds([]);
+  }, [canManage]);
+
+  async function removePlayerRecord(record: Player) {
+    if (!token || !id) return;
+    if (record.competitionRegistrationId) {
+      await apiFetch(`/admin/competition-registrations/${record.competitionRegistrationId}/remove`, {
+        method: 'PATCH',
+        token,
+      });
+      return;
+    }
+    await apiFetch(`/admin/competitions/${id}/players/${record.id}/remove`, {
+      method: 'PATCH',
+      token,
+    });
+  }
+
   async function removePlayer(record: Player) {
     if (!token) return;
     try {
-      if (record.competitionRegistrationId) {
-        await apiFetch(`/admin/competition-registrations/${record.competitionRegistrationId}/remove`, {
-          method: 'PATCH',
-          token,
-        });
-      } else {
-        await apiFetch(`/admin/competitions/${id}/players/${record.id}/remove`, {
-          method: 'PATCH',
-          token,
-        });
-      }
+      await removePlayerRecord(record);
       message.success('已移除该报名');
+      setSelectedPlayerIds((current) => current.filter((key) => key !== record.id));
       await loadData();
     } catch (error) {
       message.error(error instanceof Error ? error.message : '移除失败');
+    }
+  }
+
+  async function removeSelectedPlayers() {
+    if (!token || !id || !selectedPlayerIds.length) return;
+    const selectedIdSet = new Set(selectedPlayerIds.map(String));
+    const selectedPlayers = players.filter((player) => selectedIdSet.has(player.id));
+    if (!selectedPlayers.length) {
+      setSelectedPlayerIds([]);
+      return;
+    }
+
+    setBulkDeleting(true);
+    try {
+      await Promise.all(selectedPlayers.map((player) => removePlayerRecord(player)));
+      message.success(`已批量删除 ${selectedPlayers.length} 条参赛记录`);
+      setSelectedPlayerIds([]);
+      await loadData();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '批量删除失败');
+      await loadData();
+    } finally {
+      setBulkDeleting(false);
     }
   }
 
@@ -562,16 +625,19 @@ export default function AdminCompetitionPlayersPage() {
       title: '操作',
       key: 'actions',
       width: 170,
-      render: (_: unknown, record: Player) => (
-        <Space>
-          <Button size="small" icon={<EditOutlined />} onClick={() => openEditModal(record)}>
-            编辑
-          </Button>
-          <Popconfirm title="确认移除该报名？" onConfirm={() => removePlayer(record)}>
-            <Button size="small" danger icon={<StopOutlined />}>移除</Button>
-          </Popconfirm>
-        </Space>
-      ),
+      render: (_: unknown, record: Player) =>
+        canManage ? (
+          <Space>
+            <Button size="small" icon={<EditOutlined />} onClick={() => openEditModal(record)}>
+              编辑
+            </Button>
+            <Popconfirm title="确认移除该报名？" onConfirm={() => removePlayer(record)}>
+              <Button size="small" danger icon={<StopOutlined />}>移除</Button>
+            </Popconfirm>
+          </Space>
+        ) : (
+          <Typography.Text type="secondary">只读</Typography.Text>
+        ),
     },
   ];
 
@@ -666,6 +732,12 @@ export default function AdminCompetitionPlayersPage() {
   const batchFormatText = selectedBatchEvent?.isDouble
     ? '双打：队伍名称、姓名、性别、学号、学校、学院班级、联系方式、搭档姓名、搭档性别、搭档学号、搭档学校、搭档学院班级、搭档联系方式'
     : '单打：姓名、性别、学号、学校、学院班级、联系方式';
+  const rowSelection = canManage
+    ? {
+        selectedRowKeys: selectedPlayerIds,
+        onChange: (keys: Key[]) => setSelectedPlayerIds(keys),
+      }
+    : undefined;
 
   return (
     <div>
@@ -698,21 +770,43 @@ export default function AdminCompetitionPlayersPage() {
             onSearch={setSearch}
             style={{ width: 260 }}
           />
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            onClick={openCreateModal}
-            disabled={!competition?.eventOptions?.length}
-          >
-            新增选手
-          </Button>
-          <Button
-            icon={<UsergroupAddOutlined />}
-            onClick={openBatchModal}
-            disabled={!competition?.eventOptions?.length}
-          >
-            批量新增
-          </Button>
+          {canManage ? (
+            <>
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                onClick={openCreateModal}
+                disabled={!competition?.eventOptions?.length}
+              >
+                新增选手
+              </Button>
+              <Button
+                icon={<UsergroupAddOutlined />}
+                onClick={openBatchModal}
+                disabled={!competition?.eventOptions?.length}
+              >
+                批量新增
+              </Button>
+              <Popconfirm
+                title={`确认批量删除选中的 ${selectedPlayerIds.length} 条参赛记录？`}
+                description="删除后这些报名会从参赛选手列表中移除。"
+                okText="确认删除"
+                cancelText="取消"
+                okButtonProps={{ danger: true, loading: bulkDeleting }}
+                onConfirm={removeSelectedPlayers}
+                disabled={!selectedPlayerIds.length || bulkDeleting}
+              >
+                <Button
+                  danger
+                  icon={<DeleteOutlined />}
+                  disabled={!selectedPlayerIds.length || bulkDeleting}
+                  loading={bulkDeleting}
+                >
+                  批量删除{selectedPlayerIds.length ? `（${selectedPlayerIds.length}）` : ''}
+                </Button>
+              </Popconfirm>
+            </>
+          ) : null}
           <Button icon={<DownloadOutlined />} onClick={() => message.info('导出按钮已预留，可在后续接入 Excel 导出。')}>
             导出
           </Button>
@@ -726,6 +820,7 @@ export default function AdminCompetitionPlayersPage() {
       </div>
       <Table
         rowKey="id"
+        rowSelection={rowSelection}
         columns={columns}
         dataSource={players}
         loading={loading}

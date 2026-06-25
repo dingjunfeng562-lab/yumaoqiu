@@ -30,7 +30,7 @@ export function Header({ activeHref }: { activeHref?: string }) {
   const { data: session, status } = useSession();
   const role = session?.user?.role;
   const roleHref =
-    role === 'ADMIN' || role === 'SUPER_ADMIN'
+    role === 'ADMIN' || role === 'SUPER_ADMIN' || role === 'ROOT'
       ? '/admin'
       : role === 'REFEREE'
         ? '/referee/my-matches'
@@ -125,6 +125,13 @@ export function Header({ activeHref }: { activeHref?: string }) {
                 className="hidden h-10 items-center whitespace-nowrap rounded-lg bg-gradient-to-r from-amber-400 to-amber-300 px-4 text-sm font-bold text-[#03205c] shadow-[0_6px_18px_rgba(245,158,11,0.4)] transition duration-300 hover:scale-105 lg:inline-flex"
               >
                 个人中心
+              </Link>
+              <Link
+                href="/account"
+                onClick={closeMenu}
+                className="hidden h-10 items-center whitespace-nowrap rounded-lg border border-white/60 px-4 text-sm font-bold text-white transition duration-300 hover:bg-white/10 lg:inline-flex"
+              >
+                账户设置
               </Link>
               <button
                 type="button"
@@ -231,17 +238,28 @@ export function Header({ activeHref }: { activeHref?: string }) {
               );
             })}
             {status === 'authenticated' ? (
-              <button
-                type="button"
-                onClick={() => {
-                  closeMenu();
-                  void signOut({ callbackUrl: '/' });
-                }}
-                className="flex items-center justify-between border-t border-white/10 px-5 py-3.5 text-sm font-bold text-white/95 transition hover:bg-white/5 hover:text-amber-200"
-              >
-                <span>退出登录</span>
-                <span className="text-base text-white/40">›</span>
-              </button>
+              <>
+                <Link
+                  href="/account"
+                  onClick={closeMenu}
+                  style={{ color: '#fff' }}
+                  className="flex items-center justify-between border-t border-white/10 px-5 py-3.5 text-sm font-bold !text-white transition hover:bg-white/5 hover:!text-amber-200"
+                >
+                  <span>账户设置</span>
+                  <span className="text-base text-white/40">›</span>
+                </Link>
+                <button
+                  type="button"
+                  onClick={() => {
+                    closeMenu();
+                    void signOut({ callbackUrl: '/' });
+                  }}
+                  className="flex items-center justify-between border-t border-white/10 px-5 py-3.5 text-sm font-bold text-white/95 transition hover:bg-white/5 hover:text-amber-200"
+                >
+                  <span>退出登录</span>
+                  <span className="text-base text-white/40">›</span>
+                </button>
+              </>
             ) : null}
           </nav>
         </div>

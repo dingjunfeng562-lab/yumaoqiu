@@ -1,5 +1,8 @@
 import {
+  ArrayNotEmpty,
+  ArrayUnique,
   IsEmail,
+  IsArray,
   IsBoolean,
   IsIn,
   IsInt,
@@ -11,6 +14,7 @@ import {
   MinLength,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { Role } from '@prisma/client';
 
 export const USERNAME_PATTERN = /^[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9_-]{1,19}$/;
 export const PASSWORD_PATTERN = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[^\s\u4e00-\u9fa5]{8,32}$/;
@@ -106,6 +110,27 @@ export class CreateInviteCodeDto {
 export class UpdateUserStatusDto {
   @IsIn(['ACTIVE', 'DISABLED'])
   status: 'ACTIVE' | 'DISABLED';
+}
+
+export class UpdateUserRoleDto {
+  @IsIn(Object.values(Role))
+  role: Role;
+}
+
+export class BatchDeleteUsersDto {
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayUnique()
+  @IsString({ each: true })
+  ids: string[];
+}
+
+export class RenameDto {
+  @IsString()
+  @Matches(USERNAME_PATTERN, {
+    message: '名称需为 2-20 位中文、字母、数字、下划线或连字符，首字符需为中文或字母',
+  })
+  name: string;
 }
 
 export class CheckUsernameDto {

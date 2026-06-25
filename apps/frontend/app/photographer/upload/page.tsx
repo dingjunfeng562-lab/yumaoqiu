@@ -28,11 +28,10 @@ import {
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 
-const MAX_FILES = 20;
-// 50MB matches the backend limit so high-resolution photos of any size upload.
-const MAX_FILE_SIZE_MB = 50;
+const MAX_FILES = 100;
+const MAX_FILE_SIZE_MB = 15;
 const MAX_FILE_SIZE = MAX_FILE_SIZE_MB * 1024 * 1024;
-const ACCEPTED = /^image\/(png|jpe?g)$/;
+const ACCEPTED = /^image\/(?!svg\+xml$).+/;
 
 const CATEGORIES = [
   { value: 'PLAYER', label: '选手证件照' },
@@ -157,17 +156,17 @@ export default function PhotographerUploadPage() {
         }
         accepted.push(f);
       }
-      if (rejectedType) message.warning(`已忽略 ${rejectedType} 个非 JPG/PNG 文件`);
+      if (rejectedType) message.warning(`已忽略 ${rejectedType} 个非图片文件`);
       if (rejectedSize) message.warning(`已忽略 ${rejectedSize} 个超过 ${MAX_FILE_SIZE_MB}MB 的文件`);
 
       setQueue((prev) => {
         const remaining = MAX_FILES - prev.length;
         if (remaining <= 0) {
-          message.warning('每批最多上传 20 张,请分批上传或减少选择数量');
+          message.warning(`每批最多上传 ${MAX_FILES} 张,请分批上传或减少选择数量`);
           return prev;
         }
         if (accepted.length > remaining) {
-          message.warning('每批最多上传 20 张,请分批上传或减少选择数量');
+          message.warning(`每批最多上传 ${MAX_FILES} 张,请分批上传或减少选择数量`);
         }
         const slice = accepted.slice(0, remaining).map<QueueItem>((file) => ({
           id: nextId(),
@@ -399,12 +398,12 @@ export default function PhotographerUploadPage() {
             <Typography.Text strong>点击选择或拖拽图片到此处</Typography.Text>
           </div>
           <Typography.Text type="secondary">
-            支持 JPG / PNG,单张 ≤ {MAX_FILE_SIZE_MB}MB,每批最多 {MAX_FILES} 张
+            支持图片格式,单张 ≤ {MAX_FILE_SIZE_MB}MB,每批最多 {MAX_FILES} 张
           </Typography.Text>
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/png,image/jpeg"
+            accept="image/*"
             multiple
             hidden
             onChange={onPick}

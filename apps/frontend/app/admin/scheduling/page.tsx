@@ -12,6 +12,7 @@ import {
   Form,
   InputNumber,
   Modal,
+  Popconfirm,
   Select,
   Space,
   Table,
@@ -19,7 +20,7 @@ import {
   Typography,
   message,
 } from 'antd';
-import { EditOutlined, ReloadOutlined } from '@ant-design/icons';
+import { DeleteOutlined, EditOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { roundCn } from '@/lib/round';
 
@@ -86,6 +87,7 @@ interface ScheduleMatch {
   round: string;
   roundNo: number;
   matchNo: number;
+  venueSequence?: number | null;
   side1Id?: string | null;
   side2Id?: string | null;
   side1?: { name: string; affiliation: string } | null;
@@ -124,6 +126,13 @@ function sideName(side?: { name: string } | null) {
 
 function formatTime(value?: string | null) {
   return value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '—';
+}
+
+function scheduleGroupLabel(row: ScheduleMatch) {
+  const round = row.round?.trim();
+  if (!round) return '—';
+  if (row.roundNo === 0) return round.endsWith('组') ? round : `${round}组`;
+  return roundCn(round);
 }
 
 function rowConflictClass(row: ScheduleMatch) {
@@ -259,6 +268,27 @@ export default function AdminSchedulingPage() {
     }
   }
 
+  async function clearSchedule() {
+    if (!token || !selectedTournamentId) return;
+    setLoading(true);
+    try {
+      const data = await apiFetch<ScheduleData>('/scheduling/clear', {
+        method: 'POST',
+        token,
+        body: JSON.stringify({
+          tournamentId: selectedTournamentId,
+          eventId: selectedEventId || undefined,
+        }),
+      });
+      setSchedule(data);
+      message.success('已取消场地排程，相关场次回到待排程');
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '取消场地排程失败');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function quickUpdateDuration(match: ScheduleMatch, durationMinutes: number) {
     if (!token || !durationMinutes || durationMinutes === match.durationMinutes) return;
     try {
@@ -363,6 +393,15 @@ export default function AdminSchedulingPage() {
         <Space wrap>
           <Button icon={<ReloadOutlined />} onClick={() => loadSchedule()} loading={loading}>刷新</Button>
           <Button href="/admin/tournaments">编辑赛程设置</Button>
+          <Popconfirm
+            title="取消后将清空当前所选范围内所有未开始场次的场地与时间（已完赛/进行中的不受影响），确认继续？"
+            onConfirm={clearSchedule}
+            disabled={!selectedTournamentId}
+          >
+            <Button danger icon={<DeleteOutlined />} disabled={!selectedTournamentId}>
+              取消场地排程
+            </Button>
+          </Popconfirm>
           <Button type="primary" onClick={openAutoSchedule} disabled={!activeVenues.length}>
             全部重新自动排程
           </Button>
@@ -450,8 +489,13 @@ export default function AdminSchedulingPage() {
             { title: '时间', dataIndex: 'scheduledAt', width: 118, render: formatTime },
             { title: '场地', dataIndex: 'venueName', width: 68, ellipsis: true, render: (value) => value || '—' },
             { title: '项目', dataIndex: 'eventTypeLabel', width: 74, ellipsis: true },
-            { title: '轮次', dataIndex: 'round', width: 62, ellipsis: true, render: (value: string) => roundCn(value) },
-            { title: '场次', dataIndex: 'matchNo', width: 58, render: (value) => `第${value}场` },
+            { title: '组别', key: 'groupLabel', width: 62, ellipsis: true, render: (_: unknown, row: ScheduleMatch) => scheduleGroupLabel(row) },
+            {
+              title: '场次',
+              dataIndex: 'venueSequence',
+              width: 58,
+              render: (value: number | null | undefined) => (value ? `第${value}场` : '—'),
+            },
             {
               title: '对阵',
               width: 190,

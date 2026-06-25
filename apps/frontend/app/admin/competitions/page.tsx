@@ -44,6 +44,10 @@ function formatDate(value: string) {
   return date.toLocaleDateString('zh-CN');
 }
 
+function competitionPath(record: Competition, suffix: string) {
+  return `/admin/competitions/${encodeURIComponent(record.id)}/${suffix}`;
+}
+
 export default function AdminCompetitionsPage() {
   const router = useRouter();
   const { data: session } = useSession();
@@ -166,25 +170,25 @@ export default function AdminCompetitionsPage() {
           <Button
             type="primary"
             icon={<AuditOutlined />}
-            onClick={() => router.push(`/admin/competitions/${record.id}/registrations`)}
+            onClick={() => router.push(competitionPath(record, 'registrations'))}
           >
             报名审核
           </Button>
           <Button
             icon={<TeamOutlined />}
-            onClick={() => router.push(`/admin/competitions/${record.id}/players`)}
+            onClick={() => router.push(competitionPath(record, 'players'))}
           >
             参赛选手
           </Button>
           <Button
             icon={<PictureOutlined />}
-            onClick={() => router.push(`/admin/competitions/${record.id}/watermark`)}
+            onClick={() => router.push(competitionPath(record, 'watermark'))}
           >
             水印设置
           </Button>
           <Button
             icon={<PictureOutlined />}
-            onClick={() => router.push(`/admin/competitions/${record.id}/photos`)}
+            onClick={() => router.push(competitionPath(record, 'photos'))}
           >
             图片管理
           </Button>

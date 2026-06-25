@@ -60,6 +60,9 @@ export default function PhotographerLayout({ children }: { children: React.React
             <UserOutlined />
             {session?.user?.name ?? (session?.user as { username?: string } | undefined)?.username}
           </Typography.Text>
+          <Button icon={<UserOutlined />} onClick={() => router.push('/account')}>
+            账户设置
+          </Button>
           <Button icon={<LogoutOutlined />} onClick={() => signOut({ callbackUrl: '/' })}>
             退出登录
           </Button>

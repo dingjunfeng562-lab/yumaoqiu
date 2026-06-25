@@ -34,6 +34,8 @@ const INVITE_CODE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 const TEMP_PASSWORD_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
 const INVALID_LOGIN_MESSAGE = '账号或密码错误';
 const LOCKED_LOGIN_MESSAGE = '账号已锁定,请稍后再试';
+const RENAME_LIMIT_PER_YEAR = 3;
+const RENAME_WINDOW_MS = 365 * 24 * 60 * 60 * 1000;
 
 @Injectable()
 export class AuthService {
@@ -285,6 +287,10 @@ export class AuthService {
     return this.serializeUser(user);
   }
 
+  async createSuperAdmin(username: string, email: string, password: string) {
+    return this.createManagedUser(Role.SUPER_ADMIN, username, email, password);
+  }
+
   async createAdmin(username: string, email: string, password: string) {
     return this.createManagedUser(Role.ADMIN, username, email, password);
   }
@@ -351,7 +357,13 @@ export class AuthService {
     };
   }
 
-  async updateUserStatus(userId: string, dto: UpdateUserStatusDto) {
+  async updateUserStatus(userId: string, dto: UpdateUserStatusDto, requesterId?: string) {
+    // Disabling now invalidates the target's active sessions immediately, so a
+    // super admin must not be able to lock themselves out of the console.
+    if (dto.status === UserStatus.DISABLED && requesterId && requesterId === userId) {
+      throw new BadRequestException('不能禁用自己的账号');
+    }
+
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
       throw new NotFoundException('用户不存在');
@@ -368,6 +380,104 @@ export class AuthService {
     });
 
     return this.serializeUser(updated);
+  }
+
+  /**
+   * Super admin (ROOT) changes any user's role/permission category. Any role
+   * is assignable, including promoting another account to ROOT. A ROOT account
+   * cannot change its own role — that would risk locking the platform out of
+   * its highest privilege; demote yourself only by promoting someone else first
+   * and having them do it.
+   */
+  async updateUserRole(userId: string, role: Role, requesterId?: string) {
+    if (requesterId && requesterId === userId) {
+      throw new BadRequestException('不能修改自己的角色');
+    }
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException('用户不存在');
+    }
+    if (user.role === role) {
+      return this.serializeUser(user);
+    }
+    const updated = await this.prisma.user.update({
+      where: { id: userId },
+      data: { role },
+    });
+    return this.serializeUser(updated);
+  }
+
+  /**
+   * Self-service rename. Every user may change their display name (which is
+   * the globally-unique `username`) up to {@link RENAME_LIMIT_PER_YEAR} times
+   * inside a rolling 365-day window anchored at the first rename of the window.
+   */
+  async renameSelf(userId: string, nameInput: string) {
+    const name = this.normalizeUsername(nameInput);
+    this.assertValidUsername(name);
+
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw new UnauthorizedException('用户不存在');
+    }
+    if (user.username === name) {
+      throw new BadRequestException('新名称与当前名称相同');
+    }
+
+    const now = new Date();
+    const quota = this.getRenameQuota(user, now);
+    if (quota.remaining <= 0) {
+      throw new BadRequestException(
+        `改名次数已用完（每年最多 ${quota.limit} 次）${
+          quota.resetAt ? `，${this.formatDate(quota.resetAt)} 后可再次改名` : ''
+        }`,
+      );
+    }
+
+    // First rename in a fresh window starts the clock; subsequent renames keep
+    // the same anchor so all three are counted against the same 365 days.
+    const windowStart = quota.windowStart ?? now;
+
+    try {
+      const updated = await this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          username: name,
+          nameChangeCount: quota.used + 1,
+          nameChangeWindowStart: windowStart,
+        },
+      });
+      return this.serializeUser(updated);
+    } catch (error) {
+      throw this.mapUsernameConflict(error);
+    }
+  }
+
+  /**
+   * Super-admin rename of any account. Does NOT consume the user's own quota
+   * and is not bound by the per-year limit.
+   */
+  async renameUser(userId: string, nameInput: string) {
+    const name = this.normalizeUsername(nameInput);
+    this.assertValidUsername(name);
+
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException('用户不存在');
+    }
+    if (user.username === name) {
+      throw new BadRequestException('新名称与当前名称相同');
+    }
+
+    try {
+      const updated = await this.prisma.user.update({
+        where: { id: userId },
+        data: { username: name },
+      });
+      return this.serializeUser(updated);
+    } catch (error) {
+      throw this.mapUsernameConflict(error);
+    }
   }
 
   async listUsers() {
@@ -446,12 +556,39 @@ export class AuthService {
     return this.prisma.inviteCode.delete({ where: { id } });
   }
 
-  async deleteUser(id: string) {
+  async deleteUser(id: string, requesterId?: string) {
+    if (requesterId && requesterId === id) {
+      throw new BadRequestException('不能删除自己的账号');
+    }
+
     const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) {
       throw new NotFoundException('用户不存在');
     }
     return this.prisma.user.delete({ where: { id } });
+  }
+
+  async deleteUsers(ids: string[], requesterId?: string) {
+    const uniqueIds = Array.from(new Set(ids.map((id) => id.trim()).filter(Boolean)));
+    if (!uniqueIds.length) {
+      throw new BadRequestException('请选择要删除的账号');
+    }
+    if (requesterId && uniqueIds.includes(requesterId)) {
+      throw new BadRequestException('不能删除自己的账号');
+    }
+
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: uniqueIds } },
+      select: { id: true },
+    });
+    if (users.length !== uniqueIds.length) {
+      throw new NotFoundException('部分账号不存在，请刷新后重试');
+    }
+
+    const result = await this.prisma.user.deleteMany({
+      where: { id: { in: uniqueIds } },
+    });
+    return { deleted: result.count };
   }
 
   private async createManagedUser(role: Role, usernameInput: string, emailInput: string, password: string) {
@@ -551,8 +688,11 @@ export class AuthService {
     role: Role;
     status?: UserStatus;
     mustChangePassword?: boolean;
+    nameChangeCount?: number | null;
+    nameChangeWindowStart?: Date | null;
     createdAt?: Date;
   }) {
+    const quota = this.getRenameQuota(user);
     return {
       id: user.id,
       username: user.username,
@@ -561,8 +701,50 @@ export class AuthService {
       role: user.role,
       status: user.status ?? UserStatus.ACTIVE,
       mustChangePassword: Boolean(user.mustChangePassword),
+      renameLimit: quota.limit,
+      renameUsed: quota.used,
+      renameRemaining: quota.remaining,
+      renameResetAt: quota.resetAt,
       createdAt: user.createdAt,
     };
+  }
+
+  /**
+   * Compute the current rename quota for a user. The stored window is treated
+   * as expired (and the count reset) once 365 days have elapsed since it
+   * started, so a fresh year of renames opens automatically.
+   */
+  private getRenameQuota(
+    user: { nameChangeCount?: number | null; nameChangeWindowStart?: Date | null },
+    now: Date = new Date(),
+  ) {
+    const windowStart = user.nameChangeWindowStart ?? null;
+    const expired =
+      !windowStart || now.getTime() - windowStart.getTime() >= RENAME_WINDOW_MS;
+    const used = expired ? 0 : user.nameChangeCount ?? 0;
+    const effectiveWindowStart = expired ? null : windowStart;
+    return {
+      limit: RENAME_LIMIT_PER_YEAR,
+      used,
+      remaining: Math.max(0, RENAME_LIMIT_PER_YEAR - used),
+      windowStart: effectiveWindowStart,
+      resetAt: effectiveWindowStart
+        ? new Date(effectiveWindowStart.getTime() + RENAME_WINDOW_MS)
+        : null,
+    };
+  }
+
+  private mapUsernameConflict(error: unknown) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+      return new ConflictException('该名称已被占用，请换一个');
+    }
+    return error;
+  }
+
+  private formatDate(date: Date) {
+    const month = `${date.getMonth() + 1}`.padStart(2, '0');
+    const day = `${date.getDate()}`.padStart(2, '0');
+    return `${date.getFullYear()}-${month}-${day}`;
   }
 
   private normalizeUsername(username: string) {

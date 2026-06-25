@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { signOut, useSession } from 'next-auth/react';
 import { Button, Empty, Spin, Tag, message } from 'antd';
-import { LogoutOutlined, ReloadOutlined } from '@ant-design/icons';
+import { LogoutOutlined, ReloadOutlined, UserOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { roundCn } from '@/lib/round';
 
@@ -130,6 +130,9 @@ export default function RefereeMatchesPage() {
           <div className="flex gap-2">
             <Button icon={<ReloadOutlined />} onClick={loadMatches} loading={loading}>
               刷新
+            </Button>
+            <Button icon={<UserOutlined />} href="/account">
+              账户设置
             </Button>
             <Button icon={<LogoutOutlined />} onClick={() => signOut({ callbackUrl: '/' })}>
               退出

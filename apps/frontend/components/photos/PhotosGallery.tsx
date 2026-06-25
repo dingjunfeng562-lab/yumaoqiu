@@ -200,12 +200,7 @@ export function PhotosGallery() {
             onChange: (c) => setPreviewIndex(c),
           }}
         >
-          <div
-            style={{
-              columnGap: 12,
-              columnWidth: 240,
-            }}
-          >
+          <div className="photo-grid">
             {photos.map((item, index) => (
               <div
                 key={item.id}
@@ -272,6 +267,10 @@ export function PhotosGallery() {
       )}
 
       <style jsx>{`
+        .photo-grid {
+          column-gap: 12px;
+          column-width: 240px;
+        }
         .photo-overlay {
           position: absolute;
           inset: 0;
@@ -301,6 +300,22 @@ export function PhotosGallery() {
         }
         .photo-overlay-btn:hover {
           background: rgba(255, 255, 255, 0.28);
+        }
+        @media (max-width: 640px) {
+          .photo-grid {
+            column-count: 2;
+            column-width: auto;
+            column-gap: 8px;
+          }
+          .photo-card {
+            margin-bottom: 8px !important;
+            border-radius: 8px !important;
+          }
+          .photo-overlay-btn {
+            font-size: 11px;
+            padding: 5px 7px;
+            border-radius: 7px;
+          }
         }
       `}</style>
     </div>

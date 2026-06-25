@@ -54,6 +54,7 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
 };
 
 const FORMAT_LABELS: Record<string, string> = {
+  GROUP_PLUS_KNOCKOUT_STD: '小组循环 + 淘汰(标准2023)',
   SINGLE_ELIMINATION: '单淘汰制',
   GROUP_PLUS_KNOCKOUT: '小组赛 + 淘汰赛',
   ROUND_ROBIN: '单循环排名赛',
@@ -86,6 +87,7 @@ interface EventItem {
   type: string;
   format: string;
   groupSize?: number | null;
+  groupCount?: number | null;
   qualifiersPerGroup?: number | null;
   drawLocked: boolean;
   drawPublished: boolean;
@@ -194,6 +196,20 @@ function sourceLabel(rounds: RoundItem[], match: MatchItem, sideNo: 1 | 2) {
   const previousMatchNo = match.matchNo * 2 - (sideNo === 1 ? 1 : 0);
   const previousRoundName = roundCn(previousRound?.round ?? `R${match.roundNo - 1}`);
   return `${previousRoundName} 第 ${previousMatchNo} 场胜者`;
+}
+
+function groupNameSortValue(value: string) {
+  const letters = /^[A-Z]+/.exec(value.trim().toUpperCase())?.[0];
+  if (!letters) return Number.MAX_SAFE_INTEGER;
+  return [...letters].reduce((sum, char) => sum * 26 + char.charCodeAt(0) - 64, 0);
+}
+
+function groupNameCompare(a: string, b: string) {
+  return groupNameSortValue(a) - groupNameSortValue(b) || a.localeCompare(b, 'zh-CN', { numeric: true });
+}
+
+function groupMatchCompare(a: MatchItem, b: MatchItem) {
+  return groupNameCompare(a.round, b.round) || a.matchNo - b.matchNo || a.id.localeCompare(b.id);
 }
 
 function isDoublesEvent(type?: string) {
@@ -363,8 +379,20 @@ function BracketRenderer({ data }: { data?: BracketData | null }) {
 
   if (data.groups.length) {
     const format = data.event?.format;
+    const groups = [...data.groups]
+      .sort((a, b) => groupNameCompare(a.name, b.name))
+      .map((group) => ({
+        ...group,
+        matches: [...group.matches].sort(groupMatchCompare),
+      }));
     const alertMeta =
-      format === 'ROUND_ROBIN'
+      format === 'GROUP_PLUS_KNOCKOUT_STD'
+        ? {
+            message: '小组循环已生成（标准2023）',
+            description:
+              '蛇形分组 + 组内循环。小组赛全部完赛后，系统会按官方名次（胜场→相互胜负→净胜局→净胜分）取各组出线选手，自动生成单淘汰对阵（组冠军分散、首轮不同组）。',
+          }
+        : format === 'ROUND_ROBIN'
         ? {
             message: '单循环排名赛已生成',
             description:
@@ -385,7 +413,7 @@ function BracketRenderer({ data }: { data?: BracketData | null }) {
       <Space direction="vertical" size={16} style={{ width: '100%' }}>
         <Alert type="info" showIcon message={alertMeta.message} description={alertMeta.description} />
         <Row gutter={[16, 16]}>
-          {data.groups.map((group) => (
+          {groups.map((group) => (
             <Col xs={24} lg={12} key={group.name}>
               <section style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 12 }}>
                 <Typography.Title level={5} style={{ marginTop: 0 }}>{group.name} 组</Typography.Title>
@@ -411,6 +439,14 @@ function BracketRenderer({ data }: { data?: BracketData | null }) {
             </Col>
           ))}
         </Row>
+        {format === 'GROUP_PLUS_KNOCKOUT_STD' && data.rounds.length ? (
+          <>
+            <Typography.Title level={5} style={{ margin: '8px 0 0' }}>
+              淘汰赛对阵
+            </Typography.Title>
+            <KnockoutBracket data={toKnockoutBracketData(data)} />
+          </>
+        ) : null}
       </Space>
     );
   }
@@ -423,7 +459,7 @@ export default function DrawsPage() {
   const token = session?.user?.accessToken as string | undefined;
   const userRole = session?.user?.role;
   const userId = session?.user?.id;
-  const isSuperAdmin = userRole === 'SUPER_ADMIN';
+  const isSuperAdmin = userRole === 'SUPER_ADMIN' || userRole === 'ROOT';
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
   const [events, setEvents] = useState<EventItem[]>([]);
   const [players, setPlayers] = useState<Player[]>([]);
@@ -434,6 +470,8 @@ export default function DrawsPage() {
   const [loading, setLoading] = useState(false);
   const [registrationOpen, setRegistrationOpen] = useState(false);
   const [registrationForm] = Form.useForm();
+  const [editingRegistration, setEditingRegistration] = useState<Registration | null>(null);
+  const [seedForm] = Form.useForm();
   const [swapPosA, setSwapPosA] = useState<number | undefined>(undefined);
   const [swapPosB, setSwapPosB] = useState<number | undefined>(undefined);
   const [redrawRequests, setRedrawRequests] = useState<RedrawRequestItem[]>([]);
@@ -466,6 +504,11 @@ export default function DrawsPage() {
     );
     return visibleRegistrations.filter((registration) => !placedIds.has(registration.id));
   }, [visibleBracket, visibleRegistrations]);
+  const unplacedPreviewText = useMemo(() => {
+    const preview = unplacedRegistrations.slice(0, 4).map(sideName).join('、');
+    const restCount = unplacedRegistrations.length - 4;
+    return restCount > 0 ? `${preview} 等 ${unplacedRegistrations.length} 名/队` : preview;
+  }, [unplacedRegistrations]);
   const slotOptions = useMemo(() => {
     if (!visibleBracket?.rounds.length) return [];
     const round1 = visibleBracket.rounds[0];
@@ -644,6 +687,27 @@ export default function DrawsPage() {
     }
   }
 
+  async function handleUpdateSeed() {
+    if (!editingRegistration) return;
+    const values = await seedForm.validateFields();
+    try {
+      await apiFetch(`/registrations/${editingRegistration.id}`, {
+        method: 'PATCH',
+        token,
+        body: JSON.stringify({
+          isSeed: values.isSeed ?? false,
+          seedRank: values.isSeed ? values.seedRank : null,
+        }),
+      });
+      message.success('种子设置已更新，重新抽签后生效');
+      setEditingRegistration(null);
+      seedForm.resetFields();
+      refreshDraw();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '种子设置更新失败');
+    }
+  }
+
   async function handleDeleteRegistration(id: string) {
     try {
       await apiFetch(`/registrations/${id}`, { method: 'DELETE', token });
@@ -674,6 +738,24 @@ export default function DrawsPage() {
       message.success(force ? '已重新抽签，可调整签位后发布' : '抽签完成，可调整签位后点击发布');
     } catch (error) {
       message.error(error instanceof Error ? error.message : '抽签失败');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleClearAllDraws() {
+    if (!token || !selectedTournamentId) return;
+    setLoading(true);
+    try {
+      const res = await apiFetch<{ cleared: number }>(
+        `/tournaments/${selectedTournamentId}/draws/clear`,
+        { method: 'POST', token },
+      );
+      message.success(`已取消全部编排，共清空 ${res.cleared} 个单项`);
+      await loadEvents(selectedTournamentId);
+      await refreshDraw();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '取消全部编排失败');
     } finally {
       setLoading(false);
     }
@@ -816,18 +898,42 @@ export default function DrawsPage() {
   const registrationColumns = [
     {
       title: '报名',
-      render: (_: unknown, row: Registration) => (
-        <Space direction="vertical" size={0}>
-          <Typography.Text strong>{sideName(row)}</Typography.Text>
-          <Typography.Text type="secondary">{affiliation(row)}</Typography.Text>
-        </Space>
-      ),
+      render: (_: unknown, row: Registration) => {
+        const name = sideName(row);
+        const unit = affiliation(row);
+        return (
+          <Space direction="vertical" size={0} style={{ maxWidth: 220 }}>
+            <Typography.Text strong ellipsis={{ tooltip: name }} style={{ maxWidth: 220 }}>
+              {name}
+            </Typography.Text>
+            <Typography.Text type="secondary" ellipsis={{ tooltip: unit }} style={{ maxWidth: 220 }}>
+              {unit}
+            </Typography.Text>
+          </Space>
+        );
+      },
     },
     {
       title: '种子',
-      width: 110,
-      render: (_: unknown, row: Registration) =>
-        row.isSeed ? <Tag color="gold">{row.seedRank}号种子</Tag> : <Typography.Text type="secondary">非种子</Typography.Text>,
+      width: 150,
+      render: (_: unknown, row: Registration) => (
+        <Space size={4}>
+          {row.isSeed ? (
+            <Tag color="gold">{row.seedRank}号种子</Tag>
+          ) : (
+            <Typography.Text type="secondary">非种子</Typography.Text>
+          )}
+          <Button
+            size="small"
+            type="link"
+            icon={<StarFilled />}
+            disabled={selectedEvent?.drawLocked}
+            onClick={() => setEditingRegistration(row)}
+          >
+            设置
+          </Button>
+        </Space>
+      ),
     },
     ...(!isSingleElimination(selectedEvent)
       ? [
@@ -862,6 +968,17 @@ export default function DrawsPage() {
           <Button icon={<ReloadOutlined />} onClick={refreshDraw} disabled={!selectedEventId}>
             刷新
           </Button>
+          {isSuperAdmin && (
+            <Popconfirm
+              title="清空该赛事下所有单项的抽签、对阵与比赛结果（报名名单保留），且无法撤销，确认继续？"
+              onConfirm={handleClearAllDraws}
+              disabled={!selectedTournamentId}
+            >
+              <Button danger icon={<DeleteOutlined />} disabled={!selectedTournamentId}>
+                取消全部编排
+              </Button>
+            </Popconfirm>
+          )}
           {bracket?.currentDraw && !selectedEvent?.drawPublished && (
             <Button
               type="primary"
@@ -1004,7 +1121,19 @@ export default function DrawsPage() {
       <Spin spinning={loading}>
         <Row gutter={[16, 16]}>
           <Col xs={24} xl={8}>
-            <section style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 16, background: '#fff' }}>
+            <section
+              style={{
+                border: '1px solid #f0f0f0',
+                borderRadius: 8,
+                padding: 16,
+                background: '#fff',
+                maxHeight: 'calc(100vh - 220px)',
+                minHeight: 360,
+                display: 'flex',
+                flexDirection: 'column',
+                overflow: 'hidden',
+              }}
+            >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                 <Typography.Title level={5} style={{ margin: 0 }}>报名名单</Typography.Title>
                 <Button
@@ -1027,7 +1156,8 @@ export default function DrawsPage() {
                   type="warning"
                   showIcon
                   style={{ marginBottom: 12 }}
-                  message={`未排位选手：${unplacedRegistrations.map(sideName).join('、')}（重新抽签后才会进入对阵）`}
+                  message={`有 ${unplacedRegistrations.length} 名/队未排位`}
+                  description={`${unplacedPreviewText}。重新抽签后才会进入对阵。`}
                 />
               )}
               <Table
@@ -1035,7 +1165,9 @@ export default function DrawsPage() {
                 size="small"
                 columns={registrationColumns}
                 dataSource={visibleRegistrations}
-                pagination={{ pageSize: 8 }}
+                pagination={{ pageSize: 8, size: 'small', showSizeChanger: false }}
+                scroll={{ x: 520, y: 'calc(100vh - 500px)' }}
+                style={{ flex: 1, minHeight: 0 }}
               />
             </section>
           </Col>
@@ -1183,6 +1315,50 @@ export default function DrawsPage() {
               <Select showSearch optionFilterProp="label" options={playerOptions} />
             </Form.Item>
           )}
+          <Form.Item name="isSeed" label="是否种子" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+          <Form.Item shouldUpdate noStyle>
+            {({ getFieldValue }) =>
+              getFieldValue('isSeed') ? (
+                <Form.Item name="seedRank" label="种子顺位" rules={[{ required: true, message: '请输入种子顺位' }]}>
+                  <InputNumber min={1} max={16} style={{ width: '100%' }} />
+                </Form.Item>
+              ) : null
+            }
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title="设置种子"
+        open={Boolean(editingRegistration)}
+        onOk={handleUpdateSeed}
+        onCancel={() => {
+          setEditingRegistration(null);
+          seedForm.resetFields();
+        }}
+        okText="保存"
+        cancelText="取消"
+      >
+        {editingRegistration && (
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message={sideName(editingRegistration)}
+            description={affiliation(editingRegistration)}
+          />
+        )}
+        <Form
+          form={seedForm}
+          layout="vertical"
+          key={editingRegistration?.id}
+          initialValues={{
+            isSeed: editingRegistration?.isSeed ?? false,
+            seedRank: editingRegistration?.seedRank ?? undefined,
+          }}
+        >
           <Form.Item name="isSeed" label="是否种子" valuePropName="checked">
             <Switch />
           </Form.Item>

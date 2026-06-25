@@ -19,7 +19,7 @@ type AuthRequest = {
 };
 
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.ADMIN, Role.SUPER_ADMIN)
+@Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.ROOT)
 @Controller('admin')
 export class AdminCompetitionsController {
   constructor(private competitionsService: CompetitionsService) {}
@@ -53,6 +53,7 @@ export class AdminCompetitionsController {
     return this.competitionsService.listAdminPlayers(id, eventName, search);
   }
 
+  @Roles(Role.ADMIN)
   @Post('competitions/:id/players/batch')
   batchAddPlayers(
     @Param('id') id: string,
@@ -66,6 +67,7 @@ export class AdminCompetitionsController {
     );
   }
 
+  @Roles(Role.ADMIN)
   @Post('competitions/:id/players')
   createPlayer(
     @Param('id') id: string,
@@ -79,6 +81,7 @@ export class AdminCompetitionsController {
     );
   }
 
+  @Roles(Role.ADMIN)
   @Patch('competitions/:competitionId/players/:registrationId')
   updatePlayer(
     @Param('competitionId') competitionId: string,
@@ -94,6 +97,7 @@ export class AdminCompetitionsController {
     );
   }
 
+  @Roles(Role.ADMIN)
   @Patch('competitions/:competitionId/players/:registrationId/remove')
   removePlayerRegistration(
     @Param('competitionId') competitionId: string,
@@ -107,6 +111,7 @@ export class AdminCompetitionsController {
     );
   }
 
+  @Roles(Role.ADMIN)
   @Patch('competition-registrations/:registrationId/approve')
   approveRegistration(@Param('registrationId') registrationId: string, @Req() req: AuthRequest) {
     return this.competitionsService.approveRegistration(
@@ -115,6 +120,7 @@ export class AdminCompetitionsController {
     );
   }
 
+  @Roles(Role.ADMIN)
   @Patch('competition-registrations/:registrationId/reject')
   rejectRegistration(
     @Param('registrationId') registrationId: string,
@@ -128,6 +134,7 @@ export class AdminCompetitionsController {
     );
   }
 
+  @Roles(Role.ADMIN)
   @Patch('competition-registrations/:registrationId/remove')
   removeRegistration(@Param('registrationId') registrationId: string, @Req() req: AuthRequest) {
     return this.competitionsService.removeRegistration(

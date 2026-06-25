@@ -1,8 +1,6 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { PortalFeaturePage } from '@/components/home/PortalFeaturePage';
-import type { KnockoutBracketData } from '@/components/bracket/KnockoutBracket';
-import { LiveBracketsSection } from '@/components/bracket/LiveBracketsSection';
 import { isRichAnnouncementContent, sanitizeAnnouncementHtml } from '@/lib/announcement-html';
 
 export const dynamic = 'force-dynamic';
@@ -78,22 +76,10 @@ async function getCompetition(id: string): Promise<CompetitionDetail | null> {
   }
 }
 
-async function getBrackets(tournamentId: string): Promise<KnockoutBracketData[]> {
-  try {
-    const res = await fetch(`${API_BASE}/public/brackets`, { cache: 'no-store' });
-    if (!res.ok) return [];
-    const data = (await res.json()) as { brackets: KnockoutBracketData[] };
-    return (data.brackets ?? []).filter((bracket) => bracket.tournamentId === tournamentId);
-  } catch {
-    return [];
-  }
-}
-
 export default async function CompetitionDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const competition = await getCompetition(id);
   if (!competition) notFound();
-  const brackets = await getBrackets(competition.id);
 
   const projects =
     competition.eventOptions?.map((event) => event.label) ??
@@ -235,12 +221,12 @@ export default async function CompetitionDetailPage({ params }: { params: Promis
             >
               查看选手
             </Link>
-            <a
-              href="#brackets"
+            <Link
+              href={`/competitions/${competition.id}/brackets`}
               className="inline-flex h-11 w-full items-center justify-center rounded-lg border border-blue-200 text-sm font-black text-blue-700 transition hover:bg-blue-50"
             >
               查看对阵表
-            </a>
+            </Link>
             <Link
               href="/competitions"
               className="inline-flex h-11 w-full items-center justify-center rounded-lg text-sm font-semibold text-slate-500 transition hover:text-blue-700"
@@ -251,19 +237,6 @@ export default async function CompetitionDetailPage({ params }: { params: Promis
         </aside>
       </div>
 
-      {/* Embedded brackets — surface entry from competition detail */}
-      <section id="brackets" className="mt-6 space-y-4 sm:mt-8 sm:space-y-5">
-        <div className="flex items-baseline justify-between gap-3">
-          <div>
-            <p className="text-xs font-black uppercase tracking-[0.16em] text-blue-700/70">Bracket</p>
-            <h2 className="mt-1 text-xl font-black text-slate-900 sm:text-2xl">对阵表</h2>
-          </div>
-          <span className="text-xs font-semibold text-slate-400">
-            {brackets.length ? `共 ${brackets.length} 个项目` : ''}
-          </span>
-        </div>
-        <LiveBracketsSection tournamentId={competition.id} initialBrackets={brackets} />
-      </section>
     </PortalFeaturePage>
   );
 }

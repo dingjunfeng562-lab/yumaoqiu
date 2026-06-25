@@ -3,7 +3,7 @@ import type { NextRequest } from 'next/server';
 import { auth } from '@/auth';
 
 function isAdminRole(role?: string | null) {
-  return role === 'ADMIN' || role === 'SUPER_ADMIN';
+  return role === 'ADMIN' || role === 'SUPER_ADMIN' || role === 'ROOT';
 }
 
 function destinationForRole(role?: string | null) {

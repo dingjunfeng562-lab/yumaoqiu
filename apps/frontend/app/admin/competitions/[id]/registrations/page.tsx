@@ -60,9 +60,13 @@ function formatDateTime(value: string) {
   return date.toLocaleString('zh-CN', { hour12: false });
 }
 
+function normalizeRouteParam(value?: string | string[]) {
+  return Array.isArray(value) ? value[0] : value;
+}
+
 export default function AdminCompetitionRegistrationsPage() {
   const params = useParams<{ id: string }>();
-  const id = params?.id;
+  const id = normalizeRouteParam(params?.id);
   const router = useRouter();
   const { data: session } = useSession();
   const token = session?.user?.accessToken as string | undefined;
@@ -90,7 +94,10 @@ export default function AdminCompetitionRegistrationsPage() {
       cancelled = true;
     };
   }, [token]);
-  const isSuperAdmin = (liveRole ?? sessionRole) === 'SUPER_ADMIN';
+  const effectiveRole = liveRole ?? sessionRole;
+  const isRoot = effectiveRole === 'ROOT';
+  // 报名审核为写操作:降权后的总管理员(SUPER_ADMIN)只读,仅管理员/超级管理员可操作。
+  const canManage = effectiveRole === 'ADMIN' || effectiveRole === 'ROOT';
 
   const loadData = useCallback(async () => {
     if (!token || !id) return;
@@ -200,36 +207,39 @@ export default function AdminCompetitionRegistrationsPage() {
       title: '操作',
       key: 'actions',
       width: 180,
-      render: (_: unknown, record: Registration) => (
-        <Space>
-          <Popconfirm
-            title="确认通过该报名？"
-            onConfirm={() => approve(record.id)}
-            disabled={record.status === 'approved'}
-          >
-            <Button
-              size="small"
-              type="primary"
-              icon={<CheckOutlined />}
+      render: (_: unknown, record: Registration) =>
+        canManage ? (
+          <Space>
+            <Popconfirm
+              title="确认通过该报名？"
+              onConfirm={() => approve(record.id)}
               disabled={record.status === 'approved'}
             >
-              通过
+              <Button
+                size="small"
+                type="primary"
+                icon={<CheckOutlined />}
+                disabled={record.status === 'approved'}
+              >
+                通过
+              </Button>
+            </Popconfirm>
+            <Button
+              size="small"
+              danger
+              icon={<CloseOutlined />}
+              disabled={record.status === 'rejected'}
+              onClick={() => {
+                setRejectingId(record.id);
+                setRejectReason(record.rejectReason || '');
+              }}
+            >
+              驳回
             </Button>
-          </Popconfirm>
-          <Button
-            size="small"
-            danger
-            icon={<CloseOutlined />}
-            disabled={record.status === 'rejected'}
-            onClick={() => {
-              setRejectingId(record.id);
-              setRejectReason(record.rejectReason || '');
-            }}
-          >
-            驳回
-          </Button>
-        </Space>
-      ),
+          </Space>
+        ) : (
+          <Typography.Text type="secondary">只读</Typography.Text>
+        ),
     },
   ];
 
@@ -252,7 +262,10 @@ export default function AdminCompetitionRegistrationsPage() {
             options={STATUS_OPTIONS}
           />
           <Tag color="orange">当前列表待审核：{pendingCount}</Tag>
-          <Button icon={<TeamOutlined />} onClick={() => router.push(`/admin/competitions/${id}/players`)}>
+          <Button
+            icon={<TeamOutlined />}
+            onClick={() => id && router.push(`/admin/competitions/${encodeURIComponent(id)}/players`)}
+          >
             参赛选手
           </Button>
           <Button onClick={() => router.push('/admin/competitions')}>返回赛事管理</Button>
@@ -265,7 +278,7 @@ export default function AdminCompetitionRegistrationsPage() {
         loading={loading}
         pagination={{ pageSize: 20 }}
       />
-      {isSuperAdmin && token && id ? (
+      {isRoot && token && id ? (
         <CompetitionEmailSettingsCard competitionId={id} token={token} />
       ) : null}
       <Modal

@@ -306,12 +306,24 @@ export class DrawsService {
       throw new BadRequestException('至少需要 2 个报名才能抽签');
     }
 
-    const seedSettings = await this.prisma.drawSeedSetting.findMany({
-      where: { eventItemId: eventId },
-      orderBy: { seedNo: 'asc' },
-    });
     const seedLimit = this.drawAlgorithmService.getSeedLimit(registrations.length);
-    this.validateSeedSettings(seedSettings, seedLimit);
+    // 前端通过报名表单(registration.isSeed/seedRank)标记种子，并不会写入 drawSeedSetting；
+    // 因此优先读取独立种子配置，缺失时回退到报名上的种子标记，并规范化(按顺位排序、限额内截断、
+    // 重新连续编号)，确保选中的种子在抽签中真正生效。
+    let seedSettings: Array<{ entrantId: string; seedNo: number }> =
+      await this.prisma.drawSeedSetting.findMany({
+        where: { eventItemId: eventId },
+        orderBy: { seedNo: 'asc' },
+      });
+    if (seedSettings.length) {
+      this.validateSeedSettings(seedSettings, seedLimit);
+    } else {
+      seedSettings = registrations
+        .filter((registration) => registration.isSeed && registration.seedRank != null)
+        .sort((a, b) => (a.seedRank ?? 0) - (b.seedRank ?? 0))
+        .slice(0, seedLimit)
+        .map((registration, index) => ({ entrantId: registration.id, seedNo: index + 1 }));
+    }
 
     const latest = await this.prisma.drawBracket.findFirst({
       where: { eventItemId: eventId },
@@ -347,7 +359,7 @@ export class DrawsService {
           seedLimit,
           seedCount,
           byeCount,
-          groupCount: event.groupSize ?? null,
+          groupCount: this.initialDrawGroupCount(event, format, registrations.length),
           qualifyPerGroup: event.qualifiersPerGroup ?? null,
           executedAt: new Date(),
           createdBy: operatorId,
@@ -408,10 +420,9 @@ export class DrawsService {
             : this.drawAlgorithmService.buildGroups(
                 entrants,
                 seedInputs,
-                // 交叉排位赛固定分 2 个组：用 ceil(n/2) 作为组容量即可保证组数为 2。
                 format === DrawFormat.group_then_playoff
-                  ? Math.ceil(entrants.length / 2)
-                  : event.groupSize ?? 4,
+                  ? 2
+                  : this.configuredGroupCount(event, entrants.length),
               );
 
         await tx.drawBracket.update({
@@ -770,7 +781,11 @@ export class DrawsService {
     });
     if (!current) throw new NotFoundException('当前单项还没有可重抽的签表');
 
-    if (event.drawPublished && operatorRole !== Role.SUPER_ADMIN) {
+    if (
+      event.drawPublished &&
+      operatorRole !== Role.SUPER_ADMIN &&
+      operatorRole !== Role.ROOT
+    ) {
       throw new ForbiddenException('对阵已发布，普通管理员请提交重抽申请，由总管理员审批');
     }
 
@@ -793,6 +808,56 @@ export class DrawsService {
       },
     });
     return next;
+  }
+
+  /**
+   * 取消整个赛事下「全部单项」的抽签编排,回到未抽签状态:
+   * 删除所有已生成的比赛(级联清空比分)、第二阶段(级联签位/对阵/名次)、
+   * 签表(级联 DrawSlot / DrawOperationLog / DrawGroup),撤销待审批的重抽申请,
+   * 并复位每个单项的抽签状态标志。报名名单与种子设置(编排的输入)予以保留,可直接重新抽签。
+   */
+  async clearAllDraws(
+    tournamentId: string,
+    operatorId: string,
+    operatorName: string | null,
+  ) {
+    if (!operatorId) throw new BadRequestException('缺少操作人信息');
+    const tournament = await this.prisma.tournament.findUnique({
+      where: { id: tournamentId },
+      select: { id: true },
+    });
+    if (!tournament) throw new NotFoundException('赛事不存在');
+
+    const events = await this.prisma.event.findMany({
+      where: { tournamentId },
+      select: { id: true },
+    });
+    const eventIds = events.map((event) => event.id);
+    if (!eventIds.length) return { cleared: 0 };
+
+    await this.prisma.$transaction(async (tx) => {
+      // 单项正式比赛(组内循环 / 淘汰 / 第二阶段正式赛),删除时级联清空 Game 比分。
+      await tx.match.deleteMany({ where: { eventId: { in: eventIds } } });
+      // 第二阶段实体,级联删除其签位 / 对阵 / 名次。
+      await tx.secondStage.deleteMany({ where: { eventId: { in: eventIds } } });
+      // 签表,级联删除 DrawSlot / DrawOperationLog / DrawGroup。
+      await tx.drawBracket.deleteMany({ where: { eventItemId: { in: eventIds } } });
+      // 签表已不存在,待审批的重抽申请失去意义,统一置为已取消。
+      await tx.drawRedrawRequest.updateMany({
+        where: { eventItemId: { in: eventIds }, status: DrawRedrawRequestStatus.PENDING },
+        data: {
+          status: DrawRedrawRequestStatus.CANCELLED,
+          decisionRemark: '赛事已取消全部编排,申请自动作废',
+        },
+      });
+      // 复位单项抽签状态:回到未锁定、未发布、未生成。
+      await tx.event.updateMany({
+        where: { id: { in: eventIds } },
+        data: { drawLocked: false, drawPublished: false, drawGeneratedAt: null },
+      });
+    });
+
+    return { cleared: eventIds.length };
   }
 
   async createRedrawRequest(
@@ -1011,6 +1076,7 @@ export class DrawsService {
       where: { eventId },
       orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }],
     });
+    const sortedMatches = [...matches].sort((a, b) => this.bracketMatchCompare(a, b));
     const currentDraw = await this.prisma.drawBracket.findFirst({
       where: { eventItemId: eventId, isCurrent: true },
       orderBy: { version: 'desc' },
@@ -1030,7 +1096,7 @@ export class DrawsService {
       side2: match.side2Id ? registrationMap.get(match.side2Id) ?? null : null,
     });
 
-    const rounds = matches
+    const rounds = sortedMatches
       .filter((match) => match.roundNo > 0 && !isSecondStageFormalRoundNo(match.roundNo))
       .reduce<Array<{ roundNo: number; round: string; matches: ReturnType<typeof hydrateMatch>[] }>>(
         (acc, match) => {
@@ -1065,13 +1131,16 @@ export class DrawsService {
       }, []);
 
     for (const group of groups) {
-      group.matches = matches.filter((match) => match.round === group.name).map((match) => hydrateMatch(match));
+      group.matches = sortedMatches
+        .filter((match) => match.round === group.name)
+        .map((match) => hydrateMatch(match));
     }
+    groups.sort((a, b) => this.groupNameCompare(a.name, b.name));
 
     // 第二阶段的正式比赛（roundNo≥100）单独返回——它们不属于一阶段对阵图，但
     // 必须出现在管理端记分页才能被分配裁判、正常记分（记分后会同步回 second_stage_match，
     // 前台对阵表与抽签编排随之显示结果）。
-    const secondStageFormalMatches = matches
+    const secondStageFormalMatches = sortedMatches
       .filter((match) => isSecondStageFormalRoundNo(match.roundNo))
       .map((match) => hydrateMatch(match));
 
@@ -1620,6 +1689,9 @@ export class DrawsService {
   private drawFormatForEvent(eventFormat: Format): DrawFormat {
     switch (eventFormat) {
       case Format.GROUP_PLUS_KNOCKOUT:
+      // 标准小组循环+淘汰：抽签阶段同样只生成小组(蛇形分组+组内循环)，
+      // 淘汰赛在小组赛全部完赛后由 scoring 自动按出线名次生成。
+      case Format.GROUP_PLUS_KNOCKOUT_STD:
         return DrawFormat.group_then_elim;
       case Format.ROUND_ROBIN:
         return DrawFormat.round_robin;
@@ -1628,6 +1700,52 @@ export class DrawsService {
       default:
         return DrawFormat.single_elim;
     }
+  }
+
+  private initialDrawGroupCount(
+    event: { groupCount?: number | null; groupSize?: number | null },
+    format: DrawFormat,
+    entrantCount: number,
+  ) {
+    if (format === DrawFormat.single_elim) return null;
+    if (format === DrawFormat.round_robin) return 1;
+    if (format === DrawFormat.group_then_playoff) return 2;
+    return this.configuredGroupCount(event, entrantCount);
+  }
+
+  private configuredGroupCount(
+    event: { groupCount?: number | null; groupSize?: number | null },
+    entrantCount: number,
+  ) {
+    if (event.groupCount && event.groupCount > 0) return event.groupCount;
+    const legacyGroupSize = Math.max(event.groupSize ?? 4, 2);
+    return Math.ceil(entrantCount / legacyGroupSize);
+  }
+
+  private bracketMatchCompare(
+    a: { round: string; roundNo: number; matchNo: number; id: string },
+    b: { round: string; roundNo: number; matchNo: number; id: string },
+  ) {
+    if (a.roundNo === 0 || b.roundNo === 0) {
+      return a.roundNo - b.roundNo
+        || this.groupNameCompare(a.round, b.round)
+        || a.matchNo - b.matchNo
+        || a.id.localeCompare(b.id);
+    }
+    return a.roundNo - b.roundNo
+      || a.matchNo - b.matchNo
+      || a.id.localeCompare(b.id);
+  }
+
+  private groupNameCompare(a: string, b: string) {
+    return this.groupNameSortValue(a) - this.groupNameSortValue(b)
+      || a.localeCompare(b, 'zh-CN', { numeric: true });
+  }
+
+  private groupNameSortValue(value: string) {
+    const letters = /^[A-Z]+/.exec(value.trim().toUpperCase())?.[0];
+    if (!letters) return Number.MAX_SAFE_INTEGER;
+    return [...letters].reduce((sum, char) => sum * 26 + char.charCodeAt(0) - 64, 0);
   }
 
   /**
