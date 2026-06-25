@@ -148,6 +148,7 @@ interface BracketData {
   registrations: Registration[];
   rounds: RoundItem[];
   groups: GroupItem[];
+  knockoutSkeleton?: KnockoutBracketData['knockoutSkeleton'];
   secondStage?: SecondStageData | null;
 }
 
@@ -277,6 +278,7 @@ function toKnockoutBracketData(data: BracketData): KnockoutBracketData {
     generatedAt: data.event.drawGeneratedAt ?? null,
     participants,
     matches,
+    knockoutSkeleton: data.knockoutSkeleton ?? null,
   };
 }
 
@@ -494,7 +496,29 @@ export default function DrawsPage() {
     });
   }, [registrations, selectedEventId]);
   const visibleBracket = selectedEventId ? bracket : null;
-  const isSecondStageFormat = selectedEvent?.format === 'SINGLE_ELIMINATION_PLUS_GROUP_RANKING';
+  const isManualSecondStageFormat = selectedEvent?.format === 'SINGLE_ELIMINATION_PLUS_GROUP_RANKING';
+  const isStandardSecondStageFormat = selectedEvent?.format === 'GROUP_PLUS_KNOCKOUT_STD';
+  const isSecondStageFormat = isManualSecondStageFormat || isStandardSecondStageFormat;
+  const secondStageCandidates = useMemo(() => {
+    const eligible = visibleBracket?.secondStage?.eligibleEntrants ?? [];
+    if (isStandardSecondStageFormat) {
+      return eligible.map((entrant) => ({
+        value: entrant.playerId,
+        label: `${entrant.playerName ?? '待定'} · ${entrant.group ?? '-'}组第${entrant.rank ?? '-'}名`,
+      }));
+    }
+    return visibleRegistrations.map((registration) => ({
+      value: registration.id,
+      label: sideName(registration),
+    }));
+  }, [isStandardSecondStageFormat, visibleBracket?.secondStage?.eligibleEntrants, visibleRegistrations]);
+  const canConfirmSecondStage = isStandardSecondStageFormat
+    ? secondStageCandidates.length >= 2 && secondStageCandidates.length <= SECOND_STAGE_SLOT_CODES.length
+    : visibleRegistrations.length >= 2;
+  const secondStageStatus = String(
+    visibleBracket?.secondStage?.secondStageStatus ?? visibleBracket?.secondStage?.status ?? 'NOT_STARTED',
+  ).toUpperCase();
+  const secondStageConfirmed = secondStageStatus === 'CONFIRMED' || secondStageStatus === 'FINISHED';
   const unplacedRegistrations = useMemo(() => {
     if (!visibleBracket?.rounds.length) return [];
     const placedIds = new Set(
@@ -884,7 +908,11 @@ export default function DrawsPage() {
         }),
       });
       await refreshDraw();
-      message.success('第二阶段已确认生成，前台对阵表会同步显示');
+      message.success(
+        isStandardSecondStageFormat
+          ? '第二阶段已生成：手动签位已保留，其余出线队伍随机补齐'
+          : '第二阶段已确认生成，前台对阵表会同步显示',
+      );
     } catch (error) {
       message.error(error instanceof Error ? error.message : '第二阶段生成失败');
     }
@@ -1231,19 +1259,33 @@ export default function DrawsPage() {
                 <section style={{ border: '1px solid #d9f7be', borderRadius: 8, padding: 16, background: '#fff' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12, flexWrap: 'wrap' }}>
                     <div>
-                      <Typography.Title level={5} style={{ margin: 0 }}>第二阶段：小组赛排位赛</Typography.Title>
-                      <Typography.Text type="secondary">分组方式：裁判手动指定；签位来源：组委会手动安排。</Typography.Text>
+                      <Typography.Title level={5} style={{ margin: 0 }}>
+                        {isStandardSecondStageFormat ? '第二阶段：标准2023淘汰排位' : '第二阶段：小组赛排位赛'}
+                      </Typography.Title>
+                      <Typography.Text type="secondary">
+                        {isStandardSecondStageFormat
+                          ? '小组赛全部结束后，系统按标准2023名次取出线队伍；可手动指定 A-H，未指定部分随机补齐。'
+                          : '分组方式：裁判手动指定；签位来源：组委会手动安排。'}
+                      </Typography.Text>
                     </div>
-                    <Button type="primary" icon={<TrophyOutlined />} onClick={handleConfirmSecondStage} disabled={!selectedEventId || visibleRegistrations.length < 8}>
-                      确认生成第二阶段
+                    <Button type="primary" icon={<TrophyOutlined />} onClick={handleConfirmSecondStage} disabled={!selectedEventId || !canConfirmSecondStage}>
+                      {isStandardSecondStageFormat ? '确认/随机生成第二阶段' : '确认生成第二阶段'}
                     </Button>
                   </div>
                   <Alert
                     type="info"
                     showIcon
                     style={{ marginBottom: 12 }}
-                    message="请手动指定 A-H 签位（可留空＝轮空）"
-                    description="确认后会生成 A vs B、C vs D、E vs F、G vs H，并按 TOP_6 / TOP_8 自动准备后续排位赛。签位可留空或选“轮空”（至少需 2 名选手），轮空位的对手不战自动晋级。重新抽签会清空已指定的 A-H 签位，需重新指定。"
+                    message={
+                      isStandardSecondStageFormat
+                        ? '可手动指定 A-H；不指定时按出线队伍随机抽签'
+                        : '请手动指定 A-H 签位（可留空＝轮空）'
+                    }
+                    description={
+                      isStandardSecondStageFormat
+                        ? '确认后会生成 A vs B、C vs D、E vs F、G vs H。首轮负者进入 5-8 名争夺区；排名范围可设置为取前6名或取前8名。'
+                        : '确认后会生成 A vs B、C vs D、E vs F、G vs H，并按 TOP_6 / TOP_8 自动准备后续排位赛。签位可留空或选“轮空”（至少需 2 名选手），轮空位的对手不战自动晋级。重新抽签会清空已指定的 A-H 签位，需重新指定。'
+                    }
                   />
                   <Form form={secondStageForm} layout="vertical" initialValues={{ rankingMode: 'TOP_8' }}>
                     <Form.Item name="rankingMode" label="排名范围" rules={[{ required: true, message: '请选择排名范围' }]}>
@@ -1268,10 +1310,7 @@ export default function DrawsPage() {
                               optionFilterProp="label"
                               options={[
                                 { value: SECOND_STAGE_BYE, label: '轮空（空位，对手不战晋级）' },
-                                ...visibleRegistrations.map((registration) => ({
-                                  value: registration.id,
-                                  label: sideName(registration),
-                                })),
+                                ...secondStageCandidates,
                               ]}
                             />
                           </Form.Item>
@@ -1283,11 +1322,15 @@ export default function DrawsPage() {
                     <div style={{ marginTop: 8 }}>
                       <SecondStageBracket data={visibleBracket.secondStage} />
                       <Alert
-                        type="success"
+                        type={secondStageConfirmed ? 'success' : 'warning'}
                         showIcon
                         style={{ marginTop: 12 }}
-                        message="第二阶段对阵已自动生成"
-                        description="A-H 签位确认后，系统会生成正式比赛；后续比分由赛程/裁判记分同步，胜负关系自动推进，不需要在这里手动录入。"
+                        message={secondStageConfirmed ? '第二阶段正式比赛已生成' : '第二阶段对阵预览'}
+                        description={
+                          secondStageConfirmed
+                            ? 'A-H 签位确认后，系统会生成正式比赛；后续比分由赛程/裁判记分同步，胜负关系自动推进，不需要在这里手动录入。'
+                            : '当前仅展示 A-H 签位与胜负推进结构。小组赛完成后可手动指定签位，或直接确认让系统随机补齐。'
+                        }
                       />
                     </div>
                   ) : null}

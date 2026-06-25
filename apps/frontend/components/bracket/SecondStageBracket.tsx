@@ -40,6 +40,14 @@ export type SecondStageRanking = {
   playerName?: string | null;
 };
 
+export type SecondStageEligibleEntrant = {
+  playerId: string;
+  playerName?: string | null;
+  playerMembers?: string[] | null;
+  group?: string | null;
+  rank?: number | null;
+};
+
 export type SecondStageData = {
   status?: SecondStageStatus;
   secondStageStatus?: SecondStageStatus;
@@ -52,6 +60,8 @@ export type SecondStageData = {
   slots?: SecondStageSlot[];
   matches?: SecondStageMatch[];
   rankings?: SecondStageRanking[];
+  qualifierReady?: boolean;
+  eligibleEntrants?: SecondStageEligibleEntrant[];
 };
 
 const SLOT_ORDER = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
@@ -82,6 +92,7 @@ export function SecondStageBracket({ data }: { data: SecondStageData }) {
   const rankings = [...(data.rankings ?? [])]
     .filter((ranking) => rankingMode !== 'TOP_6' || ranking.rank <= 6)
     .sort((a, b) => a.rank - b.rank);
+  const hasPreview = slots.length > 0 || (data.matches ?? []).length > 0;
 
   return (
     <section className="overflow-hidden rounded-2xl border border-emerald-100 bg-white shadow-sm">
@@ -106,7 +117,7 @@ export function SecondStageBracket({ data }: { data: SecondStageData }) {
         </div>
       </header>
 
-      {!formal ? (
+      {!formal && !hasPreview ? (
         <div className="bg-emerald-50 px-4 py-6 sm:px-6">
           <p className="text-sm font-black text-emerald-900">
             {status === 'DRAFT' ? '第二阶段分组待确认' : '第二阶段暂未开启'}

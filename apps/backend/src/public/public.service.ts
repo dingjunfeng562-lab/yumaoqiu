@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { TeamCompetitionsService } from '../team-competitions/team-competitions.service';
 import { AnnouncementsService } from '../announcements/announcements.service';
 import { effectiveTournamentStatus } from '../tournaments/tournament-status';
+import { buildKnockoutSkeleton } from '../common/knockout-skeleton';
 
 const SECOND_STAGE_FORMAL_ROUND_NO_BASE = 100;
 
@@ -722,6 +723,25 @@ export class PublicService {
     const firstRound = bracketMatches
       .filter((match: any) => match.roundNo === 1)
       .sort((a: any, b: any) => a.matchNo - b.matchNo);
+
+    // GROUP_PLUS_KNOCKOUT_STD：小组赛出线前淘汰赛尚未生成，按 组数×出线数 预画对阵骨架
+    //（签位用「X组第N名」占位，出线后由真实签表无缝替换）。
+    const hasKnockout = bracketMatches.some((match: any) => match.roundNo >= 1);
+    const skeleton =
+      !hasKnockout && event.format === Format.GROUP_PLUS_KNOCKOUT_STD
+        ? buildKnockoutSkeleton(
+            [
+              ...new Set(
+                bracketMatches
+                  .filter((match: any) => match.roundNo === 0)
+                  .map((match: any) => String(match.round ?? ''))
+                  .filter(Boolean),
+              ),
+            ] as string[],
+            event.qualifiersPerGroup ?? 2,
+          )
+        : null;
+
     const participants = firstRound.length
       ? firstRound.flatMap((match: any, index: number) => [
           this.bracketParticipant(match.side1Id, index * 2 + 1, registrationMap),
@@ -752,6 +772,7 @@ export class PublicService {
       generatedAt: event.drawGeneratedAt?.toISOString?.() ?? null,
       participants,
       groups,
+      knockoutSkeleton: skeleton,
       matches: bracketMatches.map((match: any) => {
         const pauseState = this.computePublicPauseState(match.events ?? [], match.finishedAt);
         const courtDisplayState = this.computePublicCourtDisplayState(match.events ?? []);

@@ -1,12 +1,26 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { MatchStatus, RegistrationStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { buildOrderbookWorkbook } from './orderbook-workbook';
+
+const XLS_CONTENT_TYPE = 'application/vnd.ms-excel';
+const XLSX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 type ExportKind = 'schedule' | 'results' | 'registrations' | 'bracket' | 'orderbook';
 type CellValue = string | number | boolean | null | undefined;
 type Worksheet = {
   name: string;
   rows: CellValue[][];
+};
+export type {
+  ExportTournament,
+  ExportEvent,
+  ExportMatch,
+  ExportRegistration,
+  ExportVenue,
+  ExportSecondStage,
+  ExportSecondStageMatch,
+  ExportSecondStageSlot,
 };
 type StandingRow = {
   id: string;
@@ -76,11 +90,47 @@ type ExportMatch = {
   }>;
 };
 
+type ExportSecondStageSlot = {
+  slot: string;
+  sortOrder: number;
+  entrantId: string | null;
+  entrantNameSnapshot: string | null;
+};
+
+type ExportSecondStageMatch = {
+  matchNo: number;
+  roundName: string;
+  area: string;
+  slotInfo: string | null;
+  side1Source: string | null;
+  side2Source: string | null;
+  side1Id: string | null;
+  side2Id: string | null;
+  side1NameSnapshot: string | null;
+  side2NameSnapshot: string | null;
+  score: string | null;
+  status: string;
+  winnerSide: number | null;
+  winnerId: string | null;
+  winnerNameSnapshot: string | null;
+};
+
+type ExportSecondStage = {
+  status: string;
+  mode: string;
+  rankingMode: string;
+  slots: ExportSecondStageSlot[];
+  matches: ExportSecondStageMatch[];
+  rankings: Array<{ rank: number; entrantId: string | null; entrantNameSnapshot: string | null }>;
+};
+
 type ExportEvent = {
   type: string;
   format?: string;
+  qualifiersPerGroup?: number | null;
   registrations: ExportRegistration[];
   matches: ExportMatch[];
+  secondStage?: ExportSecondStage | null;
 };
 
 type ExportVenue = {
@@ -103,26 +153,6 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
   MENS_DOUBLES: '男子双打',
   WOMENS_DOUBLES: '女子双打',
   MIXED_DOUBLES: '混合双打',
-};
-
-// 秩序册「场次号」前缀:项目类型缩写,如 男双1、女双2。
-const EVENT_TYPE_ABBR: Record<string, string> = {
-  MENS_SINGLES: '男单',
-  WOMENS_SINGLES: '女单',
-  MENS_DOUBLES: '男双',
-  WOMENS_DOUBLES: '女双',
-  MIXED_DOUBLES: '混双',
-};
-
-// 与前端 lib/round.ts 的 roundCn 保持一致的淘汰赛轮次中文名。
-const KNOCKOUT_ROUND_LABELS: Record<string, string> = {
-  F: '决赛',
-  SF: '半决赛',
-  QF: '1/4决赛',
-  R1: '1/8决赛',
-  R2: '1/16决赛',
-  R3: '1/32决赛',
-  BRONZE: '季军赛',
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -148,12 +178,22 @@ export class ExportsService {
     const tournament = await this.findTournamentForExport(tournamentId, kind);
     if (!tournament) throw new NotFoundException('赛事不存在');
 
+    // 秩序册走高保真 .xlsx（含日程表、秩序表、各项目流程表）；其余沿用轻量 .xls。
+    if (kind === 'orderbook') {
+      return {
+        filename: this.exportFilename(tournament.name, '秩序册', 'xlsx'),
+        content: await buildOrderbookWorkbook(tournament),
+        contentType: XLSX_CONTENT_TYPE,
+      };
+    }
+
     const worksheets = this.buildWorksheets(tournament, kind);
     const label = this.exportLabel(kind);
 
     return {
-      filename: this.exportFilename(tournament.name, label),
+      filename: this.exportFilename(tournament.name, label, 'xls'),
       content: this.toWorkbookXml(worksheets),
+      contentType: XLS_CONTENT_TYPE,
     };
   }
 
@@ -261,6 +301,7 @@ export class ExportsService {
           select: {
             type: true,
             format: true,
+            qualifiersPerGroup: true,
             registrations: {
               where: { status: RegistrationStatus.APPROVED },
               orderBy: [{ groupName: 'asc' }, { isSeed: 'desc' }, { seedRank: 'asc' }, { createdAt: 'asc' }],
@@ -330,6 +371,42 @@ export class ExportsService {
                 },
               },
             },
+            // 第二阶段（前8/前6晋级赛）由后台手动指定的签位与对阵，用于秩序册流程图。
+            secondStage: {
+              select: {
+                status: true,
+                mode: true,
+                rankingMode: true,
+                slots: {
+                  orderBy: { sortOrder: 'asc' },
+                  select: { slot: true, sortOrder: true, entrantId: true, entrantNameSnapshot: true },
+                },
+                matches: {
+                  orderBy: { matchNo: 'asc' },
+                  select: {
+                    matchNo: true,
+                    roundName: true,
+                    area: true,
+                    slotInfo: true,
+                    side1Source: true,
+                    side2Source: true,
+                    side1Id: true,
+                    side2Id: true,
+                    side1NameSnapshot: true,
+                    side2NameSnapshot: true,
+                    score: true,
+                    status: true,
+                    winnerSide: true,
+                    winnerId: true,
+                    winnerNameSnapshot: true,
+                  },
+                },
+                rankings: {
+                  orderBy: { rank: 'asc' },
+                  select: { rank: true, entrantId: true, entrantNameSnapshot: true },
+                },
+              },
+            },
           },
         },
       },
@@ -340,7 +417,6 @@ export class ExportsService {
     if (kind === 'schedule') return [this.scheduleWorksheet(tournament)];
     if (kind === 'registrations') return [this.registrationsWorksheet(tournament)];
     if (kind === 'bracket') return [this.bracketWorksheet(tournament)];
-    if (kind === 'orderbook') return this.orderbookWorksheets(tournament);
     return [this.resultsWorksheet(tournament), this.standingsWorksheet(tournament)];
   }
 
@@ -539,259 +615,6 @@ export class ExportsService {
     return '';
   }
 
-  // ===== 秩序册：日程表 + 秩序表 =====
-
-  private orderbookWorksheets(tournament: ExportTournament): Worksheet[] {
-    return [
-      this.orderbookScheduleSheet(tournament),
-      this.orderbookOrderSheet(tournament),
-    ];
-  }
-
-  // 日程表：每个项目按节次（上午/下午）列出该节进行的阶段/轮次。
-  private orderbookScheduleSheet(tournament: ExportTournament): Worksheet {
-    const rows: CellValue[][] = [['日期', '项目', '阶段']];
-    for (const session of this.orderbookSessions(tournament)) {
-      for (const event of tournament.events) {
-        const matches = event.matches.filter(
-          (match) => match.scheduledAt && this.orderbookSessionKey(match.scheduledAt) === session.key,
-        );
-        if (!matches.length) continue;
-        rows.push([
-          session.label,
-          EVENT_TYPE_LABELS[event.type] ?? event.type,
-          this.orderbookStageText(matches),
-        ]);
-      }
-    }
-    if (rows.length === 1) rows.push([tournament.name, '暂无已排程的项目', '']);
-    return { name: '日程表', rows };
-  }
-
-  // 秩序表：按「节」分块；每节为「场次 | 时间 | 各号场地」网格，每个场次占 4 行
-  // （项目+场次号 / 组别轮次+签位对阵 / 单位 / 姓名），每个场地占 2 列（对阵双方）。
-  private orderbookOrderSheet(tournament: ExportTournament): Worksheet {
-    const venues = this.orderbookVenues(tournament);
-    const regMap = this.orderbookRegistrationMap(tournament);
-    const codeMap = this.orderbookMatchCodeMap(tournament);
-    const posMap = this.orderbookGroupPositions(tournament);
-
-    const scheduled = tournament.events.flatMap((event) =>
-      event.matches
-        .filter((match) => match.scheduledAt && match.venueId)
-        .map((match) => ({ event, match })),
-    );
-
-    const rows: CellValue[][] = [['秩 序 表']];
-    let sessionNo = 0;
-    for (const session of this.orderbookSessions(tournament)) {
-      const sessionMatches = scheduled.filter(
-        ({ match }) => this.orderbookSessionKey(match.scheduledAt!) === session.key,
-      );
-      if (!sessionMatches.length) continue;
-      sessionNo += 1;
-
-      const times = [...new Set(sessionMatches.map(({ match }) => match.scheduledAt!.getTime()))].sort(
-        (a, b) => a - b,
-      );
-
-      rows.push([]);
-      rows.push([`第${sessionNo}节（${session.label}）`]);
-      const header: CellValue[] = ['场次', '时间'];
-      for (const venue of venues) header.push(venue.name, '');
-      rows.push(header);
-
-      times.forEach((time, index) => {
-        const rowItem: CellValue[] = [`第${index + 1}场`, this.orderbookTimeHM(new Date(time))];
-        const rowGroup: CellValue[] = ['', ''];
-        const rowUnit: CellValue[] = ['', ''];
-        const rowName: CellValue[] = ['', ''];
-
-        for (const venue of venues) {
-          const found = sessionMatches.find(
-            ({ match }) => match.scheduledAt!.getTime() === time && match.venueId === venue.id,
-          );
-          if (!found) {
-            rowItem.push('', '');
-            rowGroup.push('', '');
-            rowUnit.push('', '');
-            rowName.push('', '');
-            continue;
-          }
-          const { event, match } = found;
-          const side1 = match.side1Id ? regMap.get(match.side1Id) ?? null : null;
-          const side2 = match.side2Id ? regMap.get(match.side2Id) ?? null : null;
-          rowItem.push(EVENT_TYPE_LABELS[event.type] ?? event.type, codeMap.get(match.id) ?? '');
-          rowGroup.push(this.orderbookRoundLabel(match), this.orderbookPairLabel(match, posMap));
-          rowUnit.push(this.orderbookSideUnit(side1), this.orderbookSideUnit(side2));
-          rowName.push(this.orderbookSideName(side1), this.orderbookSideName(side2));
-        }
-
-        rows.push(rowItem, rowGroup, rowUnit, rowName);
-      });
-    }
-
-    if (rows.length === 1) rows.push([], [tournament.name, '暂无已排程的场次']);
-    return { name: '秩序表', rows };
-  }
-
-  private orderbookVenues(tournament: ExportTournament): ExportVenue[] {
-    if (tournament.venues?.length) return tournament.venues;
-    const map = new Map<string, ExportVenue>();
-    for (const event of tournament.events) {
-      for (const match of event.matches) {
-        if (match.venueId && match.venue && !map.has(match.venueId)) {
-          map.set(match.venueId, {
-            id: match.venueId,
-            name: match.venue.name,
-            sortOrder: match.venue.sortOrder,
-          });
-        }
-      }
-    }
-    return [...map.values()].sort((a, b) => a.sortOrder - b.sortOrder);
-  }
-
-  private orderbookSessions(tournament: ExportTournament) {
-    const map = new Map<string, { key: string; label: string; sort: number }>();
-    for (const event of tournament.events) {
-      for (const match of event.matches) {
-        if (!match.scheduledAt) continue;
-        const key = this.orderbookSessionKey(match.scheduledAt);
-        if (map.has(key)) continue;
-        const d = match.scheduledAt;
-        const sort = ((d.getFullYear() * 100 + d.getMonth() + 1) * 100 + d.getDate()) * 10 + (d.getHours() < 12 ? 0 : 1);
-        map.set(key, { key, label: this.orderbookSessionLabel(d), sort });
-      }
-    }
-    return [...map.values()].sort((a, b) => a.sort - b.sort);
-  }
-
-  private orderbookSessionKey(date: Date) {
-    return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}-${date.getHours() < 12 ? 'AM' : 'PM'}`;
-  }
-
-  private orderbookSessionLabel(date: Date) {
-    const mm = String(date.getMonth() + 1).padStart(2, '0');
-    const dd = String(date.getDate()).padStart(2, '0');
-    return `${mm}月${dd}日${date.getHours() < 12 ? '上午' : '下午'}`;
-  }
-
-  private orderbookTimeHM(date: Date) {
-    return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-  }
-
-  private orderbookStageText(matches: ExportMatch[]) {
-    const parts: string[] = [];
-    if (matches.some((match) => (match.roundNo ?? 0) === 0)) parts.push('第一阶段·小组循环');
-    if (matches.some((match) => this.orderbookIsPlayoff(match))) parts.push('排位赛');
-    const koLabels = [
-      ...new Set(
-        matches
-          .filter(
-            (match) =>
-              (match.roundNo ?? 0) >= 1 && (match.roundNo ?? 0) < 100 && !this.orderbookIsPlayoff(match),
-          )
-          .map((match) => this.orderbookRoundLabel(match)),
-      ),
-    ];
-    if (koLabels.length) parts.push('第二阶段·' + koLabels.join('、'));
-    if (matches.some((match) => (match.roundNo ?? 0) >= 100)) parts.push('第二阶段·排位赛');
-    return parts.join('；') || '—';
-  }
-
-  private orderbookIsPlayoff(match: ExportMatch) {
-    const roundNo = match.roundNo ?? 0;
-    return roundNo >= 1 && roundNo < 100 && typeof match.round === 'string' && match.round.startsWith('P');
-  }
-
-  private orderbookRoundLabel(match: ExportMatch) {
-    const roundNo = match.roundNo ?? 0;
-    const round = typeof match.round === 'string' ? match.round : match.round != null ? String(match.round) : '';
-    if (roundNo === 0) return round ? `${round}组` : '小组循环';
-    if (roundNo >= 100) return '第二阶段';
-    if (round.startsWith('P')) return '排位赛';
-    return KNOCKOUT_ROUND_LABELS[round] ?? round;
-  }
-
-  private orderbookPairLabel(match: ExportMatch, posMap: Map<string, { group: string; pos: number }>) {
-    if ((match.roundNo ?? 0) !== 0) return '';
-    const a = match.side1Id ? posMap.get(match.side1Id) : null;
-    const b = match.side2Id ? posMap.get(match.side2Id) : null;
-    if (!a || !b) return '';
-    return `${a.group}${a.pos}-${b.group}${b.pos}`;
-  }
-
-  private orderbookSideUnit(registration: ExportRegistration | null) {
-    if (!registration) return '';
-    const team = registration.teamName?.trim();
-    if (team) return team;
-    return registration.player2
-      ? `${registration.player1.affiliation}/${registration.player2.affiliation}`
-      : registration.player1.affiliation;
-  }
-
-  private orderbookSideName(registration: ExportRegistration | null) {
-    return registration ? this.registrationName(registration) : '';
-  }
-
-  private orderbookRegistrationMap(tournament: ExportTournament) {
-    const map = new Map<string, ExportRegistration>();
-    for (const event of tournament.events) {
-      for (const registration of event.registrations) map.set(registration.id, registration);
-    }
-    return map;
-  }
-
-  // 每个项目内，已排程的场次按时间→场地→场序编「场次号」（如 男双1、男双2）。
-  private orderbookMatchCodeMap(tournament: ExportTournament) {
-    const map = new Map<string, string>();
-    for (const event of tournament.events) {
-      const abbr = EVENT_TYPE_ABBR[event.type] ?? '场';
-      const ordered = event.matches
-        .filter((match) => match.scheduledAt && match.venueId)
-        .sort(
-          (a, b) =>
-            a.scheduledAt!.getTime() - b.scheduledAt!.getTime() ||
-            (a.venue?.sortOrder ?? 0) - (b.venue?.sortOrder ?? 0) ||
-            (a.matchNo ?? 0) - (b.matchNo ?? 0) ||
-            a.id.localeCompare(b.id),
-        );
-      ordered.forEach((match, index) => map.set(match.id, `${abbr}${index + 1}`));
-    }
-    return map;
-  }
-
-  // 组内循环按 i<j 嵌套生成（round=组码、roundNo=0、matchNo 递增），据此还原每个成员的组内签位号：
-  // member0 = 首场 side1；其余成员 = 与 member0 同为 side1 的各场 side2，依 matchNo 顺序排列。
-  private orderbookGroupPositions(tournament: ExportTournament) {
-    const map = new Map<string, { group: string; pos: number }>();
-    for (const event of tournament.events) {
-      const byGroup = new Map<string, ExportMatch[]>();
-      for (const match of event.matches) {
-        if ((match.roundNo ?? 0) !== 0) continue;
-        const group = typeof match.round === 'string' ? match.round : match.round != null ? String(match.round) : '';
-        if (!group) continue;
-        const list = byGroup.get(group) ?? [];
-        list.push(match);
-        byGroup.set(group, list);
-      }
-      for (const [group, groupMatches] of byGroup) {
-        const sorted = [...groupMatches].sort((a, b) => (a.matchNo ?? 0) - (b.matchNo ?? 0));
-        const member0 = sorted[0]?.side1Id;
-        if (!member0) continue;
-        const order = [member0];
-        for (const match of sorted) {
-          if (match.side1Id === member0 && match.side2Id) order.push(match.side2Id);
-        }
-        order.forEach((id, index) => {
-          if (!map.has(id)) map.set(id, { group, pos: index + 1 });
-        });
-      }
-    }
-    return map;
-  }
-
   private venueSequentialMatchNoMap(tournament: ExportTournament) {
     const matches = tournament.events
       .flatMap((event) => event.matches)
@@ -847,9 +670,9 @@ export class ExportsService {
     return '报名表';
   }
 
-  private exportFilename(tournamentName: string, label: string) {
+  private exportFilename(tournamentName: string, label: string, ext: 'xls' | 'xlsx') {
     const safeName = this.sanitizeFilenamePart(tournamentName) || '赛事';
-    return `${safeName}-${this.formatFileDate(new Date())}-${label}.xls`;
+    return `${safeName}-${this.formatFileDate(new Date())}-${label}.${ext}`;
   }
 
   private formatFileDate(value: Date | string) {

@@ -71,6 +71,23 @@ export type BracketMatch = {
   detailLines?: string[];
 };
 
+// 第二阶段「对阵骨架」：GROUP_PLUS_KNOCKOUT_STD 小组赛出线前，按组数×出线数预排的
+// 淘汰赛对阵树（签位为「X组第N名」占位）。出线后真实签表生成、此字段为空。
+export type KnockoutSkeleton = {
+  bracketSize: number;
+  participants: { id: string; position: number; name: string; isBye: boolean }[];
+  matches: {
+    id: string;
+    round: string;
+    roundNo: number;
+    matchNo: number;
+    side1Id: string | null;
+    side2Id: string | null;
+    status: string;
+    winnerSide: number | null;
+  }[];
+};
+
 export type KnockoutBracketData = {
   id: string;
   tournamentId?: string;
@@ -82,6 +99,7 @@ export type KnockoutBracketData = {
   participants: BracketParticipant[];
   groups?: BracketGroup[];
   matches: BracketMatch[];
+  knockoutSkeleton?: KnockoutSkeleton | null;
   secondStage?: SecondStageData | null;
 };
 
@@ -324,6 +342,34 @@ export function KnockoutBracket({
   const hasBracketMatches = bracketInputMatches.length > 0;
   const canShowTree = hasBracketMatches && !hasGroupStageMatches;
   const groupRosters = data.groups ?? [];
+
+  // 第二阶段对阵骨架：小组赛出线前（尚无真实淘汰赛场次）按预排骨架渲染一棵独立对阵树，
+  // 签位为「X组第N名」占位。作为独立卡片渲染，与小组赛名次解析互不干扰。
+  const skeletonData: KnockoutBracketData | null =
+    data.knockoutSkeleton && !hasBracketMatches && data.knockoutSkeleton.matches.length
+      ? {
+          id: `${data.id}-skeleton`,
+          title: `${data.groupLabel ?? '第二阶段'}对阵（出线前预排）`,
+          subtitle: '签位为「X组第N名」，小组赛出线后自动替换为真实选手',
+          participants: data.knockoutSkeleton.participants.map((p) => ({
+            id: p.id,
+            position: p.position,
+            name: p.name,
+            isBye: p.isBye,
+          })),
+          matches: data.knockoutSkeleton.matches
+            .filter((m) => m.round !== 'BRONZE')
+            .map((m) => ({
+              id: m.id,
+              roundNo: m.roundNo,
+              matchNo: m.matchNo,
+              status: m.status,
+              side1Id: m.side1Id,
+              side2Id: m.side2Id,
+              winnerSide: m.winnerSide,
+            })),
+        }
+      : null;
 
   // Slots = ordered participants padded to next power of two with byes
   const baseSlots = useMemo(() => {
@@ -676,6 +722,7 @@ export function KnockoutBracket({
         />
       ) : null}
     </section>
+    {skeletonData ? <KnockoutBracket data={skeletonData} /> : null}
     {data.secondStage ? <SecondStageBracket data={data.secondStage} /> : null}
     </div>
   );

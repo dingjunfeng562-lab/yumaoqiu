@@ -39,6 +39,7 @@ import {
   secondStageFormalRoundNo,
 } from '../common/second-stage-bracket';
 import { SecondStageProgressService } from '../common/second-stage-progress.service';
+import { buildKnockoutSkeleton } from '../common/knockout-skeleton';
 
 type RegistrationWithPlayers = Registration & {
   player1: { id: string; name: string; gender: string; affiliation: string };
@@ -61,6 +62,14 @@ type SecondStageSlotCode = (typeof SECOND_STAGE_SLOTS)[number];
 type SecondStageEntrant = {
   id: string | null;
   name: string | null;
+};
+
+type StandardSecondStageEntrant = {
+  id: string;
+  name: string;
+  members: string[];
+  group: string;
+  rank: number;
 };
 
 type SecondStageMatchTemplate = {
@@ -1144,16 +1153,32 @@ export class DrawsService {
       .filter((match) => isSecondStageFormalRoundNo(match.roundNo))
       .map((match) => hydrateMatch(match));
 
+    // GROUP_PLUS_KNOCKOUT_STD：小组赛出线前淘汰赛尚未生成，按 组数×出线数 预画对阵骨架
+    //（签位用「X组第N名」占位，出线后由真实签表无缝替换）。
+    const knockoutSkeleton =
+      rounds.length === 0 && event.format === Format.GROUP_PLUS_KNOCKOUT_STD
+        ? buildKnockoutSkeleton(
+            groups.map((group) => group.name),
+            event.qualifiersPerGroup ?? 2,
+          )
+        : null;
+    const secondStageEntrants =
+      event.format === Format.GROUP_PLUS_KNOCKOUT_STD
+        ? await this.getStandardSecondStageEntrants(eventId, event.qualifiersPerGroup ?? 2)
+        : [];
+
     return {
       event,
       currentDraw,
       registrations,
       rounds,
       groups,
+      knockoutSkeleton,
       secondStage: this.secondStageView(
         secondStage,
         event.format,
         new Map(registrations.map((registration) => [registration.id, registration])),
+        secondStageEntrants,
       ),
       secondStageFormalMatches,
     };
@@ -1179,6 +1204,9 @@ export class DrawsService {
       stage,
       event.format,
       new Map(registrations.map((registration) => [registration.id, registration])),
+      event.format === Format.GROUP_PLUS_KNOCKOUT_STD
+        ? await this.getStandardSecondStageEntrants(eventId, event.qualifiersPerGroup ?? 2)
+        : [],
     );
   }
 
@@ -1190,8 +1218,10 @@ export class DrawsService {
   ) {
     if (!operatorId) throw new BadRequestException('缺少操作人信息');
     const event = await this.ensureEvent(eventId);
-    if (event.format !== Format.SINGLE_ELIMINATION_PLUS_GROUP_RANKING) {
-      throw new BadRequestException('当前单项不是“单淘汰+小组赛排位赛”赛制');
+    const isManualRankingFormat = event.format === Format.SINGLE_ELIMINATION_PLUS_GROUP_RANKING;
+    const isStandard2023Format = event.format === Format.GROUP_PLUS_KNOCKOUT_STD;
+    if (!isManualRankingFormat && !isStandard2023Format) {
+      throw new BadRequestException('当前单项不支持第二阶段 A-H 签位编排');
     }
 
     // A-H 签位允许留空（轮空）：留空/未选的签位无选手，对应初始赛由对手不战而胜。
@@ -1206,25 +1236,59 @@ export class DrawsService {
       return { slot, entrantId };
     });
 
-    const assigned = normalizedSlots.filter(
+    let assigned = normalizedSlots.filter(
       (item): item is { slot: SecondStageSlotCode; entrantId: string } => Boolean(item.entrantId),
     );
-    if (assigned.length < 2) {
+
+    let standardEntrants: StandardSecondStageEntrant[] = [];
+    if (isStandard2023Format) {
+      standardEntrants = await this.getStandardSecondStageEntrants(eventId, event.qualifiersPerGroup ?? 2);
+      if (standardEntrants.length < 2) {
+        throw new BadRequestException('小组赛全部结束后，至少需要产生 2 名出线队伍才能生成第二阶段');
+      }
+      if (standardEntrants.length > SECOND_STAGE_SLOTS.length) {
+        throw new BadRequestException('A-H 第二阶段最多支持 8 名出线队伍，请调整每组出线数或使用普通淘汰签表');
+      }
+      const eligibleIds = new Set(standardEntrants.map((entrant) => entrant.id));
+      const invalid = assigned.find((item) => !eligibleIds.has(item.entrantId));
+      if (invalid) {
+        throw new BadRequestException('标准2023第二阶段签位只能选择已出线队伍');
+      }
+
+      const usedIds = new Set(assigned.map((item) => item.entrantId));
+      const emptySlots = SECOND_STAGE_SLOTS.filter(
+        (slot) => !assigned.some((item) => item.slot === slot),
+      );
+      const remaining = this.shuffle(standardEntrants.filter((entrant) => !usedIds.has(entrant.id)));
+      if (remaining.length > emptySlots.length) {
+        throw new BadRequestException('A-H 签位不足以容纳全部出线队伍');
+      }
+      assigned = [
+        ...assigned,
+        ...remaining.map((entrant, index) => ({ slot: emptySlots[index], entrantId: entrant.id })),
+      ];
+    } else if (assigned.length < 2) {
       throw new BadRequestException('至少需要指定 2 名选手，其余签位可留空（轮空）');
     }
+
     const entrantIds = assigned.map((item) => item.entrantId);
     if (new Set(entrantIds).size !== entrantIds.length) {
       throw new BadRequestException('A-H 签位不能重复选择同一名选手');
     }
 
-    const registrations = await this.prisma.registration.findMany({
-      where: {
-        eventId,
-        id: { in: entrantIds },
-        status: RegistrationStatus.APPROVED,
-      },
-      include: { player1: true, player2: true },
-    });
+    const registrations = isStandard2023Format
+      ? await this.prisma.registration.findMany({
+          where: { eventId, id: { in: entrantIds }, status: RegistrationStatus.APPROVED },
+          include: { player1: true, player2: true },
+        })
+      : await this.prisma.registration.findMany({
+          where: {
+            eventId,
+            id: { in: entrantIds },
+            status: RegistrationStatus.APPROVED,
+          },
+          include: { player1: true, player2: true },
+        });
     if (registrations.length !== entrantIds.length) {
       throw new BadRequestException('签位选手必须来自当前单项已通过报名名单');
     }
@@ -1285,7 +1349,12 @@ export class DrawsService {
         })),
       });
       await tx.match.deleteMany({
-        where: { eventId, roundNo: { gte: SECOND_STAGE_FORMAL_ROUND_NO_BASE } },
+        where: {
+          eventId,
+          roundNo: {
+            gte: isStandard2023Format ? 1 : SECOND_STAGE_FORMAL_ROUND_NO_BASE,
+          },
+        },
       });
       await this.createSecondStageFormalMatches(tx, eventId, matchTemplates);
 
@@ -1423,19 +1492,52 @@ export class DrawsService {
     stage: any | null,
     eventFormat?: Format,
     registrationMap: Map<string, RegistrationWithPlayers> = new Map(),
+    standardEntrants: StandardSecondStageEntrant[] = [],
   ) {
     if (!stage) {
-      if (eventFormat !== Format.SINGLE_ELIMINATION_PLUS_GROUP_RANKING) return null;
+      if (!this.supportsSecondStageBracket(eventFormat)) return null;
+      const rankingMode = SecondStageRankingMode.TOP_8;
+      const previewMatches = this.secondStageMatchTemplates(new Map(), rankingMode);
       return {
         status: SecondStageStatus.NOT_STARTED,
         secondStageStatus: SecondStageStatus.NOT_STARTED,
         mode: SecondStageMode.MANUAL_BY_REFEREE,
         secondStageMode: SecondStageMode.MANUAL_BY_REFEREE,
-        modeText: '裁判手动指定',
-        rankingMode: SecondStageRankingMode.TOP_8,
+        modeText:
+          eventFormat === Format.GROUP_PLUS_KNOCKOUT_STD ? '标准2023出线抽签' : '裁判手动指定',
+        rankingMode,
         rankingModeText: '取前8名',
-        slots: [],
-        matches: [],
+        slotSourceText:
+          eventFormat === Format.GROUP_PLUS_KNOCKOUT_STD ? '出线队伍随机或手动安排' : '组委会手动安排',
+        qualifierReady: standardEntrants.length >= 2,
+        eligibleEntrants: this.secondStageEligibleView(standardEntrants),
+        slots: SECOND_STAGE_SLOTS.map((slot) => ({
+          slot,
+          playerId: null,
+          playerName: '待定',
+          playerMembers: [],
+        })),
+        matches: previewMatches.map((match) => ({
+          id: `preview-${match.matchNo}`,
+          matchNo: match.matchNo,
+          stageName: '第二阶段',
+          roundName: match.roundName,
+          area: match.area,
+          slotInfo: match.slotInfo,
+          source1: match.side1Source,
+          source2: match.side2Source,
+          player1Id: null,
+          player2Id: null,
+          player1Name: '待定',
+          player2Name: '待定',
+          player1Members: [],
+          player2Members: [],
+          score: null,
+          winnerSide: null,
+          winnerId: null,
+          winnerName: null,
+          status: MatchStatus.PENDING,
+        })),
         rankings: [],
       };
     }
@@ -1463,6 +1565,8 @@ export class DrawsService {
       rankingMode,
       rankingModeText: rankingMode === SecondStageRankingMode.TOP_6 ? '取前6名' : '取前8名',
       slotSourceText: '组委会手动安排',
+      qualifierReady: standardEntrants.length >= 2,
+      eligibleEntrants: this.secondStageEligibleView(standardEntrants),
       confirmedAt: stage.confirmedAt?.toISOString?.() ?? null,
       finishedAt: stage.finishedAt?.toISOString?.() ?? null,
       slots: (stage.slots ?? []).map((slot: any) => ({
@@ -1746,6 +1850,184 @@ export class DrawsService {
     const letters = /^[A-Z]+/.exec(value.trim().toUpperCase())?.[0];
     if (!letters) return Number.MAX_SAFE_INTEGER;
     return [...letters].reduce((sum, char) => sum * 26 + char.charCodeAt(0) - 64, 0);
+  }
+
+  private supportsSecondStageBracket(eventFormat?: Format) {
+    return (
+      eventFormat === Format.SINGLE_ELIMINATION_PLUS_GROUP_RANKING ||
+      eventFormat === Format.GROUP_PLUS_KNOCKOUT_STD
+    );
+  }
+
+  private secondStageEligibleView(entrants: StandardSecondStageEntrant[]) {
+    return entrants.map((entrant) => ({
+      playerId: entrant.id,
+      playerName: entrant.name,
+      playerMembers: entrant.members,
+      group: entrant.group,
+      rank: entrant.rank,
+    }));
+  }
+
+  private shuffle<T>(items: T[]): T[] {
+    const result = [...items];
+    for (let i = result.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [result[i], result[j]] = [result[j], result[i]];
+    }
+    return result;
+  }
+
+  private async getStandardSecondStageEntrants(
+    eventId: string,
+    qualifiersPerGroup: number,
+  ): Promise<StandardSecondStageEntrant[]> {
+    const groupMatches = await this.prisma.match.findMany({
+      where: { eventId, roundNo: 0 },
+      include: { games: true },
+    });
+    if (!groupMatches.length) return [];
+    const allSettled = groupMatches.every(
+      (match) => match.status === MatchStatus.COMPLETED || match.status === MatchStatus.CANCELLED,
+    );
+    if (!allSettled) return [];
+
+    const rankedByGroup = this.computeOfficialGroupRanking(groupMatches);
+    const groupCodes = [...rankedByGroup.keys()].sort((a, b) => this.groupNameCompare(a, b));
+    const q = Math.max(1, qualifiersPerGroup || 2);
+    const qualifiers: Array<{ id: string; group: string; rank: number }> = [];
+    for (let rankIndex = 0; rankIndex < q; rankIndex += 1) {
+      for (const group of groupCodes) {
+        const id = rankedByGroup.get(group)?.[rankIndex];
+        if (id) qualifiers.push({ id, group, rank: rankIndex + 1 });
+      }
+    }
+    if (!qualifiers.length) return [];
+
+    const registrations = await this.prisma.registration.findMany({
+      where: {
+        eventId,
+        id: { in: qualifiers.map((qualifier) => qualifier.id) },
+        status: RegistrationStatus.APPROVED,
+      },
+      include: { player1: true, player2: true },
+    });
+    const registrationMap = new Map(registrations.map((registration) => [registration.id, registration]));
+
+    return qualifiers
+      .map((qualifier) => {
+        const registration = registrationMap.get(qualifier.id);
+        if (!registration) return null;
+        const members = [registration.player1?.name, registration.player2?.name].filter(Boolean) as string[];
+        return {
+          id: registration.id,
+          name: registration.teamName?.trim() || this.registrationName(registration),
+          members,
+          group: qualifier.group,
+          rank: qualifier.rank,
+        };
+      })
+      .filter((entrant): entrant is StandardSecondStageEntrant => Boolean(entrant));
+  }
+
+  private computeOfficialGroupRanking(
+    groupMatches: Array<{
+      round: string;
+      side1Id: string | null;
+      side2Id: string | null;
+      status: MatchStatus;
+      winnerSide: number | null;
+      games: Array<{ side1Score: number; side2Score: number; winnerSide: number | null }>;
+    }>,
+  ): Map<string, string[]> {
+    type Stat = { id: string; wins: number; netGames: number; netPoints: number };
+    const groups = new Map<string, Map<string, Stat>>();
+    const head = new Map<string, Map<string, Map<string, number>>>();
+
+    const ensureStat = (code: string, id: string) => {
+      let group = groups.get(code);
+      if (!group) groups.set(code, (group = new Map()));
+      let stat = group.get(id);
+      if (!stat) group.set(id, (stat = { id, wins: 0, netGames: 0, netPoints: 0 }));
+      return stat;
+    };
+    const addHead = (code: string, winnerId: string, loserId: string) => {
+      let group = head.get(code);
+      if (!group) head.set(code, (group = new Map()));
+      let winnerMap = group.get(winnerId);
+      if (!winnerMap) group.set(winnerId, (winnerMap = new Map()));
+      winnerMap.set(loserId, (winnerMap.get(loserId) ?? 0) + 1);
+    };
+
+    for (const match of groupMatches) {
+      if (!match.side1Id || !match.side2Id) continue;
+      const side1 = ensureStat(match.round, match.side1Id);
+      const side2 = ensureStat(match.round, match.side2Id);
+      if (match.status !== MatchStatus.COMPLETED || !match.winnerSide) continue;
+      let side1Games = 0;
+      let side2Games = 0;
+      for (const game of match.games) {
+        if (game.winnerSide === 1) side1Games += 1;
+        else if (game.winnerSide === 2) side2Games += 1;
+        side1.netPoints += game.side1Score - game.side2Score;
+        side2.netPoints += game.side2Score - game.side1Score;
+      }
+      side1.netGames += side1Games - side2Games;
+      side2.netGames += side2Games - side1Games;
+      if (match.winnerSide === 1) {
+        side1.wins += 1;
+        addHead(match.round, match.side1Id, match.side2Id);
+      } else {
+        side2.wins += 1;
+        addHead(match.round, match.side2Id, match.side1Id);
+      }
+    }
+
+    const headBetween = (code: string, x: string, y: string) => {
+      const group = head.get(code);
+      const xy = group?.get(x)?.get(y) ?? 0;
+      const yx = group?.get(y)?.get(x) ?? 0;
+      return xy - yx;
+    };
+
+    const order = (code: string, members: Stat[], stage: 'wins' | 'netGames' | 'netPoints'): Stat[] => {
+      if (members.length <= 1) return members;
+      const keyOf = (stat: Stat) =>
+        stage === 'wins' ? stat.wins : stage === 'netGames' ? stat.netGames : stat.netPoints;
+      const sorted = [...members].sort((a, b) => keyOf(b) - keyOf(a));
+      const buckets: Stat[][] = [];
+      for (const stat of sorted) {
+        const last = buckets[buckets.length - 1];
+        if (last && keyOf(last[0]) === keyOf(stat)) last.push(stat);
+        else buckets.push([stat]);
+      }
+      const nextStage = (bucket: Stat[]): Stat[] =>
+        stage === 'wins'
+          ? order(code, bucket, 'netGames')
+          : stage === 'netGames'
+            ? order(code, bucket, 'netPoints')
+            : bucket;
+      const result: Stat[] = [];
+      for (const bucket of buckets) {
+        if (bucket.length === 1) {
+          result.push(bucket[0]);
+        } else if (bucket.length === 2) {
+          const headToHead = headBetween(code, bucket[0].id, bucket[1].id);
+          if (headToHead > 0) result.push(bucket[0], bucket[1]);
+          else if (headToHead < 0) result.push(bucket[1], bucket[0]);
+          else result.push(...nextStage(bucket));
+        } else {
+          result.push(...nextStage(bucket));
+        }
+      }
+      return result;
+    };
+
+    const ranked = new Map<string, string[]>();
+    for (const [code, members] of groups) {
+      ranked.set(code, order(code, [...members.values()], 'wins').map((stat) => stat.id));
+    }
+    return ranked;
   }
 
   /**

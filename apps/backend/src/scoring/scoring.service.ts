@@ -1957,6 +1957,7 @@ export class ScoringService {
       }
     }
     if (seedList.length < 2) return;
+    if (seedList.length <= 8) return;
 
     const slots = this.buildCanonicalKnockoutSlots(seedList);
     const drafts = this.buildEliminationDrafts(slots);

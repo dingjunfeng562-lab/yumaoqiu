@@ -20,9 +20,10 @@ export class ExportsController {
   ) {
     const file = await this.exportsService.exportTournament(id, kind);
     const encodedFilename = encodeURIComponent(file.filename);
+    const isBinary = Buffer.isBuffer(file.content);
 
-    res.setHeader('Content-Type', 'application/vnd.ms-excel; charset=utf-8');
+    res.setHeader('Content-Type', isBinary ? file.contentType : `${file.contentType}; charset=utf-8`);
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodedFilename}`);
-    res.send(Buffer.from(file.content, 'utf8'));
+    res.send(isBinary ? file.content : Buffer.from(file.content as string, 'utf8'));
   }
 }
