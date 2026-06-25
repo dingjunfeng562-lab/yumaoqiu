@@ -618,10 +618,12 @@ export default function RefereeScoringPage() {
               : '';
 
   return (
-    <main className="min-h-screen overflow-x-hidden bg-[linear-gradient(180deg,#F5F8FC_0%,#EEF5FF_54%,#FFFFFF_100%)] text-slate-950">
+    <main className={`referee-scoring-page min-h-screen overflow-x-hidden bg-[linear-gradient(180deg,#F5F8FC_0%,#EEF5FF_54%,#FFFFFF_100%)] text-slate-950 ${
+      score.status === 'LIVE' ? 'referee-live-compact' : ''
+    }`}>
       <MatchTimerStrip score={score} />
-      <div className="w-full px-3 py-3 sm:px-5 sm:py-4 xl:px-8 2xl:px-10">
-        <div className="mx-auto flex w-full max-w-[1920px] flex-col gap-4 sm:gap-5">
+      <div className="referee-score-layout w-full px-3 py-3 sm:px-5 sm:py-4 xl:px-8 2xl:px-10">
+        <div className="referee-score-shell mx-auto flex w-full max-w-[1920px] flex-col gap-4 sm:gap-5">
           <TopMatchBar
             score={score}
             socketStatus={socketStatus}
@@ -686,10 +688,10 @@ export default function RefereeScoringPage() {
             />
           ) : null}
 
-          <div className="grid min-w-0 grid-cols-1 gap-4 sm:gap-5 xl:grid-cols-[minmax(0,1fr)_360px] 2xl:grid-cols-[minmax(0,1fr)_400px]">
+          <div className="referee-main-grid grid min-w-0 grid-cols-1 gap-4 sm:gap-5 xl:grid-cols-[minmax(0,1fr)_360px] 2xl:grid-cols-[minmax(0,1fr)_400px]">
             <div className="min-w-0 space-y-4 sm:space-y-5">
-              <section className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.72fr)_minmax(0,1fr)]">
-                <div className="order-2 min-w-0 sm:order-2 lg:order-1">
+              <section className="referee-scoreboard-row grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.72fr)_minmax(0,1fr)]">
+                <div className="referee-left-card order-2 min-w-0 sm:order-2 lg:order-1">
                   <SideScoreCard
                     side={leftDisplaySide.side}
                     accent={leftDisplaySide.accent}
@@ -711,7 +713,7 @@ export default function RefereeScoringPage() {
                   />
                 </div>
 
-                <div className="order-1 min-w-0 sm:col-span-2 lg:order-2 lg:col-span-1">
+                <div className="referee-center-card-slot order-1 min-w-0 sm:col-span-2 lg:order-2 lg:col-span-1">
                   <CenterScoreboard
                     score={score}
                     leftScore={leftDisplaySide.score}
@@ -721,7 +723,7 @@ export default function RefereeScoringPage() {
                   />
                 </div>
 
-                <div className="order-3 min-w-0 lg:order-3">
+                <div className="referee-right-card order-3 min-w-0 lg:order-3">
                   <SideScoreCard
                     side={rightDisplaySide.side}
                     accent={rightDisplaySide.accent}
@@ -986,8 +988,8 @@ function TopMatchBar({
         : 'border-red-200 bg-red-50 text-red-700';
 
   return (
-    <header className="overflow-hidden rounded-2xl border border-[#E5E7EB] bg-white shadow-[0_18px_45px_rgba(15,23,42,0.08)]">
-      <div className="flex min-w-0 flex-col gap-4 border-b border-slate-100 px-3 py-3 sm:px-5 sm:py-4 lg:flex-row lg:items-center lg:justify-between xl:px-6">
+    <header className="referee-top-match-bar overflow-hidden rounded-2xl border border-[#E5E7EB] bg-white shadow-[0_18px_45px_rgba(15,23,42,0.08)]">
+      <div className="referee-top-match-inner flex min-w-0 flex-col gap-4 border-b border-slate-100 px-3 py-3 sm:px-5 sm:py-4 lg:flex-row lg:items-center lg:justify-between xl:px-6">
         <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
           <Link
             href="/referee/my-matches"
@@ -1113,8 +1115,8 @@ function SideScoreCard({
   const activeReceiverPlayer = servingState?.receivingSide === side ? servingState.receiverPlayerIndex : null;
 
   return (
-    <article className={`min-w-0 overflow-hidden rounded-2xl border border-[#E5E7EB] bg-white shadow-[0_18px_45px_rgba(15,23,42,0.08)] ring-1 ${ringTone}`}>
-      <div className={`flex h-12 items-center justify-between px-5 text-white ${topBar}`}>
+    <article className={`referee-side-score-card min-w-0 overflow-hidden rounded-2xl border border-[#E5E7EB] bg-white shadow-[0_18px_45px_rgba(15,23,42,0.08)] ring-1 ${ringTone}`}>
+      <div className={`referee-side-topbar flex h-12 items-center justify-between px-5 text-white ${topBar}`}>
         <span className="min-w-0 truncate text-sm font-black sm:hidden">{displayName}</span>
         <span className="hidden text-sm font-black uppercase tracking-[0.18em] sm:inline">SIDE {side}</span>
         <div className="flex items-center gap-2">
@@ -1123,7 +1125,7 @@ function SideScoreCard({
         </div>
       </div>
 
-      <div className="flex min-h-[300px] flex-col p-4 sm:min-h-[340px] sm:p-5 xl:min-h-[430px]">
+      <div className="referee-side-score-body flex min-h-[300px] flex-col p-4 sm:min-h-[340px] sm:p-5 xl:min-h-[430px]">
         <div className="min-w-0">
           <h2 className="hidden truncate text-xl font-black text-[#0F172A] sm:block sm:text-2xl xl:text-3xl">
             {displayName}
@@ -1162,9 +1164,9 @@ function SideScoreCard({
           )}
         </div>
 
-        <div className="my-4 flex flex-1 flex-col items-center justify-center rounded-2xl bg-slate-50/80 px-3 py-4 sm:my-7 sm:px-4 sm:py-6">
+        <div className="referee-side-score-zone my-4 flex flex-1 flex-col items-center justify-center rounded-2xl bg-slate-50/80 px-3 py-4 sm:my-7 sm:px-4 sm:py-6">
           <p className="text-xs font-black uppercase tracking-[0.2em] text-slate-400">本局比分</p>
-          <strong className={`mt-2 block text-[5.5rem] font-black leading-none tracking-tight sm:text-[7.5rem] xl:text-[9rem] ${scoreTone}`}>
+          <strong className={`referee-side-score-value mt-2 block text-[5.5rem] font-black leading-none tracking-tight sm:text-[7.5rem] xl:text-[9rem] ${scoreTone}`}>
             {score}
           </strong>
           <p className={`mt-2 text-base font-black ${scoreTone}`}>已胜局数 {gamesWon}</p>
@@ -1177,7 +1179,7 @@ function SideScoreCard({
             disabled={disabled}
             loading={loading}
             onClick={onPoint}
-            className={`!h-12 !rounded-2xl !border-0 text-lg !font-black text-white shadow-[0_14px_28px_rgba(37,99,235,0.24)] transition active:scale-[0.99] disabled:!bg-slate-200 disabled:!text-slate-400 sm:!h-14 sm:text-xl ${buttonTone}`}
+            className={`referee-score-button !h-12 !rounded-2xl !border-0 text-lg !font-black text-white shadow-[0_14px_28px_rgba(37,99,235,0.24)] transition active:scale-[0.99] disabled:!bg-slate-200 disabled:!text-slate-400 sm:!h-14 sm:text-xl ${buttonTone}`}
           >
             +1 得分
           </Button>
@@ -1188,7 +1190,7 @@ function SideScoreCard({
             disabled={undoDisabled}
             loading={undoLoading}
             onClick={onUndo}
-            className="!h-12 !rounded-2xl border-slate-200 !font-black text-slate-600 transition hover:!border-slate-300 hover:!bg-slate-50 active:scale-[0.99] disabled:!bg-slate-50 disabled:!text-slate-300"
+            className="referee-undo-button !h-12 !rounded-2xl border-slate-200 !font-black text-slate-600 transition hover:!border-slate-300 hover:!bg-slate-50 active:scale-[0.99] disabled:!bg-slate-50 disabled:!text-slate-300"
           >
             撤销上一分
           </Button>
@@ -1215,14 +1217,14 @@ function CenterScoreboard({
   const statusLabel = score.matchPaused && score.status === 'LIVE' ? '比赛暂停' : status.label;
 
   return (
-    <article className="min-w-0 overflow-hidden rounded-2xl border border-[#0F172A]/10 bg-[#07152F] text-white shadow-[0_24px_60px_rgba(15,23,42,0.22)]">
-      <div className="flex h-full min-h-[300px] flex-col p-4 sm:min-h-[360px] sm:p-5 lg:min-h-[430px]">
-        <div className="rounded-2xl border border-white/10 bg-white/5 p-3 text-center sm:p-4">
+    <article className="referee-center-score-card min-w-0 overflow-hidden rounded-2xl border border-[#0F172A]/10 bg-[#07152F] text-white shadow-[0_24px_60px_rgba(15,23,42,0.22)]">
+      <div className="referee-center-score-body flex h-full min-h-[300px] flex-col p-4 sm:min-h-[360px] sm:p-5 lg:min-h-[430px]">
+        <div className="referee-center-score-panel rounded-2xl border border-white/10 bg-white/5 p-3 text-center sm:p-4">
           <p className="text-xs font-black uppercase tracking-[0.2em] text-blue-200">比赛总览</p>
           <div className="mt-4 flex items-center justify-center gap-3 sm:mt-7 sm:gap-5">
-            <span className="text-[4.2rem] font-black leading-none text-[#60A5FA] sm:text-[5.5rem] xl:text-[6.5rem]">{leftScore}</span>
+            <span className="referee-center-score-value text-[4.2rem] font-black leading-none text-[#60A5FA] sm:text-[5.5rem] xl:text-[6.5rem]">{leftScore}</span>
             <span className="pb-2 text-4xl font-black text-white sm:pb-3 sm:text-5xl">:</span>
-            <span className="text-[4.2rem] font-black leading-none text-[#F87171] sm:text-[5.5rem] xl:text-[6.5rem]">{rightScore}</span>
+            <span className="referee-center-score-value text-[4.2rem] font-black leading-none text-[#F87171] sm:text-[5.5rem] xl:text-[6.5rem]">{rightScore}</span>
           </div>
           <div className="mt-4 grid grid-cols-2 gap-2 sm:mt-6 sm:gap-3">
             <div className="rounded-xl bg-white/8 px-3 py-3">
@@ -1236,14 +1238,14 @@ function CenterScoreboard({
           </div>
         </div>
 
-        <div className="mt-auto pt-5">
+        <div className="referee-center-actions mt-auto pt-5">
           <Button
             type="primary"
             block
             icon={<PlayCircleFilled />}
             disabled={startDisabled}
             onClick={onStart}
-            className="!h-12 !rounded-2xl !border-0 !bg-[#22C55E] text-base !font-black text-white shadow-[0_16px_30px_rgba(34,197,94,0.24)] transition hover:!bg-emerald-400 active:scale-[0.99] disabled:!bg-slate-600 disabled:!text-slate-300 sm:!h-14 sm:text-lg"
+            className="referee-start-button !h-12 !rounded-2xl !border-0 !bg-[#22C55E] text-base !font-black text-white shadow-[0_16px_30px_rgba(34,197,94,0.24)] transition hover:!bg-emerald-400 active:scale-[0.99] disabled:!bg-slate-600 disabled:!text-slate-300 sm:!h-14 sm:text-lg"
           >
             开始比赛
           </Button>
@@ -1266,7 +1268,7 @@ function GameRecordCard({ score }: { score: ScoreState }) {
   const paused = score.matchPaused && score.status === 'LIVE';
 
   return (
-    <section className="min-w-0 rounded-2xl border border-[#E5E7EB] bg-white p-4 shadow-[0_18px_45px_rgba(15,23,42,0.08)] sm:p-5">
+    <section className="referee-sub-card min-w-0 rounded-2xl border border-[#E5E7EB] bg-white p-4 shadow-[0_18px_45px_rgba(15,23,42,0.08)] sm:p-5">
       <div className="flex items-center gap-3">
         <span className="grid h-10 w-10 place-items-center rounded-xl bg-blue-50 text-[#2563EB]">
           <FieldTimeOutlined />
@@ -1277,7 +1279,7 @@ function GameRecordCard({ score }: { score: ScoreState }) {
         </div>
       </div>
 
-      <div className="mt-5 space-y-3">
+      <div className="referee-record-list mt-5 space-y-3">
         {recordItems(score).map((game) => {
           const statusText = game.winnerSide ? `胜方 SIDE ${game.winnerSide}` : game.active ? (paused ? '暂停中' : '进行中') : '未开始';
           return (
@@ -1455,7 +1457,7 @@ function RefereeActionCard({
   ];
 
   return (
-    <section className="min-w-0 rounded-2xl border border-[#E5E7EB] bg-white p-4 shadow-[0_18px_45px_rgba(15,23,42,0.08)] sm:p-5">
+    <section className="referee-sub-card min-w-0 rounded-2xl border border-[#E5E7EB] bg-white p-4 shadow-[0_18px_45px_rgba(15,23,42,0.08)] sm:p-5">
       <div className="flex items-center gap-3">
         <span className="grid h-10 w-10 place-items-center rounded-xl bg-slate-900 text-white">
           <StopOutlined />
@@ -1466,7 +1468,7 @@ function RefereeActionCard({
         </div>
       </div>
 
-      <div className="mt-5 grid grid-cols-2 gap-2 sm:gap-3">
+      <div className="referee-action-grid mt-5 grid grid-cols-2 gap-2 sm:gap-3">
         {actions.map((action) => (
           <Button
             key={action.label}
@@ -1479,7 +1481,7 @@ function RefereeActionCard({
             }
             loading={action.loading}
             onClick={action.onClick}
-            className={`!h-12 !rounded-2xl !bg-white text-xs !font-black transition active:scale-[0.98] disabled:!border-slate-100 disabled:!bg-slate-50 disabled:!text-slate-300 sm:text-sm ${action.className}`}
+            className={`referee-action-button !h-12 !rounded-2xl !bg-white text-xs !font-black transition active:scale-[0.98] disabled:!border-slate-100 disabled:!bg-slate-50 disabled:!text-slate-300 sm:text-sm ${action.className}`}
           >
             {action.label}
           </Button>

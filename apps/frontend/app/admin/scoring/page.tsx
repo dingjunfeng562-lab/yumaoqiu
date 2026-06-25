@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useSession } from 'next-auth/react';
+import dayjs from 'dayjs';
 import { Button, Card, Empty, Select, Space, Table, Tag, Typography, message } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
@@ -50,8 +51,10 @@ interface Registration {
 interface MatchItem {
   id: string;
   round: string;
+  roundNo?: number;
   matchNo: number;
   status: string;
+  scheduledAt?: string | null;
   refereeId?: string | null;
   side1?: Registration | null;
   side2?: Registration | null;
@@ -67,6 +70,17 @@ interface BracketData {
 function sideName(side?: Registration | null) {
   if (!side) return '待定';
   return side.player2 ? `${side.player1.name} / ${side.player2.name}` : side.player1.name;
+}
+
+function matchStageLabel(row: MatchItem) {
+  const round = row.round?.trim();
+  if (!round) return '—';
+  if (row.roundNo === 0) return round.endsWith('组') ? round : `${round}组`;
+  return roundCn(round);
+}
+
+function formatTime(value?: string | null) {
+  return value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '待排时间';
 }
 
 export default function AdminScoringPage() {
@@ -194,8 +208,10 @@ export default function AdminScoringPage() {
             dataSource={matches}
             loading={loading}
             pagination={false}
+            scroll={{ x: 960 }}
             columns={[
-              { title: '轮次', dataIndex: 'round', render: (value: string) => roundCn(value) },
+              { title: '组别/轮次', render: (_, row: MatchItem) => matchStageLabel(row) },
+              { title: '时间', dataIndex: 'scheduledAt', render: (value: string | null) => formatTime(value) },
               { title: '场次', dataIndex: 'matchNo', render: (value) => `第 ${value} 场` },
               { title: '对阵', render: (_, row: MatchItem) => `${sideName(row.side1)} VS ${sideName(row.side2)}` },
               {

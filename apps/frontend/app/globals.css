@@ -103,6 +103,107 @@ a {
   }
 }
 
+@media (orientation: landscape) and (max-height: 560px) and (max-width: 980px) and (pointer: coarse) {
+  .referee-live-compact .referee-score-layout {
+    padding: 0.5rem 0.75rem 0.75rem;
+  }
+
+  .referee-live-compact .referee-score-shell,
+  .referee-live-compact .referee-main-grid,
+  .referee-live-compact .referee-scoreboard-row {
+    gap: 0.625rem;
+  }
+
+  .referee-live-compact .referee-top-match-inner {
+    gap: 0.625rem;
+    padding: 0.625rem 0.75rem;
+  }
+
+  .referee-live-compact .referee-top-match-inner h1 {
+    margin-top: 0.25rem;
+    font-size: 1.35rem;
+    line-height: 1.15;
+  }
+
+  .referee-live-compact .referee-top-match-inner p {
+    margin-top: 0.125rem;
+    font-size: 0.78rem;
+    line-height: 1.25;
+  }
+
+  .referee-live-compact .referee-scoreboard-row {
+    grid-template-columns: minmax(0, 1fr) minmax(210px, 0.64fr) minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .referee-live-compact .referee-left-card {
+    order: 1;
+  }
+
+  .referee-live-compact .referee-center-card-slot {
+    grid-column: auto;
+    order: 2;
+  }
+
+  .referee-live-compact .referee-right-card {
+    order: 3;
+  }
+
+  .referee-live-compact .referee-side-topbar {
+    height: 2.35rem;
+    padding-inline: 0.75rem;
+  }
+
+  .referee-live-compact .referee-side-score-body,
+  .referee-live-compact .referee-center-score-body {
+    min-height: 240px;
+    padding: 0.75rem;
+  }
+
+  .referee-live-compact .referee-side-score-zone {
+    margin-block: 0.625rem;
+    border-radius: 0.875rem;
+    padding-block: 0.625rem;
+  }
+
+  .referee-live-compact .referee-side-score-value {
+    font-size: clamp(3.5rem, 13vw, 5.5rem);
+  }
+
+  .referee-live-compact .referee-center-score-panel {
+    border-radius: 0.875rem;
+    padding: 0.65rem;
+  }
+
+  .referee-live-compact .referee-center-score-value {
+    font-size: clamp(2.8rem, 10vw, 4.25rem);
+  }
+
+  .referee-live-compact .referee-center-actions {
+    padding-top: 0.65rem;
+  }
+
+  .referee-live-compact .referee-score-button,
+  .referee-live-compact .referee-undo-button,
+  .referee-live-compact .referee-start-button,
+  .referee-live-compact .referee-action-button {
+    height: 2.5rem !important;
+    border-radius: 0.875rem !important;
+    font-size: 0.875rem !important;
+  }
+
+  .referee-live-compact .referee-sub-card {
+    border-radius: 1rem;
+    padding: 0.75rem;
+  }
+
+  .referee-live-compact .referee-record-list,
+  .referee-live-compact .referee-action-grid {
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+  }
+}
+
 .register-page {
   --primary: #0a4d3c;
   --primary-dark: #063528;
