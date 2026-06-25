@@ -515,6 +515,8 @@ export default function DrawsPage() {
   const canConfirmSecondStage = isStandardSecondStageFormat
     ? secondStageCandidates.length >= 2 && secondStageCandidates.length <= SECOND_STAGE_SLOT_CODES.length
     : visibleRegistrations.length >= 2;
+  const standardSecondStageAutoText =
+    (selectedEvent?.qualifiersPerGroup ?? 2) <= 1 ? '随机补齐' : '按组别交叉补齐';
   const secondStageStatus = String(
     visibleBracket?.secondStage?.secondStageStatus ?? visibleBracket?.secondStage?.status ?? 'NOT_STARTED',
   ).toUpperCase();
@@ -910,7 +912,7 @@ export default function DrawsPage() {
       await refreshDraw();
       message.success(
         isStandardSecondStageFormat
-          ? '第二阶段已生成：手动签位已保留，其余出线队伍随机补齐'
+          ? `第二阶段已生成：手动签位已保留，其余出线队伍${standardSecondStageAutoText}`
           : '第二阶段已确认生成，前台对阵表会同步显示',
       );
     } catch (error) {
@@ -1264,12 +1266,12 @@ export default function DrawsPage() {
                       </Typography.Title>
                       <Typography.Text type="secondary">
                         {isStandardSecondStageFormat
-                          ? '小组赛全部结束后，系统按标准2023名次取出线队伍；可手动指定 A-H，未指定部分随机补齐。'
+                          ? `小组赛全部结束后，系统按单项设置取出线队伍；可手动指定 A-H，未指定部分${standardSecondStageAutoText}。`
                           : '分组方式：裁判手动指定；签位来源：组委会手动安排。'}
                       </Typography.Text>
                     </div>
                     <Button type="primary" icon={<TrophyOutlined />} onClick={handleConfirmSecondStage} disabled={!selectedEventId || !canConfirmSecondStage}>
-                      {isStandardSecondStageFormat ? '确认/随机生成第二阶段' : '确认生成第二阶段'}
+                      确认生成第二阶段
                     </Button>
                   </div>
                   <Alert
@@ -1278,12 +1280,12 @@ export default function DrawsPage() {
                     style={{ marginBottom: 12 }}
                     message={
                       isStandardSecondStageFormat
-                        ? '可手动指定 A-H；不指定时按出线队伍随机抽签'
+                        ? `可手动指定 A-H；不指定时${standardSecondStageAutoText}`
                         : '请手动指定 A-H 签位（可留空＝轮空）'
                     }
                     description={
                       isStandardSecondStageFormat
-                        ? '确认后会生成 A vs B、C vs D、E vs F、G vs H。首轮负者进入 5-8 名争夺区；排名范围可设置为取前6名或取前8名。'
+                        ? '取每组第一时随机排入 A-H；取每组前二时按 A组第一 vs B组第二、A组第二 vs B组第一 这类交叉规则生成。首轮负者进入 5-8 名争夺区；排名范围可设置为取前6名或取前8名。'
                         : '确认后会生成 A vs B、C vs D、E vs F、G vs H，并按 TOP_6 / TOP_8 自动准备后续排位赛。签位可留空或选“轮空”（至少需 2 名选手），轮空位的对手不战自动晋级。重新抽签会清空已指定的 A-H 签位，需重新指定。'
                     }
                   />
@@ -1329,7 +1331,7 @@ export default function DrawsPage() {
                         description={
                           secondStageConfirmed
                             ? 'A-H 签位确认后，系统会生成正式比赛；后续比分由赛程/裁判记分同步，胜负关系自动推进，不需要在这里手动录入。'
-                            : '当前仅展示 A-H 签位与胜负推进结构。小组赛完成后可手动指定签位，或直接确认让系统随机补齐。'
+                            : `当前仅展示 A-H 签位与胜负推进结构。小组赛完成后可手动指定签位，或直接确认让系统${standardSecondStageAutoText}。`
                         }
                       />
                     </div>

@@ -1256,17 +1256,31 @@ export class DrawsService {
       }
 
       const usedIds = new Set(assigned.map((item) => item.entrantId));
-      const emptySlots = SECOND_STAGE_SLOTS.filter(
-        (slot) => !assigned.some((item) => item.slot === slot),
+      const occupiedSlots = new Set(assigned.map((item) => item.slot));
+      const autoAssigned: Array<{ slot: SecondStageSlotCode; entrantId: string }> = [];
+      const defaultAssignments = this.buildStandardSecondStageDefaultAssignments(
+        standardEntrants,
+        event.qualifiersPerGroup ?? 2,
       );
-      const remaining = this.shuffle(standardEntrants.filter((entrant) => !usedIds.has(entrant.id)));
-      if (remaining.length > emptySlots.length) {
-        throw new BadRequestException('A-H 签位不足以容纳全部出线队伍');
+
+      for (const item of defaultAssignments) {
+        if (usedIds.has(item.entrantId) || occupiedSlots.has(item.slot)) continue;
+        autoAssigned.push(item);
+        usedIds.add(item.entrantId);
+        occupiedSlots.add(item.slot);
       }
-      assigned = [
-        ...assigned,
-        ...remaining.map((entrant, index) => ({ slot: emptySlots[index], entrantId: entrant.id })),
-      ];
+
+      const remaining = standardEntrants.filter((entrant) => !usedIds.has(entrant.id));
+      for (const entrant of remaining) {
+        const slot = SECOND_STAGE_SLOTS.find((candidate) => !occupiedSlots.has(candidate));
+        if (!slot) {
+          throw new BadRequestException('A-H 签位不足以容纳全部出线队伍');
+        }
+        autoAssigned.push({ slot, entrantId: entrant.id });
+        usedIds.add(entrant.id);
+        occupiedSlots.add(slot);
+      }
+      assigned = [...assigned, ...autoAssigned];
     } else if (assigned.length < 2) {
       throw new BadRequestException('至少需要指定 2 名选手，其余签位可留空（轮空）');
     }
@@ -1867,6 +1881,72 @@ export class DrawsService {
       group: entrant.group,
       rank: entrant.rank,
     }));
+  }
+
+  private buildStandardSecondStageDefaultAssignments(
+    entrants: StandardSecondStageEntrant[],
+    qualifiersPerGroup: number,
+  ): Array<{ slot: SecondStageSlotCode; entrantId: string }> {
+    const ordered = this.orderStandardSecondStageEntrants(entrants, qualifiersPerGroup);
+    return ordered.map((entrant, index) => ({
+      slot: SECOND_STAGE_SLOTS[index],
+      entrantId: entrant.id,
+    }));
+  }
+
+  private orderStandardSecondStageEntrants(
+    entrants: StandardSecondStageEntrant[],
+    qualifiersPerGroup: number,
+  ): StandardSecondStageEntrant[] {
+    const q = Math.max(1, qualifiersPerGroup || 2);
+    if (q <= 1) return this.shuffle(entrants);
+
+    const byGroupRank = new Map<string, Map<number, StandardSecondStageEntrant>>();
+    for (const entrant of entrants) {
+      let ranks = byGroupRank.get(entrant.group);
+      if (!ranks) byGroupRank.set(entrant.group, (ranks = new Map()));
+      ranks.set(entrant.rank, entrant);
+    }
+
+    const append = (
+      list: StandardSecondStageEntrant[],
+      used: Set<string>,
+      entrant?: StandardSecondStageEntrant,
+    ) => {
+      if (!entrant || used.has(entrant.id)) return;
+      list.push(entrant);
+      used.add(entrant.id);
+    };
+
+    const groups = [...byGroupRank.keys()].sort((a, b) => this.groupNameCompare(a, b));
+    const ordered: StandardSecondStageEntrant[] = [];
+    const used = new Set<string>();
+    for (let index = 0; index < groups.length; index += 2) {
+      const groupA = groups[index];
+      const groupB = groups[index + 1];
+      const a = byGroupRank.get(groupA);
+      const b = groupB ? byGroupRank.get(groupB) : undefined;
+      if (b) {
+        append(ordered, used, a?.get(1));
+        append(ordered, used, b.get(2));
+        append(ordered, used, a?.get(2));
+        append(ordered, used, b.get(1));
+        for (let rank = 3; rank <= q; rank += 1) {
+          append(ordered, used, a?.get(rank));
+          append(ordered, used, b.get(rank));
+        }
+      } else {
+        for (let rank = 1; rank <= q; rank += 1) {
+          append(ordered, used, a?.get(rank));
+        }
+      }
+    }
+
+    const fallback = [...entrants].sort(
+      (a, b) => a.rank - b.rank || this.groupNameCompare(a.group, b.group),
+    );
+    for (const entrant of fallback) append(ordered, used, entrant);
+    return ordered;
   }
 
   private shuffle<T>(items: T[]): T[] {
