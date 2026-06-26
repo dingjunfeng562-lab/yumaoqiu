@@ -1179,6 +1179,8 @@ export class DrawsService {
         event.format,
         new Map(registrations.map((registration) => [registration.id, registration])),
         secondStageEntrants,
+        event.qualifiersPerGroup ?? 2,
+        groups.map((group) => group.name),
       ),
       secondStageFormalMatches,
     };
@@ -1200,6 +1202,13 @@ export class DrawsService {
         include: { player1: true, player2: true },
       }),
     ]);
+    const groupCodes = [
+      ...new Set(
+        registrations
+          .map((registration) => registration.groupName)
+          .filter((name): name is string => Boolean(name)),
+      ),
+    ];
     return this.secondStageView(
       stage,
       event.format,
@@ -1207,6 +1216,8 @@ export class DrawsService {
       event.format === Format.GROUP_PLUS_KNOCKOUT_STD
         ? await this.getStandardSecondStageEntrants(eventId, event.qualifiersPerGroup ?? 2)
         : [],
+      event.qualifiersPerGroup ?? 2,
+      groupCodes,
     );
   }
 
@@ -1507,11 +1518,51 @@ export class DrawsService {
     eventFormat?: Format,
     registrationMap: Map<string, RegistrationWithPlayers> = new Map(),
     standardEntrants: StandardSecondStageEntrant[] = [],
+    qualifiersPerGroup: number = 2,
+    groupCodes: string[] = [],
   ) {
+    // 每个 A-H 签位归属「X组第N名」（官方交叉序）：让抽签编排页直接标出归属，
+    // 小组赛未完赛时也能看到结构；STD 赛制专用，其它赛制为空。
+    const slotSourceLabels =
+      eventFormat === Format.GROUP_PLUS_KNOCKOUT_STD
+        ? this.buildStandardSecondStageSlotLabels(groupCodes, qualifiersPerGroup)
+        : new Map<SecondStageSlotCode, string>();
+    const sourceLabelOf = (slot: SecondStageSlotCode) => slotSourceLabels.get(slot) ?? null;
+
     if (!stage) {
       if (!this.supportsSecondStageBracket(eventFormat)) return null;
       const rankingMode = SecondStageRankingMode.TOP_8;
-      const previewMatches = this.secondStageMatchTemplates(new Map(), rankingMode);
+
+      // 标准2023「每组出线 ≥ 2」小组赛全部完赛后，按官方种子序（相邻两组交叉：
+      // A1-B2 / A2-B1 / …）把出线队伍预排进 A-H 签位，让抽签编排页打开即看到默认对阵，
+      // 避免管理员每次都得手动重排或先点确认才能看到。每组只取第一(q=1)是随机排入，
+      // 没有固定交叉结构，保持原行为（待定，确认时随机补齐）。非 STD 同样回退「待定」。
+      const isStdReady =
+        eventFormat === Format.GROUP_PLUS_KNOCKOUT_STD &&
+        (qualifiersPerGroup ?? 2) >= 2 &&
+        standardEntrants.length >= 2;
+      const defaultAssignments = isStdReady
+        ? this.buildStandardSecondStageDefaultAssignments(standardEntrants, qualifiersPerGroup)
+        : [];
+      const entrantById = new Map(standardEntrants.map((entrant) => [entrant.id, entrant]));
+      const slotEntrantMap = new Map<SecondStageSlotCode, StandardSecondStageEntrant>();
+      for (const { slot, entrantId } of defaultAssignments) {
+        const entrant = entrantById.get(entrantId);
+        if (entrant) slotEntrantMap.set(slot, entrant);
+      }
+      const templateSlotMap = new Map<SecondStageSlotCode, SecondStageEntrant>();
+      for (const slot of SECOND_STAGE_SLOTS) {
+        const entrant = slotEntrantMap.get(slot);
+        // 已知出线队伍则填真名，否则用「X组第N名」占位，让对阵预览也显示归属。
+        templateSlotMap.set(slot, {
+          id: entrant?.id ?? null,
+          name: entrant?.name ?? sourceLabelOf(slot),
+        });
+      }
+      const previewMatches = this.secondStageMatchTemplates(templateSlotMap, rankingMode);
+      const membersById = (id: string | null | undefined) =>
+        id ? entrantById.get(id)?.members ?? [] : [];
+
       return {
         status: SecondStageStatus.NOT_STARTED,
         secondStageStatus: SecondStageStatus.NOT_STARTED,
@@ -1521,16 +1572,23 @@ export class DrawsService {
           eventFormat === Format.GROUP_PLUS_KNOCKOUT_STD ? '标准2023出线抽签' : '裁判手动指定',
         rankingMode,
         rankingModeText: '取前8名',
-        slotSourceText:
-          eventFormat === Format.GROUP_PLUS_KNOCKOUT_STD ? '出线队伍随机或手动安排' : '组委会手动安排',
+        slotSourceText: isStdReady
+          ? '已按官方种子序自动排布，可手动调整后确认'
+          : eventFormat === Format.GROUP_PLUS_KNOCKOUT_STD
+            ? '出线队伍随机或手动安排'
+            : '组委会手动安排',
         qualifierReady: standardEntrants.length >= 2,
         eligibleEntrants: this.secondStageEligibleView(standardEntrants),
-        slots: SECOND_STAGE_SLOTS.map((slot) => ({
-          slot,
-          playerId: null,
-          playerName: '待定',
-          playerMembers: [],
-        })),
+        slots: SECOND_STAGE_SLOTS.map((slot) => {
+          const entrant = slotEntrantMap.get(slot);
+          return {
+            slot,
+            sourceLabel: sourceLabelOf(slot),
+            playerId: entrant?.id ?? null,
+            playerName: entrant?.name ?? '待定',
+            playerMembers: entrant?.members ?? [],
+          };
+        }),
         matches: previewMatches.map((match) => ({
           id: `preview-${match.matchNo}`,
           matchNo: match.matchNo,
@@ -1540,12 +1598,12 @@ export class DrawsService {
           slotInfo: match.slotInfo,
           source1: match.side1Source,
           source2: match.side2Source,
-          player1Id: null,
-          player2Id: null,
-          player1Name: '待定',
-          player2Name: '待定',
-          player1Members: [],
-          player2Members: [],
+          player1Id: match.side1?.id ?? null,
+          player2Id: match.side2?.id ?? null,
+          player1Name: match.side1?.name ?? '待定',
+          player2Name: match.side2?.name ?? '待定',
+          player1Members: membersById(match.side1?.id),
+          player2Members: membersById(match.side2?.id),
           score: null,
           winnerSide: null,
           winnerId: null,
@@ -1585,6 +1643,7 @@ export class DrawsService {
       finishedAt: stage.finishedAt?.toISOString?.() ?? null,
       slots: (stage.slots ?? []).map((slot: any) => ({
         slot: slot.slot,
+        sourceLabel: sourceLabelOf(slot.slot as SecondStageSlotCode),
         playerId: slot.entrantId,
         playerName: slot.entrantId ? displayName(slot.entrantId, slot.entrantNameSnapshot, null) : '轮空',
         playerMembers: membersOf(slot.entrantId),
@@ -1874,13 +1933,19 @@ export class DrawsService {
   }
 
   private secondStageEligibleView(entrants: StandardSecondStageEntrant[]) {
-    return entrants.map((entrant) => ({
-      playerId: entrant.id,
-      playerName: entrant.name,
-      playerMembers: entrant.members,
-      group: entrant.group,
-      rank: entrant.rank,
-    }));
+    // 出线名单按组聚合后再按名次：A1,A2 → B1,B2 → C1,C2 …，方便管理员对照分组核对。
+    // 仅影响展示顺序，签位编排仍由 orderStandardSecondStageEntrants 按官方种子序决定。
+    return [...entrants]
+      .sort(
+        (a, b) => this.groupNameCompare(a.group, b.group) || a.rank - b.rank,
+      )
+      .map((entrant) => ({
+        playerId: entrant.id,
+        playerName: entrant.name,
+        playerMembers: entrant.members,
+        group: entrant.group,
+        rank: entrant.rank,
+      }));
   }
 
   private buildStandardSecondStageDefaultAssignments(
@@ -1892,6 +1957,47 @@ export class DrawsService {
       slot: SECOND_STAGE_SLOTS[index],
       entrantId: entrant.id,
     }));
+  }
+
+  /**
+   * 按 A-H 签位顺序生成「X组第N名」来源标签，顺序与 orderStandardSecondStageEntrants
+   * 的官方交叉序一致（A组第1, B组第2, A组第2, B组第1, …）。即使小组赛尚未完赛、
+   * 还不知道具体出线队伍，也能让抽签编排页直接标出每个签位归属哪一组第几名。
+   *
+   * 仅在「每组出线 ≥ 2」时才有确定的交叉归属；每组只取第一(q=1)是随机排入 A-H，
+   * 没有 A1-B2 这种固定结构，返回空表（不标注、不预填）。
+   */
+  private buildStandardSecondStageSlotLabels(
+    groupCodes: string[],
+    qualifiersPerGroup: number,
+  ): Map<SecondStageSlotCode, string> {
+    const labels = new Map<SecondStageSlotCode, string>();
+    const q = Math.max(1, qualifiersPerGroup || 2);
+    if (q < 2) return labels;
+    const codes = [...new Set(groupCodes.filter((code) => code && code.trim()))].sort((a, b) =>
+      this.groupNameCompare(a, b),
+    );
+    if (!codes.length) return labels;
+
+    const ordered: string[] = [];
+    const label = (group: string, rank: number) => `${group}组第${rank}名`;
+    for (let index = 0; index < codes.length; index += 2) {
+      const groupA = codes[index];
+      const groupB = codes[index + 1];
+      if (groupB) {
+        ordered.push(label(groupA, 1), label(groupB, 2), label(groupA, 2), label(groupB, 1));
+        for (let rank = 3; rank <= q; rank += 1) {
+          ordered.push(label(groupA, rank), label(groupB, rank));
+        }
+      } else {
+        for (let rank = 1; rank <= q; rank += 1) ordered.push(label(groupA, rank));
+      }
+    }
+
+    ordered.slice(0, SECOND_STAGE_SLOTS.length).forEach((text, index) => {
+      labels.set(SECOND_STAGE_SLOTS[index], text);
+    });
+    return labels;
   }
 
   private orderStandardSecondStageEntrants(

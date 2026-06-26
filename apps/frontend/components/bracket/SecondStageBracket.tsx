@@ -7,6 +7,7 @@ export type SecondStageRankingMode = 'TOP_6' | 'TOP_8' | string;
 
 export type SecondStageSlot = {
   slot: string;
+  sourceLabel?: string | null;
   playerId?: string | null;
   playerName?: string | null;
   playerMembers?: string[] | null;
@@ -139,8 +140,13 @@ export function SecondStageBracket({ data }: { data: SecondStageData }) {
                   key={slot.slot}
                   className="flex min-h-12 items-center justify-between gap-3 rounded-lg border border-emerald-100 bg-white px-3 py-2 shadow-sm"
                 >
-                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-emerald-700 text-xs font-black text-white">
-                    {slot.slot}
+                  <span className="flex shrink-0 items-center gap-1.5">
+                    <span className="flex h-7 w-7 items-center justify-center rounded-md bg-emerald-700 text-xs font-black text-white">
+                      {slot.slot}
+                    </span>
+                    {slot.sourceLabel ? (
+                      <span className="text-xs font-bold text-emerald-700">{slot.sourceLabel}</span>
+                    ) : null}
                   </span>
                   <span className="min-w-0 flex-1 truncate text-right text-sm font-black text-slate-800">
                     {slot.playerName ?? '待定'}

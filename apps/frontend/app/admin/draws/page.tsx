@@ -517,6 +517,13 @@ export default function DrawsPage() {
     : visibleRegistrations.length >= 2;
   const standardSecondStageAutoText =
     (selectedEvent?.qualifiersPerGroup ?? 2) <= 1 ? '随机补齐' : '按组别交叉补齐';
+  const slotSourceLabelMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const slot of visibleBracket?.secondStage?.slots ?? []) {
+      if (slot.sourceLabel) map.set(slot.slot, slot.sourceLabel);
+    }
+    return map;
+  }, [visibleBracket?.secondStage?.slots]);
   const secondStageStatus = String(
     visibleBracket?.secondStage?.secondStageStatus ?? visibleBracket?.secondStage?.status ?? 'NOT_STARTED',
   ).toUpperCase();
@@ -1303,7 +1310,11 @@ export default function DrawsPage() {
                         <Col xs={24} sm={12} md={6} key={slot}>
                           <Form.Item
                             name={['slots', slot]}
-                            label={`${slot} 签位`}
+                            label={
+                              slotSourceLabelMap.get(slot)
+                                ? `${slot} 签位 · ${slotSourceLabelMap.get(slot)}`
+                                : `${slot} 签位`
+                            }
                           >
                             <Select
                               showSearch
