@@ -13,6 +13,11 @@ const DEFAULT_LOGO_GAP_PERCENT = WatermarkService.DEFAULT_LOGO_GAP_PERCENT;
 const MIN_LOGO_GAP_PERCENT = WatermarkService.MIN_LOGO_GAP_PERCENT;
 const MAX_LOGO_GAP_PERCENT = WatermarkService.MAX_LOGO_GAP_PERCENT;
 const DEFAULT_WATERMARK_POSITION = WatermarkService.DEFAULT_POSITION;
+const DEFAULT_TEXT_COLOR = WatermarkService.DEFAULT_TEXT_COLOR;
+const DEFAULT_TEXT_SIZE_PERCENT = WatermarkService.DEFAULT_TEXT_SIZE_PERCENT;
+const MIN_TEXT_SIZE_PERCENT = WatermarkService.MIN_TEXT_SIZE_PERCENT;
+const MAX_TEXT_SIZE_PERCENT = WatermarkService.MAX_TEXT_SIZE_PERCENT;
+const MAX_TEXT_LENGTH = WatermarkService.MAX_TEXT_LENGTH;
 import {
   AdminPhotoQueryDto,
   PublicPhotoQueryDto,
@@ -28,6 +33,16 @@ type UploadFile = {
 };
 
 type WatermarkLogo = { order: number; path: string; filename?: string };
+type ProcessedUpload = {
+  idx: number;
+  name: string;
+  originalPath: string;
+  fullPath: string;
+  thumbnailPath: string;
+  fileSize: number;
+  width: number;
+  height: number;
+};
 
 const MAX_UPLOAD_FILES = 100;
 const MAX_UPLOAD_FILE_SIZE = 15 * 1024 * 1024;
@@ -78,6 +93,16 @@ export class PhotosService {
         /* best-effort */
       }
     }
+  }
+
+  private removeProcessedUploadFiles(upload: {
+    originalPath: string;
+    fullPath: string;
+    thumbnailPath: string;
+  }) {
+    this.removeRelative(upload.originalPath);
+    this.removeRelative(upload.fullPath);
+    this.removeRelative(upload.thumbnailPath);
   }
 
   private originalImageExtension(format?: string) {
@@ -141,6 +166,11 @@ export class PhotosService {
     logoGapPercent: number;
     position: WatermarkPosition;
     portraitPosition: WatermarkPosition;
+    text: string | null;
+    textColor: string;
+    textSizePercent: number;
+    textPosition: WatermarkPosition;
+    textPortraitPosition: WatermarkPosition;
   }> {
     const config = await this.prisma.tournamentWatermark.findUnique({
       where: { tournamentId },
@@ -152,6 +182,11 @@ export class PhotosService {
         logoGapPercent: DEFAULT_LOGO_GAP_PERCENT,
         position: DEFAULT_WATERMARK_POSITION,
         portraitPosition: DEFAULT_WATERMARK_POSITION,
+        text: null,
+        textColor: DEFAULT_TEXT_COLOR,
+        textSizePercent: DEFAULT_TEXT_SIZE_PERCENT,
+        textPosition: DEFAULT_WATERMARK_POSITION,
+        textPortraitPosition: DEFAULT_WATERMARK_POSITION,
       };
     }
     const logos = this.parseLogos(config.logos);
@@ -168,6 +203,16 @@ export class PhotosService {
       logoGapPercent: config.logoGapPercent ?? DEFAULT_LOGO_GAP_PERCENT,
       position: this.normalizePosition(config.position),
       portraitPosition: this.normalizePosition(config.portraitPosition ?? config.position),
+      text: config.text?.trim() ? config.text.trim() : null,
+      textColor: config.textColor ?? DEFAULT_TEXT_COLOR,
+      textSizePercent: config.textSizePercent ?? DEFAULT_TEXT_SIZE_PERCENT,
+      textPosition: this.normalizePosition(config.textPosition ?? config.position),
+      textPortraitPosition: this.normalizePosition(
+        config.textPortraitPosition ??
+          config.portraitPosition ??
+          config.textPosition ??
+          config.position,
+      ),
     };
   }
 
@@ -193,16 +238,18 @@ export class PhotosService {
       throw new BadRequestException(`每批最多上传 ${MAX_UPLOAD_FILES} 张图片`);
     }
 
-    const { buffers: logos, logoHeightPercent, logoGapPercent, position, portraitPosition } =
-      await this.loadLogoConfig(tournamentId);
-
-    // Per-tournament upload sequence. New photos continue from the current max
-    // (deleted rows included) so download names stay unique and stable.
-    const seqAgg = await this.prisma.photo.aggregate({
-      where: { tournamentId },
-      _max: { seq: true },
-    });
-    const seqBase = seqAgg._max.seq ?? 0;
+    const {
+      buffers: logos,
+      logoHeightPercent,
+      logoGapPercent,
+      position,
+      portraitPosition,
+      text,
+      textColor,
+      textSizePercent,
+      textPosition,
+      textPortraitPosition,
+    } = await this.loadLogoConfig(tournamentId);
 
     // Bound concurrency so several large images don't blow up memory.
     // p-limit@3 is CommonJS; the dynamic import exposes it on `.default`.
@@ -210,12 +257,13 @@ export class PhotosService {
     const limit = pLimit(3);
 
     const failed: Array<{ name: string; reason: string }> = [];
-    let uploaded = 0;
+    const processed: ProcessedUpload[] = [];
 
     await Promise.all(
       files.map((file, idx) =>
         limit(async () => {
           const name = file.originalname || 'unknown';
+          const writtenPaths: string[] = [];
           try {
             if (!file.buffer) throw new Error('空文件');
             if (!PHOTO_MIME_RE.test(file.mimetype ?? '')) {
@@ -224,11 +272,12 @@ export class PhotosService {
             if ((file.size ?? file.buffer.length) > MAX_UPLOAD_FILE_SIZE) {
               throw new Error('单张图片不能超过 15MB');
             }
-            const seq = seqBase + idx + 1;
             const uuid = randomUUID();
             const info = await this.watermark.imageInfo(file.buffer);
             const origExt = this.originalImageExtension(info.format);
             const resolvedPosition = info.height > info.width ? portraitPosition : position;
+            const resolvedTextPosition =
+              info.height > info.width ? textPortraitPosition : textPosition;
 
             const originalPath = `photos/${tournamentId}/original/${uuid}${origExt}`;
             const thumbnailPath = `photos/${tournamentId}/thumb/${uuid}.jpg`;
@@ -239,30 +288,35 @@ export class PhotosService {
               logoHeightPercent,
               logoGapPercent,
               resolvedPosition,
+              {
+                content: text,
+                color: textColor,
+                heightPercent: textSizePercent,
+                position: resolvedTextPosition,
+              },
             );
             const fullPath = `photos/${tournamentId}/full/${uuid}${watermarked.ext}`;
             const thumb = await this.watermark.generateThumbnail(watermarked.buffer);
 
             this.writeRelative(originalPath, file.buffer);
+            writtenPaths.push(originalPath);
             this.writeRelative(fullPath, watermarked.buffer);
+            writtenPaths.push(fullPath);
             this.writeRelative(thumbnailPath, thumb);
+            writtenPaths.push(thumbnailPath);
 
-            await this.prisma.photo.create({
-              data: {
-                tournamentId,
-                uploaderId,
-                category,
-                seq,
-                originalPath,
-                fullPath,
-                thumbnailPath,
-                fileSize: file.size ?? file.buffer.length,
-                width: info.width,
-                height: info.height,
-              },
+            processed.push({
+              idx,
+              name,
+              originalPath,
+              fullPath,
+              thumbnailPath,
+              fileSize: file.size ?? file.buffer.length,
+              width: info.width,
+              height: info.height,
             });
-            uploaded += 1;
           } catch (error) {
+            writtenPaths.forEach((path) => this.removeRelative(path));
             failed.push({
               name,
               reason: error instanceof Error ? error.message : '处理失败',
@@ -271,6 +325,51 @@ export class PhotosService {
         }),
       ),
     );
+
+    const readyToCreate = processed.sort((a, b) => a.idx - b.idx);
+    let uploaded = 0;
+
+    if (readyToCreate.length > 0) {
+      try {
+        await this.prisma.$transaction(async (tx) => {
+          // Serialize sequence assignment per tournament; image processing stays outside the lock.
+          const locked = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT id FROM \`tournament\` WHERE id = ${tournamentId} FOR UPDATE
+          `;
+          if (locked.length === 0) throw new NotFoundException('Tournament not found');
+
+          // New photos continue from the current max (deleted rows included)
+          // so download names stay unique and stable.
+          const seqAgg = await tx.photo.aggregate({
+            where: { tournamentId },
+            _max: { seq: true },
+          });
+          const seqBase = seqAgg._max.seq ?? 0;
+
+          for (const [order, item] of readyToCreate.entries()) {
+            await tx.photo.create({
+              data: {
+                tournamentId,
+                uploaderId,
+                category,
+                seq: seqBase + order + 1,
+                originalPath: item.originalPath,
+                fullPath: item.fullPath,
+                thumbnailPath: item.thumbnailPath,
+                fileSize: item.fileSize,
+                width: item.width,
+                height: item.height,
+              },
+            });
+          }
+        });
+        uploaded = readyToCreate.length;
+      } catch (error) {
+        readyToCreate.forEach((item) => this.removeProcessedUploadFiles(item));
+        const reason = error instanceof Error ? error.message : 'Processing failed';
+        failed.push(...readyToCreate.map((item) => ({ name: item.name, reason })));
+      }
+    }
 
     return { uploaded, failed };
   }
@@ -350,6 +449,23 @@ export class PhotosService {
     return Math.min(MAX_LOGO_GAP_PERCENT, Math.max(MIN_LOGO_GAP_PERCENT, Math.round(v)));
   }
 
+  private clampTextSizePercent(value?: number | null): number {
+    const v = value ?? DEFAULT_TEXT_SIZE_PERCENT;
+    return Math.min(MAX_TEXT_SIZE_PERCENT, Math.max(MIN_TEXT_SIZE_PERCENT, Math.round(v)));
+  }
+
+  /** Trim + length-cap the text; empty → null (no text watermark). */
+  private sanitizeText(value?: string | null): string | null {
+    const v = (value ?? '').trim().slice(0, MAX_TEXT_LENGTH);
+    return v ? v : null;
+  }
+
+  /** Accept #RGB / #RRGGBB hex only; fall back to white. */
+  private sanitizeTextColor(value?: string | null): string {
+    const v = (value ?? '').trim();
+    return /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(v) ? v : DEFAULT_TEXT_COLOR;
+  }
+
   async getWatermark(tournamentId: string) {
     const config = await this.prisma.tournamentWatermark.findUnique({
       where: { tournamentId },
@@ -362,6 +478,16 @@ export class PhotosService {
       logoGapPercent: config?.logoGapPercent ?? DEFAULT_LOGO_GAP_PERCENT,
       position: this.normalizePosition(config?.position),
       portraitPosition: this.normalizePosition(config?.portraitPosition ?? config?.position),
+      text: config?.text?.trim() ? config.text.trim() : '',
+      textColor: config?.textColor ?? DEFAULT_TEXT_COLOR,
+      textSizePercent: config?.textSizePercent ?? DEFAULT_TEXT_SIZE_PERCENT,
+      textPosition: this.normalizePosition(config?.textPosition ?? config?.position),
+      textPortraitPosition: this.normalizePosition(
+        config?.textPortraitPosition ??
+          config?.portraitPosition ??
+          config?.textPosition ??
+          config?.position,
+      ),
       updatedAt: config?.updatedAt ?? null,
     };
   }
@@ -377,6 +503,16 @@ export class PhotosService {
       logoGapPercent: this.clampLogoGapPercent(dto.logoGapPercent),
       position: this.normalizePosition(dto.position),
       portraitPosition: this.normalizePosition(dto.portraitPosition ?? dto.position),
+      text: this.sanitizeText(dto.text),
+      textColor: this.sanitizeTextColor(dto.textColor),
+      textSizePercent: this.clampTextSizePercent(dto.textSizePercent),
+      textPosition: this.normalizePosition(dto.textPosition ?? dto.position),
+      textPortraitPosition: this.normalizePosition(
+        dto.textPortraitPosition ??
+          dto.portraitPosition ??
+          dto.textPosition ??
+          dto.position,
+      ),
     };
     await this.prisma.tournamentWatermark.upsert({
       where: { tournamentId },
@@ -406,11 +542,16 @@ export class PhotosService {
       (l, i) => ({ order: i + 1, path: l.path, filename: l.filename }),
     );
     const data = { logos: next as unknown as Prisma.InputJsonValue };
-    await this.prisma.tournamentWatermark.upsert({
-      where: { tournamentId },
-      create: { tournamentId, ...data },
-      update: data,
-    });
+    try {
+      await this.prisma.tournamentWatermark.upsert({
+        where: { tournamentId },
+        create: { tournamentId, ...data },
+        update: data,
+      });
+    } catch (error) {
+      this.removeRelative(path);
+      throw error;
+    }
     return this.getWatermark(tournamentId);
   }
 
@@ -639,9 +780,7 @@ export class PhotosService {
     fullPath: string;
     thumbnailPath: string;
   }) {
-    this.removeRelative(photo.originalPath);
-    this.removeRelative(photo.fullPath);
-    this.removeRelative(photo.thumbnailPath);
+    this.removeProcessedUploadFiles(photo);
   }
 
   /** Strip characters that are illegal in filenames / Content-Disposition. */

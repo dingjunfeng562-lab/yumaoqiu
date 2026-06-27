@@ -103,10 +103,29 @@ export default function PhotographerUploadPage() {
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const previewUrlsRef = useRef<Set<string>>(new Set());
 
   const selectedTournament = useMemo(
     () => tournaments.find((t) => t.id === tournamentId),
     [tournaments, tournamentId],
+  );
+
+  const createPreviewUrl = useCallback((file: File) => {
+    const url = URL.createObjectURL(file);
+    previewUrlsRef.current.add(url);
+    return url;
+  }, []);
+
+  const revokePreviewUrl = useCallback((url?: string) => {
+    if (!url || !previewUrlsRef.current.delete(url)) return;
+    URL.revokeObjectURL(url);
+  }, []);
+
+  const revokePreviewUrls = useCallback(
+    (items: Array<{ previewUrl: string }>) => {
+      items.forEach((item) => revokePreviewUrl(item.previewUrl));
+    },
+    [revokePreviewUrl],
   );
 
   useEffect(() => {
@@ -132,9 +151,9 @@ export default function PhotographerUploadPage() {
   // Revoke object URLs on unmount to avoid leaks.
   useEffect(() => {
     return () => {
-      queue.forEach((q) => URL.revokeObjectURL(q.previewUrl));
+      previewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+      previewUrlsRef.current.clear();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const ready = Boolean(tournamentId && category);
@@ -171,14 +190,14 @@ export default function PhotographerUploadPage() {
         const slice = accepted.slice(0, remaining).map<QueueItem>((file) => ({
           id: nextId(),
           file,
-          previewUrl: URL.createObjectURL(file),
+          previewUrl: createPreviewUrl(file),
           status: 'pending',
           progress: 0,
         }));
         return [...prev, ...slice];
       });
     },
-    [],
+    [createPreviewUrl],
   );
 
   function onPick(e: React.ChangeEvent<HTMLInputElement>) {
@@ -189,8 +208,15 @@ export default function PhotographerUploadPage() {
   function removeItem(id: string) {
     setQueue((prev) => {
       const target = prev.find((q) => q.id === id);
-      if (target) URL.revokeObjectURL(target.previewUrl);
+      if (target) revokePreviewUrl(target.previewUrl);
       return prev.filter((q) => q.id !== id);
+    });
+  }
+
+  function clearQueue() {
+    setQueue((prev) => {
+      revokePreviewUrls(prev);
+      return [];
     });
   }
 
@@ -426,7 +452,7 @@ export default function PhotographerUploadPage() {
                 </Typography.Text>
               </Space>
               <Space>
-                <Button onClick={() => setQueue([])} disabled={uploading}>
+                <Button onClick={clearQueue} disabled={uploading}>
                   清空
                 </Button>
                 <Button

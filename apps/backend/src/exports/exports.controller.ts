@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Res, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Query, Res, UseGuards } from '@nestjs/common';
 import { Response } from 'express';
 import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -19,6 +19,24 @@ export class ExportsController {
     @Res() res: Response,
   ) {
     const file = await this.exportsService.exportTournament(id, kind);
+    this.sendFile(res, file);
+  }
+
+  @Get('events/:eventId/stage-order')
+  async downloadEventStageOrder(
+    @Param('eventId') eventId: string,
+    @Query('stage') stage: string,
+    @Res() res: Response,
+  ) {
+    const normalized = stage === 'first' ? 'first' : 'second';
+    const file = await this.exportsService.exportEventStageOrder(eventId, normalized);
+    this.sendFile(res, file);
+  }
+
+  private sendFile(
+    res: Response,
+    file: { filename: string; content: Buffer | string; contentType: string },
+  ) {
     const encodedFilename = encodeURIComponent(file.filename);
     const isBinary = Buffer.isBuffer(file.content);
 

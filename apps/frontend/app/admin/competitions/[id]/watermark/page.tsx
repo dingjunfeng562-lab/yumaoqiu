@@ -8,6 +8,7 @@ import {
   Button,
   Card,
   Empty,
+  Input,
   InputNumber,
   Radio,
   Slider,
@@ -36,6 +37,13 @@ const MAX_LOGO_PERCENT = 80;
 const DEFAULT_LOGO_GAP = 20;
 const MIN_LOGO_GAP = 0;
 const MAX_LOGO_GAP = 200;
+const DEFAULT_TEXT_COLOR = '#FFFFFF';
+const DEFAULT_TEXT_SIZE = 6;
+const MIN_TEXT_SIZE = 2;
+const MAX_TEXT_SIZE = 80;
+const MAX_TEXT_LENGTH = 100;
+const WATERMARK_FONT_FAMILY =
+  "'Noto Sans CJK SC','Noto Sans SC','Source Han Sans SC','Microsoft YaHei','SimHei','PingFang SC','WenQuanYi Micro Hei','WenQuanYi Zen Hei',sans-serif";
 
 type WatermarkPosition = 'TOP_LEFT' | 'TOP_RIGHT' | 'BOTTOM_LEFT' | 'BOTTOM_RIGHT';
 const DEFAULT_POSITION: WatermarkPosition = 'TOP_RIGHT';
@@ -54,6 +62,11 @@ type WatermarkConfig = {
   logoGapPercent: number;
   position: WatermarkPosition;
   portraitPosition: WatermarkPosition;
+  text: string;
+  textColor: string;
+  textSizePercent: number;
+  textPosition: WatermarkPosition;
+  textPortraitPosition: WatermarkPosition;
   updatedAt: string | null;
 };
 
@@ -69,6 +82,11 @@ export default function WatermarkSettingsPage() {
   const [logoGap, setLogoGap] = useState<number>(DEFAULT_LOGO_GAP);
   const [position, setPosition] = useState<WatermarkPosition>(DEFAULT_POSITION);
   const [portraitPosition, setPortraitPosition] = useState<WatermarkPosition>(DEFAULT_POSITION);
+  const [text, setText] = useState<string>('');
+  const [textColor, setTextColor] = useState<string>(DEFAULT_TEXT_COLOR);
+  const [textSize, setTextSize] = useState<number>(DEFAULT_TEXT_SIZE);
+  const [textPosition, setTextPosition] = useState<WatermarkPosition>(DEFAULT_POSITION);
+  const [textPortraitPosition, setTextPortraitPosition] = useState<WatermarkPosition>(DEFAULT_POSITION);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -97,6 +115,17 @@ export default function WatermarkSettingsPage() {
       setLogoGap(data.logoGapPercent ?? DEFAULT_LOGO_GAP);
       setPosition(data.position ?? DEFAULT_POSITION);
       setPortraitPosition(data.portraitPosition ?? data.position ?? DEFAULT_POSITION);
+      setText(data.text ?? '');
+      setTextColor(data.textColor ?? DEFAULT_TEXT_COLOR);
+      setTextSize(data.textSizePercent ?? DEFAULT_TEXT_SIZE);
+      setTextPosition(data.textPosition ?? data.position ?? DEFAULT_POSITION);
+      setTextPortraitPosition(
+        data.textPortraitPosition ??
+          data.portraitPosition ??
+          data.textPosition ??
+          data.position ??
+          DEFAULT_POSITION,
+      );
       setDirty(false);
     } catch (error) {
       message.error(error instanceof Error ? error.message : '水印配置加载失败');
@@ -143,7 +172,17 @@ export default function WatermarkSettingsPage() {
         logoPercent !== (data.logoHeightPercent ?? DEFAULT_LOGO_PERCENT) ||
           logoGap !== (data.logoGapPercent ?? DEFAULT_LOGO_GAP) ||
           position !== (data.position ?? DEFAULT_POSITION) ||
-          portraitPosition !== (data.portraitPosition ?? data.position ?? DEFAULT_POSITION),
+          portraitPosition !== (data.portraitPosition ?? data.position ?? DEFAULT_POSITION) ||
+          text.trim() !== (data.text ?? '') ||
+          textColor !== (data.textColor ?? DEFAULT_TEXT_COLOR) ||
+          textSize !== (data.textSizePercent ?? DEFAULT_TEXT_SIZE) ||
+          textPosition !== (data.textPosition ?? data.position ?? DEFAULT_POSITION) ||
+          textPortraitPosition !==
+            (data.textPortraitPosition ??
+              data.portraitPosition ??
+              data.textPosition ??
+              data.position ??
+              DEFAULT_POSITION),
       );
       message.success('Logo 已添加');
     } catch (error) {
@@ -166,7 +205,17 @@ export default function WatermarkSettingsPage() {
         logoPercent !== (data.logoHeightPercent ?? DEFAULT_LOGO_PERCENT) ||
           logoGap !== (data.logoGapPercent ?? DEFAULT_LOGO_GAP) ||
           position !== (data.position ?? DEFAULT_POSITION) ||
-          portraitPosition !== (data.portraitPosition ?? data.position ?? DEFAULT_POSITION),
+          portraitPosition !== (data.portraitPosition ?? data.position ?? DEFAULT_POSITION) ||
+          text.trim() !== (data.text ?? '') ||
+          textColor !== (data.textColor ?? DEFAULT_TEXT_COLOR) ||
+          textSize !== (data.textSizePercent ?? DEFAULT_TEXT_SIZE) ||
+          textPosition !== (data.textPosition ?? data.position ?? DEFAULT_POSITION) ||
+          textPortraitPosition !==
+            (data.textPortraitPosition ??
+              data.portraitPosition ??
+              data.textPosition ??
+              data.position ??
+              DEFAULT_POSITION),
       );
       message.success('Logo 已删除');
     } catch (error) {
@@ -198,6 +247,11 @@ export default function WatermarkSettingsPage() {
           logoGapPercent: logoGap,
           position,
           portraitPosition,
+          text: text.trim(),
+          textColor,
+          textSizePercent: textSize,
+          textPosition,
+          textPortraitPosition,
         }),
       });
       setLogos(data.logos);
@@ -205,6 +259,17 @@ export default function WatermarkSettingsPage() {
       setLogoGap(data.logoGapPercent ?? logoGap);
       setPosition(data.position ?? position);
       setPortraitPosition(data.portraitPosition ?? data.position ?? portraitPosition);
+      setText(data.text ?? '');
+      setTextColor(data.textColor ?? DEFAULT_TEXT_COLOR);
+      setTextSize(data.textSizePercent ?? DEFAULT_TEXT_SIZE);
+      setTextPosition(data.textPosition ?? data.position ?? position);
+      setTextPortraitPosition(
+        data.textPortraitPosition ??
+          data.portraitPosition ??
+          data.textPosition ??
+          data.position ??
+          portraitPosition,
+      );
       setDirty(false);
       message.success('水印设置已保存,将应用于后续上传的图片');
     } catch (error) {
@@ -219,6 +284,9 @@ export default function WatermarkSettingsPage() {
   const previewLogoPx = Math.max(8, Math.round(((previewBoxH || 180) * logoPercent) / 100));
   // Gap mirrors the real watermark: a percentage of the logo height.
   const previewGap = Math.round((previewLogoPx * logoGap) / 100);
+  // Text height in preview px mirrors the real watermark: imageHeight * textSize%.
+  const previewTextPx = Math.max(8, Math.round(((previewBoxH || 180) * textSize) / 100));
+  const trimmedText = text.trim();
 
   function changePercent(value: number | null) {
     if (value == null) return;
@@ -234,6 +302,23 @@ export default function WatermarkSettingsPage() {
     setDirty(true);
   }
 
+  function changeText(value: string) {
+    setText(value.slice(0, MAX_TEXT_LENGTH));
+    setDirty(true);
+  }
+
+  function changeTextColor(value: string) {
+    setTextColor(value);
+    setDirty(true);
+  }
+
+  function changeTextSize(value: number | null) {
+    if (value == null) return;
+    const clamped = Math.min(MAX_TEXT_SIZE, Math.max(MIN_TEXT_SIZE, Math.round(value)));
+    setTextSize(clamped);
+    setDirty(true);
+  }
+
   function changePosition(value: WatermarkPosition) {
     setPosition(value);
     setDirty(true);
@@ -241,6 +326,16 @@ export default function WatermarkSettingsPage() {
 
   function changePortraitPosition(value: WatermarkPosition) {
     setPortraitPosition(value);
+    setDirty(true);
+  }
+
+  function changeTextPosition(value: WatermarkPosition) {
+    setTextPosition(value);
+    setDirty(true);
+  }
+
+  function changeTextPortraitPosition(value: WatermarkPosition) {
+    setTextPortraitPosition(value);
     setDirty(true);
   }
 
@@ -255,10 +350,94 @@ export default function WatermarkSettingsPage() {
     } as const;
   }
 
-  function renderPreviewPhoto(value: WatermarkPosition, shape: 'landscape' | 'portrait') {
+  function renderWatermarkOverlay(logoValue: WatermarkPosition, textValue: WatermarkPosition) {
+    const hasLogos = previewLogos.length > 0;
+    const hasText = Boolean(trimmedText);
+    const renderLogos = () =>
+      previewLogos.map((logo) => (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          key={logo.path}
+          src={`${API_ORIGIN}${logo.url}`}
+          alt={logo.filename ?? 'logo'}
+          style={{ height: previewLogoPx, objectFit: 'contain' }}
+        />
+      ));
+    const renderText = () => (
+      <span
+        style={{
+          color: textColor,
+          fontSize: previewTextPx,
+          fontFamily: WATERMARK_FONT_FAMILY,
+          fontWeight: 700,
+          lineHeight: 1,
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {trimmedText}
+      </span>
+    );
+
+    if (!hasLogos && !hasText) {
+      return (
+        <div style={{ position: 'absolute', ...previewCornerFor(logoValue) }}>
+          <Typography.Text style={{ color: 'rgba(255,255,255,0.7)' }}>
+            未配置水印
+          </Typography.Text>
+        </div>
+      );
+    }
+
+    if (hasLogos && hasText && logoValue === textValue) {
+      return (
+        <div
+          style={{
+            position: 'absolute',
+            ...previewCornerFor(logoValue),
+            display: 'flex',
+            alignItems: 'center',
+            gap: previewGap,
+            opacity: 0.85,
+          }}
+        >
+          {renderLogos()}
+          {renderText()}
+        </div>
+      );
+    }
+
+    return (
+      <>
+        {hasLogos && (
+          <div
+            style={{
+              position: 'absolute',
+              ...previewCornerFor(logoValue),
+              display: 'flex',
+              alignItems: 'center',
+              gap: previewGap,
+              opacity: 0.85,
+            }}
+          >
+            {renderLogos()}
+          </div>
+        )}
+        {hasText && (
+          <div style={{ position: 'absolute', ...previewCornerFor(textValue), opacity: 0.85 }}>
+            {renderText()}
+          </div>
+        )}
+      </>
+    );
+  }
+
+  function renderPreviewPhoto(
+    value: WatermarkPosition,
+    textValue: WatermarkPosition,
+    shape: 'landscape' | 'portrait',
+  ) {
     const aspect = shape === 'portrait' ? '66%' : '100%';
     const paddingTop = shape === 'portrait' ? '136%' : '60%';
-    const corner = previewCornerFor(value);
     return (
       <div
         ref={shape === 'landscape' ? previewRef : undefined}
@@ -273,32 +452,7 @@ export default function WatermarkSettingsPage() {
           background: 'linear-gradient(135deg, #1f6feb, #0a2a66)',
         }}
       >
-        <div
-          style={{
-            position: 'absolute',
-            ...corner,
-            display: 'flex',
-            alignItems: 'center',
-            gap: previewGap,
-            opacity: 0.85,
-          }}
-        >
-          {previewLogos.length === 0 ? (
-            <Typography.Text style={{ color: 'rgba(255,255,255,0.7)' }}>
-              未配置 Logo
-            </Typography.Text>
-          ) : (
-            previewLogos.map((logo) => (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                key={logo.path}
-                src={`${API_ORIGIN}${logo.url}`}
-                alt={logo.filename ?? 'logo'}
-                style={{ height: previewLogoPx, objectFit: 'contain' }}
-              />
-            ))
-          )}
-        </div>
+        {renderWatermarkOverlay(value, textValue)}
         <Typography.Text
           style={{
             position: 'absolute',
@@ -329,7 +483,7 @@ export default function WatermarkSettingsPage() {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="第 1 个为赛事主 Logo,其余为赞助商 Logo,多个 Logo 横向并排展示(间距可调)。最多 5 个,仅支持透明背景 PNG(< 5MB)。"
+        message="第 1 个为赛事主 Logo,其余为赞助商 Logo,多个 Logo 横向并排展示(间距可调)。最多 5 个,仅支持透明背景 PNG(< 5MB)。可在右侧「文字水印」额外添加一段文字(自定义颜色、大小、位置)。"
       />
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
@@ -501,6 +655,90 @@ export default function WatermarkSettingsPage() {
 
             <div style={{ marginTop: 16 }}>
               <Typography.Text strong style={{ display: 'block', marginBottom: 6 }}>
+                文字水印(可选)
+              </Typography.Text>
+              <Input
+                value={text}
+                onChange={(e) => changeText(e.target.value)}
+                placeholder="留空表示不加文字,例如:第十届校园羽毛球赛"
+                maxLength={MAX_TEXT_LENGTH}
+                showCount
+                allowClear
+              />
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 16,
+                  flexWrap: 'wrap',
+                  marginTop: 12,
+                }}
+              >
+                <Space size={8}>
+                  <Typography.Text>颜色</Typography.Text>
+                  <input
+                    type="color"
+                    value={/^#[0-9a-fA-F]{6}$/.test(textColor) ? textColor : '#FFFFFF'}
+                    onChange={(e) => changeTextColor(e.target.value.toUpperCase())}
+                    style={{ width: 40, height: 28, border: '1px solid #d9d9d9', borderRadius: 4, padding: 0, cursor: 'pointer' }}
+                    aria-label="文字颜色"
+                  />
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    {textColor}
+                  </Typography.Text>
+                </Space>
+                <Space size={8}>
+                  <Typography.Text>大小</Typography.Text>
+                  <InputNumber
+                    size="small"
+                    min={MIN_TEXT_SIZE}
+                    max={MAX_TEXT_SIZE}
+                    value={textSize}
+                    onChange={changeTextSize}
+                    formatter={(v) => `${v}%`}
+                    parser={(v) => Number((v ?? '').replace('%', ''))}
+                    style={{ width: 88 }}
+                  />
+                </Space>
+                <Space size={8} wrap>
+                  <Typography.Text>横图位置</Typography.Text>
+                  <Radio.Group
+                    size="small"
+                    value={textPosition}
+                    onChange={(e) => changeTextPosition(e.target.value as WatermarkPosition)}
+                    optionType="button"
+                    buttonStyle="solid"
+                    options={POSITION_OPTIONS}
+                  />
+                </Space>
+                <Space size={8} wrap>
+                  <Typography.Text>竖图位置</Typography.Text>
+                  <Radio.Group
+                    size="small"
+                    value={textPortraitPosition}
+                    onChange={(e) =>
+                      changeTextPortraitPosition(e.target.value as WatermarkPosition)
+                    }
+                    optionType="button"
+                    buttonStyle="solid"
+                    options={POSITION_OPTIONS}
+                  />
+                </Space>
+              </div>
+              <Slider
+                min={MIN_TEXT_SIZE}
+                max={MAX_TEXT_SIZE}
+                value={textSize}
+                onChange={(v) => changeTextSize(v as number)}
+                tooltip={{ formatter: (v) => `${v}%` }}
+              />
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                文字高度 = 图片高度的 {textSize}%;位置可独立设置,与 Logo 选择同一角落时同条并排。中文文字需服务器安装中文字体才能正常渲染。
+              </Typography.Text>
+            </div>
+
+            <div style={{ marginTop: 16 }}>
+              <Typography.Text strong style={{ display: 'block', marginBottom: 6 }}>
                 横图水印位置
               </Typography.Text>
               <Radio.Group
@@ -540,32 +778,7 @@ export default function WatermarkSettingsPage() {
               background: 'linear-gradient(135deg, #1f6feb, #0a2a66)',
             }}
           >
-            <div
-              style={{
-                position: 'absolute',
-                ...previewCornerFor(position),
-                display: 'flex',
-                alignItems: 'center',
-                gap: previewGap,
-                opacity: 0.85,
-              }}
-            >
-              {previewLogos.length === 0 ? (
-                <Typography.Text style={{ color: 'rgba(255,255,255,0.7)' }}>
-                  未配置 Logo
-                </Typography.Text>
-              ) : (
-                previewLogos.map((logo) => (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    key={logo.path}
-                    src={`${API_ORIGIN}${logo.url}`}
-                    alt={logo.filename ?? 'logo'}
-                    style={{ height: previewLogoPx, objectFit: 'contain' }}
-                  />
-                ))
-              )}
-            </div>
+            {renderWatermarkOverlay(position, textPosition)}
             {/* Caption hugs the opposite corner of the watermark so it never overlaps. */}
             <Typography.Text
               style={{
@@ -576,11 +789,11 @@ export default function WatermarkSettingsPage() {
                 ...(position.endsWith('_LEFT') ? { right: 16 } : { left: 16 }),
               }}
             >
-              示例照片 —— 水印显示在{POSITION_OPTIONS.find((o) => o.value === position)?.label ?? ''}
+              示例照片 —— Logo 显示在{POSITION_OPTIONS.find((o) => o.value === position)?.label ?? ''}
             </Typography.Text>
           </div>
           <div style={{ marginTop: 12 }}>
-            {renderPreviewPhoto(portraitPosition, 'portrait')}
+            {renderPreviewPhoto(portraitPosition, textPortraitPosition, 'portrait')}
           </div>
           {loading && (
             <div style={{ textAlign: 'center', marginTop: 12 }}>

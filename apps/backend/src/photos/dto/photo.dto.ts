@@ -6,7 +6,9 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  Matches,
   Max,
+  MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -127,6 +129,36 @@ export class UpdateWatermarkDto {
   @IsOptional()
   @IsIn(['TOP_LEFT', 'TOP_RIGHT', 'BOTTOM_LEFT', 'BOTTOM_RIGHT'])
   portraitPosition?: 'TOP_LEFT' | 'TOP_RIGHT' | 'BOTTOM_LEFT' | 'BOTTOM_RIGHT';
+
+  /** Text watermark content; empty string clears it. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  text?: string;
+
+  /** Text color as #RGB or #RRGGBB hex. */
+  @IsOptional()
+  @IsString()
+  @Matches(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/, { message: '文字颜色必须是 #RGB 或 #RRGGBB 十六进制' })
+  textColor?: string;
+
+  /** Text height as a percentage of the image height (2–80). */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(2)
+  @Max(80)
+  textSizePercent?: number;
+
+  /** Text watermark corner position for landscape photos. */
+  @IsOptional()
+  @IsIn(['TOP_LEFT', 'TOP_RIGHT', 'BOTTOM_LEFT', 'BOTTOM_RIGHT'])
+  textPosition?: 'TOP_LEFT' | 'TOP_RIGHT' | 'BOTTOM_LEFT' | 'BOTTOM_RIGHT';
+
+  /** Text watermark corner position for portrait photos. */
+  @IsOptional()
+  @IsIn(['TOP_LEFT', 'TOP_RIGHT', 'BOTTOM_LEFT', 'BOTTOM_RIGHT'])
+  textPortraitPosition?: 'TOP_LEFT' | 'TOP_RIGHT' | 'BOTTOM_LEFT' | 'BOTTOM_RIGHT';
 }
 
 export class BatchDeletePhotosDto {

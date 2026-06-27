@@ -499,10 +499,14 @@ export default function DrawsPage() {
   const isManualSecondStageFormat = selectedEvent?.format === 'SINGLE_ELIMINATION_PLUS_GROUP_RANKING';
   const isStandardSecondStageFormat = selectedEvent?.format === 'GROUP_PLUS_KNOCKOUT_STD';
   const isSecondStageFormat = isManualSecondStageFormat || isStandardSecondStageFormat;
+  const standardEligibleEntrants = visibleBracket?.secondStage?.eligibleEntrants ?? [];
+  // 标准2023的官方出线名次只有在小组赛全部完赛后才会产生。出线名次尚未产生时，
+  // 回退到「全部已通过报名」作为候选，让管理员仍能在第二阶段区块手动指定签位
+  //（否则下拉为空，会出现“选不了选手”）。出线名次已产生时仍只允许选出线队伍。
+  const hasOfficialQualifiers = isStandardSecondStageFormat && standardEligibleEntrants.length > 0;
   const secondStageCandidates = useMemo(() => {
-    const eligible = visibleBracket?.secondStage?.eligibleEntrants ?? [];
-    if (isStandardSecondStageFormat) {
-      return eligible.map((entrant) => ({
+    if (isStandardSecondStageFormat && standardEligibleEntrants.length > 0) {
+      return standardEligibleEntrants.map((entrant) => ({
         value: entrant.playerId,
         label: `${entrant.playerName ?? '待定'} · ${entrant.group ?? '-'}组第${entrant.rank ?? '-'}名`,
       }));
@@ -511,10 +515,12 @@ export default function DrawsPage() {
       value: registration.id,
       label: sideName(registration),
     }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isStandardSecondStageFormat, visibleBracket?.secondStage?.eligibleEntrants, visibleRegistrations]);
-  const canConfirmSecondStage = isStandardSecondStageFormat
-    ? secondStageCandidates.length >= 2 && secondStageCandidates.length <= SECOND_STAGE_SLOT_CODES.length
-    : visibleRegistrations.length >= 2;
+  // 出线队伍超过 8 支（系统已走常规淘汰签表）时禁用确认；其余情况只要有 ≥2 名可选即可确认。
+  const tooManyStandardQualifiers =
+    hasOfficialQualifiers && standardEligibleEntrants.length > SECOND_STAGE_SLOT_CODES.length;
+  const canConfirmSecondStage = secondStageCandidates.length >= 2 && !tooManyStandardQualifiers;
   const standardSecondStageAutoText =
     (selectedEvent?.qualifiersPerGroup ?? 2) <= 1 ? '随机补齐' : '按组别交叉补齐';
   const slotSourceLabelMap = useMemo(() => {
@@ -919,7 +925,9 @@ export default function DrawsPage() {
       await refreshDraw();
       message.success(
         isStandardSecondStageFormat
-          ? `第二阶段已生成：手动签位已保留，其余出线队伍${standardSecondStageAutoText}`
+          ? hasOfficialQualifiers
+            ? `第二阶段已生成：手动签位已保留，其余出线队伍${standardSecondStageAutoText}`
+            : '第二阶段已按手动指定签位生成（小组赛全部完赛后可重新确认以套用官方出线名次）'
           : '第二阶段已确认生成，前台对阵表会同步显示',
       );
     } catch (error) {

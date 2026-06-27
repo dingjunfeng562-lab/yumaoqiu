@@ -380,7 +380,11 @@ function pairLabel(match: ExportMatch, posMap: Map<string, { group: string; pos:
 
 // ===== 工作表 3：流程表（各项目第一阶段小组网格 + 第二阶段淘汰树）=====
 
-function buildFlowSheet(wb: ExcelJS.Workbook, tournament: ExportTournament) {
+function buildFlowSheet(
+  wb: ExcelJS.Workbook,
+  tournament: ExportTournament,
+  stage?: 'first' | 'second',
+) {
   const ws = wb.addWorksheet('流程表');
   ws.properties.defaultColWidth = 8;
   const regMap = registrationMap(tournament);
@@ -389,22 +393,25 @@ function buildFlowSheet(wb: ExcelJS.Workbook, tournament: ExportTournament) {
   let row = 1;
   for (const event of tournament.events) {
     const label = eventLabel(event);
-    // 第一阶段：仅「小组循环+淘汰(标准2023)」输出小组循环成绩网格。
-    if (event.format === GROUP_KNOCKOUT_STD) {
+    // 第一阶段：仅「小组循环+淘汰(标准2023)」输出小组循环成绩网格。按阶段导出时，
+    // 第二阶段不画第一阶段；第一阶段不画第二阶段（全量导出 stage 为空时两段都画）。
+    if (stage !== 'second' && event.format === GROUP_KNOCKOUT_STD) {
       row = sectionTitle(ws, row, `${label}第一阶段：`);
       row = renderGroupGrids(ws, row, event, regMap, codeMap);
       row += 1;
     }
     // 第二阶段：优先用后台手动指定的「前8/前6晋级赛」对阵图；否则退回到淘汰赛对阵树
     //（无任何场次时仅留标题占位，与参考件一致）。
-    row = sectionTitle(ws, row, `${label}第二阶段：`);
-    if (event.secondStage && event.secondStage.matches.length) {
-      row = renderSecondStagePlacement(ws, row, event.secondStage, regMap);
-    } else if (event.matches.some((m) => (m.roundNo ?? 0) >= 1 && (m.roundNo ?? 0) < 100 && !isPlayoff(m))) {
-      row = renderKnockoutBracket(ws, row, event, regMap);
-    } else if (event.format === GROUP_KNOCKOUT_STD) {
-      // 出线前也按组数×出线数预画对阵骨架（X组第N名占位）。
-      row = renderSkeletonBracket(ws, row, event);
+    if (stage !== 'first') {
+      row = sectionTitle(ws, row, `${label}第二阶段：`);
+      if (event.secondStage && event.secondStage.matches.length) {
+        row = renderSecondStagePlacement(ws, row, event.secondStage, regMap);
+      } else if (event.matches.some((m) => (m.roundNo ?? 0) >= 1 && (m.roundNo ?? 0) < 100 && !isPlayoff(m))) {
+        row = renderKnockoutBracket(ws, row, event, regMap);
+      } else if (event.format === GROUP_KNOCKOUT_STD) {
+        // 出线前也按组数×出线数预画对阵骨架（X组第N名占位）。
+        row = renderSkeletonBracket(ws, row, event);
+      }
     }
     row += 2;
   }
@@ -915,13 +922,21 @@ function placementSide(
   return slot ? `${slot}  ${name}` : name;
 }
 
-export async function buildOrderbookWorkbook(tournament: ExportTournament): Promise<Buffer> {
+/**
+ * 秩序册（高保真 .xlsx）：日程表 + 秩序表 + 流程表。
+ * options.stage 留空 = 全量（数据导出页用）；'first'/'second' = 只导出对应阶段的流程表段
+ *（场地排程页「按阶段导出秩序册」用，格式与全量秩序册保持一致）。
+ */
+export async function buildOrderbookWorkbook(
+  tournament: ExportTournament,
+  options?: { stage?: 'first' | 'second' },
+): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
   wb.creator = '羽毛球赛事系统';
   wb.created = new Date();
   buildScheduleSheet(wb, tournament);
   buildOrderSheet(wb, tournament);
-  buildFlowSheet(wb, tournament);
+  buildFlowSheet(wb, tournament, options?.stage);
   const buffer = await wb.xlsx.writeBuffer();
   return Buffer.from(buffer as ArrayBuffer);
 }

@@ -1254,44 +1254,47 @@ export class DrawsService {
     let standardEntrants: StandardSecondStageEntrant[] = [];
     if (isStandard2023Format) {
       standardEntrants = await this.getStandardSecondStageEntrants(eventId, event.qualifiersPerGroup ?? 2);
-      if (standardEntrants.length < 2) {
-        throw new BadRequestException('小组赛全部结束后，至少需要产生 2 名出线队伍才能生成第二阶段');
-      }
-      if (standardEntrants.length > SECOND_STAGE_SLOTS.length) {
-        throw new BadRequestException('A-H 第二阶段最多支持 8 名出线队伍，请调整每组出线数或使用普通淘汰签表');
-      }
-      const eligibleIds = new Set(standardEntrants.map((entrant) => entrant.id));
-      const invalid = assigned.find((item) => !eligibleIds.has(item.entrantId));
-      if (invalid) {
-        throw new BadRequestException('标准2023第二阶段签位只能选择已出线队伍');
-      }
-
-      const usedIds = new Set(assigned.map((item) => item.entrantId));
-      const occupiedSlots = new Set(assigned.map((item) => item.slot));
-      const autoAssigned: Array<{ slot: SecondStageSlotCode; entrantId: string }> = [];
-      const defaultAssignments = this.buildStandardSecondStageDefaultAssignments(
-        standardEntrants,
-        event.qualifiersPerGroup ?? 2,
-      );
-
-      for (const item of defaultAssignments) {
-        if (usedIds.has(item.entrantId) || occupiedSlots.has(item.slot)) continue;
-        autoAssigned.push(item);
-        usedIds.add(item.entrantId);
-        occupiedSlots.add(item.slot);
-      }
-
-      const remaining = standardEntrants.filter((entrant) => !usedIds.has(entrant.id));
-      for (const entrant of remaining) {
-        const slot = SECOND_STAGE_SLOTS.find((candidate) => !occupiedSlots.has(candidate));
-        if (!slot) {
-          throw new BadRequestException('A-H 签位不足以容纳全部出线队伍');
+      if (standardEntrants.length >= 2) {
+        // 官方出线名次已产生（小组赛全部完赛）：签位只能选出线队伍，未指定部分按官方种子序自动补齐。
+        if (standardEntrants.length > SECOND_STAGE_SLOTS.length) {
+          throw new BadRequestException('A-H 第二阶段最多支持 8 名出线队伍，请调整每组出线数或使用普通淘汰签表');
         }
-        autoAssigned.push({ slot, entrantId: entrant.id });
-        usedIds.add(entrant.id);
-        occupiedSlots.add(slot);
+        const eligibleIds = new Set(standardEntrants.map((entrant) => entrant.id));
+        const invalid = assigned.find((item) => !eligibleIds.has(item.entrantId));
+        if (invalid) {
+          throw new BadRequestException('标准2023第二阶段签位只能选择已出线队伍');
+        }
+
+        const usedIds = new Set(assigned.map((item) => item.entrantId));
+        const occupiedSlots = new Set(assigned.map((item) => item.slot));
+        const autoAssigned: Array<{ slot: SecondStageSlotCode; entrantId: string }> = [];
+        const defaultAssignments = this.buildStandardSecondStageDefaultAssignments(
+          standardEntrants,
+          event.qualifiersPerGroup ?? 2,
+        );
+
+        for (const item of defaultAssignments) {
+          if (usedIds.has(item.entrantId) || occupiedSlots.has(item.slot)) continue;
+          autoAssigned.push(item);
+          usedIds.add(item.entrantId);
+          occupiedSlots.add(item.slot);
+        }
+
+        const remaining = standardEntrants.filter((entrant) => !usedIds.has(entrant.id));
+        for (const entrant of remaining) {
+          const slot = SECOND_STAGE_SLOTS.find((candidate) => !occupiedSlots.has(candidate));
+          if (!slot) {
+            throw new BadRequestException('A-H 签位不足以容纳全部出线队伍');
+          }
+          autoAssigned.push({ slot, entrantId: entrant.id });
+          usedIds.add(entrant.id);
+          occupiedSlots.add(slot);
+        }
+        assigned = [...assigned, ...autoAssigned];
+      } else if (assigned.length < 2) {
+        // 小组赛尚未全部完赛、官方出线名次未产生：退回手动指定，至少需要 2 名（任意已通过报名均可入位）。
+        throw new BadRequestException('至少需要指定 2 名选手，其余签位可留空（轮空）');
       }
-      assigned = [...assigned, ...autoAssigned];
     } else if (assigned.length < 2) {
       throw new BadRequestException('至少需要指定 2 名选手，其余签位可留空（轮空）');
     }

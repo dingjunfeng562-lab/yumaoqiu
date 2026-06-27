@@ -8,6 +8,7 @@ import {
   Button,
   Card,
   DatePicker,
+  Dropdown,
   Empty,
   Form,
   InputNumber,
@@ -20,9 +21,14 @@ import {
   Typography,
   message,
 } from 'antd';
-import { DeleteOutlined, EditOutlined, ReloadOutlined } from '@ant-design/icons';
+import { DeleteOutlined, DownloadOutlined, DownOutlined, EditOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { roundCn } from '@/lib/round';
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
+
+// 带第二阶段（A-H 淘汰排位）的赛制，才提供「单独导出第二阶段秩序表」。
+const SECOND_STAGE_FORMATS = ['GROUP_PLUS_KNOCKOUT_STD', 'SINGLE_ELIMINATION_PLUS_GROUP_RANKING'];
 
 const EVENT_TYPE_LABELS: Record<string, string> = {
   MENS_SINGLES: '男子单打',
@@ -64,6 +70,7 @@ interface EventItem {
   id: string;
   tournamentId: string;
   type: string;
+  format?: string;
 }
 
 interface Venue {
@@ -163,10 +170,18 @@ export default function AdminSchedulingPage() {
   const [editingMatch, setEditingMatch] = useState<ScheduleMatch | null>(null);
   const [autoForm] = Form.useForm();
   const [editForm] = Form.useForm();
+  const [exportingStage, setExportingStage] = useState(false);
 
   const selectedTournament = useMemo(
     () => tournaments.find((item) => item.id === selectedTournamentId),
     [selectedTournamentId, tournaments],
+  );
+  const selectedEvent = useMemo(
+    () => events.find((item) => item.id === selectedEventId),
+    [events, selectedEventId],
+  );
+  const canExportStageOrder = Boolean(
+    selectedEventId && selectedEvent && SECOND_STAGE_FORMATS.includes(selectedEvent.format ?? ''),
   );
   const configuredVenues = selectedTournament?.venues ?? schedule.venues;
   const activeVenues = useMemo(() => configuredVenues.filter((venue) => venue.isActive), [configuredVenues]);
@@ -289,6 +304,38 @@ export default function AdminSchedulingPage() {
     }
   }
 
+  async function exportStageOrder(stage: 'first' | 'second') {
+    if (!token || !selectedEventId) return;
+    const stageLabel = stage === 'first' ? '第一阶段' : '第二阶段';
+    setExportingStage(true);
+    try {
+      const res = await fetch(`${API_BASE}/exports/events/${selectedEventId}/stage-order?stage=${stage}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({ message: '导出失败' }));
+        throw new Error(error.message ?? '导出失败');
+      }
+      const blob = await res.blob();
+      const disposition = res.headers.get('content-disposition');
+      const encoded = disposition?.match(/filename\*=UTF-8''([^;]+)/)?.[1];
+      const fallback = `${(selectedTournament?.name ?? '赛事').replace(/[\\/:*?"<>|]/g, '-')}-${stageLabel}秩序册.xlsx`;
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = encoded ? decodeURIComponent(encoded) : fallback;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      message.success(`${stageLabel}秩序册已导出`);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '导出失败');
+    } finally {
+      setExportingStage(false);
+    }
+  }
+
   async function quickUpdateDuration(match: ScheduleMatch, durationMinutes: number) {
     if (!token || !durationMinutes || durationMinutes === match.durationMinutes) return;
     try {
@@ -393,6 +440,25 @@ export default function AdminSchedulingPage() {
         <Space wrap>
           <Button icon={<ReloadOutlined />} onClick={() => loadSchedule()} loading={loading}>刷新</Button>
           <Button href="/admin/tournaments">编辑赛程设置</Button>
+          <Dropdown
+            disabled={!canExportStageOrder}
+            menu={{
+              items: [
+                { key: 'first', label: '导出第一阶段秩序册' },
+                { key: 'second', label: '导出第二阶段秩序册' },
+              ],
+              onClick: ({ key }) => exportStageOrder(key as 'first' | 'second'),
+            }}
+          >
+            <Button
+              icon={<DownloadOutlined />}
+              loading={exportingStage}
+              disabled={!canExportStageOrder}
+              title={canExportStageOrder ? undefined : '请选择带第二阶段（标准2023/淘汰排位）的单项'}
+            >
+              导出秩序册 <DownOutlined />
+            </Button>
+          </Dropdown>
           <Popconfirm
             title="取消后将清空当前所选范围内所有未开始场次的场地与时间（已完赛/进行中的不受影响），确认继续？"
             onConfirm={clearSchedule}

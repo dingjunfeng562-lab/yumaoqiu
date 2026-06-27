@@ -8,6 +8,12 @@ export const WATERMARK_POSITIONS: WatermarkPosition[] = [
   'BOTTOM_LEFT',
   'BOTTOM_RIGHT',
 ];
+type TextWatermarkOptions = {
+  content?: string | null;
+  color?: string | null;
+  heightPercent?: number | null;
+  position?: WatermarkPosition | null;
+};
 
 /**
  * Builds and applies the per-tournament logo watermark to uploaded photos.
@@ -32,10 +38,20 @@ export class WatermarkService {
   static readonly DEFAULT_LOGO_GAP_PERCENT = 20;
   static readonly MIN_LOGO_GAP_PERCENT = 0;
   static readonly MAX_LOGO_GAP_PERCENT = 200;
+  /** Text watermark height as a percentage of the image height. */
+  static readonly DEFAULT_TEXT_SIZE_PERCENT = 6;
+  static readonly MIN_TEXT_SIZE_PERCENT = 2;
+  static readonly MAX_TEXT_SIZE_PERCENT = 80;
+  static readonly DEFAULT_TEXT_COLOR = '#FFFFFF';
+  static readonly MAX_TEXT_LENGTH = 100;
+  static readonly DEFAULT_TEXT_FONT_FAMILY =
+    "'Noto Sans CJK SC','Noto Sans SC','Source Han Sans SC','Microsoft YaHei','SimHei','PingFang SC','WenQuanYi Micro Hei','WenQuanYi Zen Hei',sans-serif";
   static readonly DEFAULT_POSITION: WatermarkPosition = 'TOP_RIGHT';
   private readonly EDGE_MARGIN = 24;
   private readonly OPACITY = 0.85;
   private readonly THUMB_WIDTH = 400;
+  private readonly TEXT_FONT_FAMILY =
+    process.env.WATERMARK_FONT_FAMILY?.trim() || WatermarkService.DEFAULT_TEXT_FONT_FAMILY;
 
   /**
    * Decode options shared by every pipeline that reads an uploaded photo.
@@ -76,41 +92,119 @@ export class WatermarkService {
     );
   }
 
-  /** Horizontal strip of resized logos placed side by side with a gap. */
+  /** Clamp the text-size percent into the supported range. */
+  private clampTextSize(percent?: number | null): number {
+    const value = percent ?? WatermarkService.DEFAULT_TEXT_SIZE_PERCENT;
+    return Math.min(
+      WatermarkService.MAX_TEXT_SIZE_PERCENT,
+      Math.max(WatermarkService.MIN_TEXT_SIZE_PERCENT, Math.round(value)),
+    );
+  }
+
+  /** Accept #RGB / #RRGGBB hex only; fall back to white. */
+  private sanitizeColor(color?: string | null): string {
+    const v = (color ?? '').trim();
+    return /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(v) ? v : WatermarkService.DEFAULT_TEXT_COLOR;
+  }
+
+  private escapeXml(value: string): string {
+    return value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+  }
+
+  /**
+   * Render a text watermark element to a tightly-cropped PNG of ~heightPx tall.
+   * Drawn via SVG (sharp uses librsvg/fontconfig); a CJK font must be installed
+   * on the host for Chinese text to render — otherwise it falls back to boxes.
+   * Returns null when the text is empty or rendering fails.
+   */
+  private async renderText(
+    content: string,
+    heightPx: number,
+    color?: string | null,
+  ): Promise<{ buffer: Buffer; width: number; height: number } | null> {
+    const text = content.trim().slice(0, WatermarkService.MAX_TEXT_LENGTH);
+    if (!text) return null;
+    const fontSize = Math.max(1, heightPx);
+    const fill = this.sanitizeColor(color);
+    // Generous canvas; CJK glyphs ~1em wide, latin narrower — over-allocate then trim.
+    const canvasW = Math.ceil(text.length * fontSize * 1.4) + fontSize * 2;
+    const canvasH = Math.ceil(fontSize * 1.6);
+    const svg =
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${canvasW}" height="${canvasH}">` +
+      `<text x="${Math.round(fontSize * 0.2)}" y="${Math.round(canvasH / 2)}" ` +
+      `font-family="${this.escapeXml(this.TEXT_FONT_FAMILY)}" ` +
+      `font-size="${fontSize}" font-weight="bold" fill="${fill}" ` +
+      `dominant-baseline="central" text-anchor="start">${this.escapeXml(text)}</text>` +
+      `</svg>`;
+    try {
+      const base = await sharp(Buffer.from(svg)).png().toBuffer();
+      let buffer = base;
+      try {
+        buffer = await sharp(base).trim().toBuffer(); // crop transparent margins to the glyph box
+      } catch {
+        /* uniform/blank canvas (e.g. missing font) → keep untrimmed */
+      }
+      const meta = await sharp(buffer).metadata();
+      return { buffer, width: meta.width || 0, height: meta.height || fontSize };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Horizontal strip of resized logos + optional text element, placed side by
+   * side with a gap and vertically centered. Returns null when nothing to draw.
+   */
   private async buildWatermark(
     logos: Buffer[],
     imageHeight: number,
     heightPercent: number,
     gapPercent: number,
-  ): Promise<Buffer> {
+    text?: { content: string; color?: string | null; heightPercent: number },
+  ): Promise<Buffer | null> {
     const logoH = Math.max(1, Math.floor((imageHeight * heightPercent) / 100));
 
-    const resizedLogos = await Promise.all(
-      logos.map((buf) => sharp(buf).resize(null, logoH, { fit: 'inside' }).png().toBuffer()),
-    );
-
-    if (resizedLogos.length === 1) {
-      return resizedLogos[0];
+    const elements: Array<{ buffer: Buffer; width: number; height: number }> = [];
+    for (const buf of logos) {
+      const resized = await sharp(buf).resize(null, logoH, { fit: 'inside' }).png().toBuffer();
+      const meta = await sharp(resized).metadata();
+      elements.push({ buffer: resized, width: meta.width || 0, height: meta.height || logoH });
+    }
+    if (text?.content?.trim()) {
+      const textH = Math.max(1, Math.floor((imageHeight * text.heightPercent) / 100));
+      const rendered = await this.renderText(text.content, textH, text.color);
+      if (rendered) elements.push(rendered);
     }
 
-    const gapPx = Math.round((logoH * gapPercent) / 100);
-    const metas = await Promise.all(resizedLogos.map((e) => sharp(e).metadata()));
-    const totalWidth = metas.reduce(
-      (sum, m, i) => sum + (m.width || 0) + (i > 0 ? gapPx : 0),
+    if (elements.length === 0) return null;
+    if (elements.length === 1) return elements[0].buffer;
+
+    // Gap is a percentage of the logo height (or the first element's height when
+    // there are no logos, e.g. text-only watermark with several elements).
+    const refH = logos.length ? logoH : elements[0].height;
+    const gapPx = Math.round((refH * gapPercent) / 100);
+    const stripH = Math.max(...elements.map((e) => e.height));
+    const totalWidth = elements.reduce(
+      (sum, e, i) => sum + e.width + (i > 0 ? gapPx : 0),
       0,
     );
 
     let offsetX = 0;
-    const inputs = resizedLogos.map((buf, i) => {
-      const item = { input: buf, left: offsetX, top: 0 };
-      offsetX += (metas[i].width || 0) + gapPx;
+    const inputs = elements.map((e) => {
+      const item = { input: e.buffer, left: offsetX, top: Math.round((stripH - e.height) / 2) };
+      offsetX += e.width + gapPx;
       return item;
     });
 
     return sharp({
       create: {
         width: Math.max(1, totalWidth),
-        height: logoH,
+        height: Math.max(1, stripH),
         channels: 4,
         background: { r: 0, g: 0, b: 0, alpha: 0 },
       },
@@ -125,6 +219,31 @@ export class WatermarkService {
    * simply re-encoded so every photo lives under the public `full/` path.
    */
   /** Resolve corner position to absolute (left, top) on the source image. */
+  private async fitWatermarkToImage(
+    watermark: Buffer,
+    imgW: number,
+    imgH: number,
+  ): Promise<{ buffer: Buffer; width: number; height: number } | null> {
+    const meta = await sharp(watermark).metadata();
+    const width = meta.width || 0;
+    const height = meta.height || 0;
+    if (width <= 0 || height <= 0) return null;
+
+    const maxW = Math.max(1, imgW > this.EDGE_MARGIN * 2 ? imgW - this.EDGE_MARGIN * 2 : imgW);
+    const maxH = Math.max(1, imgH > this.EDGE_MARGIN * 2 ? imgH - this.EDGE_MARGIN * 2 : imgH);
+    if (width <= maxW && height <= maxH) return { buffer: watermark, width, height };
+
+    const buffer = await sharp(watermark)
+      .resize({ width: maxW, height: maxH, fit: 'inside', withoutEnlargement: true })
+      .png()
+      .toBuffer();
+    const fittedMeta = await sharp(buffer).metadata();
+    const fittedW = fittedMeta.width || 0;
+    const fittedH = fittedMeta.height || 0;
+    if (fittedW <= 0 || fittedH <= 0) return null;
+    return { buffer, width: fittedW, height: fittedH };
+  }
+
   private resolveCornerOffset(
     position: WatermarkPosition,
     imgW: number,
@@ -134,59 +253,37 @@ export class WatermarkService {
   ): { left: number; top: number } {
     const isRight = position === 'TOP_RIGHT' || position === 'BOTTOM_RIGHT';
     const isBottom = position === 'BOTTOM_LEFT' || position === 'BOTTOM_RIGHT';
-    const left = isRight
-      ? Math.max(0, imgW - wmW - this.EDGE_MARGIN)
-      : this.EDGE_MARGIN;
-    const top = isBottom
-      ? Math.max(0, imgH - wmH - this.EDGE_MARGIN)
-      : this.EDGE_MARGIN;
+    const marginX = Math.min(this.EDGE_MARGIN, Math.max(0, Math.floor((imgW - wmW) / 2)));
+    const marginY = Math.min(this.EDGE_MARGIN, Math.max(0, Math.floor((imgH - wmH) / 2)));
+    const left = isRight ? Math.max(0, imgW - wmW - marginX) : marginX;
+    const top = isBottom ? Math.max(0, imgH - wmH - marginY) : marginY;
     return { left, top };
   }
 
-  async applyWatermark(
-    imageBuffer: Buffer,
-    logos: Buffer[],
-    logoHeightPercent?: number,
-    logoGapPercent?: number,
-    position?: WatermarkPosition,
-  ): Promise<{ buffer: Buffer; ext: '.jpg' | '.png' }> {
-    const meta = await sharp(imageBuffer, this.INPUT_OPTS).metadata();
-    const ext: '.jpg' | '.png' = meta.format === 'png' ? '.png' : '.jpg';
-
-    // 未配置 logo：原文件字节原样直出，零重编码、零压缩。EXIF 方向标签保留，
-    // 浏览器与相册会按标签正确显示方向。
-    if (logos.length === 0) {
-      if (meta.format && meta.format !== 'jpeg' && meta.format !== 'png') {
-        const buffer = await sharp(imageBuffer, this.INPUT_OPTS)
-          .rotate()
-          .jpeg({ quality: 100, chromaSubsampling: '4:4:4' })
-          .toBuffer();
-        return { buffer, ext: '.jpg' };
-      }
-      return { buffer: imageBuffer, ext };
-    }
-    // Use post-orientation dimensions so the logo lands in the visually-correct
-    // corner and is sized against the displayed height.
-    const { width: imgW, height: imgH } = this.orientedSize(meta);
-    const safeW = imgW || 1000;
-    const safeH = imgH || 1000;
-
-    const watermark = await this.buildWatermark(
-      logos,
-      safeH,
-      this.clampPercent(logoHeightPercent),
-      this.clampGap(logoGapPercent),
-    );
-    const wmMeta = await sharp(watermark).metadata();
-    const wmW = wmMeta.width || 0;
-    const wmH = wmMeta.height || 0;
-    const pos = WATERMARK_POSITIONS.includes(position as WatermarkPosition)
+  private normalizePosition(position?: WatermarkPosition | null): WatermarkPosition {
+    return WATERMARK_POSITIONS.includes(position as WatermarkPosition)
       ? (position as WatermarkPosition)
       : WatermarkService.DEFAULT_POSITION;
-    const { left, top } = this.resolveCornerOffset(pos, safeW, safeH, wmW, wmH);
+  }
 
-    // Multiply the whole strip's alpha by OPACITY via a tiled dest-in blend.
-    const transparentWm = await sharp(watermark)
+  private async buildOverlay(
+    watermark: Buffer,
+    imgW: number,
+    imgH: number,
+    position: WatermarkPosition,
+  ): Promise<sharp.OverlayOptions | null> {
+    const fittedWatermark = await this.fitWatermarkToImage(watermark, imgW, imgH);
+    if (!fittedWatermark) return null;
+
+    const { left, top } = this.resolveCornerOffset(
+      position,
+      imgW,
+      imgH,
+      fittedWatermark.width,
+      fittedWatermark.height,
+    );
+
+    const transparentWm = await sharp(fittedWatermark.buffer)
       .composite([
         {
           input: Buffer.from([255, 255, 255, Math.floor(this.OPACITY * 255)]),
@@ -198,20 +295,92 @@ export class WatermarkService {
       .png()
       .toBuffer();
 
+    return {
+      input: transparentWm,
+      left,
+      top,
+      blend: 'over',
+    };
+  }
+
+  async applyWatermark(
+    imageBuffer: Buffer,
+    logos: Buffer[],
+    logoHeightPercent?: number,
+    logoGapPercent?: number,
+    position?: WatermarkPosition,
+    text?: TextWatermarkOptions,
+  ): Promise<{ buffer: Buffer; ext: '.jpg' | '.png' }> {
+    const meta = await sharp(imageBuffer, this.INPUT_OPTS).metadata();
+    const ext: '.jpg' | '.png' = meta.format === 'png' ? '.png' : '.jpg';
+
+    const hasText = Boolean(text?.content && text.content.trim());
+
+    // 未配置 logo 也未配置文字水印：原文件字节原样直出，零重编码、零压缩。
+    // EXIF 方向标签保留，浏览器与相册会按标签正确显示方向。
+    const passthrough = async () => {
+      if (meta.format && meta.format !== 'jpeg' && meta.format !== 'png') {
+        const buffer = await sharp(imageBuffer, this.INPUT_OPTS)
+          .rotate()
+          .jpeg({ quality: 100, chromaSubsampling: '4:4:4' })
+          .toBuffer();
+        return { buffer, ext: '.jpg' as const };
+      }
+      return { buffer: imageBuffer, ext };
+    };
+    if (logos.length === 0 && !hasText) {
+      return passthrough();
+    }
+    // Use post-orientation dimensions so the logo lands in the visually-correct
+    // corner and is sized against the displayed height.
+    const { width: imgW, height: imgH } = this.orientedSize(meta);
+    const safeW = imgW || 1000;
+    const safeH = imgH || 1000;
+
+    const pos = this.normalizePosition(position);
+    const textPos = this.normalizePosition(text?.position);
+    const clampedText =
+      hasText
+        ? {
+            content: text!.content!.trim(),
+            color: text!.color ?? undefined,
+            heightPercent: this.clampTextSize(text!.heightPercent),
+          }
+        : undefined;
+    const overlays: sharp.OverlayOptions[] = [];
+
+    const combinedText = clampedText && textPos === pos ? clampedText : undefined;
+    const logoWatermark = await this.buildWatermark(
+      logos,
+      safeH,
+      this.clampPercent(logoHeightPercent),
+      this.clampGap(logoGapPercent),
+      combinedText,
+    );
+    // If every requested overlay fails to render, keep the original bytes.
+    if (logoWatermark) {
+      const overlay = await this.buildOverlay(logoWatermark, safeW, safeH, pos);
+      if (overlay) overlays.push(overlay);
+    }
+
+    if (clampedText && textPos !== pos) {
+      const textH = Math.max(1, Math.floor((safeH * clampedText.heightPercent) / 100));
+      const renderedText = await this.renderText(clampedText.content, textH, clampedText.color);
+      if (renderedText) {
+        const overlay = await this.buildOverlay(renderedText.buffer, safeW, safeH, textPos);
+        if (overlay) overlays.push(overlay);
+      }
+    }
+
+    if (overlays.length === 0) return passthrough();
+
     // Auto-orient first so the composite coordinates match the visual image
     // (`.rotate()` bakes the EXIF orientation into pixels), then composite the
     // watermark at full resolution. 合成必须重编码：JPEG 用质量 100 + 4:4:4
     // 无色度抽样（视觉无损），PNG 保持无损输出，分辨率不变。
     const pipeline = sharp(imageBuffer, this.INPUT_OPTS)
       .rotate()
-      .composite([
-        {
-          input: transparentWm,
-          left,
-          top,
-          blend: 'over',
-        },
-      ]);
+      .composite(overlays);
     const buffer =
       ext === '.png'
         ? await pipeline.png().toBuffer()

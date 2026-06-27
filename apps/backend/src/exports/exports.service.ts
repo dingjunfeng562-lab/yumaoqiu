@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { MatchStatus, RegistrationStatus } from '@prisma/client';
+import { Format, MatchStatus, RegistrationStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { SECOND_STAGE_FORMAL_ROUND_NO_BASE } from '../common/second-stage-bracket';
 import { buildOrderbookWorkbook } from './orderbook-workbook';
 
 const XLS_CONTENT_TYPE = 'application/vnd.ms-excel';
@@ -195,6 +196,156 @@ export class ExportsService {
       content: this.toWorkbookXml(worksheets),
       contentType: XLS_CONTENT_TYPE,
     };
+  }
+
+  /**
+   * 单项「按阶段」秩序册（高保真 .xlsx）：场地排程页「按阶段导出秩序册」用。
+   * 复用全量秩序册的同一套生成器（日程表 + 秩序表 + 流程表），与数据导出页「秩序册」格式内容一致；
+   * stage 仅决定流程表只画第一阶段或第二阶段，日程表/秩序表按该阶段场次（含未排程的，流程表会完整呈现）。
+   */
+  async exportEventStageOrder(eventId: string, stage: 'first' | 'second') {
+    const event = await this.prisma.event.findUnique({
+      where: { id: eventId },
+      select: {
+        type: true,
+        format: true,
+        qualifiersPerGroup: true,
+        tournament: {
+          select: {
+            name: true,
+            startDate: true,
+            endDate: true,
+            venues: {
+              orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+              select: { id: true, name: true, sortOrder: true },
+            },
+          },
+        },
+        registrations: {
+          where: { status: RegistrationStatus.APPROVED },
+          select: {
+            id: true,
+            eventId: true,
+            studentId: true,
+            createdAt: true,
+            className: true,
+            groupName: true,
+            teamName: true,
+            isSeed: true,
+            seedRank: true,
+            player1: { select: { name: true, gender: true, affiliation: true, contact: true } },
+            player2: { select: { name: true, gender: true, affiliation: true, contact: true } },
+            competitionRegistration: {
+              select: { school: true, eventItems: { select: { eventId: true, partnerStudentId: true } } },
+            },
+          },
+        },
+        matches: {
+          orderBy: [{ scheduledAt: 'asc' }, { roundNo: 'asc' }, { matchNo: 'asc' }],
+          select: {
+            id: true,
+            round: true,
+            roundNo: true,
+            matchNo: true,
+            venueId: true,
+            scheduledAt: true,
+            status: true,
+            durationMinutes: true,
+            side1Id: true,
+            side2Id: true,
+            winnerSide: true,
+            updatedAt: true,
+            venue: { select: { name: true, sortOrder: true } },
+            referee: { select: { username: true } },
+            games: {
+              orderBy: { gameNo: 'asc' },
+              select: { gameNo: true, side1Score: true, side2Score: true },
+            },
+          },
+        },
+        // 第二阶段（前8/前6晋级赛）后台指定的签位与对阵，用于流程表第二阶段对阵图。
+        secondStage: {
+          select: {
+            status: true,
+            mode: true,
+            rankingMode: true,
+            slots: {
+              orderBy: { sortOrder: 'asc' },
+              select: { slot: true, sortOrder: true, entrantId: true, entrantNameSnapshot: true },
+            },
+            matches: {
+              orderBy: { matchNo: 'asc' },
+              select: {
+                matchNo: true,
+                roundName: true,
+                area: true,
+                slotInfo: true,
+                side1Source: true,
+                side2Source: true,
+                side1Id: true,
+                side2Id: true,
+                side1NameSnapshot: true,
+                side2NameSnapshot: true,
+                score: true,
+                status: true,
+                winnerSide: true,
+                winnerId: true,
+                winnerNameSnapshot: true,
+              },
+            },
+            rankings: {
+              orderBy: { rank: 'asc' },
+              select: { rank: true, entrantId: true, entrantNameSnapshot: true },
+            },
+          },
+        },
+      },
+    });
+    if (!event) throw new NotFoundException('单项不存在');
+
+    // 只取目标阶段的场次喂给日程表/秩序表；流程表会按 stage 完整呈现该阶段结构（含未排程的）。
+    const stageMatches = (event.matches as unknown as ExportMatch[]).filter((match) =>
+      this.isStageMatch(event.format, match.roundNo ?? 0, stage),
+    );
+
+    const tournament: ExportTournament = {
+      name: event.tournament.name,
+      startDate: event.tournament.startDate,
+      endDate: event.tournament.endDate,
+      venues: event.tournament.venues,
+      events: [
+        {
+          type: event.type,
+          format: event.format,
+          qualifiersPerGroup: event.qualifiersPerGroup,
+          registrations: event.registrations as unknown as ExportRegistration[],
+          matches: stageMatches,
+          secondStage: event.secondStage as unknown as ExportSecondStage | null,
+        },
+      ],
+    };
+
+    const eventLabel = EVENT_TYPE_LABELS[event.type] ?? event.type;
+    const stageLabel = stage === 'first' ? '第一阶段' : '第二阶段';
+    return {
+      filename: this.exportFilename(`${event.tournament.name}-${eventLabel}`, `${stageLabel}秩序册`, 'xlsx'),
+      content: await buildOrderbookWorkbook(tournament, { stage }),
+      contentType: XLSX_CONTENT_TYPE,
+    };
+  }
+
+  /**
+   * 阶段归属判定（按赛制）：
+   * - 单淘汰+小组排位(SINGLE_ELIMINATION_PLUS_GROUP_RANKING)：第一阶段=单淘汰(1≤roundNo<100)，第二阶段=排位赛(roundNo≥100)；
+   * - 其余含小组的赛制（含标准2023）：第一阶段=小组循环(roundNo=0)，第二阶段=淘汰/排位(roundNo≥1)。
+   */
+  private isStageMatch(format: Format, roundNo: number, stage: 'first' | 'second') {
+    if (format === Format.SINGLE_ELIMINATION_PLUS_GROUP_RANKING) {
+      return stage === 'first'
+        ? roundNo >= 1 && roundNo < SECOND_STAGE_FORMAL_ROUND_NO_BASE
+        : roundNo >= SECOND_STAGE_FORMAL_ROUND_NO_BASE;
+    }
+    return stage === 'first' ? roundNo === 0 : roundNo >= 1;
   }
 
   private async findTournamentForExport(tournamentId: string, kind: ExportKind): Promise<ExportTournament | null> {

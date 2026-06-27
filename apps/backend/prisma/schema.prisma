@@ -395,6 +395,12 @@ model TournamentWatermark {
   logoGapPercent    Int       @default(20)
   position          String    @default("TOP_RIGHT") @db.VarChar(16)
   portraitPosition  String?   @db.VarChar(16)
+  // 文字水印（可选）：text 为空表示不加文字水印。
+  text              String?   @db.VarChar(100)
+  textColor         String?   @db.VarChar(16)
+  textSizePercent   Int?
+  textPosition      String?   @db.VarChar(16)
+  textPortraitPosition String?   @db.VarChar(16)
   updatedAt         DateTime  @updatedAt
 }
 
