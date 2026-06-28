@@ -27,8 +27,14 @@ import { roundCn } from '@/lib/round';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 
-// 带第二阶段（A-H 淘汰排位）的赛制，才提供「单独导出第二阶段秩序表」。
-const SECOND_STAGE_FORMATS = ['GROUP_PLUS_KNOCKOUT_STD', 'SINGLE_ELIMINATION_PLUS_GROUP_RANKING'];
+// 有淘汰 / 排位阶段的赛制都允许按阶段导出；ROUND_ROBIN 只有循环赛阶段。
+const SECOND_STAGE_FORMATS = [
+  'SINGLE_ELIMINATION',
+  'GROUP_PLUS_KNOCKOUT',
+  'GROUP_PLUS_KNOCKOUT_STD',
+  'GROUP_PLUS_PLAYOFF',
+  'SINGLE_ELIMINATION_PLUS_GROUP_RANKING',
+];
 
 const EVENT_TYPE_LABELS: Record<string, string> = {
   MENS_SINGLES: '男子单打',
@@ -455,7 +461,7 @@ export default function AdminSchedulingPage() {
               icon={<DownloadOutlined />}
               loading={exportingStage}
               disabled={!canExportStageOrder}
-              title={canExportStageOrder ? undefined : '请选择带第二阶段（标准2023/淘汰排位）的单项'}
+              title={canExportStageOrder ? undefined : '请选择带淘汰/排位阶段的单项'}
             >
               导出秩序册 <DownOutlined />
             </Button>

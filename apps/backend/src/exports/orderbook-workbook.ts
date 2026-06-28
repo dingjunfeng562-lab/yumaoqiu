@@ -100,6 +100,30 @@ function sideUnit(registration: ExportRegistration | null | undefined) {
     : registration.player1.affiliation;
 }
 
+function eventGroupCodes(event: ExportEvent) {
+  return [
+    ...new Set(
+      event.matches
+        .filter((m) => (m.roundNo ?? 0) === 0)
+        .map((m) => (typeof m.round === 'string' ? m.round : m.round != null ? String(m.round) : ''))
+        .filter(Boolean),
+    ),
+  ].sort((a, b) => a.localeCompare(b, 'zh-CN'));
+}
+
+function playoffRank(match: ExportMatch) {
+  if (match.matchNo != null) return match.matchNo;
+  const parsed = /^P(\d+)$/.exec(typeof match.round === 'string' ? match.round : String(match.round ?? ''));
+  return parsed ? Math.floor((Number(parsed[1]) + 1) / 2) : null;
+}
+
+function playoffSideSource(event: ExportEvent, match: ExportMatch, side: 1 | 2) {
+  if (!isPlayoff(match)) return null;
+  const group = eventGroupCodes(event)[side - 1];
+  const rank = playoffRank(match);
+  return group && rank ? `${group}组第${rank}名` : '待定';
+}
+
 function secondStagePlanningMatch(event: ExportEvent, match: ExportMatch) {
   if ((match.roundNo ?? 0) < 100) return null;
   return event.secondStage?.matches.find((item) => item.matchNo === match.matchNo) ?? null;
@@ -123,9 +147,10 @@ function orderSideText(
   const planning = secondStagePlanningMatch(event, match);
   const source = side === 1 ? planning?.side1Source : planning?.side2Source;
   const snapshot = side === 1 ? planning?.side1NameSnapshot : planning?.side2NameSnapshot;
+  const playoffSource = playoffSideSource(event, match, side);
   return {
     unit: source ?? '',
-    name: snapshot ?? (source ? '待定' : ''),
+    name: snapshot ?? (source ? '待定' : playoffSource ?? (match.scheduledAt || match.venueId ? '待定' : '')),
   };
 }
 
@@ -161,19 +186,45 @@ function isPlayoff(match: ExportMatch) {
   return roundNo >= 1 && roundNo < 100 && typeof match.round === 'string' && match.round.startsWith('P');
 }
 
+function playoffRoundLabel(round: string) {
+  const playoff = /^P(\d+)$/.exec(round);
+  if (!playoff) return null;
+  const hi = Number(playoff[1]);
+  return `${hi}-${hi + 1}名决赛`;
+}
+
+function secondStageFormalRoundLabel(match: ExportMatch) {
+  const round = typeof match.round === 'string' ? match.round : match.round != null ? String(match.round) : '';
+  const rankFinalLabels: Record<string, string> = {
+    决赛: '1-2名决赛',
+    三四名决赛: '3-4名决赛',
+    五六名决赛: '5-6名决赛',
+    七八名决赛: '7-8名决赛',
+  };
+  return rankFinalLabels[round] ?? (round || '第二阶段');
+}
+
 function roundLabel(match: ExportMatch) {
   const roundNo = match.roundNo ?? 0;
   const round = typeof match.round === 'string' ? match.round : match.round != null ? String(match.round) : '';
   if (roundNo === 0) return round ? `${round}组` : '小组循环';
-  if (roundNo >= 100) return '第二阶段';
-  if (round.startsWith('P')) return '排位赛';
+  if (roundNo >= 100) return secondStageFormalRoundLabel(match);
+  if (round.startsWith('P')) return playoffRoundLabel(round) ?? '排位赛';
   return KNOCKOUT_ROUND_LABELS[round] ?? round;
 }
 
 function stageText(matches: ExportMatch[]) {
   const parts: string[] = [];
   if (matches.some((m) => (m.roundNo ?? 0) === 0)) parts.push('第一阶段·小组循环');
-  if (matches.some((m) => isPlayoff(m))) parts.push('排位赛');
+  const playoffLabels = [
+    ...new Set(
+      matches
+        .filter((m) => isPlayoff(m))
+        .map((m) => (typeof m.round === 'string' ? playoffRoundLabel(m.round) : null))
+        .filter((label): label is string => Boolean(label)),
+    ),
+  ];
+  if (playoffLabels.length) parts.push('第二阶段·' + playoffLabels.join('、'));
   const koLabels = [
     ...new Set(
       matches
@@ -460,7 +511,9 @@ function buildFlowSheet(
     if (stage !== 'first') {
       row = sectionTitle(ws, row, `${label}第二阶段：`);
       if (event.secondStage && event.secondStage.matches.length) {
-        row = renderSecondStagePlacement(ws, row, event.secondStage, regMap);
+        row = renderSecondStagePlacement(ws, row, event, event.secondStage, regMap);
+      } else if (event.matches.some((m) => isPlayoff(m))) {
+        row = renderPlayoffPlacementMatches(ws, row, event, regMap);
       } else if (event.matches.some((m) => (m.roundNo ?? 0) >= 1 && (m.roundNo ?? 0) < 100 && !isPlayoff(m))) {
         row = renderKnockoutBracket(ws, row, event, regMap);
       } else if (event.format === GROUP_KNOCKOUT_STD) {
@@ -812,6 +865,85 @@ function renderSkeletonBracket(ws: ExcelJS.Worksheet, startRow: number, event: E
   return layoutBracketTree(ws, startRow, rounds, bronze);
 }
 
+const MATCH_STATUS_LABELS: Record<string, string> = {
+  PENDING: '未开始',
+  LIVE: '进行中',
+  COMPLETED: '已结束',
+  CANCELLED: '已取消',
+};
+
+function matchScoreText(match: ExportMatch) {
+  return match.games.length ? match.games.map((game) => `${game.side1Score}:${game.side2Score}`).join('  ') : '';
+}
+
+function scheduleMeta(match: ExportMatch | null | undefined) {
+  if (!match) return '';
+  const parts = [
+    match.scheduledAt ? fmtScheduleDateTime(match.scheduledAt) : '',
+    match.venue?.name ? `场地:${match.venue.name}` : '',
+  ].filter(Boolean);
+  return parts.join('\n');
+}
+
+function playoffSideName(
+  event: ExportEvent,
+  match: ExportMatch,
+  side: 1 | 2,
+  regMap: Map<string, ExportRegistration>,
+) {
+  const id = side === 1 ? match.side1Id : match.side2Id;
+  const registration = id ? regMap.get(id) ?? null : null;
+  return registrationName(registration) || playoffSideSource(event, match, side) || '待定';
+}
+
+function renderPlayoffPlacementMatches(
+  ws: ExcelJS.Worksheet,
+  startRow: number,
+  event: ExportEvent,
+  regMap: Map<string, ExportRegistration>,
+) {
+  const matches = event.matches
+    .filter((match) => isPlayoff(match))
+    .sort((a, b) => (a.matchNo ?? 0) - (b.matchNo ?? 0) || a.id.localeCompare(b.id));
+  if (!matches.length) return startRow;
+
+  const headers = ['场次', '名次赛', '时间', '场地', '对阵', '比分', '状态'];
+  const widths = [8, 14, 17, 12, 30, 12, 10];
+  widths.forEach((width, index) => {
+    const column = ws.getColumn(index + 1);
+    column.width = Math.max(column.width ?? 0, width);
+  });
+
+  let row = startRow;
+  headers.forEach((header, index) => {
+    const cell = ws.getCell(row, index + 1);
+    cell.value = header;
+    styleHeaderCell(cell);
+  });
+  row += 1;
+
+  for (const match of matches) {
+    const values = [
+      match.matchNo != null ? `第${match.matchNo}场` : '',
+      roundLabel(match),
+      match.scheduledAt ? fmtScheduleDateTime(match.scheduledAt) : '',
+      match.venue?.name ?? '',
+      `${playoffSideName(event, match, 1, regMap)} VS ${playoffSideName(event, match, 2, regMap)}`,
+      matchScoreText(match),
+      MATCH_STATUS_LABELS[match.status] ?? match.status,
+    ];
+    values.forEach((value, index) => {
+      const cell = ws.getCell(row, index + 1);
+      cell.value = value;
+      cell.border = thinBorder();
+      cell.alignment = { vertical: 'middle', wrapText: true };
+    });
+    row += 1;
+  }
+
+  return row;
+}
+
 // ===== 第二阶段：后台手动指定的「前8/前6晋级赛」交叉对阵图 =====
 // 版式镜像前端 SecondStageCrossBracket：1-4 名争夺区在上、5-8 名争夺区在下，
 // 拓扑与 common/second-stage-bracket.ts 的推进边一致。
@@ -837,11 +969,11 @@ const PLACEMENT_POS: Record<number, { col: number; row: number }> = {
 function placementRoundLabel(no: number, top6: boolean) {
   if (no <= 4) return '前8初始赛';
   if (no === 5 || no === 6) return '1-4 半决赛';
-  if (no === 7) return '决赛·1/2名';
-  if (no === 8) return '3/4名';
+  if (no === 7) return '1-2名决赛';
+  if (no === 8) return '3-4名决赛';
   if (no === 9 || no === 10) return top6 ? '5-6 资格赛' : '5-8 半决赛';
-  if (no === 11) return top6 ? '5/6名决赛' : '5/6名';
-  return '7/8名';
+  if (no === 11) return '5-6名决赛';
+  return '7-8名决赛';
 }
 
 type NameResolver = (id: string | null, snapshot: string | null, source: string | null) => string;
@@ -849,6 +981,7 @@ type NameResolver = (id: string | null, snapshot: string | null, source: string 
 function renderSecondStagePlacement(
   ws: ExcelJS.Worksheet,
   startRow: number,
+  event: ExportEvent,
   stage: ExportSecondStage,
   regMap: Map<string, ExportRegistration>,
 ) {
@@ -885,6 +1018,11 @@ function renderSecondStagePlacement(
 
   // 交叉对阵区。
   const byNo = new Map(stage.matches.map((m) => [m.matchNo, m]));
+  const formalMatchByNo = new Map(
+    event.matches
+      .filter((match) => (match.roundNo ?? 0) >= 100 && match.matchNo != null)
+      .map((match) => [match.matchNo!, match]),
+  );
   const bracketTop = row;
   const matchNos = Object.keys(PLACEMENT_POS)
     .map(Number)
@@ -892,7 +1030,16 @@ function renderSecondStagePlacement(
   let maxRel = 0;
   for (const no of matchNos) {
     const pos = PLACEMENT_POS[no];
-    drawPlacementCard(ws, bracketTop + pos.row, 1 + pos.col * 7, no, byNo.get(no), placementRoundLabel(no, top6), displayName);
+    drawPlacementCard(
+      ws,
+      bracketTop + pos.row,
+      1 + pos.col * 7,
+      no,
+      byNo.get(no),
+      placementRoundLabel(no, top6),
+      displayName,
+      scheduleMeta(formalMatchByNo.get(no)),
+    );
     maxRel = Math.max(maxRel, pos.row + 3);
   }
   const dividerCell = ws.getCell(bracketTop + 16, 1 + 7);
@@ -933,13 +1080,18 @@ function drawPlacementCard(
   match: ExportSecondStageMatch | undefined,
   label: string,
   displayName: NameResolver,
+  meta: string,
 ) {
   const W = 6;
   ws.mergeCells(top, col, top, col + W - 2);
   const head = ws.getCell(top, col);
-  head.value = `第${no}场·${label}`;
+  head.value = [`第${no}场·${label}`, meta].filter(Boolean).join('\n');
   head.font = { bold: true, size: 9, color: { argb: 'FF64748B' } };
-  head.alignment = { vertical: 'middle' };
+  head.alignment = { vertical: 'middle', wrapText: true };
+  if (meta) {
+    const currentHeight = ws.getRow(top).height ?? 15;
+    ws.getRow(top).height = Math.max(currentHeight, 34);
+  }
   const scoreCell = ws.getCell(top, col + W - 1);
   if (match?.score) {
     scoreCell.value = match.score.replace(/\s*[:：]\s*/g, ':');
