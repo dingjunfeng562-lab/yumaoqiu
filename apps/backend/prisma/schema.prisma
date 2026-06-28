@@ -377,6 +377,8 @@ model Photo {
   fileSize        Int
   width           Int
   height          Int
+  viewCount       Int           @default(0)
+  downloadCount   Int           @default(0)
   uploadedAt      DateTime      @default(now())
   deletedAt       DateTime?
 

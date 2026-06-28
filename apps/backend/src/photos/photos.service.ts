@@ -145,15 +145,30 @@ export class PhotosService {
       by: ['tournamentId'],
       where: { deletedAt: null },
       _count: { _all: true },
+      _sum: { viewCount: true, downloadCount: true },
     });
     if (grouped.length === 0) return [];
-    const counts = new Map(grouped.map((g) => [g.tournamentId, g._count._all]));
+    const counts = new Map(
+      grouped.map((g) => [
+        g.tournamentId,
+        {
+          count: g._count._all,
+          viewCount: g._sum.viewCount ?? 0,
+          downloadCount: g._sum.downloadCount ?? 0,
+        },
+      ]),
+    );
     const tournaments = await this.prisma.tournament.findMany({
       where: { id: { in: grouped.map((g) => g.tournamentId) } },
       select: { id: true, name: true, edition: true, startDate: true, endDate: true },
       orderBy: [{ startDate: 'desc' }, { edition: 'desc' }],
     });
-    return tournaments.map((t) => ({ ...t, photoCount: counts.get(t.id) ?? 0 }));
+    return tournaments.map((t) => ({
+      ...t,
+      photoCount: counts.get(t.id)?.count ?? 0,
+      viewCount: counts.get(t.id)?.viewCount ?? 0,
+      downloadCount: counts.get(t.id)?.downloadCount ?? 0,
+    }));
   }
 
   // ---------------------------------------------------------------------------
@@ -405,6 +420,10 @@ export class PhotosService {
     return `/api/uploads/${relPath}`;
   }
 
+  private photoThumbUrl(photoId: string) {
+    return `/api/photos/${photoId}/thumb`;
+  }
+
   async listPublicPhotos(query: PublicPhotoQueryDto) {
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 30;
@@ -414,8 +433,15 @@ export class PhotosService {
       ...(query.category ? { category: query.category } : {}),
     };
 
-    const [total, rows] = await this.prisma.$transaction([
+    const [total, stats, rows] = await this.prisma.$transaction([
       this.prisma.photo.count({ where }),
+      this.prisma.photo.aggregate({
+        where,
+        _sum: {
+          viewCount: true,
+          downloadCount: true,
+        },
+      }),
       this.prisma.photo.findMany({
         where,
         orderBy: { uploadedAt: 'desc' },
@@ -430,6 +456,8 @@ export class PhotosService {
           width: true,
           height: true,
           uploadedAt: true,
+          viewCount: true,
+          downloadCount: true,
         },
       }),
     ]);
@@ -438,17 +466,55 @@ export class PhotosService {
       total,
       page,
       pageSize,
+      stats: {
+        viewCount: stats._sum.viewCount ?? 0,
+        downloadCount: stats._sum.downloadCount ?? 0,
+      },
       items: rows.map((r) => ({
         id: r.id,
         category: r.category,
         seq: r.seq,
         url: this.url(r.fullPath),
-        thumbUrl: this.url(r.thumbnailPath),
+        thumbUrl: this.photoThumbUrl(r.id),
         width: r.width,
         height: r.height,
         uploadedAt: r.uploadedAt,
+        viewCount: r.viewCount,
+        downloadCount: r.downloadCount,
       })),
     };
+  }
+
+  async getPublicThumb(photoId: string) {
+    const photo = await this.prisma.photo.findUnique({
+      where: { id: photoId },
+    });
+    if (!photo || photo.deletedAt) throw new NotFoundException('图片不存在');
+    const abs = this.absolute(photo.thumbnailPath);
+    if (!existsSync(abs)) throw new NotFoundException('缩略图文件丢失');
+
+    await this.prisma.photo.update({
+      where: { id: photoId },
+      data: { viewCount: { increment: 1 } },
+    });
+
+    return { absolutePath: abs };
+  }
+
+  async getPublicView(photoId: string) {
+    const photo = await this.prisma.photo.findUnique({
+      where: { id: photoId },
+    });
+    if (!photo || photo.deletedAt) throw new NotFoundException('图片不存在');
+    const abs = this.absolute(photo.fullPath);
+    if (!existsSync(abs)) throw new NotFoundException('图片文件丢失');
+
+    await this.prisma.photo.update({
+      where: { id: photoId },
+      data: { viewCount: { increment: 1 } },
+    });
+
+    return { absolutePath: abs };
   }
 
   // ---------------------------------------------------------------------------
@@ -697,6 +763,12 @@ export class PhotosService {
     if (!photo || photo.deletedAt) throw new NotFoundException('图片不存在');
     const abs = this.absolute(photo.fullPath);
     if (!existsSync(abs)) throw new NotFoundException('图片文件丢失');
+
+    // Increment download count
+    await this.prisma.photo.update({
+      where: { id: photoId },
+      data: { downloadCount: { increment: 1 } },
+    });
 
     const name = this.safeFileName(photo.tournament?.name ?? '赛事');
     const category = PHOTO_CATEGORY_LABELS[photo.category] ?? photo.category;

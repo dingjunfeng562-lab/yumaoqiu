@@ -26,12 +26,18 @@ type PhotoItem = {
   width: number;
   height: number;
   uploadedAt: string;
+  viewCount: number;
+  downloadCount: number;
 };
 
 type PhotoPage = {
   total: number;
   page: number;
   pageSize: number;
+  stats?: {
+    viewCount: number;
+    downloadCount: number;
+  };
   items: PhotoItem[];
 };
 
@@ -52,6 +58,14 @@ function fullUrl(path: string) {
   return `${API_ORIGIN}${path}`;
 }
 
+function viewUrl(id: string) {
+  return `${API_BASE}/photos/${id}/view`;
+}
+
+function downloadUrl(id: string) {
+  return `${API_BASE}/photos/${id}/download`;
+}
+
 function formatDateTime(value: string) {
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? value : d.toLocaleString('zh-CN', { hour12: false });
@@ -63,15 +77,21 @@ export function PhotosGallery() {
   const [category, setCategory] = useState<string>('ALL');
   const [photos, setPhotos] = useState<PhotoItem[]>([]);
   const [total, setTotal] = useState(0);
+  const [photoStats, setPhotoStats] = useState({ viewCount: 0, downloadCount: 0 });
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
 
   const [previewVisible, setPreviewVisible] = useState(false);
   const [previewIndex, setPreviewIndex] = useState(0);
+  const totalStats = {
+    views: photoStats.viewCount,
+    downloads: photoStats.downloadCount,
+  };
 
   const sentinelRef = useRef<HTMLDivElement>(null);
   const loadingRef = useRef(false);
+  const countedThumbIdsRef = useRef<Set<string>>(new Set());
 
   // Load the tournament tabs once.
   useEffect(() => {
@@ -110,7 +130,12 @@ export function PhotosGallery() {
         if (!res.ok) throw new Error('加载失败');
         const data = (await res.json()) as PhotoPage;
         setTotal(data.total);
+        setPhotoStats({
+          viewCount: data.stats?.viewCount ?? 0,
+          downloadCount: data.stats?.downloadCount ?? 0,
+        });
         setPage(data.page);
+        if (replace) countedThumbIdsRef.current.clear();
         setPhotos((prev) => (replace ? data.items : [...prev, ...data.items]));
       } catch {
         message.error('图片加载失败');
@@ -127,6 +152,8 @@ export function PhotosGallery() {
     if (!tournamentId) return;
     setPhotos([]);
     setTotal(0);
+    setPhotoStats({ viewCount: 0, downloadCount: 0 });
+    countedThumbIdsRef.current.clear();
     setPage(1);
     void loadPage(1, true);
   }, [tournamentId, category, loadPage]);
@@ -147,11 +174,34 @@ export function PhotosGallery() {
     return () => observer.disconnect();
   }, [photos.length, total, page, loadPage]);
 
+  function incrementLocalStat(photoId: string, key: 'viewCount' | 'downloadCount') {
+    setPhotos((prev) =>
+      prev.map((photo) =>
+        photo.id === photoId ? { ...photo, [key]: (photo[key] ?? 0) + 1 } : photo,
+      ),
+    );
+    setPhotoStats((prev) => ({ ...prev, [key]: prev[key] + 1 }));
+  }
+
+  function openPreview(index: number) {
+    const item = photos[index];
+    if (item) incrementLocalStat(item.id, 'viewCount');
+    setPreviewIndex(index);
+    setPreviewVisible(true);
+  }
+
+  function countThumbView(photoId: string) {
+    if (countedThumbIdsRef.current.has(photoId)) return;
+    countedThumbIdsRef.current.add(photoId);
+    incrementLocalStat(photoId, 'viewCount');
+  }
+
   function downloadPhoto(item: PhotoItem) {
     // Go through the download endpoint, not the raw /uploads URL: the server
     // streams the high-res watermarked version with a 赛事名-分类-序号.ext filename.
+    incrementLocalStat(item.id, 'downloadCount');
     const a = document.createElement('a');
-    a.href = `${API_BASE}/photos/${item.id}/download`;
+    a.href = downloadUrl(item.id);
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -188,16 +238,28 @@ export function PhotosGallery() {
         />
       </div>
 
+      {photos.length > 0 && (
+        <div style={{ marginBottom: 16, color: '#64748b', fontSize: 13 }}>
+          <EyeOutlined /> {totalStats.views.toLocaleString()} 浏览
+          &nbsp;&nbsp;
+          <DownloadOutlined /> {totalStats.downloads.toLocaleString()} 下载
+        </div>
+      )}
+
       {photos.length === 0 && !loading ? (
         <Empty description="该分类下暂无图片" style={{ padding: 48 }} />
       ) : (
         <Image.PreviewGroup
-          items={photos.map((p) => fullUrl(p.url))}
+          items={photos.map((p) => viewUrl(p.id))}
           preview={{
             visible: previewVisible,
             current: previewIndex,
             onVisibleChange: (v) => setPreviewVisible(v),
-            onChange: (c) => setPreviewIndex(c),
+            onChange: (c) => {
+              setPreviewIndex(c);
+              const item = photos[c];
+              if (item) incrementLocalStat(item.id, 'viewCount');
+            },
           }}
         >
           <div className="photo-grid">
@@ -215,25 +277,21 @@ export function PhotosGallery() {
                   boxShadow: '0 4px 16px rgba(15,30,80,0.08)',
                 }}
               >
+                <div className="photo-media">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={fullUrl(item.thumbUrl)}
                   alt={CATEGORY_FILE_LABEL[item.category]}
                   loading="lazy"
-                  onClick={() => {
-                    setPreviewIndex(index);
-                    setPreviewVisible(true);
-                  }}
+                  onLoad={() => countThumbView(item.id)}
+                  onClick={() => openPreview(index)}
                   style={{ width: '100%', display: 'block', cursor: 'zoom-in' }}
                 />
                 <div className="photo-overlay">
                   <button
                     type="button"
                     className="photo-overlay-btn"
-                    onClick={() => {
-                      setPreviewIndex(index);
-                      setPreviewVisible(true);
-                    }}
+                    onClick={() => openPreview(index)}
                   >
                     <EyeOutlined /> 查看大图
                   </button>
@@ -245,10 +303,28 @@ export function PhotosGallery() {
                     <DownloadOutlined /> 下载
                   </button>
                 </div>
+                </div>
                 <div style={{ padding: '6px 8px' }}>
                   <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                     {formatDateTime(item.uploadedAt)}
                   </Typography.Text>
+                  <span
+                    style={{
+                      marginLeft: 12,
+                      color: '#94a3b8',
+                      fontSize: 11,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}
+                  >
+                    <span>
+                      <EyeOutlined /> 浏览 {item.viewCount}
+                    </span>
+                    <span>
+                      <DownloadOutlined /> 下载 {item.downloadCount}
+                    </span>
+                  </span>
                 </div>
               </div>
             ))}
@@ -271,6 +347,10 @@ export function PhotosGallery() {
           column-gap: 12px;
           column-width: 240px;
         }
+        .photo-media {
+          position: relative;
+          overflow: hidden;
+        }
         .photo-overlay {
           position: absolute;
           inset: 0;
@@ -282,7 +362,7 @@ export function PhotosGallery() {
           opacity: 0;
           transition: opacity 0.2s ease;
         }
-        .photo-card:hover .photo-overlay {
+        .photo-media:hover .photo-overlay {
           opacity: 1;
         }
         .photo-overlay-btn {

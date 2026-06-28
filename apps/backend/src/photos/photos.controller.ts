@@ -3,6 +3,7 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   Param,
   Post,
   Query,
@@ -44,6 +45,28 @@ export class PhotosController {
   @Get('photos/tournaments')
   listTournaments() {
     return this.photosService.listTournamentsWithPhotos();
+  }
+
+  @Get('photos/:id/thumb')
+  @Header('Cache-Control', 'no-store')
+  async thumb(@Param('id') id: string) {
+    const { absolutePath } = await this.photosService.getPublicThumb(id);
+    return new StreamableFile(createReadStream(absolutePath), {
+      type: 'image/jpeg',
+      disposition: 'inline',
+    });
+  }
+
+  @Get('photos/:id/view')
+  @Header('Cache-Control', 'no-store')
+  async view(@Param('id') id: string) {
+    const { absolutePath } = await this.photosService.getPublicView(id);
+    const ext = extname(absolutePath).toLowerCase();
+    const type = ext === '.png' ? 'image/png' : 'image/jpeg';
+    return new StreamableFile(createReadStream(absolutePath), {
+      type,
+      disposition: 'inline',
+    });
   }
 
   // Download the high-res watermarked version as an attachment. Public, like the
