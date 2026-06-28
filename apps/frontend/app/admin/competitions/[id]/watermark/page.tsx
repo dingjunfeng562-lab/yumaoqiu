@@ -46,7 +46,14 @@ const WATERMARK_FONT_FAMILY =
   "'Noto Sans CJK SC','Noto Sans SC','Source Han Sans SC','Microsoft YaHei','SimHei','PingFang SC','WenQuanYi Micro Hei','WenQuanYi Zen Hei',sans-serif";
 
 type WatermarkPosition = 'TOP_LEFT' | 'TOP_RIGHT' | 'BOTTOM_LEFT' | 'BOTTOM_RIGHT';
+type TextFontType = 'HEITI' | 'SONGTI' | 'KAITI';
 const DEFAULT_POSITION: WatermarkPosition = 'TOP_RIGHT';
+const DEFAULT_TEXT_FONT: TextFontType = 'HEITI';
+const FONT_OPTIONS: Array<{ value: TextFontType; label: string; family: string; weight?: number }> = [
+  { value: 'HEITI', label: '黑体', family: "'Noto Sans CJK SC','Microsoft YaHei','SimHei',sans-serif", weight: 700 },
+  { value: 'SONGTI', label: '宋体', family: "'Noto Serif CJK SC','SimSun','Songti SC',serif", weight: 400 },
+  { value: 'KAITI', label: '楷体', family: "'KaiTi','STKaiti','Kaiti SC',serif", weight: 400 },
+];
 const POSITION_OPTIONS: Array<{ value: WatermarkPosition; label: string }> = [
   { value: 'TOP_LEFT', label: '左上角' },
   { value: 'TOP_RIGHT', label: '右上角' },
@@ -65,6 +72,7 @@ type WatermarkConfig = {
   text: string;
   textColor: string;
   textSizePercent: number;
+  textFont: TextFontType;
   textPosition: WatermarkPosition;
   textPortraitPosition: WatermarkPosition;
   updatedAt: string | null;
@@ -85,6 +93,7 @@ export default function WatermarkSettingsPage() {
   const [text, setText] = useState<string>('');
   const [textColor, setTextColor] = useState<string>(DEFAULT_TEXT_COLOR);
   const [textSize, setTextSize] = useState<number>(DEFAULT_TEXT_SIZE);
+  const [textFont, setTextFont] = useState<TextFontType>(DEFAULT_TEXT_FONT);
   const [textPosition, setTextPosition] = useState<WatermarkPosition>(DEFAULT_POSITION);
   const [textPortraitPosition, setTextPortraitPosition] = useState<WatermarkPosition>(DEFAULT_POSITION);
   const [loading, setLoading] = useState(false);
@@ -118,6 +127,7 @@ export default function WatermarkSettingsPage() {
       setText(data.text ?? '');
       setTextColor(data.textColor ?? DEFAULT_TEXT_COLOR);
       setTextSize(data.textSizePercent ?? DEFAULT_TEXT_SIZE);
+      setTextFont(data.textFont ?? DEFAULT_TEXT_FONT);
       setTextPosition(data.textPosition ?? data.position ?? DEFAULT_POSITION);
       setTextPortraitPosition(
         data.textPortraitPosition ??
@@ -176,6 +186,7 @@ export default function WatermarkSettingsPage() {
           text.trim() !== (data.text ?? '') ||
           textColor !== (data.textColor ?? DEFAULT_TEXT_COLOR) ||
           textSize !== (data.textSizePercent ?? DEFAULT_TEXT_SIZE) ||
+          textFont !== (data.textFont ?? DEFAULT_TEXT_FONT) ||
           textPosition !== (data.textPosition ?? data.position ?? DEFAULT_POSITION) ||
           textPortraitPosition !==
             (data.textPortraitPosition ??
@@ -209,6 +220,7 @@ export default function WatermarkSettingsPage() {
           text.trim() !== (data.text ?? '') ||
           textColor !== (data.textColor ?? DEFAULT_TEXT_COLOR) ||
           textSize !== (data.textSizePercent ?? DEFAULT_TEXT_SIZE) ||
+          textFont !== (data.textFont ?? DEFAULT_TEXT_FONT) ||
           textPosition !== (data.textPosition ?? data.position ?? DEFAULT_POSITION) ||
           textPortraitPosition !==
             (data.textPortraitPosition ??
@@ -250,6 +262,7 @@ export default function WatermarkSettingsPage() {
           text: text.trim(),
           textColor,
           textSizePercent: textSize,
+          textFont,
           textPosition,
           textPortraitPosition,
         }),
@@ -262,6 +275,7 @@ export default function WatermarkSettingsPage() {
       setText(data.text ?? '');
       setTextColor(data.textColor ?? DEFAULT_TEXT_COLOR);
       setTextSize(data.textSizePercent ?? DEFAULT_TEXT_SIZE);
+      setTextFont(data.textFont ?? DEFAULT_TEXT_FONT);
       setTextPosition(data.textPosition ?? data.position ?? position);
       setTextPortraitPosition(
         data.textPortraitPosition ??
@@ -319,6 +333,11 @@ export default function WatermarkSettingsPage() {
     setDirty(true);
   }
 
+  function changeTextFont(value: TextFontType) {
+    setTextFont(value);
+    setDirty(true);
+  }
+
   function changePosition(value: WatermarkPosition) {
     setPosition(value);
     setDirty(true);
@@ -363,20 +382,23 @@ export default function WatermarkSettingsPage() {
           style={{ height: previewLogoPx, objectFit: 'contain' }}
         />
       ));
-    const renderText = () => (
-      <span
-        style={{
-          color: textColor,
-          fontSize: previewTextPx,
-          fontFamily: WATERMARK_FONT_FAMILY,
-          fontWeight: 700,
-          lineHeight: 1,
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {trimmedText}
-      </span>
-    );
+    const renderText = () => {
+      const fontOpt = FONT_OPTIONS.find((f) => f.value === textFont) ?? FONT_OPTIONS[0];
+      return (
+        <span
+          style={{
+            color: textColor,
+            fontSize: previewTextPx,
+            fontFamily: fontOpt.family,
+            fontWeight: fontOpt.weight ?? 400,
+            lineHeight: 1,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {trimmedText}
+        </span>
+      );
+    };
 
     if (!hasLogos && !hasText) {
       return (
@@ -688,6 +710,24 @@ export default function WatermarkSettingsPage() {
                   </Typography.Text>
                 </Space>
                 <Space size={8}>
+                  <Typography.Text>字体</Typography.Text>
+                  <Radio.Group
+                    size="small"
+                    value={textFont}
+                    onChange={(e) => changeTextFont(e.target.value as TextFontType)}
+                    optionType="button"
+                    buttonStyle="solid"
+                  >
+                    {FONT_OPTIONS.map((opt) => (
+                      <Radio.Button key={opt.value} value={opt.value}>
+                        <span style={{ fontFamily: opt.family, fontWeight: opt.weight ?? 400 }}>
+                          {opt.label}
+                        </span>
+                      </Radio.Button>
+                    ))}
+                  </Radio.Group>
+                </Space>
+                <Space size={8}>
                   <Typography.Text>大小</Typography.Text>
                   <InputNumber
                     size="small"
@@ -733,7 +773,7 @@ export default function WatermarkSettingsPage() {
                 tooltip={{ formatter: (v) => `${v}%` }}
               />
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                文字高度 = 图片高度的 {textSize}%;位置可独立设置,与 Logo 选择同一角落时同条并排。中文文字需服务器安装中文字体才能正常渲染。
+                文字高度 = 图片高度的 {textSize}%;位置可独立设置,与 Logo 选择同一角落时同条并排。支持黑体、宋体、楷体三种字体,可自定义颜色。
               </Typography.Text>
             </div>
 

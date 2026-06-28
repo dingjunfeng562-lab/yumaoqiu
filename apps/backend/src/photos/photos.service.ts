@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, normalize } from 'node:path';
 import { PrismaService } from '../prisma/prisma.service';
-import { WatermarkService, WATERMARK_POSITIONS, WatermarkPosition } from './watermark.service';
+import { WatermarkService, WATERMARK_POSITIONS, WatermarkPosition, TEXT_FONT_OPTIONS, TextFontType } from './watermark.service';
 
 const DEFAULT_LOGO_HEIGHT_PERCENT = WatermarkService.DEFAULT_LOGO_HEIGHT_PERCENT;
 const MIN_LOGO_HEIGHT_PERCENT = WatermarkService.MIN_LOGO_HEIGHT_PERCENT;
@@ -15,6 +15,7 @@ const MAX_LOGO_GAP_PERCENT = WatermarkService.MAX_LOGO_GAP_PERCENT;
 const DEFAULT_WATERMARK_POSITION = WatermarkService.DEFAULT_POSITION;
 const DEFAULT_TEXT_COLOR = WatermarkService.DEFAULT_TEXT_COLOR;
 const DEFAULT_TEXT_SIZE_PERCENT = WatermarkService.DEFAULT_TEXT_SIZE_PERCENT;
+const DEFAULT_TEXT_FONT = WatermarkService.DEFAULT_TEXT_FONT;
 const MIN_TEXT_SIZE_PERCENT = WatermarkService.MIN_TEXT_SIZE_PERCENT;
 const MAX_TEXT_SIZE_PERCENT = WatermarkService.MAX_TEXT_SIZE_PERCENT;
 const MAX_TEXT_LENGTH = WatermarkService.MAX_TEXT_LENGTH;
@@ -184,6 +185,7 @@ export class PhotosService {
     text: string | null;
     textColor: string;
     textSizePercent: number;
+    textFont: TextFontType;
     textPosition: WatermarkPosition;
     textPortraitPosition: WatermarkPosition;
   }> {
@@ -200,6 +202,7 @@ export class PhotosService {
         text: null,
         textColor: DEFAULT_TEXT_COLOR,
         textSizePercent: DEFAULT_TEXT_SIZE_PERCENT,
+        textFont: DEFAULT_TEXT_FONT,
         textPosition: DEFAULT_WATERMARK_POSITION,
         textPortraitPosition: DEFAULT_WATERMARK_POSITION,
       };
@@ -221,11 +224,12 @@ export class PhotosService {
       text: config.text?.trim() ? config.text.trim() : null,
       textColor: config.textColor ?? DEFAULT_TEXT_COLOR,
       textSizePercent: config.textSizePercent ?? DEFAULT_TEXT_SIZE_PERCENT,
+      textFont: (config.textFont as TextFontType) ?? DEFAULT_TEXT_FONT,
       textPosition: this.normalizePosition(config.textPosition ?? config.position),
       textPortraitPosition: this.normalizePosition(
         config.textPortraitPosition ??
-          config.portraitPosition ??
           config.textPosition ??
+          config.portraitPosition ??
           config.position,
       ),
     };
@@ -287,6 +291,7 @@ export class PhotosService {
       text,
       textColor,
       textSizePercent,
+      textFont,
       textPosition,
       textPortraitPosition,
     } = await this.loadLogoConfig(tournamentId);
@@ -333,6 +338,7 @@ export class PhotosService {
                 color: textColor,
                 heightPercent: textSizePercent,
                 position: resolvedTextPosition,
+                font: textFont,
               },
             );
             const fullPath = `photos/${tournamentId}/full/${uuid}${watermarked.ext}`;
@@ -555,6 +561,13 @@ export class PhotosService {
     return /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(v) ? v : DEFAULT_TEXT_COLOR;
   }
 
+  private sanitizeTextFont(value?: string | null): TextFontType {
+    const v = (value ?? '').trim().toUpperCase();
+    return (TEXT_FONT_OPTIONS as readonly string[]).includes(v)
+      ? (v as TextFontType)
+      : DEFAULT_TEXT_FONT;
+  }
+
   async getWatermark(tournamentId: string) {
     const config = await this.prisma.tournamentWatermark.findUnique({
       where: { tournamentId },
@@ -570,6 +583,7 @@ export class PhotosService {
       text: config?.text?.trim() ? config.text.trim() : '',
       textColor: config?.textColor ?? DEFAULT_TEXT_COLOR,
       textSizePercent: config?.textSizePercent ?? DEFAULT_TEXT_SIZE_PERCENT,
+      textFont: (config?.textFont as TextFontType) ?? DEFAULT_TEXT_FONT,
       textPosition: this.normalizePosition(config?.textPosition ?? config?.position),
       textPortraitPosition: this.normalizePosition(
         config?.textPortraitPosition ??
@@ -595,6 +609,7 @@ export class PhotosService {
       text: this.sanitizeText(dto.text),
       textColor: this.sanitizeTextColor(dto.textColor),
       textSizePercent: this.clampTextSizePercent(dto.textSizePercent),
+      textFont: this.sanitizeTextFont(dto.textFont),
       textPosition: this.normalizePosition(dto.textPosition ?? dto.position),
       textPortraitPosition: this.normalizePosition(
         dto.textPortraitPosition ??

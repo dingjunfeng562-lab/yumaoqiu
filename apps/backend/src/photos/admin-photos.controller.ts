@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -10,10 +11,11 @@ import {
   Req,
   StreamableFile,
   UploadedFile,
+  UploadedFiles,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { FilesInterceptor, FileInterceptor } from '@nestjs/platform-express';
 import { createReadStream } from 'node:fs';
 import { extname } from 'node:path';
 import { Role } from '@prisma/client';
@@ -24,6 +26,7 @@ import {
   DeleteTournamentPhotosDto,
   UpdateWatermarkDto,
 } from './dto/photo.dto';
+import { PhotoCategory } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -33,6 +36,9 @@ type AuthedRequest = {
 };
 
 const MAX_LOGO_SIZE = 5 * 1024 * 1024;
+const MAX_UPLOAD_FILES = 100;
+const MAX_UPLOAD_FILE_SIZE = 15 * 1024 * 1024;
+const PHOTO_MIME_RE = /^image\/(?!svg\+xml$).+/;
 
 function imageContentType(path: string) {
   const ext = extname(path).toLowerCase();
@@ -90,6 +96,36 @@ export class AdminPhotosController {
   }
 
   // ----- Photo management -----
+
+  @Post('tournaments/:id/photos')
+  @UseInterceptors(
+    FilesInterceptor('photos', MAX_UPLOAD_FILES, {
+      fileFilter: (
+        _req: unknown,
+        file: { mimetype: string },
+        cb: (error: Error | null, acceptFile: boolean) => void,
+      ) => {
+        if (!PHOTO_MIME_RE.test(file.mimetype)) {
+          cb(new BadRequestException('仅支持图片格式'), false);
+          return;
+        }
+        cb(null, true);
+      },
+      limits: { fileSize: MAX_UPLOAD_FILE_SIZE, files: MAX_UPLOAD_FILES },
+    }),
+  )
+  uploadPhotos(
+    @Param('id') id: string,
+    @Body('category') category: PhotoCategory,
+    @UploadedFiles() files: Array<{ originalname?: string; mimetype?: string; size?: number; buffer?: Buffer }>,
+    @Req() req: AuthedRequest,
+  ) {
+    if (!files?.length) throw new BadRequestException('请至少上传一张图片');
+    if (!['PLAYER', 'MATCH', 'AWARD'].includes(category)) {
+      throw new BadRequestException('图片分类不正确');
+    }
+    return this.photosService.uploadPhotos(id, category, files, req.user.id);
+  }
 
   @Get('photos')
   listPhotos(@Query() query: AdminPhotoQueryDto) {

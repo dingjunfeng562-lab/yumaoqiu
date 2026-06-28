@@ -1,5 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import sharp from 'sharp';
+import { createCanvas, GlobalFonts } from '@napi-rs/canvas';
+import { join } from 'node:path';
+import { readFileSync, existsSync } from 'node:fs';
 
 export type WatermarkPosition = 'TOP_LEFT' | 'TOP_RIGHT' | 'BOTTOM_LEFT' | 'BOTTOM_RIGHT';
 export const WATERMARK_POSITIONS: WatermarkPosition[] = [
@@ -13,6 +16,15 @@ type TextWatermarkOptions = {
   color?: string | null;
   heightPercent?: number | null;
   position?: WatermarkPosition | null;
+  font?: string | null;
+};
+
+export type TextFontType = 'HEITI' | 'SONGTI' | 'KAITI';
+export const TEXT_FONT_OPTIONS: TextFontType[] = ['HEITI', 'SONGTI', 'KAITI'];
+export const TEXT_FONT_LABELS: Record<TextFontType, string> = {
+  HEITI: '黑体',
+  SONGTI: '宋体',
+  KAITI: '楷体',
 };
 
 /**
@@ -44,6 +56,7 @@ export class WatermarkService {
   static readonly MAX_TEXT_SIZE_PERCENT = 80;
   static readonly DEFAULT_TEXT_COLOR = '#FFFFFF';
   static readonly MAX_TEXT_LENGTH = 100;
+  static readonly DEFAULT_TEXT_FONT: TextFontType = 'HEITI';
   static readonly DEFAULT_TEXT_FONT_FAMILY =
     "'Noto Sans CJK SC','Noto Sans SC','Source Han Sans SC','Microsoft YaHei','SimHei','PingFang SC','WenQuanYi Micro Hei','WenQuanYi Zen Hei',sans-serif";
   static readonly DEFAULT_POSITION: WatermarkPosition = 'TOP_RIGHT';
@@ -52,6 +65,40 @@ export class WatermarkService {
   private readonly THUMB_WIDTH = 400;
   private readonly TEXT_FONT_FAMILY =
     process.env.WATERMARK_FONT_FAMILY?.trim() || WatermarkService.DEFAULT_TEXT_FONT_FAMILY;
+
+  private readonly FONT_MAP: Record<TextFontType, { file: string; family: string; weight: 'normal' | 'bold' }> = {
+    HEITI: { file: 'NotoSansSC-Bold.otf', family: 'Noto Sans CJK SC Bold', weight: 'bold' },
+    SONGTI: { file: 'NotoSerifSC-Regular.otf', family: 'Noto Serif CJK SC', weight: 'normal' },
+    KAITI: { file: 'LXGWWenKai-Regular.ttf', family: 'LXGW WenKai', weight: 'normal' },
+  };
+
+  constructor() {
+    // Register bundled CJK fonts so Chinese text renders correctly on all platforms.
+    const fontsDir = join(process.cwd(), 'assets', 'fonts');
+    for (const key of TEXT_FONT_OPTIONS) {
+      try {
+        const fontPath = join(fontsDir, this.FONT_MAP[key].file);
+        if (existsSync(fontPath)) {
+          GlobalFonts.registerFromPath(fontPath, this.FONT_MAP[key].family);
+        }
+      } catch {
+        /* font registration is best-effort; fall back to system fonts */
+      }
+    }
+  }
+
+  private resolveFontFamily(font?: string | null): string {
+    const key = (font as TextFontType) || 'HEITI';
+    if (key && this.FONT_MAP[key]) {
+      return `"${this.FONT_MAP[key].family}", sans-serif`;
+    }
+    return `"${this.FONT_MAP.HEITI.family}", sans-serif`;
+  }
+
+  private isBoldFont(font?: string | null): boolean {
+    const key = (font as TextFontType) || 'HEITI';
+    return this.FONT_MAP[key]?.weight === 'bold';
+  }
 
   /**
    * Decode options shared by every pipeline that reads an uploaded photo.
@@ -118,39 +165,50 @@ export class WatermarkService {
 
   /**
    * Render a text watermark element to a tightly-cropped PNG of ~heightPx tall.
-   * Drawn via SVG (sharp uses librsvg/fontconfig); a CJK font must be installed
-   * on the host for Chinese text to render — otherwise it falls back to boxes.
+   * Uses @napi-rs/canvas with a bundled CJK font so Chinese text renders
+   * correctly on all platforms (Windows/Linux/macOS).
    * Returns null when the text is empty or rendering fails.
    */
   private async renderText(
     content: string,
     heightPx: number,
     color?: string | null,
+    font?: string | null,
   ): Promise<{ buffer: Buffer; width: number; height: number } | null> {
     const text = content.trim().slice(0, WatermarkService.MAX_TEXT_LENGTH);
     if (!text) return null;
     const fontSize = Math.max(1, heightPx);
     const fill = this.sanitizeColor(color);
-    // Generous canvas; CJK glyphs ~1em wide, latin narrower — over-allocate then trim.
-    const canvasW = Math.ceil(text.length * fontSize * 1.4) + fontSize * 2;
-    const canvasH = Math.ceil(fontSize * 1.6);
-    const svg =
-      `<svg xmlns="http://www.w3.org/2000/svg" width="${canvasW}" height="${canvasH}">` +
-      `<text x="${Math.round(fontSize * 0.2)}" y="${Math.round(canvasH / 2)}" ` +
-      `font-family="${this.escapeXml(this.TEXT_FONT_FAMILY)}" ` +
-      `font-size="${fontSize}" font-weight="bold" fill="${fill}" ` +
-      `dominant-baseline="central" text-anchor="start">${this.escapeXml(text)}</text>` +
-      `</svg>`;
+    const fontFamily = this.resolveFontFamily(font);
+    const isBold = this.isBoldFont(font);
+
     try {
-      const base = await sharp(Buffer.from(svg)).png().toBuffer();
-      let buffer = base;
+      const measureCanvas = createCanvas(1, 1);
+      const mctx = measureCanvas.getContext('2d');
+      mctx.font = `${isBold ? 'bold ' : ''}${fontSize}px ${fontFamily}`;
+      const metrics = mctx.measureText(text);
+      const textWidth = Math.ceil(metrics.width) + Math.ceil(fontSize * 0.4);
+      const textHeight = Math.ceil(fontSize * 1.4);
+
+      const canvas = createCanvas(textWidth, textHeight);
+      const ctx = canvas.getContext('2d');
+      ctx.font = `${isBold ? 'bold ' : ''}${fontSize}px ${fontFamily}`;
+      ctx.fillStyle = fill;
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'left';
+      ctx.fillText(text, Math.ceil(fontSize * 0.2), textHeight / 2);
+
+      const pngBuffer = canvas.toBuffer('image/png');
+
+      // Trim transparent margins using sharp
       try {
-        buffer = await sharp(base).trim().toBuffer(); // crop transparent margins to the glyph box
+        const trimmed = await sharp(pngBuffer).trim().toBuffer();
+        const meta = await sharp(trimmed).metadata();
+        return { buffer: trimmed, width: meta.width || 0, height: meta.height || fontSize };
       } catch {
-        /* uniform/blank canvas (e.g. missing font) → keep untrimmed */
+        const meta = await sharp(pngBuffer).metadata();
+        return { buffer: pngBuffer, width: meta.width || 0, height: meta.height || fontSize };
       }
-      const meta = await sharp(buffer).metadata();
-      return { buffer, width: meta.width || 0, height: meta.height || fontSize };
     } catch {
       return null;
     }
@@ -165,7 +223,7 @@ export class WatermarkService {
     imageHeight: number,
     heightPercent: number,
     gapPercent: number,
-    text?: { content: string; color?: string | null; heightPercent: number },
+    text?: { content: string; color?: string | null; heightPercent: number; font?: string | null },
   ): Promise<Buffer | null> {
     const logoH = Math.max(1, Math.floor((imageHeight * heightPercent) / 100));
 
@@ -177,7 +235,7 @@ export class WatermarkService {
     }
     if (text?.content?.trim()) {
       const textH = Math.max(1, Math.floor((imageHeight * text.heightPercent) / 100));
-      const rendered = await this.renderText(text.content, textH, text.color);
+      const rendered = await this.renderText(text.content, textH, text.color, text.font);
       if (rendered) elements.push(rendered);
     }
 
@@ -345,6 +403,7 @@ export class WatermarkService {
             content: text!.content!.trim(),
             color: text!.color ?? undefined,
             heightPercent: this.clampTextSize(text!.heightPercent),
+            font: text!.font ?? undefined,
           }
         : undefined;
     const overlays: sharp.OverlayOptions[] = [];
@@ -365,7 +424,7 @@ export class WatermarkService {
 
     if (clampedText && textPos !== pos) {
       const textH = Math.max(1, Math.floor((safeH * clampedText.heightPercent) / 100));
-      const renderedText = await this.renderText(clampedText.content, textH, clampedText.color);
+      const renderedText = await this.renderText(clampedText.content, textH, clampedText.color, clampedText.font);
       if (renderedText) {
         const overlay = await this.buildOverlay(renderedText.buffer, safeW, safeH, textPos);
         if (overlay) overlays.push(overlay);

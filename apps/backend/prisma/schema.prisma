@@ -401,6 +401,7 @@ model TournamentWatermark {
   text              String?   @db.VarChar(100)
   textColor         String?   @db.VarChar(16)
   textSizePercent   Int?
+  textFont          String?   @db.VarChar(32)
   textPosition      String?   @db.VarChar(16)
   textPortraitPosition String?   @db.VarChar(16)
   updatedAt         DateTime  @updatedAt

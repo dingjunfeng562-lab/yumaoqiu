@@ -19,6 +19,7 @@ import {
   Table,
   Tag,
   Typography,
+  Upload,
   message,
 } from 'antd';
 import {
@@ -27,6 +28,7 @@ import {
   EyeOutlined,
   FileSearchOutlined,
   ReloadOutlined,
+  UploadOutlined,
 } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 
@@ -110,6 +112,11 @@ export default function AdminPhotosPage() {
   const [purgeOpen, setPurgeOpen] = useState(false);
   const [purgeInput, setPurgeInput] = useState('');
   const [purging, setPurging] = useState(false);
+
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [uploadCategory, setUploadCategory] = useState<'PLAYER' | 'MATCH' | 'AWARD'>('MATCH');
+  const [uploading, setUploading] = useState(false);
+  const [uploadFileList, setUploadFileList] = useState<any[]>([]);
 
   // Uploader options accumulated from loaded photos.
   const [uploaderOptions, setUploaderOptions] = useState<Uploader[]>([]);
@@ -248,6 +255,34 @@ export default function AdminPhotosPage() {
     }
   }
 
+  async function uploadPhotos() {
+    if (!token || !id || uploadFileList.length === 0) return;
+    setUploading(true);
+    try {
+      const form = new FormData();
+      form.append('category', uploadCategory);
+      uploadFileList.forEach((f) => form.append('photos', f.originFileObj ?? f));
+      const res = await fetch(`${API_BASE}/admin/tournaments/${id}/photos`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ message: '上传失败' }));
+        throw new Error(err.message ?? '上传失败');
+      }
+      const data = await res.json();
+      message.success(`上传成功: ${data.uploaded} 张${data.failed?.length ? `,失败 ${data.failed.length} 张` : ''}`);
+      setUploadOpen(false);
+      setUploadFileList([]);
+      void load();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '上传失败');
+    } finally {
+      setUploading(false);
+    }
+  }
+
   const allSelected = photos.length > 0 && photos.every((p) => selected.has(p.id));
 
   const logColumns = useMemo(
@@ -317,6 +352,9 @@ export default function AdminPhotosPage() {
       </Card>
 
       <Space style={{ marginBottom: 12 }} wrap>
+        <Button type="primary" icon={<UploadOutlined />} onClick={() => setUploadOpen(true)}>
+          上传图片
+        </Button>
         <Checkbox
           checked={allSelected}
           indeterminate={selected.size > 0 && !allSelected}
@@ -438,6 +476,60 @@ export default function AdminPhotosPage() {
           onChange={(e) => setPurgeInput(e.target.value)}
           placeholder="输入赛事名称"
         />
+      </Modal>
+
+      <Modal
+        title="上传图片"
+        open={uploadOpen}
+        onCancel={() => {
+          setUploadOpen(false);
+          setUploadFileList([]);
+        }}
+        onOk={uploadPhotos}
+        okButtonProps={{ loading: uploading, disabled: uploadFileList.length === 0 }}
+        okText="开始上传"
+        cancelText="取消"
+        width={520}
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <div>
+            <Typography.Text strong style={{ display: 'block', marginBottom: 8 }}>
+              图片分类
+            </Typography.Text>
+            <Segmented
+              options={[
+                { label: '选手照', value: 'PLAYER' },
+                { label: '现场照', value: 'MATCH' },
+                { label: '颁奖照', value: 'AWARD' },
+              ]}
+              value={uploadCategory}
+              onChange={(v) => setUploadCategory(v as 'PLAYER' | 'MATCH' | 'AWARD')}
+            />
+          </div>
+          <div>
+            <Typography.Text strong style={{ display: 'block', marginBottom: 8 }}>
+              选择图片
+            </Typography.Text>
+            <Upload.Dragger
+              multiple
+              accept="image/*"
+              fileList={uploadFileList}
+              beforeUpload={() => false}
+              onChange={(info) => setUploadFileList(info.fileList)}
+              onRemove={(file) => setUploadFileList((prev) => prev.filter((f) => f.uid !== file.uid))}
+              showUploadList={{ showPreviewIcon: false, showRemoveIcon: true }}
+              maxCount={100}
+            >
+              <p className="ant-upload-drag-icon">
+                <UploadOutlined />
+              </p>
+              <p className="ant-upload-text">点击或拖拽图片到此区域上传</p>
+              <p className="ant-upload-hint">
+                支持 JPG/PNG/WebP 等格式,单张不超过 15MB,一次最多 100 张
+              </p>
+            </Upload.Dragger>
+          </div>
+        </Space>
       </Modal>
 
       <Modal

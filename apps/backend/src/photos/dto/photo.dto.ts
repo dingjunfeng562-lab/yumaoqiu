@@ -150,6 +150,11 @@ export class UpdateWatermarkDto {
   @Max(80)
   textSizePercent?: number;
 
+  /** Text font: HEITI (黑体), SONGTI (宋体), KAITI (楷体). */
+  @IsOptional()
+  @IsIn(['HEITI', 'SONGTI', 'KAITI'])
+  textFont?: 'HEITI' | 'SONGTI' | 'KAITI';
+
   /** Text watermark corner position for landscape photos. */
   @IsOptional()
   @IsIn(['TOP_LEFT', 'TOP_RIGHT', 'BOTTOM_LEFT', 'BOTTOM_RIGHT'])
