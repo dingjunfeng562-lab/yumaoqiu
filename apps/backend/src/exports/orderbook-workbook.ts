@@ -65,7 +65,9 @@ function pad2(value: number) {
   return String(value).padStart(2, '0');
 }
 
-function scheduleDateParts(date: Date) {
+type ScheduleDateParts = { year: number; month: number; day: number; hour: number; minute: number };
+
+function scheduleDateParts(date: Date): ScheduleDateParts {
   const parts = new Map(scheduleDateTimeFormatter.formatToParts(date).map((part) => [part.type, part.value]));
   const year = Number(parts.get('year') ?? date.getUTCFullYear());
   const month = Number(parts.get('month') ?? date.getUTCMonth() + 1);
@@ -75,9 +77,41 @@ function scheduleDateParts(date: Date) {
   return { year, month, day, hour, minute };
 }
 
-function fmtScheduleDateTime(date: Date) {
-  const { year, month, day, hour, minute } = scheduleDateParts(date);
+function scheduleDatePartsFromLocal(value?: string | null): ScheduleDateParts | null {
+  const match = /^(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{1,2})/.exec(value ?? '');
+  if (!match) return null;
+  const [year, month, day, hour, minute] = match.slice(1).map(Number);
+  if ([year, month, day, hour, minute].some((part) => !Number.isFinite(part))) return null;
+  if (month < 1 || month > 12 || day < 1 || day > 31 || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    return null;
+  }
+  return { year, month, day, hour, minute };
+}
+
+function scheduleDatePartsForMatch(match: ExportMatch): ScheduleDateParts | null {
+  return scheduleDatePartsFromLocal(match.scheduledAtLocal) ?? (match.scheduledAt ? scheduleDateParts(match.scheduledAt) : null);
+}
+
+function fmtScheduleDateTimeParts({ year, month, day, hour, minute }: ScheduleDateParts) {
   return `${year}-${pad2(month)}-${pad2(day)} ${pad2(hour)}:${pad2(minute)}`;
+}
+
+function fmtScheduleDateTime(date: Date) {
+  return fmtScheduleDateTimeParts(scheduleDateParts(date));
+}
+
+function fmtMatchScheduleDateTime(match: ExportMatch) {
+  const parts = scheduleDatePartsForMatch(match);
+  return parts ? fmtScheduleDateTimeParts(parts) : '';
+}
+
+function scheduleTimeKey(match: ExportMatch) {
+  return fmtMatchScheduleDateTime(match);
+}
+
+function scheduleSortValueForMatch(match: ExportMatch) {
+  const parts = scheduleDatePartsForMatch(match);
+  return parts ? (((parts.year * 100 + parts.month) * 100 + parts.day) * 10000 + parts.hour * 100 + parts.minute) : Number.MAX_SAFE_INTEGER;
 }
 
 function eventLabel(event: ExportEvent) {
@@ -237,29 +271,30 @@ function stageText(matches: ExportMatch[]) {
   return parts.join('；') || '—';
 }
 
-function sessionKey(date: Date) {
-  const { year, month, day, hour } = scheduleDateParts(date);
+function sessionKeyFromParts({ year, month, day, hour }: ScheduleDateParts) {
   return `${year}-${month}-${day}-${hour < 12 ? 'AM' : 'PM'}`;
 }
-function sessionLabel(date: Date) {
-  const { month, day, hour } = scheduleDateParts(date);
-  return `${pad2(month)}月${pad2(day)}日${hour < 12 ? '上午' : '下午'}`;
+function sessionLabelFromParts({ month, day, hour }: ScheduleDateParts) {
+  return `${pad2(month)}\u6708${pad2(day)}\u65e5${hour < 12 ? '\u4e0a\u5348' : '\u4e0b\u5348'}`;
 }
-function sessionSortValue(date: Date) {
-  const { year, month, day, hour } = scheduleDateParts(date);
+function sessionSortValueFromParts({ year, month, day, hour }: ScheduleDateParts) {
   return ((year * 100 + month) * 100 + day) * 10 + (hour < 12 ? 0 : 1);
+}
+function sessionKeyForMatch(match: ExportMatch) {
+  const parts = scheduleDatePartsForMatch(match);
+  return parts ? sessionKeyFromParts(parts) : '';
 }
 
 function sessions(tournament: ExportTournament) {
   const map = new Map<string, { key: string; label: string; sort: number }>();
   for (const event of tournament.events) {
     for (const match of event.matches) {
-      if (!match.scheduledAt) continue;
-      const key = sessionKey(match.scheduledAt);
+      const parts = scheduleDatePartsForMatch(match);
+      if (!parts) continue;
+      const key = sessionKeyFromParts(parts);
       if (map.has(key)) continue;
-      const d = match.scheduledAt;
-      const sort = sessionSortValue(d);
-      map.set(key, { key, label: sessionLabel(d), sort });
+      const sort = sessionSortValueFromParts(parts);
+      map.set(key, { key, label: sessionLabelFromParts(parts), sort });
     }
   }
   return [...map.values()].sort((a, b) => a.sort - b.sort);
@@ -287,7 +322,7 @@ function matchCodeMap(tournament: ExportTournament) {
       .filter((m) => m.scheduledAt && m.venueId)
       .sort(
         (a, b) =>
-          a.scheduledAt!.getTime() - b.scheduledAt!.getTime() ||
+          scheduleSortValueForMatch(a) - scheduleSortValueForMatch(b) ||
           (a.venue?.sortOrder ?? 0) - (b.venue?.sortOrder ?? 0) ||
           (a.matchNo ?? 0) - (b.matchNo ?? 0) ||
           a.id.localeCompare(b.id),
@@ -357,7 +392,7 @@ function buildScheduleSheet(wb: ExcelJS.Workbook, tournament: ExportTournament) 
   for (const session of sessions(tournament)) {
     const sessionStart = row;
     for (const event of tournament.events) {
-      const matches = event.matches.filter((m) => m.scheduledAt && sessionKey(m.scheduledAt) === session.key);
+      const matches = event.matches.filter((m) => sessionKeyForMatch(m) === session.key);
       if (!matches.length) continue;
       ws.getCell(row, 1).value = session.label;
       ws.getCell(row, 2).value = eventLabel(event);
@@ -401,13 +436,13 @@ function buildOrderSheet(wb: ExcelJS.Workbook, tournament: ExportTournament) {
   ws.getCell(1, 1).value = '秩  序  表';
 
   const scheduled = tournament.events.flatMap((event) =>
-    event.matches.filter((m) => m.scheduledAt && m.venueId).map((match) => ({ event, match })),
+    event.matches.filter((m) => scheduleTimeKey(m) && m.venueId).map((match) => ({ event, match })),
   );
 
   let row = 2;
   let sessionNo = 0;
   for (const session of sessions(tournament)) {
-    const sessionMatches = scheduled.filter(({ match }) => sessionKey(match.scheduledAt!) === session.key);
+    const sessionMatches = scheduled.filter(({ match }) => sessionKeyForMatch(match) === session.key);
     if (!sessionMatches.length) continue;
     sessionNo += 1;
 
@@ -433,20 +468,22 @@ function buildOrderSheet(wb: ExcelJS.Workbook, tournament: ExportTournament) {
     });
     row += 1;
 
-    const times = [...new Set(sessionMatches.map(({ match }) => match.scheduledAt!.getTime()))].sort((a, b) => a - b);
+    const times = [...new Set(sessionMatches.map(({ match }) => scheduleTimeKey(match)).filter(Boolean))].sort((a, b) =>
+      a.localeCompare(b),
+    );
     times.forEach((time, index) => {
       const top = row;
       ws.mergeCells(top, 1, top + 3, 1);
       ws.mergeCells(top, 2, top + 3, 2);
       ws.getCell(top, 1).value = `第${index + 1}场`;
-      ws.getCell(top, 2).value = fmtScheduleDateTime(new Date(time));
+      ws.getCell(top, 2).value = time;
       ws.getCell(top, 1).alignment = { horizontal: 'center', vertical: 'middle' };
       ws.getCell(top, 2).alignment = { horizontal: 'center', vertical: 'middle' };
 
       venueList.forEach((venue, i) => {
         const col = 3 + i * 2;
         const found = sessionMatches.find(
-          ({ match }) => match.scheduledAt!.getTime() === time && match.venueId === venue.id,
+          ({ match }) => scheduleTimeKey(match) === time && match.venueId === venue.id,
         );
         if (found) {
           const { event, match } = found;
@@ -651,7 +688,7 @@ function crossCellText(
   }
   // 未赛：显示场次号 / 时间 / 场地，便于查表。
   const code = codeMap.get(match.id) ?? (match.matchNo != null ? `#${match.matchNo}` : '');
-  const when = match.scheduledAt ? fmtScheduleDateTime(match.scheduledAt) : '';
+  const when = fmtMatchScheduleDateTime(match);
   const venue = match.venue?.name ? `场地:${match.venue.name}` : '';
   return [code, when, venue].filter(Boolean).join('\n');
 }
@@ -879,7 +916,7 @@ function matchScoreText(match: ExportMatch) {
 function scheduleMeta(match: ExportMatch | null | undefined) {
   if (!match) return '';
   const parts = [
-    match.scheduledAt ? fmtScheduleDateTime(match.scheduledAt) : '',
+    fmtMatchScheduleDateTime(match),
     match.venue?.name ? `场地:${match.venue.name}` : '',
   ].filter(Boolean);
   return parts.join('\n');
@@ -926,7 +963,7 @@ function renderPlayoffPlacementMatches(
     const values = [
       match.matchNo != null ? `第${match.matchNo}场` : '',
       roundLabel(match),
-      match.scheduledAt ? fmtScheduleDateTime(match.scheduledAt) : '',
+      fmtMatchScheduleDateTime(match),
       match.venue?.name ?? '',
       `${playoffSideName(event, match, 1, regMap)} VS ${playoffSideName(event, match, 2, regMap)}`,
       matchScoreText(match),

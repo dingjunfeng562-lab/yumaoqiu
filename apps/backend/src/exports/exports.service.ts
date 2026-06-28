@@ -82,6 +82,7 @@ type ExportMatch = {
   matchNo: number | null;
   venueId: string | null;
   scheduledAt: Date | null;
+  scheduledAtLocal?: string | null;
   status: string;
   durationMinutes: number;
   side1Id: string | null;
@@ -194,7 +195,7 @@ export class ExportsService {
     if (kind === 'orderbook') {
       return {
         filename: this.exportFilename(tournament.name, '秩序册', 'xlsx'),
-        content: await buildOrderbookWorkbook(tournament),
+        content: await buildOrderbookWorkbook(this.withScheduledAtLocal(tournament)),
         contentType: XLSX_CONTENT_TYPE,
       };
     }
@@ -319,7 +320,7 @@ export class ExportsService {
       (event.matches as unknown as ExportMatch[]).filter((match) =>
         this.isStageMatch(event.format, match.roundNo ?? 0, stage),
       ),
-    );
+    ).map((match) => this.withMatchScheduledAtLocal(match));
 
     const tournament: ExportTournament = {
       name: event.tournament.name,
@@ -373,6 +374,23 @@ export class ExportsService {
         (a.matchNo ?? 0) - (b.matchNo ?? 0) ||
         a.id.localeCompare(b.id),
     );
+  }
+
+  private withScheduledAtLocal(tournament: ExportTournament): ExportTournament {
+    return {
+      ...tournament,
+      events: tournament.events.map((event) => ({
+        ...event,
+        matches: event.matches.map((match) => this.withMatchScheduledAtLocal(match)),
+      })),
+    };
+  }
+
+  private withMatchScheduledAtLocal(match: ExportMatch): ExportMatch {
+    return {
+      ...match,
+      scheduledAtLocal: match.scheduledAt ? this.formatDateTime(match.scheduledAt) : null,
+    };
   }
 
   private async findTournamentForExport(tournamentId: string, kind: ExportKind): Promise<ExportTournament | null> {
