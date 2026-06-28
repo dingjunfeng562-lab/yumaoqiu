@@ -47,17 +47,37 @@ const GROUP_KNOCKOUT_STD = 'GROUP_PLUS_KNOCKOUT_STD';
 const ACCENT = 'FF2563EB';
 const DIAGONAL = 'FFE5E7EB';
 const SUBHEAD = 'FFEFF3FF';
+const SCHEDULE_TIME_ZONE = 'Asia/Shanghai';
 
 type Cell = ExcelJS.Cell;
+
+const scheduleDateTimeFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: SCHEDULE_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
 
 function pad2(value: number) {
   return String(value).padStart(2, '0');
 }
-function fmtMD(date: Date) {
-  return `${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+
+function scheduleDateParts(date: Date) {
+  const parts = new Map(scheduleDateTimeFormatter.formatToParts(date).map((part) => [part.type, part.value]));
+  const year = Number(parts.get('year') ?? date.getFullYear());
+  const month = Number(parts.get('month') ?? date.getMonth() + 1);
+  const day = Number(parts.get('day') ?? date.getDate());
+  const hour = Number(parts.get('hour') ?? date.getHours()) % 24;
+  const minute = Number(parts.get('minute') ?? date.getMinutes());
+  return { year, month, day, hour, minute };
 }
-function fmtHM(date: Date) {
-  return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+
+function fmtScheduleDateTime(date: Date) {
+  const { year, month, day, hour, minute } = scheduleDateParts(date);
+  return `${year}-${pad2(month)}-${pad2(day)} ${pad2(hour)}:${pad2(minute)}`;
 }
 
 function eventLabel(event: ExportEvent) {
@@ -167,10 +187,16 @@ function stageText(matches: ExportMatch[]) {
 }
 
 function sessionKey(date: Date) {
-  return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}-${date.getHours() < 12 ? 'AM' : 'PM'}`;
+  const { year, month, day, hour } = scheduleDateParts(date);
+  return `${year}-${month}-${day}-${hour < 12 ? 'AM' : 'PM'}`;
 }
 function sessionLabel(date: Date) {
-  return `${pad2(date.getMonth() + 1)}月${pad2(date.getDate())}日${date.getHours() < 12 ? '上午' : '下午'}`;
+  const { month, day, hour } = scheduleDateParts(date);
+  return `${pad2(month)}月${pad2(day)}日${hour < 12 ? '上午' : '下午'}`;
+}
+function sessionSortValue(date: Date) {
+  const { year, month, day, hour } = scheduleDateParts(date);
+  return ((year * 100 + month) * 100 + day) * 10 + (hour < 12 ? 0 : 1);
 }
 
 function sessions(tournament: ExportTournament) {
@@ -181,7 +207,7 @@ function sessions(tournament: ExportTournament) {
       const key = sessionKey(match.scheduledAt);
       if (map.has(key)) continue;
       const d = match.scheduledAt;
-      const sort = ((d.getFullYear() * 100 + d.getMonth() + 1) * 100 + d.getDate()) * 10 + (d.getHours() < 12 ? 0 : 1);
+      const sort = sessionSortValue(d);
       map.set(key, { key, label: sessionLabel(d), sort });
     }
   }
@@ -313,7 +339,7 @@ function buildOrderSheet(wb: ExcelJS.Workbook, tournament: ExportTournament) {
 
   const colCount = 2 + venueList.length * 2;
   ws.getColumn(1).width = 8;
-  ws.getColumn(2).width = 8;
+  ws.getColumn(2).width = 17;
   for (let i = 0; i < venueList.length; i += 1) {
     ws.getColumn(3 + i * 2).width = 14;
     ws.getColumn(4 + i * 2).width = 14;
@@ -362,7 +388,7 @@ function buildOrderSheet(wb: ExcelJS.Workbook, tournament: ExportTournament) {
       ws.mergeCells(top, 1, top + 3, 1);
       ws.mergeCells(top, 2, top + 3, 2);
       ws.getCell(top, 1).value = `第${index + 1}场`;
-      ws.getCell(top, 2).value = fmtHM(new Date(time));
+      ws.getCell(top, 2).value = fmtScheduleDateTime(new Date(time));
       ws.getCell(top, 1).alignment = { horizontal: 'center', vertical: 'middle' };
       ws.getCell(top, 2).alignment = { horizontal: 'center', vertical: 'middle' };
 
@@ -572,7 +598,7 @@ function crossCellText(
   }
   // 未赛：显示场次号 / 时间 / 场地，便于查表。
   const code = codeMap.get(match.id) ?? (match.matchNo != null ? `#${match.matchNo}` : '');
-  const when = match.scheduledAt ? `${fmtMD(match.scheduledAt)} ${fmtHM(match.scheduledAt)}` : '';
+  const when = match.scheduledAt ? fmtScheduleDateTime(match.scheduledAt) : '';
   const venue = match.venue?.name ? `场地:${match.venue.name}` : '';
   return [code, when, venue].filter(Boolean).join('\n');
 }
