@@ -6,6 +6,17 @@ import { buildOrderbookWorkbook } from './orderbook-workbook';
 
 const XLS_CONTENT_TYPE = 'application/vnd.ms-excel';
 const XLSX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const EXPORT_TIME_ZONE = 'Asia/Shanghai';
+
+const exportDateTimeFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: EXPORT_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
 
 type ExportKind = 'schedule' | 'results' | 'registrations' | 'bracket' | 'orderbook';
 type CellValue = string | number | boolean | null | undefined;
@@ -941,7 +952,13 @@ export class ExportsService {
     if (!value) return '未安排';
     const date = value instanceof Date ? value : new Date(value);
     if (Number.isNaN(date.getTime())) return '';
-    return date.toLocaleString('zh-CN', { hour12: false });
+    const parts = new Map(exportDateTimeFormatter.formatToParts(date).map((part) => [part.type, part.value]));
+    const year = parts.get('year') ?? String(date.getUTCFullYear());
+    const month = parts.get('month') ?? String(date.getUTCMonth() + 1).padStart(2, '0');
+    const day = parts.get('day') ?? String(date.getUTCDate()).padStart(2, '0');
+    const hour = String(Number(parts.get('hour') ?? date.getUTCHours()) % 24).padStart(2, '0');
+    const minute = parts.get('minute') ?? String(date.getUTCMinutes()).padStart(2, '0');
+    return `${year}-${month}-${day} ${hour}:${minute}`;
   }
 
   private isExportKind(kind: string): kind is ExportKind {

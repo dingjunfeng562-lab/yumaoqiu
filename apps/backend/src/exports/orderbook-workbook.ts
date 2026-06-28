@@ -67,11 +67,11 @@ function pad2(value: number) {
 
 function scheduleDateParts(date: Date) {
   const parts = new Map(scheduleDateTimeFormatter.formatToParts(date).map((part) => [part.type, part.value]));
-  const year = Number(parts.get('year') ?? date.getFullYear());
-  const month = Number(parts.get('month') ?? date.getMonth() + 1);
-  const day = Number(parts.get('day') ?? date.getDate());
-  const hour = Number(parts.get('hour') ?? date.getHours()) % 24;
-  const minute = Number(parts.get('minute') ?? date.getMinutes());
+  const year = Number(parts.get('year') ?? date.getUTCFullYear());
+  const month = Number(parts.get('month') ?? date.getUTCMonth() + 1);
+  const day = Number(parts.get('day') ?? date.getUTCDate());
+  const hour = Number(parts.get('hour') ?? date.getUTCHours()) % 24;
+  const minute = Number(parts.get('minute') ?? date.getUTCMinutes());
   return { year, month, day, hour, minute };
 }
 

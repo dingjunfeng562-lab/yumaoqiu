@@ -69,6 +69,19 @@ type DailyWindow = {
   endMinutes: number;
 };
 
+const SCHEDULE_TIME_ZONE = 'Asia/Shanghai';
+const SCHEDULE_TIME_ZONE_OFFSET_MINUTES = 8 * 60;
+
+const scheduleDateTimeFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: SCHEDULE_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
+
 @Injectable()
 export class SchedulingService {
   constructor(private prisma: PrismaService) {}
@@ -663,34 +676,67 @@ export class SchedulingService {
 
   private normalizeToDailyWindow(timestamp: number, matchMinutes: number, window: DailyWindow) {
     const date = new Date(timestamp);
-    const minutes = date.getHours() * 60 + date.getMinutes();
+    const parts = this.scheduleDateParts(date);
+    const minutes = parts.hour * 60 + parts.minute;
     if (minutes < window.startMinutes) {
       return this.withMinutesOfDay(date, window.startMinutes).getTime();
     }
     if (minutes + matchMinutes > window.endMinutes) {
-      const nextDay = new Date(date);
-      nextDay.setDate(nextDay.getDate() + 1);
-      return this.withMinutesOfDay(nextDay, window.startMinutes).getTime();
+      const nextDay = this.addScheduleDays(parts, 1);
+      return this.dateFromScheduleParts(nextDay.year, nextDay.month, nextDay.day, window.startMinutes).getTime();
     }
     return timestamp;
   }
 
   private withMinutesOfDay(date: Date, minutes: number) {
-    const next = new Date(date);
-    next.setHours(Math.floor(minutes / 60), minutes % 60, 0, 0);
-    return next;
+    const parts = this.scheduleDateParts(date);
+    return this.dateFromScheduleParts(parts.year, parts.month, parts.day, minutes);
   }
 
   private endOfDay(date: Date) {
-    const end = new Date(date);
-    end.setHours(23, 59, 59, 999);
-    return end;
+    const parts = this.scheduleDateParts(date);
+    return this.dateFromScheduleParts(parts.year, parts.month, parts.day, 23 * 60 + 59, 59, 999);
   }
 
-  // 把时间戳折算成「本地自然日」的可比较序号,用于判断两个候选是否落在不同的比赛日。
+  // 把时间戳折算成「比赛地自然日」的可比较序号,用于判断两个候选是否落在不同的比赛日。
   private dayKey(timestamp: number) {
-    const date = new Date(timestamp);
-    return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
+    const { year, month, day } = this.scheduleDateParts(new Date(timestamp));
+    return Date.UTC(year, month - 1, day);
+  }
+
+  private scheduleDateParts(date: Date) {
+    const parts = new Map(scheduleDateTimeFormatter.formatToParts(date).map((part) => [part.type, part.value]));
+    const year = Number(parts.get('year') ?? date.getUTCFullYear());
+    const month = Number(parts.get('month') ?? date.getUTCMonth() + 1);
+    const day = Number(parts.get('day') ?? date.getUTCDate());
+    const hour = Number(parts.get('hour') ?? date.getUTCHours()) % 24;
+    const minute = Number(parts.get('minute') ?? date.getUTCMinutes());
+    return { year, month, day, hour, minute };
+  }
+
+  private dateFromScheduleParts(
+    year: number,
+    month: number,
+    day: number,
+    minutes: number,
+    seconds = 0,
+    milliseconds = 0,
+  ) {
+    const hour = Math.floor(minutes / 60);
+    const minute = minutes % 60;
+    return new Date(
+      Date.UTC(year, month - 1, day, hour, minute, seconds, milliseconds) -
+        SCHEDULE_TIME_ZONE_OFFSET_MINUTES * 60 * 1000,
+    );
+  }
+
+  private addScheduleDays(parts: { year: number; month: number; day: number }, days: number) {
+    const shifted = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + days));
+    return {
+      year: shifted.getUTCFullYear(),
+      month: shifted.getUTCMonth() + 1,
+      day: shifted.getUTCDate(),
+    };
   }
 
   private findOverlap(intervals: BusyInterval[], target: BusyInterval) {
