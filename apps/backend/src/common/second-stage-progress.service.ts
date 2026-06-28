@@ -132,7 +132,7 @@ export class SecondStageProgressService {
     });
   }
 
-  /** 填充对应正式赛 Match 的某一侧（PENDING 时一并清空已排场地/时间）。 */
+  /** 填充对应正式赛 Match 的某一侧；已排好的场地/时间保留，支持第二阶段先排程后自动补对阵。 */
   private async updateFormalSide(
     tx: Prisma.TransactionClient,
     eventId: string,
@@ -150,12 +150,7 @@ export class SecondStageProgressService {
       throw new ConflictException('第二阶段正式赛已开始或结束，不能修改对阵');
     }
     if (currentId === entrant.id) return;
-    const data: Prisma.MatchUncheckedUpdateInput = { [idKey]: entrant.id };
-    if (match.status === MatchStatus.PENDING) {
-      data.venueId = null;
-      data.scheduledAt = null;
-    }
-    await tx.match.update({ where: { id: match.id }, data });
+    await tx.match.update({ where: { id: match.id }, data: { [idKey]: entrant.id } });
   }
 
   /** 不战而胜：planning 与正式赛同时记为 COMPLETED + 胜方。 */

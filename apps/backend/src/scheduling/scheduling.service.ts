@@ -3,10 +3,11 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { MatchStatus, Prisma } from '@prisma/client';
+import { Format, MatchStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AutoScheduleDto, ClearScheduleDto, CreateVenueDto, UpdateMatchScheduleDto, UpdateVenueDto } from './dto/scheduling.dto';
 import {
+  SECOND_STAGE_FORMAL_ROUND_NO_BASE,
   isSecondStageFormalRoundNo,
   secondStageDependencyMatchNos,
   secondStageFormalRoundNo,
@@ -19,6 +20,8 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
   WOMENS_DOUBLES: '女子双打',
   MIXED_DOUBLES: '混合双打',
 };
+
+type ScheduleStage = NonNullable<AutoScheduleDto['scheduleStage']>;
 
 type RegistrationView = {
   id: string;
@@ -145,6 +148,7 @@ export class SchedulingService {
       matches: matches.map((match) => ({
         ...match,
         scheduledAt: match.scheduledAt?.toISOString() ?? null,
+        scheduledAtLocal: match.scheduledAt ? this.formatScheduleDateTime(match.scheduledAt) : null,
         startedAt: match.startedAt?.toISOString() ?? null,
         finishedAt: match.finishedAt?.toISOString() ?? null,
         conflicts: conflictMap.get(match.id) ?? [],
@@ -167,8 +171,7 @@ export class SchedulingService {
     });
     if (!tournament) throw new NotFoundException('赛事不存在');
 
-    const startAt = new Date(dto.startAt);
-    if (Number.isNaN(startAt.getTime())) throw new BadRequestException('开始时间无效');
+    const startAt = this.parseScheduleDate(dto.startAt, dto.startAtLocal, '开始时间无效');
     const matchMinutes = dto.matchMinutes ?? tournament.defaultMatchMinutes;
     const breakMinutes = dto.breakMinutes ?? tournament.breakMinutes;
     const dailyWindow = this.parseDailyWindow(tournament.dailyStartTime, tournament.dailyEndTime);
@@ -206,6 +209,20 @@ export class SchedulingService {
     });
     if (!scopeMatches.length) throw new BadRequestException('暂无可排程场次，请先完成抽签编排');
 
+    const scheduleStage: ScheduleStage = dto.scheduleStage ?? 'all';
+    const targetMatches = scopeMatches.filter((match) =>
+      this.isScheduleStageMatch(match.event?.format ?? null, match.roundNo, scheduleStage),
+    );
+    if (!targetMatches.length) {
+      throw new BadRequestException(
+        scheduleStage === 'second'
+          ? '当前范围暂无第二阶段可排程场次'
+          : scheduleStage === 'first'
+            ? '当前范围暂无第一阶段可排程场次'
+            : '当前范围暂无可排程场次',
+      );
+    }
+
     const matchMap = new Map(
       scopeMatches
         .filter((match) => match.eventId)
@@ -214,13 +231,14 @@ export class SchedulingService {
     const invalidCompletedIds = scopeMatches
       .filter(
         (match) =>
+          targetMatches.some((target) => target.id === match.id) &&
           match.status === MatchStatus.COMPLETED && !this.dependenciesReady(match, matchMap),
       )
       .map((match) => match.id);
     const allScheduled = await this.loadScheduleMatches(dto.tournamentId);
     const adjustableIds = new Set(
       [
-        ...scopeMatches
+        ...targetMatches
           .filter((match) => match.status === MatchStatus.PENDING)
           .map((match) => match.id),
         ...invalidCompletedIds,
@@ -279,7 +297,7 @@ export class SchedulingService {
       );
     }
 
-    const schedulableMatches = scopeMatches
+    const schedulableMatches = targetMatches
       .filter((match) => match.status === MatchStatus.PENDING)
       .sort((a, b) => {
         const stagePriority = (dto.prioritizeSecondStage ?? true)
@@ -434,13 +452,16 @@ export class SchedulingService {
       }
     }
 
+    const scheduledAt =
+      dto.scheduledAt !== undefined || dto.scheduledAtLocal !== undefined
+        ? this.parseNullableScheduleDate(dto.scheduledAt, dto.scheduledAtLocal, '比赛时间无效')
+        : undefined;
+
     await this.prisma.match.update({
       where: { id: matchId },
       data: {
         ...(dto.venueId !== undefined ? { venueId: dto.venueId } : {}),
-        ...(dto.scheduledAt !== undefined
-          ? { scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : null }
-          : {}),
+        ...(scheduledAt !== undefined ? { scheduledAt } : {}),
         ...(dto.durationMinutes !== undefined ? { durationMinutes: dto.durationMinutes } : {}),
       },
     });
@@ -657,6 +678,72 @@ export class SchedulingService {
     );
   }
 
+  private isScheduleStageMatch(format: Format | null, roundNo: number, stage: ScheduleStage) {
+    if (stage === 'all') return true;
+    if (format === Format.SINGLE_ELIMINATION_PLUS_GROUP_RANKING) {
+      return stage === 'first'
+        ? roundNo >= 1 && roundNo < SECOND_STAGE_FORMAL_ROUND_NO_BASE
+        : roundNo >= SECOND_STAGE_FORMAL_ROUND_NO_BASE;
+    }
+    if (stage === 'first') {
+      return roundNo === 0;
+    }
+    if (format === Format.ROUND_ROBIN || format === Format.SINGLE_ELIMINATION) {
+      return false;
+    }
+    return roundNo >= 1;
+  }
+
+  private parseScheduleDate(value: string, localValue: string | undefined, errorMessage: string) {
+    const parsed = this.parseNullableScheduleDate(value, localValue, errorMessage);
+    if (!parsed) throw new BadRequestException(errorMessage);
+    return parsed;
+  }
+
+  private parseNullableScheduleDate(
+    value: string | null | undefined,
+    localValue: string | null | undefined,
+    errorMessage: string,
+  ) {
+    if (localValue === null || value === null) return null;
+    const local = localValue?.trim();
+    if (local) {
+      const parsedLocal = this.parseScheduleLocalDate(local);
+      if (!parsedLocal) throw new BadRequestException(errorMessage);
+      return parsedLocal;
+    }
+    if (!value) return undefined;
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) throw new BadRequestException(errorMessage);
+    return parsed;
+  }
+
+  private parseScheduleLocalDate(value: string) {
+    const match = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/.exec(value);
+    if (!match) return null;
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const hour = Number(match[4] ?? 0);
+    const minute = Number(match[5] ?? 0);
+    const second = Number(match[6] ?? 0);
+    if (
+      month < 1 ||
+      month > 12 ||
+      day < 1 ||
+      day > 31 ||
+      hour < 0 ||
+      hour > 23 ||
+      minute < 0 ||
+      minute > 59 ||
+      second < 0 ||
+      second > 59
+    ) {
+      return null;
+    }
+    return this.dateFromScheduleParts(year, month, day, hour * 60 + minute, second, 0);
+  }
+
   private parseDailyWindow(startTime: string, endTime: string): DailyWindow {
     const startMinutes = this.timeToMinutes(startTime);
     const endMinutes = this.timeToMinutes(endTime);
@@ -712,6 +799,11 @@ export class SchedulingService {
     const hour = Number(parts.get('hour') ?? date.getUTCHours()) % 24;
     const minute = Number(parts.get('minute') ?? date.getUTCMinutes());
     return { year, month, day, hour, minute };
+  }
+
+  private formatScheduleDateTime(date: Date) {
+    const { year, month, day, hour, minute } = this.scheduleDateParts(date);
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')} ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
   }
 
   private dateFromScheduleParts(

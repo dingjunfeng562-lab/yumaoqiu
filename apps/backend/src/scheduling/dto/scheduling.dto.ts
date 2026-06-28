@@ -3,6 +3,7 @@ import {
   IsArray,
   IsBoolean,
   IsDateString,
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
@@ -48,6 +49,10 @@ export class AutoScheduleDto {
   startAt: string;
 
   @IsOptional()
+  @IsString()
+  startAtLocal?: string;
+
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
@@ -76,6 +81,10 @@ export class AutoScheduleDto {
   @IsOptional()
   @IsBoolean()
   prioritizeSecondStage?: boolean;
+
+  @IsOptional()
+  @IsIn(['all', 'first', 'second'])
+  scheduleStage?: 'all' | 'first' | 'second';
 }
 
 export class ClearScheduleDto {
@@ -95,6 +104,10 @@ export class UpdateMatchScheduleDto {
   @IsOptional()
   @IsDateString()
   scheduledAt?: string | null;
+
+  @IsOptional()
+  @IsString()
+  scheduledAtLocal?: string | null;
 
   @IsOptional()
   @Type(() => Number)

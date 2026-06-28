@@ -29,12 +29,13 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 
 // 有淘汰 / 排位阶段的赛制都允许按阶段导出；ROUND_ROBIN 只有循环赛阶段。
 const SECOND_STAGE_FORMATS = [
-  'SINGLE_ELIMINATION',
   'GROUP_PLUS_KNOCKOUT',
   'GROUP_PLUS_KNOCKOUT_STD',
   'GROUP_PLUS_PLAYOFF',
   'SINGLE_ELIMINATION_PLUS_GROUP_RANKING',
 ];
+
+type ScheduleStage = 'all' | 'second';
 
 const EVENT_TYPE_LABELS: Record<string, string> = {
   MENS_SINGLES: '男子单打',
@@ -111,6 +112,7 @@ interface ScheduleMatch {
   venueId?: string | null;
   venueName?: string | null;
   scheduledAt?: string | null;
+  scheduledAtLocal?: string | null;
   durationMinutes: number;
   startedAt?: string | null;
   finishedAt?: string | null;
@@ -137,8 +139,29 @@ function sideName(side?: { name: string } | null) {
   return side?.name ?? '待定';
 }
 
+function hasSecondStageFormat(format?: string | null) {
+  return SECOND_STAGE_FORMATS.includes(format ?? '');
+}
+
 function formatTime(value?: string | null) {
   return value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '—';
+}
+
+function formatScheduleTime(row: ScheduleMatch) {
+  return row.scheduledAtLocal ?? formatTime(row.scheduledAt);
+}
+
+function parseScheduleLocalTime(value: string) {
+  const match = /^(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{1,2})$/.exec(value);
+  if (!match) return dayjs(value);
+  return dayjs()
+    .year(Number(match[1]))
+    .month(Number(match[2]) - 1)
+    .date(Number(match[3]))
+    .hour(Number(match[4]))
+    .minute(Number(match[5]))
+    .second(0)
+    .millisecond(0);
 }
 
 function scheduleGroupLabel(row: ScheduleMatch) {
@@ -187,8 +210,11 @@ export default function AdminSchedulingPage() {
     [events, selectedEventId],
   );
   const canExportStageOrder = Boolean(
-    selectedEventId && selectedEvent && SECOND_STAGE_FORMATS.includes(selectedEvent.format ?? ''),
+    selectedEventId && selectedEvent && hasSecondStageFormat(selectedEvent.format),
   );
+  const canScheduleSecondStage = selectedEventId
+    ? hasSecondStageFormat(selectedEvent?.format)
+    : events.some((event) => hasSecondStageFormat(event.format));
   const configuredVenues = selectedTournament?.venues ?? schedule.venues;
   const activeVenues = useMemo(() => configuredVenues.filter((venue) => venue.isActive), [configuredVenues]);
 
@@ -265,6 +291,7 @@ export default function AdminSchedulingPage() {
     breakMinutes: number;
     venueIds?: string[];
     eventTypeOrder?: string[];
+    scheduleStage?: ScheduleStage;
   }) {
     if (!token || !selectedTournamentId) return;
     try {
@@ -275,11 +302,13 @@ export default function AdminSchedulingPage() {
           tournamentId: selectedTournamentId,
           eventId: selectedEventId || undefined,
           startAt: values.startAt.toISOString(),
+          startAtLocal: values.startAt.format('YYYY-MM-DD HH:mm'),
           matchMinutes: values.matchMinutes,
           breakMinutes: values.breakMinutes,
           venueIds: values.venueIds,
           eventTypeOrder: values.eventTypeOrder,
           prioritizeSecondStage: true,
+          scheduleStage: values.scheduleStage ?? 'all',
         }),
       });
       setSchedule(data);
@@ -365,6 +394,7 @@ export default function AdminSchedulingPage() {
       breakMinutes: selectedTournament?.breakMinutes ?? 10,
       venueIds: undefined,
       eventTypeOrder: undefined,
+      scheduleStage: 'all',
     });
     setAutoModalOpen(true);
   }
@@ -373,7 +403,11 @@ export default function AdminSchedulingPage() {
     setEditingMatch(match);
     editForm.setFieldsValue({
       venueId: match.venueId,
-      scheduledAt: match.scheduledAt ? dayjs(match.scheduledAt) : null,
+      scheduledAt: match.scheduledAtLocal
+        ? parseScheduleLocalTime(match.scheduledAtLocal)
+        : match.scheduledAt
+          ? dayjs(match.scheduledAt)
+          : null,
       durationMinutes: match.durationMinutes,
     });
   }
@@ -388,6 +422,7 @@ export default function AdminSchedulingPage() {
     if (values.venueId !== undefined) payload.venueId = values.venueId || null;
     if (values.scheduledAt !== undefined) {
       payload.scheduledAt = values.scheduledAt ? values.scheduledAt.toISOString() : null;
+      payload.scheduledAtLocal = values.scheduledAt ? values.scheduledAt.format('YYYY-MM-DD HH:mm') : null;
     }
     if (values.durationMinutes !== undefined) payload.durationMinutes = values.durationMinutes;
     try {
@@ -476,7 +511,7 @@ export default function AdminSchedulingPage() {
             </Button>
           </Popconfirm>
           <Button type="primary" onClick={openAutoSchedule} disabled={!activeVenues.length}>
-            全部重新自动排程
+            自动排程
           </Button>
         </Space>
       </div>
@@ -559,7 +594,7 @@ export default function AdminSchedulingPage() {
                 return <Tag color={meta.color}>{meta.label}</Tag>;
               },
             },
-            { title: '时间', dataIndex: 'scheduledAt', width: 118, render: formatTime },
+            { title: '时间', key: 'scheduledAt', width: 118, render: (_: unknown, row: ScheduleMatch) => formatScheduleTime(row) },
             { title: '场地', dataIndex: 'venueName', width: 68, ellipsis: true, render: (value) => value || '—' },
             { title: '项目', dataIndex: 'eventTypeLabel', width: 74, ellipsis: true },
             { title: '组别', key: 'groupLabel', width: 62, ellipsis: true, render: (_: unknown, row: ScheduleMatch) => scheduleGroupLabel(row) },
@@ -636,6 +671,14 @@ export default function AdminSchedulingPage() {
         >
           <Form.Item name="startAt" label="开始时间" rules={[{ required: true, message: '请选择开始时间' }]}>
             <DatePicker showTime format="YYYY-MM-DD HH:mm" style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="scheduleStage" label="排程范围" rules={[{ required: true }]}>
+            <Select
+              options={[
+                { value: 'all', label: '全部场次' },
+                { value: 'second', label: '仅第二阶段', disabled: !canScheduleSecondStage },
+              ]}
+            />
           </Form.Item>
           <Form.Item name="matchMinutes" label="单场预估时长（分钟）" rules={[{ required: true }]}>
             <InputNumber min={1} style={{ width: '100%' }} />
