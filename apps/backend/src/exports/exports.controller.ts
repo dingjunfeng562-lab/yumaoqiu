@@ -42,6 +42,9 @@ export class ExportsController {
 
     res.setHeader('Content-Type', isBinary ? file.contentType : `${file.contentType}; charset=utf-8`);
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodedFilename}`);
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     res.send(isBinary ? file.content : Buffer.from(file.content as string, 'utf8'));
   }
 }

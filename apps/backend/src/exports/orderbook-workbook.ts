@@ -267,7 +267,14 @@ function stageText(matches: ExportMatch[]) {
     ),
   ];
   if (koLabels.length) parts.push('第二阶段·' + koLabels.join('、'));
-  if (matches.some((m) => (m.roundNo ?? 0) >= 100)) parts.push('第二阶段·排位赛');
+  const formalSecondStageLabels = [
+    ...new Set(
+      matches
+        .filter((m) => (m.roundNo ?? 0) >= 100)
+        .map((m) => roundLabel(m)),
+    ),
+  ];
+  if (formalSecondStageLabels.length) parts.push('第二阶段·' + formalSecondStageLabels.join('、'));
   return parts.join('；') || '—';
 }
 
