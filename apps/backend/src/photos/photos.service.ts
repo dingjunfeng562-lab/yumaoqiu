@@ -222,6 +222,31 @@ export class PhotosService {
       : DEFAULT_WATERMARK_POSITION;
   }
 
+  private isMissingTableError(error: unknown) {
+    return (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === 'P2010' &&
+      String(error.meta?.code ?? '') === '1146'
+    );
+  }
+
+  private async lockTournamentForPhotoSequence(
+    tx: Prisma.TransactionClient,
+    tournamentId: string,
+  ) {
+    try {
+      // Prisma maps the model to `Tournament`; older migration-created DBs may still expose `tournament`.
+      return await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM \`Tournament\` WHERE id = ${tournamentId} FOR UPDATE
+      `;
+    } catch (error) {
+      if (!this.isMissingTableError(error)) throw error;
+      return tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM \`tournament\` WHERE id = ${tournamentId} FOR UPDATE
+      `;
+    }
+  }
+
   async uploadPhotos(
     tournamentId: string,
     category: PhotoCategory,
@@ -333,9 +358,7 @@ export class PhotosService {
       try {
         await this.prisma.$transaction(async (tx) => {
           // Serialize sequence assignment per tournament; image processing stays outside the lock.
-          const locked = await tx.$queryRaw<Array<{ id: string }>>`
-            SELECT id FROM \`tournament\` WHERE id = ${tournamentId} FOR UPDATE
-          `;
+          const locked = await this.lockTournamentForPhotoSequence(tx, tournamentId);
           if (locked.length === 0) throw new NotFoundException('Tournament not found');
 
           // New photos continue from the current max (deleted rows included)

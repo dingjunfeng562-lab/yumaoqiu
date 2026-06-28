@@ -269,9 +269,13 @@ export class SchedulingService {
     const schedulableMatches = scopeMatches
       .filter((match) => match.status === MatchStatus.PENDING)
       .sort((a, b) => {
+        const stagePriority = (dto.prioritizeSecondStage ?? true)
+          ? Number(!isSecondStageFormalRoundNo(a.roundNo)) -
+            Number(!isSecondStageFormalRoundNo(b.roundNo))
+          : 0;
         const aRank = eventTypeRank.get(a.event?.type ?? '') ?? Number.MAX_SAFE_INTEGER;
         const bRank = eventTypeRank.get(b.event?.type ?? '') ?? Number.MAX_SAFE_INTEGER;
-        return aRank - bRank || a.roundNo - b.roundNo || a.matchNo - b.matchNo;
+        return stagePriority || aRank - bRank || a.roundNo - b.roundNo || a.matchNo - b.matchNo;
       });
 
     const updates: Array<{ matchId: string; venueId: string; scheduledAt: Date; minutes: number }> = [];

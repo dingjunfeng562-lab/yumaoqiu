@@ -80,6 +80,35 @@ function sideUnit(registration: ExportRegistration | null | undefined) {
     : registration.player1.affiliation;
 }
 
+function secondStagePlanningMatch(event: ExportEvent, match: ExportMatch) {
+  if ((match.roundNo ?? 0) < 100) return null;
+  return event.secondStage?.matches.find((item) => item.matchNo === match.matchNo) ?? null;
+}
+
+function orderSideText(
+  event: ExportEvent,
+  match: ExportMatch,
+  side: 1 | 2,
+  regMap: Map<string, ExportRegistration>,
+) {
+  const id = side === 1 ? match.side1Id : match.side2Id;
+  const registration = id ? regMap.get(id) ?? null : null;
+  if (registration) {
+    return {
+      unit: sideUnit(registration),
+      name: registrationName(registration),
+    };
+  }
+
+  const planning = secondStagePlanningMatch(event, match);
+  const source = side === 1 ? planning?.side1Source : planning?.side2Source;
+  const snapshot = side === 1 ? planning?.side1NameSnapshot : planning?.side2NameSnapshot;
+  return {
+    unit: source ?? '',
+    name: snapshot ?? (source ? '待定' : ''),
+  };
+}
+
 function registrationMap(tournament: ExportTournament) {
   const map = new Map<string, ExportRegistration>();
   for (const event of tournament.events) {
@@ -344,16 +373,16 @@ function buildOrderSheet(wb: ExcelJS.Workbook, tournament: ExportTournament) {
         );
         if (found) {
           const { event, match } = found;
-          const side1 = match.side1Id ? regMap.get(match.side1Id) ?? null : null;
-          const side2 = match.side2Id ? regMap.get(match.side2Id) ?? null : null;
+          const side1 = orderSideText(event, match, 1, regMap);
+          const side2 = orderSideText(event, match, 2, regMap);
           ws.getCell(top, col).value = eventLabel(event);
           ws.getCell(top, col + 1).value = codeMap.get(match.id) ?? '';
           ws.getCell(top + 1, col).value = roundLabel(match);
           ws.getCell(top + 1, col + 1).value = pairLabel(match, posMap);
-          ws.getCell(top + 2, col).value = sideUnit(side1);
-          ws.getCell(top + 2, col + 1).value = sideUnit(side2);
-          ws.getCell(top + 3, col).value = registrationName(side1);
-          ws.getCell(top + 3, col + 1).value = registrationName(side2);
+          ws.getCell(top + 2, col).value = side1.unit;
+          ws.getCell(top + 2, col + 1).value = side2.unit;
+          ws.getCell(top + 3, col).value = side1.name;
+          ws.getCell(top + 3, col + 1).value = side2.name;
         }
       });
 

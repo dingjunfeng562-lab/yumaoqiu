@@ -304,8 +304,10 @@ export class ExportsService {
     if (!event) throw new NotFoundException('单项不存在');
 
     // 只取目标阶段的场次喂给日程表/秩序表；流程表会按 stage 完整呈现该阶段结构（含未排程的）。
-    const stageMatches = (event.matches as unknown as ExportMatch[]).filter((match) =>
-      this.isStageMatch(event.format, match.roundNo ?? 0, stage),
+    const stageMatches = this.orderStageMatches(
+      (event.matches as unknown as ExportMatch[]).filter((match) =>
+        this.isStageMatch(event.format, match.roundNo ?? 0, stage),
+      ),
     );
 
     const tournament: ExportTournament = {
@@ -346,6 +348,20 @@ export class ExportsService {
         : roundNo >= SECOND_STAGE_FORMAL_ROUND_NO_BASE;
     }
     return stage === 'first' ? roundNo === 0 : roundNo >= 1;
+  }
+
+  private orderStageMatches(matches: ExportMatch[]) {
+    return [...matches].sort(
+      (a, b) =>
+        Number(!a.scheduledAt) - Number(!b.scheduledAt) ||
+        this.matchSortValue(a) - this.matchSortValue(b) ||
+        (a.venue?.sortOrder ?? Number.MAX_SAFE_INTEGER) -
+          (b.venue?.sortOrder ?? Number.MAX_SAFE_INTEGER) ||
+        (a.venue?.name ?? '').localeCompare(b.venue?.name ?? '', 'zh-CN') ||
+        (a.roundNo ?? 0) - (b.roundNo ?? 0) ||
+        (a.matchNo ?? 0) - (b.matchNo ?? 0) ||
+        a.id.localeCompare(b.id),
+    );
   }
 
   private async findTournamentForExport(tournamentId: string, kind: ExportKind): Promise<ExportTournament | null> {

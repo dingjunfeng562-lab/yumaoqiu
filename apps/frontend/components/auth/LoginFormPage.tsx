@@ -2,7 +2,7 @@
 
 import { Suspense, useState } from 'react';
 import Link from 'next/link';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import { getSession, signIn } from 'next-auth/react';
 import { ArrowLeftOutlined, ArrowRightOutlined, EyeInvisibleOutlined, EyeOutlined } from '@ant-design/icons';
 import { Alert, Button, Checkbox, ConfigProvider, Form, Input } from 'antd';
@@ -20,6 +20,8 @@ const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const manrope = { className: 'font-sans' };
 const jetbrainsMono = { className: 'font-mono' };
+const sessionReadyAttempts = 8;
+const sessionReadyDelayMs = 120;
 
 function destinationForRole(role?: string | null) {
   if (role === 'REFEREE') return '/referee/my-matches';
@@ -35,6 +37,21 @@ function safeRedirect(value: string | null) {
   return value;
 }
 
+function delay(ms: number) {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+async function waitForReadySession() {
+  for (let attempt = 0; attempt < sessionReadyAttempts; attempt += 1) {
+    const session = await getSession();
+    if (session?.user?.accessToken && session.user.role) return session;
+    await delay(sessionReadyDelayMs + attempt * 80);
+  }
+  return getSession();
+}
+
 export default function LoginFormPage() {
   return (
     <Suspense fallback={<main className="register-page" />}>
@@ -44,7 +61,6 @@ export default function LoginFormPage() {
 }
 
 function LoginContent() {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const [form] = Form.useForm<FormValues>();
   const [loginType, setLoginType] = useState<LoginType>('username');
@@ -64,13 +80,14 @@ function LoginContent() {
         redirect: false,
       });
 
-      if (res?.error) {
+      if (!res?.ok || res?.error) {
         setError((res as { code?: string }).code === 'locked' ? '账号已锁定,请稍后再试' : '账号或密码错误');
         return;
       }
 
-      const session = await getSession();
-      router.replace(safeRedirect(searchParams.get('redirect')) ?? destinationForRole(session?.user?.role));
+      const session = await waitForReadySession();
+      const destination = safeRedirect(searchParams.get('redirect')) ?? destinationForRole(session?.user?.role);
+      window.location.assign(destination);
     } catch {
       setError('登录服务暂时不可用,请稍后重试');
     } finally {

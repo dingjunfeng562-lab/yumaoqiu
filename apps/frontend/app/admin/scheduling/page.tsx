@@ -273,6 +273,7 @@ export default function AdminSchedulingPage() {
           breakMinutes: values.breakMinutes,
           venueIds: values.venueIds,
           eventTypeOrder: values.eventTypeOrder,
+          prioritizeSecondStage: true,
         }),
       });
       setSchedule(data);

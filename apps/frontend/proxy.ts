@@ -13,12 +13,33 @@ function destinationForRole(role?: string | null) {
   return '/';
 }
 
+const authSessionCookieNames = [
+  'authjs.session-token',
+  '__Secure-authjs.session-token',
+  '__Host-authjs.session-token',
+  'next-auth.session-token',
+  '__Secure-next-auth.session-token',
+];
+
+function isAuthSessionCookieName(name: string) {
+  return authSessionCookieNames.some((cookieName) => name === cookieName || name.startsWith(`${cookieName}.`));
+}
+
+function clearAuthSessionCookies(req: NextRequest, res: NextResponse) {
+  const names = new Set(authSessionCookieNames);
+  for (const cookie of req.cookies.getAll()) {
+    if (isAuthSessionCookieName(cookie.name)) names.add(cookie.name);
+  }
+  for (const name of names) {
+    res.cookies.delete(name);
+  }
+}
+
 function loginRedirect(req: NextRequest) {
   const url = new URL('/login', req.url);
   url.searchParams.set('redirect', `${req.nextUrl.pathname}${req.nextUrl.search}`);
   const res = NextResponse.redirect(url);
-  res.cookies.delete('authjs.session-token');
-  res.cookies.delete('__Secure-authjs.session-token');
+  clearAuthSessionCookies(req, res);
   return res;
 }
 

@@ -72,6 +72,10 @@ export class AutoScheduleDto {
   @IsOptional()
   @IsBoolean()
   overrideMatchMinutes?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  prioritizeSecondStage?: boolean;
 }
 
 export class ClearScheduleDto {
