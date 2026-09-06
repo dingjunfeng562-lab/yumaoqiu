@@ -50,11 +50,12 @@ export default async function proxy(req: NextRequest) {
   const isAdminRoute = req.nextUrl.pathname.startsWith('/admin');
   const isRefereeRoute = req.nextUrl.pathname.startsWith('/referee');
   const isMyRegistrationsRoute = req.nextUrl.pathname.startsWith('/my-registrations');
+  const isHawkeyeRoute = req.nextUrl.pathname.startsWith('/hawkeye');
   const isRegisterRoute = /\/competitions\/[^/]+\/register$/.test(req.nextUrl.pathname);
   const isLoginPage = req.nextUrl.pathname === '/login';
 
   if (
-    (isAdminRoute || isRefereeRoute || isRegisterRoute || isMyRegistrationsRoute) &&
+    (isAdminRoute || isRefereeRoute || isRegisterRoute || isMyRegistrationsRoute || isHawkeyeRoute) &&
     (!isLoggedIn || hasInvalidSession)
   ) {
     return loginRedirect(req);
@@ -82,6 +83,7 @@ export const config = {
     '/admin/:path*',
     '/referee/:path*',
     '/my-registrations/:path*',
+    '/hawkeye/:path*',
     '/competitions/:path*/register',
     '/login',
   ],

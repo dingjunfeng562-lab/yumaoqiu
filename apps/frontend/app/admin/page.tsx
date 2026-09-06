@@ -1,8 +1,16 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Card, Progress, Typography, Spin, Empty } from 'antd';
-import { EyeOutlined, DownloadOutlined, PictureOutlined } from '@ant-design/icons';
+import { Card, Empty, Progress, Spin, Typography } from 'antd';
+import {
+  AimOutlined,
+  DownloadOutlined,
+  EyeOutlined,
+  MessageOutlined,
+  PictureOutlined,
+} from '@ant-design/icons';
+import { useSession } from 'next-auth/react';
+import { apiFetch } from '@/lib/api';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 
@@ -15,28 +23,55 @@ type TournamentStat = {
   downloadCount: number;
 };
 
+type UsageMetrics = {
+  hawkeye: number;
+  aiChat: number;
+};
+
+const EMPTY_USAGE_METRICS: UsageMetrics = {
+  hawkeye: 0,
+  aiChat: 0,
+};
+
 export default function AdminDashboard() {
+  const { data: session } = useSession();
+  const token = session?.user?.accessToken;
   const [stats, setStats] = useState<TournamentStat[]>([]);
+  const [usageMetrics, setUsageMetrics] = useState<UsageMetrics>(EMPTY_USAGE_METRICS);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
+
     (async () => {
       try {
-        const res = await fetch(`${API_BASE}/photos/tournaments`, { cache: 'no-store' });
-        const data = (res.ok ? await res.json() : []) as TournamentStat[];
+        const [photoStats, usageStats] = await Promise.all([
+          fetch(`${API_BASE}/photos/tournaments`, { cache: 'no-store' }).then(async (res) => {
+            if (!res.ok) return [];
+            return (await res.json()) as TournamentStat[];
+          }),
+          token
+            ? apiFetch<UsageMetrics>('/usage-metrics/summary', { token, cache: 'no-store' }).catch(() => EMPTY_USAGE_METRICS)
+            : Promise.resolve(EMPTY_USAGE_METRICS),
+        ]);
+
         if (cancelled) return;
-        setStats(data);
+        setStats(photoStats);
+        setUsageMetrics(usageStats);
       } catch {
-        /* ignore */
+        if (!cancelled) {
+          setStats([]);
+          setUsageMetrics(EMPTY_USAGE_METRICS);
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
     })();
+
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [token]);
 
   const totalPhotos = stats.reduce((sum, s) => sum + s.photoCount, 0);
   const totalViews = stats.reduce((sum, s) => sum + s.viewCount, 0);
@@ -44,10 +79,46 @@ export default function AdminDashboard() {
 
   return (
     <div>
-      <h1 style={{ fontSize: 24, lineHeight: 1.35, margin: '0 0 8px' }}>仪表板</h1>
+      <h1 style={{ fontSize: 24, lineHeight: 1.35, margin: '0 0 8px' }}>仪表盘</h1>
       <p style={{ color: 'rgba(0, 0, 0, 0.45)', margin: '0 0 24px' }}>
         欢迎使用羽动云赛。请从左侧菜单选择赛事、报名、抽签、裁判记分等功能。
       </p>
+
+      <Card title="智能工具使用统计" style={{ marginBottom: 24 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16 }}>
+          <div
+            style={{
+              padding: 16,
+              border: '1px solid #d9f7be',
+              borderRadius: 8,
+              background: '#f6ffed',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#389e0d', fontSize: 13, fontWeight: 700 }}>
+              <AimOutlined /> 鹰眼系统使用次数
+            </div>
+            <Typography.Title level={2} style={{ margin: '10px 0 0', color: '#389e0d' }}>
+              {usageMetrics.hawkeye.toLocaleString()}
+            </Typography.Title>
+          </div>
+
+          <div
+            style={{
+              padding: 16,
+              border: '1px solid #bae0ff',
+              borderRadius: 8,
+              background: '#f0f7ff',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#1677ff', fontSize: 13, fontWeight: 700 }}>
+              <MessageOutlined /> AI 对话使用次数
+            </div>
+            <Typography.Title level={2} style={{ margin: '10px 0 0', color: '#1677ff' }}>
+              {usageMetrics.aiChat.toLocaleString()}
+            </Typography.Title>
+          </div>
+        </div>
+      </Card>
 
       <Card title="图片统计总览" style={{ marginBottom: 24 }}>
         <div style={{ display: 'flex', gap: 48, flexWrap: 'wrap' }}>
@@ -55,7 +126,7 @@ export default function AdminDashboard() {
             <div style={{ width: 80, height: 80 }}>
               <Progress
                 type="circle"
-                percent={stats.length > 0 ? Math.round((totalPhotos / (stats.reduce((sum, s) => Math.max(sum, s.photoCount * 3), 1))) * 100) : 0}
+                percent={stats.length > 0 ? Math.round((totalPhotos / stats.reduce((sum, s) => Math.max(sum, s.photoCount * 3), 1)) * 100) : 0}
                 size={80}
                 strokeColor={{
                   '0%': '#1677ff',

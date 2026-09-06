@@ -342,7 +342,6 @@ export class PublicService {
         where: {
           eventId: { in: eventIds },
           status: MatchStatus.PENDING,
-          scheduledAt: { not: null },
         },
         include: {
           event: true,
@@ -354,7 +353,7 @@ export class PublicService {
           },
         },
         orderBy: [{ scheduledAt: 'asc' }, { roundNo: 'asc' }, { matchNo: 'asc' }],
-        take: 8,
+        take: 64,
       }),
       this.prisma.match.findMany({
         where: { eventId: { in: eventIds }, status: MatchStatus.COMPLETED },
@@ -392,9 +391,19 @@ export class PublicService {
       }),
     ]);
 
+    const upcomingDisplayMatches = [...upcomingMatches]
+      .sort(
+        (a, b) =>
+          (a.scheduledAt?.getTime() ?? Number.MAX_SAFE_INTEGER) -
+            (b.scheduledAt?.getTime() ?? Number.MAX_SAFE_INTEGER) ||
+          a.roundNo - b.roundNo ||
+          a.matchNo - b.matchNo,
+      )
+      .slice(0, 8);
+
     const registrationMap = await this.registrationMap([
       ...liveMatches.flatMap((match) => [match.side1Id, match.side2Id]),
-      ...upcomingMatches.flatMap((match) => [match.side1Id, match.side2Id]),
+      ...upcomingDisplayMatches.flatMap((match) => [match.side1Id, match.side2Id]),
       ...recentResults.flatMap((match) => [match.side1Id, match.side2Id]),
       ...eventReports.flatMap((event) =>
         event.matches.flatMap((match) => [match.side1Id, match.side2Id]),
@@ -425,7 +434,7 @@ export class PublicService {
         venues: competition.venues.length,
       },
       liveMatches: liveMatches.map((match) => this.publicMatchView(match, registrationMap)),
-      upcomingMatches: upcomingMatches.map((match) => this.publicMatchView(match, registrationMap)),
+      upcomingMatches: upcomingDisplayMatches.map((match) => this.publicMatchView(match, registrationMap)),
       recentResults: recentResults.map((match) => this.publicMatchView(match, registrationMap)),
       eventReports: eventReports.map((event) => ({
         id: event.id,

@@ -16,7 +16,7 @@ export function Footer() {
         </div>
         <div className="border-white/15 md:border-l md:pl-8">
           <p className="text-lg font-black">平台入口</p>
-          <p className="mt-2 text-blue-100">赛事报名、赛程管理、对阵生成、成绩统计</p>
+          <p className="mt-2 text-blue-100">赛事报名、对阵生成、成绩统计</p>
         </div>
         <div className="border-white/15 md:border-l md:pl-8">
           <p className="text-lg font-black">© 2026 羽动云赛</p>

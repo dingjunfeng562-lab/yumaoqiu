@@ -97,7 +97,6 @@ export function MobileBottomNav({ activeHref }: { activeHref?: string } = {}) {
       match: (p) =>
         p.startsWith('/competitions') ||
         p.startsWith('/bracket') ||
-        p.startsWith('/schedule') ||
         p.startsWith('/live-screen'),
     },
     {

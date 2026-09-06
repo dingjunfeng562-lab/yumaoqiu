@@ -91,6 +91,7 @@ export function PhotosGallery() {
 
   const sentinelRef = useRef<HTMLDivElement>(null);
   const loadingRef = useRef(false);
+  const requestKeyRef = useRef(0);
   const countedThumbIdsRef = useRef<Set<string>>(new Set());
 
   // Load the tournament tabs once.
@@ -117,6 +118,7 @@ export function PhotosGallery() {
   const loadPage = useCallback(
     async (targetPage: number, replace: boolean) => {
       if (!tournamentId || loadingRef.current) return;
+      const requestKey = ++requestKeyRef.current;
       loadingRef.current = true;
       setLoading(true);
       try {
@@ -129,6 +131,7 @@ export function PhotosGallery() {
         const res = await fetch(`${API_BASE}/photos?${params.toString()}`, { cache: 'no-store' });
         if (!res.ok) throw new Error('加载失败');
         const data = (await res.json()) as PhotoPage;
+        if (requestKey !== requestKeyRef.current) return;
         setTotal(data.total);
         setPhotoStats({
           viewCount: data.stats?.viewCount ?? 0,
@@ -150,6 +153,9 @@ export function PhotosGallery() {
   // Reset + load first page whenever tournament or category changes.
   useEffect(() => {
     if (!tournamentId) return;
+    // Cancel any in-flight request so a fast filter/tab switch cannot block the new load.
+    requestKeyRef.current += 1;
+    loadingRef.current = false;
     setPhotos([]);
     setTotal(0);
     setPhotoStats({ viewCount: 0, downloadCount: 0 });
@@ -282,23 +288,32 @@ export function PhotosGallery() {
                 <img
                   src={fullUrl(item.thumbUrl)}
                   alt={CATEGORY_FILE_LABEL[item.category]}
+                  width={item.width || undefined}
+                  height={item.height || undefined}
                   loading="lazy"
+                  decoding="async"
                   onLoad={() => countThumbView(item.id)}
                   onClick={() => openPreview(index)}
-                  style={{ width: '100%', display: 'block', cursor: 'zoom-in' }}
+                  style={{ width: '100%', height: 'auto', display: 'block', cursor: 'zoom-in' }}
                 />
                 <div className="photo-overlay">
                   <button
                     type="button"
                     className="photo-overlay-btn"
-                    onClick={() => openPreview(index)}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openPreview(index);
+                    }}
                   >
                     <EyeOutlined /> 查看大图
                   </button>
                   <button
                     type="button"
                     className="photo-overlay-btn"
-                    onClick={() => downloadPhoto(item)}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      downloadPhoto(item);
+                    }}
                   >
                     <DownloadOutlined /> 下载
                   </button>
@@ -346,6 +361,11 @@ export function PhotosGallery() {
         .photo-grid {
           column-gap: 12px;
           column-width: 240px;
+        }
+        .photo-card {
+          -webkit-column-break-inside: avoid;
+          break-inside: avoid;
+          page-break-inside: avoid;
         }
         .photo-media {
           position: relative;

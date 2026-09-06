@@ -10,13 +10,6 @@ const features = [
     gradient: 'from-blue-600 to-cyan-400',
   },
   {
-    title: '赛程管理',
-    description: '按项目、轮次、场地维护比赛安排。',
-    icon: '/generated/icon-calendar.svg',
-    href: '/login',
-    gradient: 'from-emerald-500 to-cyan-400',
-  },
-  {
     title: '对阵生成',
     description: '抽签编排、淘汰赛树与小组赛对阵。',
     icon: '/generated/icon-bracket.svg',
@@ -51,7 +44,7 @@ export function FeatureEntrances() {
           </p>
         </div>
 
-        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-5">
+        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4">
           {features.map((feature) => (
             <Link
               key={feature.title}

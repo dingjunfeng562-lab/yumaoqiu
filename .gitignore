@@ -1,5 +1,6 @@
 # dependencies
 node_modules/
+.pnpm-store/
 
 # env
 .env
@@ -23,6 +24,13 @@ build/
 .idea/
 .claude/
 .worktrees/
+
+# local Good-Badminton / Hawkeye runtime
+services/hawkeye/.venv/
+services/hawkeye/outputs/
+services/hawkeye/videos/
+services/hawkeye/weights/
+apps/frontend/public/hawkeye-app/
 
 # docs/local
 羽毛球比赛系统-需求文档.md

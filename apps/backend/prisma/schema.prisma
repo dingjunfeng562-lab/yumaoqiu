@@ -960,6 +960,32 @@ model DrawRedrawRequest {
   @@map("draw_redraw_request")
 }
 
+model AiConfig {
+  id             String   @id @default("default") @db.VarChar(191)
+  provider       String   @default("openai") @db.VarChar(64)
+  modelName      String   @default("gpt-4o-mini") @db.VarChar(128) @map("model_name")
+  apiKey         String   @default("") @db.VarChar(512) @map("api_key")
+  apiBase        String   @default("https://api.openai.com/v1") @db.VarChar(512) @map("api_base")
+  systemPrompt   String   @db.Text @map("system_prompt")
+  maxTokens      Int      @default(2048) @map("max_tokens")
+  temperature    Float    @default(0.7)
+  enabled        Boolean  @default(true)
+  welcomeMessage String   @db.VarChar(500) @map("welcome_message")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@map("ai_config")
+}
+
+model UsageMetric {
+  key       String   @id @map("metric_key") @db.VarChar(64)
+  count     Int      @default(0) @map("usage_count")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("usage_metrics")
+}
+
 model DrawGroupMember {
   id                  String       @id @default(cuid())
   drawGroupId         String       @map("draw_group_id")

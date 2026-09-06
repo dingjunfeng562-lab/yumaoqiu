@@ -33,7 +33,7 @@ const exportKinds = [
   { key: 'results', title: '成绩册', description: '输出比分、胜负和名次汇总。' },
   { key: 'registrations', title: '报名表', description: '输出选手信息、报名项目和分组种子。' },
   { key: 'bracket', title: '对阵表', description: '按场地排程输出对阵、时间与场地内场次。' },
-  { key: 'orderbook', title: '秩序册', description: '日程表 + 秩序表网格 + 各项目流程表（第一阶段小组循环成绩、第二阶段淘汰赛对阵树）。' },
+  { key: 'orderbook', title: '秩序册', description: '按参考模板生成秩序表、分组表、小组赛、日程表、名次汇总、淘汰赛和流程表。' },
 ];
 
 function fileNameFromDisposition(disposition: string | null, fallback: string) {

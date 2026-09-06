@@ -372,9 +372,17 @@ export function LiveScreenClient({
   initialBrackets: KnockoutBracketData[];
   initialTournamentId?: string | null;
 }) {
+  const initialSelectedTournamentId =
+    initialTournamentId && initialBrackets.some((bracket) => bracket.tournamentId === initialTournamentId)
+      ? initialTournamentId
+      : initialBrackets[0]?.tournamentId ?? '';
+  const initialSelectedEventId =
+    initialBrackets.find((bracket) => bracket.tournamentId === initialSelectedTournamentId)?.id ??
+    initialBrackets[0]?.id ??
+    '';
   const [brackets, setBrackets] = useState(initialBrackets);
-  const [selectedTournamentId, setSelectedTournamentId] = useState(initialBrackets[0]?.tournamentId ?? '');
-  const [selectedId, setSelectedId] = useState(initialBrackets[0]?.id ?? '');
+  const [selectedTournamentId, setSelectedTournamentId] = useState(initialSelectedTournamentId);
+  const [selectedId, setSelectedId] = useState(initialSelectedEventId);
   const [socketState, setSocketState] = useState<SocketState>('connecting');
   const [updatedAt, setUpdatedAt] = useState(new Date());
 

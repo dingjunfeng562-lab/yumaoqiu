@@ -26,7 +26,7 @@ function formatSummary(competition: PlatformCompetition) {
 function introSummary(competition: PlatformCompetition) {
   const text = announcementPlainText(competition.description ?? '').replace(/\s+/g, ' ').trim();
   if (text) return text;
-  return '查看比赛项目、报名状态、参赛选手与后续赛程安排。';
+  return '查看比赛项目、报名状态与参赛选手。';
 }
 
 export function CompetitionShowcase({ competitions }: { competitions: PlatformCompetition[] }) {

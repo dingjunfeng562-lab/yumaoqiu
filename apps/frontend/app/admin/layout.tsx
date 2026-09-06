@@ -39,6 +39,7 @@ import {
   AuditOutlined,
   MenuOutlined,
   MailOutlined,
+  MessageOutlined,
 } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 
@@ -68,10 +69,11 @@ const baseMenuItems: MenuItem[] = [
   { key: '/admin/team-competitions', icon: <ApartmentOutlined />, label: '团体赛管理' },
   { key: '/admin/draws', icon: <BranchesOutlined />, label: '抽签编排' },
   { key: '/admin/scheduling', icon: <CalendarOutlined />, label: '场地排程' },
+  { key: '/admin/exports', icon: <DownloadOutlined />, label: '秩序册/数据导出' },
   { key: '/admin/scoring', icon: <FieldTimeOutlined />, label: '裁判分配' },
   { key: '/admin/announcements', icon: <NotificationOutlined />, label: '公告管理', superOnly: true },
+  { key: '/admin/ai-config', icon: <MessageOutlined />, label: 'AI 助手配置', superOnly: true },
   { key: '/admin/email', icon: <MailOutlined />, label: '邮件通知设置', rootOnly: true },
-  { key: '/admin/exports', icon: <DownloadOutlined />, label: '数据导出' },
 ];
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {

@@ -90,6 +90,16 @@ export function HeroLanding() {
             >
               查看赛事
             </Link>
+            <Link
+              href="/hawkeye"
+              className="tappable inline-flex h-12 min-h-[44px] w-full items-center justify-center gap-2 rounded-full border border-emerald-400/50 bg-emerald-500/15 px-8 text-sm font-black text-emerald-200 shadow-[0_12px_30px_rgba(16,185,129,0.18)] backdrop-blur transition duration-300 hover:scale-105 hover:border-emerald-400/70 hover:bg-emerald-500/25 sm:w-auto sm:min-w-36"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-5 w-5">
+                <circle cx="12" cy="12" r="3" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 2v4M12 18v4M2 12h4M18 12h4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+              </svg>
+              鹰眼系统
+            </Link>
           </div>
 
           <a

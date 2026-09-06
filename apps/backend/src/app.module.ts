@@ -16,6 +16,9 @@ import { CompetitionsModule } from './competitions/competitions.module';
 import { AnnouncementsModule } from './announcements/announcements.module';
 import { PhotosModule } from './photos/photos.module';
 import { MailModule } from './mail/mail.module';
+import { AiConfigModule } from './ai-config/ai-config.module';
+import { AiChatModule } from './ai-chat/ai-chat.module';
+import { UsageMetricsModule } from './usage-metrics/usage-metrics.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 
@@ -38,6 +41,9 @@ import { AppService } from './app.service';
     AnnouncementsModule,
     PhotosModule,
     MailModule,
+    AiConfigModule,
+    UsageMetricsModule,
+    AiChatModule,
   ],
   controllers: [AppController],
   providers: [AppService],

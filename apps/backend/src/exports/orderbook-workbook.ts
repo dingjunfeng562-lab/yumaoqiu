@@ -31,6 +31,25 @@ const EVENT_TYPE_ABBR: Record<string, string> = {
   MIXED_DOUBLES: '混双',
 };
 
+// 模板工作簿按项目拆分名次/淘汰赛页。名称统一从项目类型派生，
+// 再由 uniqueWorksheetName() 处理同类型项目或 Excel 31 字符限制。
+function eventAbbr(event: ExportEvent) {
+  return EVENT_TYPE_ABBR[event.type] ?? '项目';
+}
+
+function uniqueWorksheetName(base: string, used: Set<string>) {
+  const normalized = (base.trim() || '工作表').slice(0, 31);
+  let name = normalized;
+  let suffix = 2;
+  while (used.has(name)) {
+    const tail = `-${suffix}`;
+    name = `${normalized.slice(0, Math.max(1, 31 - tail.length))}${tail}`;
+    suffix += 1;
+  }
+  used.add(name);
+  return name;
+}
+
 const KNOCKOUT_ROUND_LABELS: Record<string, string> = {
   F: '决赛',
   SF: '半决赛',
@@ -118,6 +137,12 @@ function eventLabel(event: ExportEvent) {
   return EVENT_TYPE_LABELS[event.type] ?? event.type;
 }
 
+function orderVenueLabel(name: string) {
+  const value = name.trim();
+  const match = /^(\d+)\s*号(?:场)?$/.exec(value);
+  return match ? `${match[1]} 号场` : value;
+}
+
 function registrationName(registration: ExportRegistration | null | undefined) {
   if (!registration) return '';
   return registration.player2
@@ -201,16 +226,55 @@ function thinBorder(): Partial<ExcelJS.Borders> {
   return { top: side, left: side, bottom: side, right: side };
 }
 
+const REFERENCE_FONT = '宋体';
+const REFERENCE_TEXT = { name: REFERENCE_FONT, size: 11 } as ExcelJS.Font;
+
+function referenceBorder(style: ExcelJS.BorderStyle = 'thin'): Partial<ExcelJS.Borders> {
+  const side: Partial<ExcelJS.Border> = { style, color: { argb: 'FFBFBFBF' } };
+  return { top: side, left: side, bottom: side, right: side };
+}
+
+function referenceCell(cell: Cell, options?: { bold?: boolean; size?: number; horizontal?: 'left' | 'center' | 'right'; wrapText?: boolean }) {
+  cell.font = {
+    ...REFERENCE_TEXT,
+    bold: options?.bold ?? false,
+    size: options?.size ?? REFERENCE_TEXT.size,
+    color: { argb: 'FF000000' },
+  };
+  cell.alignment = {
+    horizontal: options?.horizontal ?? 'center',
+    vertical: 'middle',
+    wrapText: options?.wrapText ?? true,
+  };
+  cell.border = referenceBorder();
+}
+
+function orderPairBorder(rowIndex: number, firstRow: boolean, lastRow: boolean, left: boolean, right: boolean) {
+  return {
+    top: { style: firstRow ? (rowIndex > 0 ? 'thick' : undefined) : 'dotted', color: { argb: 'FF7F7F7F' } },
+    bottom: { style: lastRow ? 'thick' : 'dotted', color: { argb: 'FF7F7F7F' } },
+    left: { style: left ? 'thick' : 'dotted', color: { argb: 'FF7F7F7F' } },
+    right: { style: right ? 'thick' : 'dotted', color: { argb: 'FF7F7F7F' } },
+  } as Partial<ExcelJS.Borders>;
+}
+
 function styleHeaderCell(cell: Cell) {
-  cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  // 参考秩序册的蓝色仅用于真正的列标题；节标题使用白底黑字。
+  cell.font = { ...REFERENCE_TEXT, bold: true, color: { argb: 'FFFFFFFF' } };
   cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ACCENT } };
   cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
   cell.border = thinBorder();
 }
 
 function styleTitleCell(cell: Cell) {
-  cell.font = { bold: true, size: 14 };
+  cell.font = { ...REFERENCE_TEXT, bold: true, size: 20, color: { argb: 'FFFFFFFF' } };
+  cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ACCENT } };
   cell.alignment = { horizontal: 'center', vertical: 'middle' };
+}
+
+function shortScheduleTime(match: ExportMatch) {
+  const parts = scheduleDatePartsForMatch(match);
+  return parts ? `${pad2(parts.hour)}:${pad2(parts.minute)}` : '未排程';
 }
 
 // ===== 数据整形（从 matches 还原阶段/分组/签位，与 exports.service 中口径一致）=====
@@ -431,16 +495,19 @@ function buildOrderSheet(wb: ExcelJS.Workbook, tournament: ExportTournament) {
   }
 
   const colCount = 2 + venueList.length * 2;
-  ws.getColumn(1).width = 8;
-  ws.getColumn(2).width = 17;
+  ws.getColumn(1).width = 10;
+  ws.getColumn(2).width = 10;
+  const referenceVenueWidths = [17.58, 18.16, 21.84, 18.77, 18.55, 19.13, 19.03, 18.94];
   for (let i = 0; i < venueList.length; i += 1) {
-    ws.getColumn(3 + i * 2).width = 14;
-    ws.getColumn(4 + i * 2).width = 14;
+    ws.getColumn(3 + i * 2).width = referenceVenueWidths[i * 2] ?? 18;
+    ws.getColumn(4 + i * 2).width = referenceVenueWidths[i * 2 + 1] ?? 18;
   }
 
-  ws.mergeCells(1, 1, 1, colCount);
+  ws.mergeCells(1, 1, 2, colCount);
   styleTitleCell(ws.getCell(1, 1));
-  ws.getCell(1, 1).value = '秩  序  表';
+  ws.getCell(1, 1).value = '秩 序 表';
+  ws.getRow(1).height = 14.4;
+  ws.getRow(2).height = 22;
 
   const scheduled = tournament.events.flatMap((event) =>
     event.matches.filter((m) => scheduleTimeKey(m) && m.venueId).map((match) => ({ event, match })),
@@ -451,28 +518,59 @@ function buildOrderSheet(wb: ExcelJS.Workbook, tournament: ExportTournament) {
   for (const session of sessions(tournament)) {
     const sessionMatches = scheduled.filter(({ match }) => sessionKeyForMatch(match) === session.key);
     if (!sessionMatches.length) continue;
+    const activeVenueIndexes = venueList
+      .map((venue, index) => (sessionMatches.some(({ match }) => match.venueId === venue.id) ? index : -1))
+      .filter((index) => index >= 0);
+    // 场地列保持全局顺序与编号；若某节只使用后面的场地，前面的列留空，避免“2号场”被挪到“1号场”位置。
+    const sessionVenues = activeVenueIndexes.length ? venueList.slice(0, Math.max(...activeVenueIndexes) + 1) : [];
+    const sessionColCount = 2 + sessionVenues.length * 2;
     sessionNo += 1;
 
-    row += 1; // 空行
-    ws.mergeCells(row, 1, row, colCount);
+    if (sessionNo > 1) {
+      ws.mergeCells(row, 1, row, sessionColCount);
+      const repeatTitle = ws.getCell(row, 1);
+      repeatTitle.value = '秩  序  表';
+      repeatTitle.font = { ...REFERENCE_TEXT, bold: true, size: 14, color: { argb: 'FF000000' } };
+      repeatTitle.alignment = { horizontal: 'center', vertical: 'middle' };
+      ws.getRow(row).height = 18.15;
+      row += 2; // 重复标题下保留一行空白，再开始下一节
+    } else {
+      row += 1; // 首节位于主标题下方
+    }
+    ws.mergeCells(row, 1, row, sessionColCount);
     const sessionCell = ws.getCell(row, 1);
     sessionCell.value = `第${sessionNo}节（${session.label}）`;
-    sessionCell.font = { bold: true };
-    sessionCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: SUBHEAD } };
+    sessionCell.font = { ...REFERENCE_TEXT, bold: true, size: 18, color: { argb: 'FF000000' } };
+    sessionCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } };
     sessionCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    sessionCell.border = referenceBorder();
+    ws.getRow(row).height = 42;
     row += 1;
 
     const headerRow = row;
     ws.getCell(headerRow, 1).value = '场次';
     ws.getCell(headerRow, 2).value = '时间';
-    styleHeaderCell(ws.getCell(headerRow, 1));
-    styleHeaderCell(ws.getCell(headerRow, 2));
-    venueList.forEach((venue, i) => {
+    referenceCell(ws.getCell(headerRow, 1), { bold: true, size: 12 });
+    referenceCell(ws.getCell(headerRow, 2), { bold: true, size: 12 });
+    sessionVenues.forEach((venue, i) => {
       const col = 3 + i * 2;
       ws.mergeCells(headerRow, col, headerRow, col + 1);
-      ws.getCell(headerRow, col).value = venue.name;
-      styleHeaderCell(ws.getCell(headerRow, col));
+      ws.getCell(headerRow, col).value = orderVenueLabel(venue.name);
+      referenceCell(ws.getCell(headerRow, col), { bold: true, size: 16 });
+      ws.getCell(headerRow, col).border = {
+        top: { style: 'thick', color: { argb: 'FF7F7F7F' } },
+        bottom: { style: 'thick', color: { argb: 'FF7F7F7F' } },
+        left: { style: i === 0 ? 'thick' : 'thin', color: { argb: 'FF7F7F7F' } },
+        right: { style: 'thin', color: { argb: 'FF7F7F7F' } },
+      };
+      ws.getCell(headerRow, col + 1).border = {
+        top: { style: 'thick', color: { argb: 'FF7F7F7F' } },
+        bottom: { style: 'thick', color: { argb: 'FF7F7F7F' } },
+        left: { style: 'thin', color: { argb: 'FF7F7F7F' } },
+        right: { style: 'thick', color: { argb: 'FF7F7F7F' } },
+      };
     });
+    ws.getRow(headerRow).height = 35;
     row += 1;
 
     const times = [...new Set(sessionMatches.map(({ match }) => scheduleTimeKey(match)).filter(Boolean))].sort((a, b) =>
@@ -483,11 +581,12 @@ function buildOrderSheet(wb: ExcelJS.Workbook, tournament: ExportTournament) {
       ws.mergeCells(top, 1, top + 3, 1);
       ws.mergeCells(top, 2, top + 3, 2);
       ws.getCell(top, 1).value = `第${index + 1}场`;
-      ws.getCell(top, 2).value = time;
-      ws.getCell(top, 1).alignment = { horizontal: 'center', vertical: 'middle' };
-      ws.getCell(top, 2).alignment = { horizontal: 'center', vertical: 'middle' };
+      const firstMatch = sessionMatches.find(({ match }) => scheduleTimeKey(match) === time)?.match;
+      ws.getCell(top, 2).value = firstMatch ? shortScheduleTime(firstMatch) : time;
+      referenceCell(ws.getCell(top, 1));
+      referenceCell(ws.getCell(top, 2));
 
-      venueList.forEach((venue, i) => {
+      sessionVenues.forEach((venue, i) => {
         const col = 3 + i * 2;
         const found = sessionMatches.find(
           ({ match }) => scheduleTimeKey(match) === time && match.venueId === venue.id,
@@ -508,12 +607,20 @@ function buildOrderSheet(wb: ExcelJS.Workbook, tournament: ExportTournament) {
       });
 
       for (let r = top; r <= top + 3; r += 1) {
-        for (let c = 1; c <= colCount; c += 1) {
+        for (let c = 1; c <= sessionColCount; c += 1) {
           const cell = ws.getCell(r, c);
-          cell.border = thinBorder();
-          if (!cell.alignment) cell.alignment = { vertical: 'middle', wrapText: true };
+          if (c <= 2) {
+            referenceCell(cell);
+          } else {
+            const venueIndex = Math.floor((c - 3) / 2);
+            const isLeft = (c - 3) % 2 === 0;
+            cell.font = { ...REFERENCE_TEXT, color: { argb: 'FF000000' } };
+            cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+            cell.border = orderPairBorder(index + sessionNo - 1, r === top, r === top + 3, isLeft, !isLeft);
+          }
         }
       }
+      for (let r = top; r <= top + 3; r += 1) ws.getRow(r).height = 24;
       row += 4;
     });
   }
@@ -700,6 +807,19 @@ function crossCellText(
   return [code, when, venue].filter(Boolean).join('\n');
 }
 
+// 分组表沿用参考文件的“成绩录入矩阵”：未完赛格保持空白，
+// 已完赛格才显示双方局分，避免把秩序表中的场次/时间说明混进统计表。
+function standingCrossCellText(
+  selfId: string,
+  oppId: string,
+  groupMatchByPair: Map<string, ExportMatch>,
+) {
+  const match = groupMatchByPair.get(pairKey(selfId, oppId));
+  if (!match || !match.winnerSide || !match.games.length) return '';
+  const self1 = match.side1Id === selfId;
+  return `${gamesWonBy(match, self1 ? 1 : 2)}:${gamesWonBy(match, self1 ? 2 : 1)}`;
+}
+
 function computeGroupStandings(
   members: Array<{ id: string; pos: number }>,
   groupMatchByPair: Map<string, ExportMatch>,
@@ -747,9 +867,21 @@ function computeGroupStandings(
   const ranked = [...rows].sort(
     (x, y) => y.wins - x.wins || y.netGames - x.netGames || y.pointDiff - x.pointDiff,
   );
-  const result = new Map<string, { wins: number; netGames: number; played: number; rank: number | null }>();
+  const result = new Map<string, {
+    wins: number;
+    netGames: number;
+    pointDiff: number;
+    played: number;
+    rank: number | null;
+  }>();
   ranked.forEach((r, index) => {
-    result.set(r.id, { wins: r.wins, netGames: r.netGames, played: r.played, rank: r.played ? index + 1 : null });
+    result.set(r.id, {
+      wins: r.wins,
+      netGames: r.netGames,
+      pointDiff: r.pointDiff,
+      played: r.played,
+      rank: r.played ? index + 1 : null,
+    });
   });
   return result;
 }
@@ -988,6 +1120,310 @@ function renderPlayoffPlacementMatches(
   return row;
 }
 
+// ===== 模板风格综合页 =====
+// 模板中的“小组赛 / 分组表 / 名次 / 八强”都是静态展示页。
+// 这里保留相同的阅读顺序，但所有内容均从抽签后物化的 registrations、matches、secondStage 生成，
+// 这样重新抽签或调整排程后再次导出即可得到最新秩序册。
+
+function displayMatchSide(
+  event: ExportEvent,
+  match: ExportMatch,
+  side: 1 | 2,
+  regMap: Map<string, ExportRegistration>,
+) {
+  const id = side === 1 ? match.side1Id : match.side2Id;
+  const registration = id ? regMap.get(id) ?? null : null;
+  if (registration) {
+    const team = registration.teamName?.trim();
+    const name = registrationName(registration);
+    return team ? `${team}（${name}）` : name;
+  }
+  const planning = secondStagePlanningMatch(event, match);
+  const source = side === 1 ? planning?.side1Source : planning?.side2Source;
+  const snapshot = side === 1 ? planning?.side1NameSnapshot : planning?.side2NameSnapshot;
+  return snapshot ?? source ?? '待定';
+}
+
+function matchStatusLabel(status: string) {
+  return MATCH_STATUS_LABELS[status] ?? status;
+}
+
+function styleBodyRange(ws: ExcelJS.Worksheet, top: number, bottom: number, left: number, right: number) {
+  for (let r = top; r <= bottom; r += 1) {
+    for (let c = left; c <= right; c += 1) {
+      const cell = ws.getCell(r, c);
+      cell.font = { ...REFERENCE_TEXT, color: { argb: 'FF000000' } };
+      cell.border = thinBorder();
+      cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+    }
+  }
+}
+
+function addTemplateTitle(ws: ExcelJS.Worksheet, title: string, lastCol: number) {
+  ws.mergeCells(1, 1, 1, lastCol);
+  const cell = ws.getCell(1, 1);
+  cell.value = title;
+  cell.font = { ...REFERENCE_TEXT, bold: true, size: 18, color: { argb: 'FF000000' } };
+  cell.alignment = { horizontal: 'center', vertical: 'middle' };
+  ws.getRow(1).height = 30;
+}
+
+function buildGroupMatchDetailSheet(wb: ExcelJS.Workbook, tournament: ExportTournament) {
+  const ws = wb.addWorksheet('小组赛');
+  ws.columns = [
+    { width: 14 }, { width: 8 }, { width: 18 }, { width: 16 }, { width: 8 },
+    { width: 12 }, { width: 42 }, { width: 14 }, { width: 12 },
+  ];
+  addTemplateTitle(ws, '小       组      赛', 9);
+  const headers = ['场地', '场次', '比赛时间', '项目', '组别', '轮次', '对阵', '比分', '状态'];
+  headers.forEach((header, index) => {
+    const cell = ws.getCell(2, index + 1);
+    cell.value = header;
+    styleHeaderCell(cell);
+  });
+
+  const venueMatchNo = new Map<string, number>();
+  const rows = tournament.events
+    .flatMap((event) => event.matches
+      .filter((match) => (match.roundNo ?? 0) === 0)
+      .map((match) => ({ event, match })))
+    .sort((a, b) => scheduleSortValueForMatch(a.match) - scheduleSortValueForMatch(b.match)
+      || (a.match.venue?.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.match.venue?.sortOrder ?? Number.MAX_SAFE_INTEGER)
+      || (a.match.matchNo ?? 0) - (b.match.matchNo ?? 0));
+  const regMap = registrationMap(tournament);
+  let row = 3;
+  for (const { event, match } of rows) {
+    const venueKey = match.venueId ?? match.venue?.name ?? '';
+    const sequence = (venueMatchNo.get(venueKey) ?? 0) + 1;
+    venueMatchNo.set(venueKey, sequence);
+    const values = [
+      match.venue?.name ?? '未分配',
+      sequence,
+      fmtMatchScheduleDateTime(match) || '未排程',
+      eventLabel(event),
+      typeof match.round === 'string' ? `${match.round}组` : '',
+      '小组循环',
+      `${displayMatchSide(event, match, 1, regMap)} VS ${displayMatchSide(event, match, 2, regMap)}`,
+      matchScoreText(match) || '—',
+      matchStatusLabel(match.status),
+    ];
+    values.forEach((value, index) => { ws.getCell(row, index + 1).value = value; });
+    styleBodyRange(ws, row, row, 1, headers.length);
+    row += 1;
+  }
+  if (row === 3) {
+    ws.getCell(row, 1).value = '暂无小组赛场次';
+    ws.mergeCells(row, 1, row, headers.length);
+  }
+  ws.views = [{ state: 'frozen', ySplit: 2 }];
+}
+
+function eventGroups(event: ExportEvent) {
+  const positions = groupPositions(event);
+  const groups = new Map<string, Array<{ id: string; pos: number }>>();
+  for (const registration of event.registrations) {
+    const group = registration.groupName?.trim() || positions.get(registration.id)?.group;
+    if (!group) continue;
+    const position = positions.get(registration.id)?.pos ?? (groups.get(group)?.length ?? 0) + 1;
+    const list = groups.get(group) ?? [];
+    if (!list.some((item) => item.id === registration.id)) list.push({ id: registration.id, pos: position });
+    groups.set(group, list);
+  }
+  // 某些历史赛事只有场次的 round 分组，没有回写 registration.groupName；
+  // 仍从小组赛签位补齐参赛队，避免导出的分组表出现空白项目。
+  for (const [id, position] of positions) {
+    const list = groups.get(position.group) ?? [];
+    if (!list.some((item) => item.id === id)) list.push({ id, pos: position.pos });
+    groups.set(position.group, list);
+  }
+  for (const list of groups.values()) list.sort((a, b) => a.pos - b.pos);
+  return [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0], 'zh-CN'));
+}
+
+function buildGroupStandingSheet(wb: ExcelJS.Workbook, tournament: ExportTournament) {
+  const ws = wb.addWorksheet('分组表');
+  // 参考文件的分组表不是一张“总表”：每个项目从一个合并的大标题开始，
+  // 标题宽度随该项目最大组人数变化（男子 5 人组到 L 列，女子 3 人组到 J 列）。
+  // A 列是签位，B:D 合并显示队名/选手，E 列起是交叉表，最后三列是统计。
+  ws.getColumn(1).width = 5.5;
+  for (let c = 2; c <= 20; c += 1) ws.getColumn(c).width = 8.9;
+  ws.getColumn(2).width = 8.9;
+  ws.getColumn(3).width = 8.9;
+  ws.getColumn(4).width = 8.9;
+  ws.getColumn(10).width = 9.4;
+  const regMap = registrationMap(tournament);
+  let row = 1;
+  let wrote = false;
+  for (const event of tournament.events) {
+    const groups = eventGroups(event);
+    if (!groups.length) continue;
+    wrote = true;
+    const eventMaxGroupSize = Math.max(...groups.map(([, members]) => members.length));
+    const eventLastCol = eventMaxGroupSize + 7;
+    ws.mergeCells(row, 1, row, eventLastCol);
+    const titleCell = ws.getCell(row, 1);
+    titleCell.font = { ...REFERENCE_TEXT, bold: true, size: 18, color: { argb: 'FF000000' } };
+    titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    titleCell.border = referenceBorder();
+    titleCell.value = `${eventLabel(event)}分组表`;
+    ws.getRow(row).height = 40;
+    row += 1;
+    const matchesByPair = new Map<string, ExportMatch>();
+    for (const match of event.matches) {
+      if ((match.roundNo ?? 0) === 0 && match.side1Id && match.side2Id) {
+        matchesByPair.set(pairKey(match.side1Id, match.side2Id), match);
+      }
+    }
+    for (const [group, members] of groups) {
+      const n = members.length;
+      const lastCross = 4 + n;
+      const headerRow = row;
+      ws.mergeCells(headerRow, 1, headerRow, 4);
+      ws.getCell(headerRow, 1).value = `${group}组`;
+      referenceCell(ws.getCell(headerRow, 1), { bold: true });
+      for (let i = 0; i < n; i += 1) {
+        // 交叉表从 E 列开始（A:D 是序号与姓名）。
+        ws.getCell(headerRow, 5 + i).value = i + 1;
+        referenceCell(ws.getCell(headerRow, 5 + i), { bold: true });
+      }
+      ['胜次', '净胜分', '名次'].forEach((header, i) => {
+        ws.getCell(headerRow, lastCross + i + 1).value = header;
+        referenceCell(ws.getCell(headerRow, lastCross + i + 1), { bold: true });
+      });
+      for (let c = 2; c <= 4; c += 1) referenceCell(ws.getCell(headerRow, c), { bold: true });
+      row += 1;
+      const standings = computeGroupStandings(members, matchesByPair);
+      members.forEach((member) => {
+        ws.getCell(row, 1).value = member.pos;
+        referenceCell(ws.getCell(row, 1));
+        ws.mergeCells(row, 2, row, 4);
+        ws.getCell(row, 2).value = registrationName(regMap.get(member.id) ?? null);
+        referenceCell(ws.getCell(row, 2));
+        for (let c = 3; c <= 4; c += 1) referenceCell(ws.getCell(row, c));
+        const stat = standings.get(member.id);
+        for (let j = 0; j < n; j += 1) {
+          const cell = ws.getCell(row, 5 + j);
+          if (member.id === members[j].id) {
+            cell.value = '';
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DIAGONAL } };
+          } else {
+            cell.value = standingCrossCellText(member.id, members[j].id, matchesByPair);
+          }
+          referenceCell(cell);
+          if (member.id === members[j].id) {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DIAGONAL } };
+          }
+        }
+        ws.getCell(row, lastCross + 1).value = stat?.played ? stat.wins : '';
+        ws.getCell(row, lastCross + 2).value = stat?.played ? stat.pointDiff : '';
+        ws.getCell(row, lastCross + 3).value = stat?.rank ?? '';
+        referenceCell(ws.getCell(row, lastCross + 1));
+        referenceCell(ws.getCell(row, lastCross + 2));
+        referenceCell(ws.getCell(row, lastCross + 3));
+        row += 1;
+      });
+      row += 1;
+    }
+    row += 3;
+  }
+  if (!wrote) ws.getCell(3, 1).value = '暂无已抽签分组';
+  ws.views = [{ state: 'frozen', ySplit: 2 }];
+}
+
+function buildRankingSummarySheet(wb: ExcelJS.Workbook, tournament: ExportTournament) {
+  const ws = wb.addWorksheet('名次汇总');
+  ws.columns = [{ width: 16 }, { width: 10 }, { width: 32 }, { width: 28 }, { width: 14 }];
+  addTemplateTitle(ws, '名       次       汇       总', 5);
+  ['项目', '名次', '参赛队/选手', '来源', '状态'].forEach((header, i) => {
+    ws.getCell(2, i + 1).value = header;
+    styleHeaderCell(ws.getCell(2, i + 1));
+  });
+  let row = 3;
+  for (const event of tournament.events) {
+    const regMap = registrationMap(tournament);
+    const rankingMap = new Map<number, { name: string; source: string; status: string }>();
+    const stageRankings = event.secondStage?.rankings ?? [];
+    for (const item of stageRankings) {
+      const registration = item.entrantId ? regMap.get(item.entrantId) : null;
+      rankingMap.set(item.rank, {
+        name: registrationName(registration) || item.entrantNameSnapshot || '待定',
+        source: '第二阶段排名',
+        status: '已确定',
+      });
+    }
+    if (!rankingMap.size) {
+      const standings = event.registrations
+        .map((registration) => ({ registration, stats: computeEventStats(event, registration.id) }))
+        .sort((a, b) => b.stats.wins - a.stats.wins || b.stats.netGames - a.stats.netGames || a.registration.id.localeCompare(b.registration.id));
+      standings.forEach((item, index) => rankingMap.set(index + 1, {
+        name: registrationName(item.registration),
+        source: item.stats.played ? '小组赛排名' : '抽签签位',
+        status: item.stats.played ? '已确定' : '待定',
+      }));
+    }
+    for (const [rank, item] of [...rankingMap.entries()].sort((a, b) => a[0] - b[0])) {
+      ws.getCell(row, 1).value = eventLabel(event);
+      ws.getCell(row, 2).value = `第${rank}名`;
+      ws.getCell(row, 3).value = item.name;
+      ws.getCell(row, 4).value = item.source;
+      ws.getCell(row, 5).value = item.status;
+      styleBodyRange(ws, row, row, 1, 5);
+      row += 1;
+    }
+  }
+  if (row === 3) ws.getCell(row, 1).value = '暂无名次数据';
+  ws.views = [{ state: 'frozen', ySplit: 2 }];
+}
+
+function computeEventStats(event: ExportEvent, registrationId: string) {
+  let played = 0;
+  let wins = 0;
+  let netGames = 0;
+  for (const match of event.matches) {
+    if ((match.roundNo ?? 0) !== 0 || !match.winnerSide) continue;
+    const side = match.side1Id === registrationId ? 1 : match.side2Id === registrationId ? 2 : null;
+    if (!side) continue;
+    played += 1;
+    if (match.winnerSide === side) wins += 1;
+    netGames += gamesWonBy(match, side) - gamesWonBy(match, side === 1 ? 2 : 1);
+  }
+  return { played, wins, netGames };
+}
+
+function buildKnockoutDetailSheet(wb: ExcelJS.Workbook, tournament: ExportTournament) {
+  const ws = wb.addWorksheet('淘汰赛');
+  ws.columns = [{ width: 16 }, { width: 10 }, { width: 12 }, { width: 18 }, { width: 18 }, { width: 42 }, { width: 14 }, { width: 14 }];
+  addTemplateTitle(ws, '淘       汰       赛', 8);
+  ['项目', '场次', '阶段', '场地', '比赛时间', '对阵', '比分', '状态'].forEach((header, i) => {
+    ws.getCell(2, i + 1).value = header;
+    styleHeaderCell(ws.getCell(2, i + 1));
+  });
+  const regMap = registrationMap(tournament);
+  let row = 3;
+  for (const event of tournament.events) {
+    const matches = event.matches
+      .filter((match) => (match.roundNo ?? 0) >= 1)
+      .sort((a, b) => (a.roundNo ?? 0) - (b.roundNo ?? 0) || (a.matchNo ?? 0) - (b.matchNo ?? 0));
+    for (const match of matches) {
+      const values = [
+        eventLabel(event),
+        match.matchNo != null ? `第${match.matchNo}场` : '',
+        roundLabel(match),
+        match.venue?.name ?? '未分配',
+        fmtMatchScheduleDateTime(match) || '未排程',
+        `${displayMatchSide(event, match, 1, regMap)} VS ${displayMatchSide(event, match, 2, regMap)}`,
+        matchScoreText(match) || '—',
+        matchStatusLabel(match.status),
+      ];
+      values.forEach((value, index) => { ws.getCell(row, index + 1).value = value; });
+      styleBodyRange(ws, row, row, 1, 8);
+      row += 1;
+    }
+  }
+  if (row === 3) ws.getCell(row, 1).value = '暂无淘汰赛场次';
+  ws.views = [{ state: 'frozen', ySplit: 2 }];
+}
+
 // ===== 第二阶段：后台手动指定的「前8/前6晋级赛」交叉对阵图 =====
 // 版式镜像前端 SecondStageCrossBracket：1-4 名争夺区在上、5-8 名争夺区在下，
 // 拓扑与 common/second-stage-bracket.ts 的推进边一致。
@@ -1185,8 +1621,16 @@ export async function buildOrderbookWorkbook(
   const wb = new ExcelJS.Workbook();
   wb.creator = '羽毛球赛事系统';
   wb.created = new Date();
-  buildScheduleSheet(wb, tournament);
+  // 参考文件的前两个标签页就是“秩序表”和“分组表”；其它明细页放在后面，
+  // 不影响后台现有的日程、流程与结果导出能力。
   buildOrderSheet(wb, tournament);
+  // 严格沿用参考模板的核心页顺序：秩序表 → 小组赛 → 分组表。
+  // 其余综合数据页继续追加在核心页之后，避免影响已有导出能力。
+  buildGroupMatchDetailSheet(wb, tournament);
+  buildGroupStandingSheet(wb, tournament);
+  buildScheduleSheet(wb, tournament);
+  buildRankingSummarySheet(wb, tournament);
+  buildKnockoutDetailSheet(wb, tournament);
   buildFlowSheet(wb, tournament, options?.stage);
   const buffer = await wb.xlsx.writeBuffer();
   return Buffer.from(buffer as ArrayBuffer);
