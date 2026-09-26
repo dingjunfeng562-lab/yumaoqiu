@@ -19,7 +19,6 @@
 
 # production
 /build
-/public/hawkeye-app/
 
 # misc
 .DS_Store

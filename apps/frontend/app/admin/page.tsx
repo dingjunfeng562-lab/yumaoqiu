@@ -3,7 +3,6 @@
 import { useEffect, useState } from 'react';
 import { Card, Empty, Progress, Spin, Typography } from 'antd';
 import {
-  AimOutlined,
   DownloadOutlined,
   EyeOutlined,
   MessageOutlined,
@@ -24,12 +23,10 @@ type TournamentStat = {
 };
 
 type UsageMetrics = {
-  hawkeye: number;
   aiChat: number;
 };
 
 const EMPTY_USAGE_METRICS: UsageMetrics = {
-  hawkeye: 0,
   aiChat: 0,
 };
 
@@ -86,22 +83,6 @@ export default function AdminDashboard() {
 
       <Card title="智能工具使用统计" style={{ marginBottom: 24 }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16 }}>
-          <div
-            style={{
-              padding: 16,
-              border: '1px solid #d9f7be',
-              borderRadius: 8,
-              background: '#f6ffed',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#389e0d', fontSize: 13, fontWeight: 700 }}>
-              <AimOutlined /> 鹰眼系统使用次数
-            </div>
-            <Typography.Title level={2} style={{ margin: '10px 0 0', color: '#389e0d' }}>
-              {usageMetrics.hawkeye.toLocaleString()}
-            </Typography.Title>
-          </div>
-
           <div
             style={{
               padding: 16,

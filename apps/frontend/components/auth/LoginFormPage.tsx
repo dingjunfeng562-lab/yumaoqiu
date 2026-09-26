@@ -2,9 +2,18 @@
 
 import { Suspense, useState } from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import { useSearchParams } from 'next/navigation';
 import { getSession, signIn } from 'next-auth/react';
-import { ArrowLeftOutlined, ArrowRightOutlined, EyeInvisibleOutlined, EyeOutlined } from '@ant-design/icons';
+import {
+  ArrowLeftOutlined,
+  ArrowRightOutlined,
+  EyeInvisibleOutlined,
+  EyeOutlined,
+  UserOutlined,
+  LockOutlined,
+  MailOutlined
+} from '@ant-design/icons';
 import { Alert, Button, Checkbox, ConfigProvider, Form, Input } from 'antd';
 
 type LoginType = 'username' | 'email';
@@ -99,165 +108,210 @@ function LoginContent() {
     <ConfigProvider
       theme={{
         token: {
-          colorPrimary: '#0A4D3C',
+          colorPrimary: '#1677ff',
           borderRadius: 8,
           controlHeight: 44,
-          colorBorder: '#E5E9E7',
-          colorText: '#1A2E2A',
-          colorTextPlaceholder: '#B8C2BF',
+          colorBorder: '#d9d9d9',
+          colorText: '#1f2937',
+          colorTextPlaceholder: '#9ca3af',
         },
       }}
     >
-      <main className={`register-page ${manrope.className}`}>
-        <div className="register-page__grid" />
-        <div className="register-page__glow register-page__glow--top" />
-        <div className="register-page__glow register-page__glow--bottom" />
+      <main className={`modern-login-page ${manrope.className}`}>
+        {/* 背景装饰 */}
+        <div className="modern-login-bg">
+          <div className="modern-login-bg__gradient modern-login-bg__gradient--1" />
+          <div className="modern-login-bg__gradient modern-login-bg__gradient--2" />
+          <div className="modern-login-bg__grid" />
+        </div>
 
-        <Link href="/" className="register-back-home">
+        {/* 返回首页按钮 */}
+        <Link href="/" className="modern-login-back">
           <ArrowLeftOutlined />
           <span>返回首页</span>
         </Link>
 
-        <section className="register-card login-card">
-          <div className="register-brand">
-            <div className="register-brand__mark" aria-hidden="true">
-              <svg viewBox="0 0 40 40" className="register-brand__svg" fill="none">
-                <circle cx="20" cy="20" r="18" stroke="currentColor" strokeWidth="1.5" />
-                <path d="M14 12L26 28" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
-                <path d="M26 12L14 28" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
-                <circle cx="20" cy="20" r="3" fill="#C9A961" />
-              </svg>
+        {/* 登录卡片 */}
+        <div className="modern-login-container">
+          <section className="modern-login-card">
+            {/* Logo 和品牌 */}
+            <div className="modern-login-header">
+              <div className="modern-login-logo">
+                <Image
+                  src="/logo.png"
+                  alt="校园羽毛球赛事系统"
+                  width={80}
+                  height={80}
+                  className="modern-login-logo__img"
+                  priority
+                />
+              </div>
+              <h1 className="modern-login-title">欢迎回来</h1>
+              <p className="modern-login-subtitle">登录校园羽毛球赛事管理系统</p>
             </div>
-            <span className="register-brand__name">校园羽毛球赛事系统</span>
-          </div>
 
-          <header className="register-hero">
-            <span className={`register-badge ${jetbrainsMono.className}`}>
-              <span className="register-badge__dot" />
-              账号登录
-            </span>
-            <h1 className="register-title">欢迎回来</h1>
-            <p className="register-subtitle">请使用您的账号继续</p>
-          </header>
+            {/* 登录方式切换 */}
+            <div className="modern-login-tabs">
+              {(
+                [
+                  { key: 'username', label: '用户名登录', icon: <UserOutlined /> },
+                  { key: 'email', label: '邮箱登录', icon: <MailOutlined /> },
+                ] as { key: LoginType; label: string; icon: React.ReactNode }[]
+              ).map((tab) => {
+                const active = loginType === tab.key;
+                return (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    className={`modern-login-tab ${active ? 'modern-login-tab--active' : ''}`}
+                    onClick={() => {
+                      if (active) return;
+                      setLoginType(tab.key);
+                      setError('');
+                      form.setFieldsValue({ identifier: '' });
+                      form.setFields([{ name: 'identifier', errors: [] }]);
+                    }}
+                  >
+                    <span className="modern-login-tab__icon">{tab.icon}</span>
+                    <span className="modern-login-tab__label">{tab.label}</span>
+                  </button>
+                );
+              })}
+            </div>
 
-          <div className="login-tabs" role="tablist" aria-label="登录方式">
-            {(
-              [
-                { key: 'username', label: '用户名' },
-                { key: 'email', label: '邮箱' },
-              ] as { key: LoginType; label: string }[]
-            ).map((tab) => {
-              const active = loginType === tab.key;
-              return (
-                <button
-                  key={tab.key}
-                  type="button"
-                  role="tab"
-                  aria-selected={active}
-                  className={`login-tab ${active ? 'login-tab--active' : ''}`}
-                  onClick={() => {
-                    if (active) return;
-                    setLoginType(tab.key);
-                    setError('');
-                    form.setFieldsValue({ identifier: '' });
-                    form.setFields([{ name: 'identifier', errors: [] }]);
-                  }}
-                >
-                  {tab.label}
-                </button>
-              );
-            })}
-          </div>
-
-          {error ? (
-            <Alert
-              showIcon={false}
-              type="error"
-              message={error}
-              className="register-alert login-alert"
-            />
-          ) : null}
-
-          <Form<FormValues>
-            form={form}
-            layout="vertical"
-            requiredMark={false}
-            autoComplete="off"
-            className="register-form login-form"
-            onFinish={onFinish}
-          >
-            <Form.Item<FormValues>
-              name="identifier"
-              label={<FieldLabel label={loginType === 'email' ? '邮箱' : '用户名'} />}
-              rules={
-                loginType === 'email'
-                  ? [
-                      { required: true, message: '请输入邮箱' },
-                      { pattern: emailPattern, message: '邮箱格式不正确' },
-                    ]
-                  : [
-                      { required: true, message: '请输入用户名' },
-                      { pattern: usernamePattern, message: '2-20 位中文、字母、数字、下划线或连字符，首字符需为中文或字母' },
-                    ]
-              }
-            >
-              <Input
-                placeholder={loginType === 'email' ? 'name@example.com' : '请输入用户名'}
-                autoComplete={loginType === 'email' ? 'email' : 'username'}
-                className="register-input"
-                onChange={() => error && setError('')}
+            {/* 错误提示 */}
+            {error ? (
+              <Alert
+                showIcon
+                type="error"
+                message={error}
+                className="modern-login-alert"
               />
-            </Form.Item>
+            ) : null}
 
-            <Form.Item<FormValues>
-              name="password"
-              label={<FieldLabel label="密码" />}
-              rules={[{ required: true, message: '请输入密码' }]}
+            {/* 登录表单 */}
+            <Form<FormValues>
+              form={form}
+              layout="vertical"
+              requiredMark={false}
+              autoComplete="off"
+              className="modern-login-form"
+              onFinish={onFinish}
             >
-              <Input.Password
-                placeholder="请输入密码"
-                autoComplete="current-password"
-                className="register-input"
-                iconRender={(visible) => (visible ? <EyeOutlined /> : <EyeInvisibleOutlined />)}
-                onChange={() => error && setError('')}
-              />
-            </Form.Item>
-
-            <div className="login-options">
-              <Form.Item<FormValues> name="remember" valuePropName="checked" noStyle>
-                <Checkbox>记住我</Checkbox>
+              <Form.Item<FormValues>
+                name="identifier"
+                label={loginType === 'email' ? '邮箱地址' : '用户名'}
+                rules={
+                  loginType === 'email'
+                    ? [
+                        { required: true, message: '请输入邮箱地址' },
+                        { pattern: emailPattern, message: '邮箱格式不正确' },
+                      ]
+                    : [
+                        { required: true, message: '请输入用户名' },
+                        {
+                          pattern: usernamePattern,
+                          message: '用户名格式：2-20位，以中文或字母开头'
+                        },
+                      ]
+                }
+              >
+                <Input
+                  prefix={loginType === 'email' ? <MailOutlined /> : <UserOutlined />}
+                  placeholder={loginType === 'email' ? '请输入邮箱地址' : '请输入用户名'}
+                  autoComplete={loginType === 'email' ? 'email' : 'username'}
+                  size="large"
+                  className="modern-login-input"
+                  onChange={() => error && setError('')}
+                />
               </Form.Item>
-            </div>
 
-            <div className="register-submit-wrap login-submit-wrap">
+              <Form.Item<FormValues>
+                name="password"
+                label="登录密码"
+                rules={[{ required: true, message: '请输入登录密码' }]}
+              >
+                <Input.Password
+                  prefix={<LockOutlined />}
+                  placeholder="请输入登录密码"
+                  autoComplete="current-password"
+                  size="large"
+                  className="modern-login-input"
+                  iconRender={(visible) => (visible ? <EyeOutlined /> : <EyeInvisibleOutlined />)}
+                  onChange={() => error && setError('')}
+                />
+              </Form.Item>
+
+              <div className="modern-login-options">
+                <Form.Item<FormValues> name="remember" valuePropName="checked" noStyle>
+                  <Checkbox className="modern-login-checkbox">记住登录状态</Checkbox>
+                </Form.Item>
+              </div>
+
               <Button
                 type="primary"
                 htmlType="submit"
                 loading={loading}
-                className="register-submit-button"
+                size="large"
+                block
+                className="modern-login-submit"
+                icon={!loading ? <ArrowRightOutlined /> : undefined}
               >
-                <span>登录</span>
-                {!loading ? <ArrowRightOutlined className="register-submit-button__icon" /> : null}
+                {loading ? '登录中...' : '立即登录'}
               </Button>
-            </div>
-          </Form>
+            </Form>
 
-          <footer className="register-footer">
-            <span>没有账号?</span>
-            <Link href="/register" className="register-footer__link">
-              使用邀请码注册
-            </Link>
-          </footer>
-        </section>
+            {/* 底部链接 */}
+            <div className="modern-login-footer">
+              <span className="modern-login-footer__text">还没有账号？</span>
+              <Link href="/register" className="modern-login-footer__link">
+                使用邀请码注册
+              </Link>
+            </div>
+          </section>
+
+          {/* 右侧信息面板（可选） */}
+          <aside className="modern-login-info">
+            <div className="modern-login-info__content">
+              <div className="modern-login-info__icon">
+                <svg viewBox="0 0 64 64" fill="none">
+                  <circle cx="32" cy="32" r="28" stroke="currentColor" strokeWidth="2" opacity="0.2" />
+                  <path
+                    d="M20 28L28 36L44 20"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </div>
+              <h2 className="modern-login-info__title">高效赛事管理</h2>
+              <p className="modern-login-info__desc">
+                为校园羽毛球赛事提供全方位的数字化管理解决方案
+              </p>
+              <ul className="modern-login-info__features">
+                <li>
+                  <span className="modern-login-info__check">✓</span>
+                  <span>在线报名与资格审核</span>
+                </li>
+                <li>
+                  <span className="modern-login-info__check">✓</span>
+                  <span>智能赛程编排</span>
+                </li>
+                <li>
+                  <span className="modern-login-info__check">✓</span>
+                  <span>实时比分更新</span>
+                </li>
+                <li>
+                  <span className="modern-login-info__check">✓</span>
+                  <span>赛事数据统计</span>
+                </li>
+              </ul>
+            </div>
+          </aside>
+        </div>
       </main>
     </ConfigProvider>
   );
 }
 
-function FieldLabel({ label }: { label: string }) {
-  return (
-    <span className="register-label-row">
-      <span className="register-label-row__text">{label}</span>
-    </span>
-  );
-}
