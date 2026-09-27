@@ -18,6 +18,7 @@ dist/
 build/
 .next/
 .vite/
+*.tsbuildinfo
 
 # editor / local tools
 .vscode/

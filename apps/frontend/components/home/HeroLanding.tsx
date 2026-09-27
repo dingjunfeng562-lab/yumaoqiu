@@ -7,7 +7,7 @@ export function HeroLanding() {
   return (
     <section
       id="intro"
-      className="relative isolate flex min-h-screen overflow-hidden bg-[#04163f] bg-cover bg-center"
+      className="relative isolate flex min-h-[calc(100dvh-117px)] overflow-hidden bg-[#04163f] bg-cover bg-center sm:min-h-screen"
       style={{ backgroundImage: "url('/generated/hero-bg.svg')" }}
     >
       <div className="pointer-events-none absolute inset-0 z-0 bg-[radial-gradient(circle_at_50%_22%,rgba(67,198,255,0.34),transparent_34%),linear-gradient(135deg,rgba(2,11,39,0.98),rgba(4,50,123,0.88)_48%,rgba(2,12,42,0.98))]" />
@@ -44,7 +44,7 @@ export function HeroLanding() {
         <span className="landing-particle left-[84%] top-[72%] animation-delay-900" />
       </div>
 
-      <div className="relative z-10 mx-auto flex w-full max-w-[1440px] items-center justify-center px-4 py-10 sm:px-6 sm:py-16 lg:px-8">
+      <div className="relative z-10 mx-auto flex w-full max-w-[1440px] items-center justify-center px-4 py-6 sm:px-6 sm:py-16 lg:px-8">
         <div className="mx-auto flex w-full max-w-5xl flex-col items-center text-center">
           <div className="landing-logo mb-6 flex items-center gap-3 rounded-2xl border border-white/20 bg-white/10 px-4 py-2.5 shadow-[0_18px_48px_rgba(15,118,255,0.24)] backdrop-blur-xl sm:mb-8 sm:gap-4 sm:rounded-3xl sm:px-5 sm:py-3">
             <Image
@@ -77,33 +77,41 @@ export function HeroLanding() {
             报名、赛程、对阵、成绩，一站式管理羽毛球赛事。
           </p>
 
-          <div className="landing-actions mt-7 flex w-full flex-col items-stretch justify-center gap-3 px-2 sm:mt-9 sm:w-auto sm:flex-row sm:flex-wrap sm:gap-4 sm:px-0">
+          <div className="landing-actions mt-7 flex w-full flex-row items-center justify-center gap-3 px-4 sm:mt-9 sm:w-auto sm:flex-wrap sm:gap-4 sm:px-0">
             <Link
               href="/login"
-              className="tappable inline-flex h-12 min-h-[44px] w-full items-center justify-center rounded-full bg-gradient-to-r from-orange-400 to-amber-300 px-8 text-sm font-black text-white shadow-[0_12px_28px_rgba(245,158,11,0.34)] transition duration-300 hover:scale-105 sm:w-auto sm:min-w-36"
+              className="tappable inline-flex h-12 min-h-[44px] max-w-40 flex-1 items-center justify-center whitespace-nowrap rounded-full bg-gradient-to-r from-orange-400 to-amber-300 px-6 text-sm font-black text-white shadow-[0_12px_28px_rgba(245,158,11,0.34)] transition duration-300 hover:scale-105 sm:w-auto sm:min-w-36 sm:max-w-none sm:flex-none sm:px-8"
             >
               进入系统
             </Link>
             <Link
               href="/competitions"
-              className="tappable inline-flex h-12 min-h-[44px] w-full items-center justify-center rounded-full border border-white/60 bg-white/10 px-8 text-sm font-black text-white shadow-[0_12px_30px_rgba(20,184,255,0.15)] backdrop-blur transition duration-300 hover:scale-105 hover:bg-white/18 sm:w-auto sm:min-w-36"
+              className="tappable inline-flex h-12 min-h-[44px] max-w-40 flex-1 items-center justify-center whitespace-nowrap rounded-full border border-white/60 bg-white/10 px-6 text-sm font-black text-white shadow-[0_12px_30px_rgba(20,184,255,0.15)] backdrop-blur transition duration-300 hover:scale-105 hover:bg-white/18 sm:w-auto sm:min-w-36 sm:max-w-none sm:flex-none sm:px-8"
             >
               查看赛事
             </Link>
           </div>
 
-          <a
-            href="mailto:wulibigger@foxmail.com"
-            className="landing-actions mt-8 inline-flex max-w-full flex-wrap items-center justify-center gap-x-2 gap-y-1 rounded-2xl border border-white/15 bg-white/5 px-3 py-1.5 text-[11px] font-semibold text-blue-100/85 backdrop-blur transition duration-300 hover:border-amber-300/50 hover:bg-white/10 hover:text-amber-200 sm:mt-10 sm:rounded-full sm:px-4 sm:text-sm"
+          <div
+            className="landing-actions landing-contact"
           >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16v12H4z" />
-              <path strokeLinecap="round" strokeLinejoin="round" d="M4 7l8 6 8-6" />
-            </svg>
-            <span className="font-bold tracking-wide">联系方式</span>
-            <span className="hidden text-white/40 sm:inline">·</span>
-            <span className="break-all font-mono tracking-wide">wulibigger@foxmail.com</span>
-          </a>
+            <p className="landing-contact__title">需要管理员协助？</p>
+            <div className="landing-contact__topics" aria-label="可邮件咨询的事项">
+              <span>赛事开通</span>
+              <span>资料调整</span>
+              <span>使用咨询</span>
+            </div>
+            <p className="landing-contact__hint">请发邮件说明需要办理的操作</p>
+            <div data-allow-copy className="landing-contact__email">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16v12H4z" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 7l8 6 8-6" />
+              </svg>
+              <span className="font-bold tracking-wide">联系方式</span>
+              <span className="hidden text-white/40 sm:inline">·</span>
+              <span className="break-all font-mono tracking-wide">wulibigger@foxmail.com</span>
+            </div>
+          </div>
         </div>
       </div>
     </section>

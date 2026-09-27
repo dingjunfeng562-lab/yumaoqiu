@@ -22,6 +22,7 @@ import { EmailService } from '../mail/email.service';
 import {
   AdminBatchCompetitionPlayerDto,
   AdminBatchCompetitionPlayersDto,
+  AdminCompetitionLibraryPlayerDto,
   AdminCompetitionPlayerDto,
   SubmitCompetitionRegistrationDto,
 } from './dto/competition-registration.dto';
@@ -766,6 +767,88 @@ export class CompetitionsService {
         },
         include: REGISTRATION_VIEW_INCLUDE,
       });
+    });
+
+    return this.toRegistrationView(created);
+  }
+
+  async createAdminPlayerFromLibrary(
+    competitionId: string,
+    dto: AdminCompetitionLibraryPlayerDto,
+    reviewedById?: string,
+  ) {
+    const competition = await this.findCompetition(competitionId, true);
+    const event = competition.events.find((item) => item.id === dto.eventId);
+    if (!event) throw new BadRequestException('请选择当前赛事下的参赛项目');
+
+    const playerIds = [dto.player1Id, dto.player2Id].filter(Boolean) as string[];
+    if (new Set(playerIds).size !== playerIds.length) {
+      throw new BadRequestException('同一报名中不能选择同一位选手');
+    }
+
+    const libraryPlayers = await this.prisma.player.findMany({
+      where: { id: { in: playerIds }, isTemporary: false },
+    });
+    if (libraryPlayers.length !== playerIds.length) {
+      throw new NotFoundException('选手库中存在无效选手，请刷新后重试');
+    }
+    const playerById = new Map(libraryPlayers.map((player) => [player.id, player]));
+    const player1 = playerById.get(dto.player1Id)!;
+    const player2 = dto.player2Id ? playerById.get(dto.player2Id) : undefined;
+    const isDouble = this.isDoubleEvent(event.type);
+    if (isDouble && !player2) throw new BadRequestException('双打项目需要选择两位选手');
+    if (!isDouble && player2) throw new BadRequestException('单打项目只能选择一位选手');
+    const teamName = dto.teamName?.trim();
+    if (isDouble && !teamName) throw new BadRequestException('双打项目需要填写队伍名称');
+    this.ensureRegistrationGender(event.type, player1.gender, player2?.gender);
+
+    const existing = await this.prisma.registration.findFirst({
+      where: {
+        eventId: event.id,
+        status: { not: RegistrationStatus.REMOVED },
+        OR: [
+          { player1Id: { in: playerIds } },
+          { player2Id: { in: playerIds } },
+        ],
+      },
+      select: { id: true },
+    });
+    if (existing) throw new ConflictException('所选选手已报名当前项目');
+
+    for (const playerId of playerIds) {
+      const registrationCount = await this.prisma.registration.count({
+        where: {
+          status: RegistrationStatus.APPROVED,
+          eventId: { not: event.id },
+          event: { tournamentId: competitionId },
+          OR: [{ player1Id: playerId }, { player2Id: playerId }],
+        },
+      });
+      const maxEvents = competition.allowCrossEventRegistration
+        ? competition.maxRegistrationEvents
+        : 1;
+      if (registrationCount >= maxEvents) {
+        throw new ConflictException(`选手 ${playerById.get(playerId)?.name ?? ''} 最多报名 ${maxEvents} 个项目`);
+      }
+    }
+
+    const created = await this.prisma.registration.create({
+      data: {
+        eventId: event.id,
+        player1Id: player1.id,
+        player2Id: player2?.id ?? null,
+        name: player2 ? `${player1.name} / ${player2.name}` : player1.name,
+        teamName: player2 ? teamName : null,
+        phone: player1.contact,
+        gender: player1.gender,
+        eventName: EVENT_TYPE_LABELS[event.type],
+        partnerSchool: player2?.affiliation ?? null,
+        partnerPhone: player2?.contact ?? null,
+        status: RegistrationStatus.APPROVED,
+        reviewedAt: new Date(),
+        reviewedBy: reviewedById ?? null,
+      },
+      include: REGISTRATION_VIEW_INCLUDE,
     });
 
     return this.toRegistrationView(created);

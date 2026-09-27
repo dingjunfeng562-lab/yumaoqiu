@@ -1,142 +1,124 @@
 # 校园羽毛球比赛管理系统
 
-基于 **Next.js + NestJS + Prisma + MySQL/MariaDB** 的校园羽毛球赛事管理系统，覆盖公开门户、后台管理、报名审核、抽签编排、场地排程、裁判记分、图片管理与数据归档等完整流程。
+基于 Next.js + NestJS + Prisma + MySQL/MariaDB 的校园羽毛球赛事管理系统。覆盖赛事创建与审核、报名、抽签编排、场地排程、裁判扫码执裁、实时记分、赛事图片（水印/审核/分享）、邮件通知、秩序册导出与历届归档等完整流程。
 
-> 完整需求文档见 [docs/PRD.md](docs/PRD.md)
+完整需求见 [docs/PRD.md](docs/PRD.md)。
 
-## 当前功能概览
+## 技术栈
 
-### 公开端
+| 层 | 选型 |
+|---|---|
+| 前端 | Next.js 16 (App Router)、React 19、TypeScript、Ant Design 6、Tailwind CSS 4 |
+| 后端 | NestJS 11、TypeScript |
+| 数据库 | MySQL 8+ / MariaDB 10.6+，Prisma 7（MariaDB adapter） |
+| 认证 | NextAuth.js v5（前端）+ Passport-JWT（后端），支持 Refresh Token |
+| 实时通信 | Socket.IO |
+| 图片处理 | Sharp、@napi-rs/canvas（内嵌中文字体渲染文字水印） |
+| 邮件 | Nodemailer（阿里云邮件推送 SMTP 465 SSL） |
+| 导出 | ExcelJS |
+| 包管理 | pnpm workspaces |
 
-- **首页门户与品牌展示**：赛事轮播、快捷入口、统计数据展示
-- **赛事列表**：展示已发布赛事、报名状态、项目与已审核人数
-- **邀请码注册**：按邀请码创建管理员 / 裁判 / 普通用户账号
-- **登录**：按角色自动跳转到后台、裁判端或门户首页
-- **赛事报名**：普通用户登录后可提交个人赛事报名
-- **公开选手名单**：查看各赛事已通过审核的参赛选手
-- **赛程安排**：展示后台排程后的比赛时间与场地
-- **淘汰赛对阵表**：展示公开签表与团体赛对阵
-- **通知公告**：展示后台发布的赛事公告
-- **历届数据**：查看归档赛事、成绩统计、比赛记录
-- **成绩排行页**：为公开成绩沉淀预留展示入口
-- **赛事图片**：浏览赛事图片、查看统计信息（浏览量/下载量）
+## 角色
+
+| 角色 | 入口 | 说明 |
+|---|---|---|
+| ROOT | `/admin` | 最高权限：赛事审核、图片审核配置、全部管理功能 |
+| SUPER_ADMIN | `/admin` | 总管理员：AI 助手配置、邮件设置、用户管理等 |
+| ADMIN | `/admin` | 赛事管理员：创建和运营赛事（新建赛事需经审核） |
+| REFEREE | `/referee` | 裁判：扫码/授权码进入赛事，按场地领取比赛并记分 |
+| PHOTOGRAPHER | `/photographer/upload` | 摄影师：上传赛事图片 |
+| PLAYER | `/` | 普通用户：邀请码注册，报名赛事、查看个人报名 |
+
+登录后按角色自动跳转；无权限访问会进入 `/forbidden`。
+
+## 功能概览
+
+### 公开门户
+
+- 首页：赛事轮播、快捷入口、统计数据、赛事图片瀑布流、弹窗公告
+- 赛事列表与详情、公开选手名单、赛事签表
+- 赛事报名（登录后）与"我的报名"
+- 赛程安排、淘汰赛对阵表、成绩排行、历届数据
+- 通知公告、赛事图片浏览与下载，支持通过分享链接（访问令牌）查看指定赛事图片
+- 现场大屏 `/live-screen`
+- AI 赛事助手（流式对话）
+- 邀请码注册、登录（邮箱或用户名）、账户设置
 
 ### 管理后台
 
-- **仪表盘**：赛事统计、图片统计、数据概览
-- **用户管理**：管理员、裁判、普通用户列表、启停用、重置密码、删除
-- **邀请码管理**：生成、启停用、复制、删除邀请码
-- **选手管理**：选手信息维护与搜索
-- **赛事管理**：赛事创建、发布/撤回发布、基础信息维护
-- **单项管理**：配置赛事项目、赛制与计分规则
-- **报名审核**：查看报名记录，执行通过、驳回、移除
-- **赛事选手页**：按赛事查看已入围选手
-- **团体赛管理**：配置团体赛队伍、子项、阵容与对阵数据
-- **抽签编排**：生成和维护淘汰赛签表，支持种子、交换签位、冻结/重抽
-- **场地排程**：维护场地并自动/手动安排比赛
-- **裁判分配**：给场次分配裁判并查看比赛状态
-- **公告管理**：维护公开公告内容
-- **数据导出**：导出赛事相关 Excel 数据
-- **图片管理**：赛事图片上传、分类、管理、统计
-- **水印设置**：Logo 水印、文字水印配置（字体、颜色、位置）
-- **邮件通知**：赛事邮件配置与发送
-- 修改个人密码、退出登录
-
+- 仪表板：赛事、图片与使用量统计
+- 用户管理：创建各角色账号、启停用、改名、改角色、重置密码、批量删除
+- 邀请码管理
+- 赛事审核：ROOT 审批/驳回管理员新建的赛事
+- 赛事配置与赛事管理：基础信息、封面、发布/撤回、归档/恢复、报名审核、入围选手（支持批量添加）
+- 单项管理：项目、赛制与计分规则
+- 团体赛管理：队伍（导入/快速建队）、子项、阵容、对阵生成
+- 抽签编排：种子、交换签位、冻结/解冻、发布、重抽及重抽申请审批、操作日志、第二阶段（小组出线后排位）
+- 场地排程：场地维护，自动/手动排程，一键清空
+- 裁判分配：分配裁判、生成赛事裁判授权码/二维码
+- 公告管理：富文本公告、上下线、首页弹窗
+- 秩序册/数据导出：Excel 导出、出场顺序表
+- 图片管理：上传、分类、删除、操作日志、原图下载，水印配置
+- 图片审核：上传图片自动内容审核（ROOT 配置审核 API Key）
+- AI 助手配置：模型提供方、模型、API 地址、系统提示词等
+- 邮件通知设置：全局开关、模板编辑与预览、单项赛事提醒、发送日志
 ### 裁判端
 
-- **查看分配给自己的比赛场次**
-- **进入实时记分页执裁**
-- **比赛开始、记分、撤销、事件记录**
-- **实时同步比赛状态**
+- 通过扫描赛事二维码（`/referee/scan`）或授权链接（`/referee/authorize/:accessCode`）获得赛事执裁权限
+- 按赛事 → 场地查看比赛并领取场次，"我的比赛"查看已领取/已分配场次
+- 实时记分：开始、得分、撤销、暂停/恢复、交换场区、结束
+- 特殊情况：弃权（单方/双方）、退赛、违例、红黄牌、事件记录
+- 比分通过 WebSocket 实时同步到大屏与公开页面
 
 ### 摄影师端
 
-- **图片上传**：批量上传赛事图片
-- **图片分类**：选手照、现场照、颁奖照
-- **图片管理**：查看已上传图片
-
-### 后端能力
-
-- **认证与授权**：JWT / NextAuth 凭证登录、基于角色的访问控制（ADMIN / REFEREE / PLAYER / SUPER_ADMIN / ROOT）
-- **邀请码注册与账号状态控制**
-- **赛事报名与审核流转**
-- **公开门户数据聚合接口**
-- **抽签、排程、记分、公告、导出接口**
-- **历届赛事与公开展示接口**
-- **图片上传与水印处理**：支持 Logo 水印、文字水印（黑体/宋体/楷体）、自定义颜色与位置
-- **图片统计**：浏览量、下载量统计
-- **邮件通知**：赛事相关邮件发送
+- 选择赛事批量上传图片，分类为选手照、现场照、颁奖照
+- 上传后自动生成水印图与缩略图，原图仅后台鉴权访问
 
 ## 项目结构
 
 ```text
 ayumaoqiu/
 ├── apps/
-│   ├── backend/                    # NestJS 后端 (默认端口 4000)
-│   │   ├── assets/fonts/           # 嵌入中文字体（水印渲染用）
-│   │   │   ├── NotoSansSC-Bold.otf    # 黑体
-│   │   │   ├── NotoSerifSC-Regular.otf # 宋体
-│   │   │   └── LXGWWenKai-Regular.ttf  # 楷体（霞鹜文楷）
-│   │   ├── prisma/                 # Prisma ORM 配置
-│   │   │   ├── schema.prisma          # 数据库模型
-│   │   │   ├── seed.ts                # 初始化数据脚本
-│   │   │   └── migrations/            # 数据库迁移记录
+│   ├── backend/                 # NestJS 后端（默认端口 4000，全局前缀 /api）
+│   │   ├── assets/fonts/        # 水印用中文字体：黑体/宋体/楷体
+│   │   ├── prisma/              # schema.prisma、migrations、seed.ts
 │   │   ├── src/
-│   │   │   ├── auth/               # 认证模块
-│   │   │   ├── competitions/        # 赛事报名模块
-│   │   │   ├── draws/               # 抽签编排模块
-│   │   │   ├── events/              # 单项赛事模块
-│   │   │   ├── exports/             # 数据导出模块
-│   │   │   ├── mail/                # 邮件通知模块
-│   │   │   ├── photos/              # 图片管理与水印模块
-│   │   │   ├── players/             # 选手管理模块
-│   │   │   ├── scheduling/          # 场地排程模块
-│   │   │   ├── scoring/             # 裁判记分模块
-│   │   │   ├── tournaments/         # 赛事管理模块
-│   │   │   ├── team-competitions/   # 团体赛模块
-│   │   │   └── main.ts              # 应用入口
-│   │   ├── uploads/                 # 上传文件存储目录
-│   │   └── package.json
-│   └── frontend/                   # Next.js 前端 (默认端口 3000)
-│       ├── app/
-│       │   ├── admin/               # 管理后台页面
-│       │   ├── bracket/             # 淘汰赛对阵页面
-│       │   ├── competitions/        # 赛事公开页面
-│       │   ├── photographer/        # 摄影师上传页面
-│       │   ├── photos/              # 公开图片浏览页面
-│       │   ├── referee/             # 裁判端页面
-│       │   ├── live-screen/         # 大屏展示页面
-│       │   └── layout.tsx           # 全局布局
-│       ├── components/              # 通用组件
-│       │   ├── bracket/             # 对阵图组件
-│       │   ├── photos/              # 图片画廊组件
-│       │   └── screen/              # 大屏组件
-│       ├── lib/                     # 工具函数
-│       └── package.json
-├── docs/
-│   └── PRD.md                      # 产品需求文档
-├── outputs/                        # 导出文件输出目录
-├── package.json                    # Monorepo 根
-├── pnpm-workspace.yaml             # pnpm 工作区配置
-└── README.md
+│   │   │   ├── auth/            # 登录注册、JWT、角色、用户与邀请码
+│   │   │   ├── tournaments/     # 赛事配置与审核
+│   │   │   ├── competitions/    # 赛事发布、报名与审核
+│   │   │   ├── events/          # 单项
+│   │   │   ├── players/         # 选手
+│   │   │   ├── team-competitions/ # 团体赛
+│   │   │   ├── draws/           # 抽签、签表、第二阶段
+│   │   │   ├── scheduling/      # 场地与排程
+│   │   │   ├── scoring/         # 裁判授权与实时记分（WebSocket）
+│   │   │   ├── announcements/   # 公告
+│   │   │   ├── photos/          # 图片上传、水印、统计
+│   │   │   ├── image-moderation/ # 图片内容审核
+│   │   │   ├── mail/            # 邮件通知
+│   │   │   ├── exports/         # Excel 导出
+│   │   │   ├── ai-chat/         # AI 助手对话
+│   │   │   ├── ai-config/       # AI 助手配置
+│   │   │   ├── usage-metrics/   # 使用量统计
+│   │   │   ├── public/          # 门户聚合接口
+│   │   │   └── uploads/         # 静态文件（封面/图片）读取
+│   │   ├── uploads/             # 上传文件存储
+│   │   └── nginx-photos.conf.example # 生产环境图片静态发布参考配置
+│   └── frontend/                # Next.js 前端（默认端口 3000）
+│       ├── app/                 # 页面路由（admin / referee / photographer / 公开页）
+│       ├── components/          # 组件（admin、auth、bracket、home、photos、referee、screen 等）
+│       ├── lib/                 # API 封装与工具函数
+│       ├── auth.ts              # NextAuth 配置
+│       └── proxy.ts             # 路由鉴权
+├── docs/PRD.md                  # 产品需求文档
+├── package.json                 # Monorepo 根脚本
+└── pnpm-workspace.yaml
 ```
-
-## 环境要求
-
-- **Node.js >= 18**
-- **pnpm >= 9**
-- **MySQL 8+ 或 MariaDB 10.6+**
 
 ## 快速开始
 
-### 开发流程建议
-
-1. 启动数据库并创建 `ayumaoqiu` 数据库。
-2. 在 `apps/backend/.env` 中配置 `DATABASE_URL`、JWT 参数。
-3. 执行 `pnpm db:push` 和 `pnpm seed` 初始化数据。
-4. 分别启动后端与前端，先用默认管理员进入后台。
-5. 在后台生成邀请码，再测试普通用户注册、报名、审核、抽签、排程与裁判流程。
-6. 在后台配置水印设置，测试图片上传功能。
+环境要求：Node.js >= 18、pnpm >= 9、MySQL 8+ 或 MariaDB 10.6+。
 
 ### 1. 安装依赖
 
@@ -144,53 +126,34 @@ ayumaoqiu/
 pnpm install
 ```
 
-### 2. 启动数据库并创建库
+### 2. 创建数据库
 
 ```sql
-CREATE DATABASE ayumaoqiu;
+CREATE DATABASE ayumaoqiu DEFAULT CHARACTER SET utf8mb4;
 ```
+### 3. 配置环境变量
 
-### 3. 配置后端环境变量
-
-`apps/backend/.env`:
+`apps/backend/.env`：
 
 ```env
 DATABASE_URL="mysql://用户名:密码@localhost:3306/ayumaoqiu"
 JWT_SECRET="随机长字符串"
 JWT_EXPIRES_IN="7d"
 PORT=4000
+FRONTEND_URL=http://localhost:3000
+# CORS_ORIGIN=http://localhost:3000     # 可选，逗号分隔多个来源，默认取 FRONTEND_URL
+# WATERMARK_FONT_FAMILY=                # 可选，覆盖文字水印默认字体
+
+# 邮件（可选，不配置则邮件功能自动禁用）
+MAIL_HOST=SMTP服务器地址
+MAIL_PORT=465
+MAIL_SECURE=true
+MAIL_USER=发信地址
+MAIL_PASS=SMTP密码
+MAIL_FROM_NAME=发件人名称
 ```
 
-### 4. 初始化数据库
-
-```bash
-cd apps/backend
-pnpm db:push
-pnpm seed
-```
-
-`pnpm seed` 会强制同步默认管理员账号，账号记录如下：
-
-| 字段 | 值 |
-|---|---|
-| 用户名 | `baishuwan` |
-| 邮箱 | `2385362680@qq.com` |
-| 密码 | `Baishuwan082508` |
-| 角色 | `SUPER_ADMIN` |
-
-> 注意：密码首字母是大写 `B`。
-
-### 5. 启动后端
-
-```bash
-cd apps/backend
-pnpm dev
-# 后端运行在 http://localhost:4000
-```
-
-### 6. 配置并启动前端
-
-`apps/frontend/.env.local`:
+`apps/frontend/.env.local`：
 
 ```env
 NEXTAUTH_URL=http://localhost:3000
@@ -198,94 +161,44 @@ NEXTAUTH_SECRET=随机长字符串
 NEXT_PUBLIC_API_URL=http://localhost:4000/api
 ```
 
+AI 助手与图片审核的 API Key 不走环境变量，登录后台后分别在"AI 助手配置"和"图片审核"页面填写。
+
+### 4. 初始化数据库
+
 ```bash
-cd apps/frontend
-pnpm dev
-# 前端运行在 http://localhost:3000
+cd apps/backend
+pnpm db:push        # 或 pnpm db:migrate 使用迁移
+pnpm seed
 ```
 
-### 7. 登录与体验
-
-打开浏览器访问 <http://localhost:3000>。
-
-#### 默认管理员账号
-
-系统初始化后会同步一个默认管理员用户：
+`pnpm seed` 会强制同步默认账号（角色 ROOT），并清理旧的 `admin` 测试账号：
 
 | 字段 | 值 |
 |---|---|
 | 用户名 | `baishuwan` |
 | 邮箱 | `2385362680@qq.com` |
 | 密码 | `Baishuwan082508` |
-| 角色 | `SUPER_ADMIN` |
 
-#### 登录说明
+部署到公网前请务必修改该密码。
 
-- 后端登录接口支持 **用户名或邮箱** 作为登录标识。
-- 当前前端登录页输入框和校验规则按“邮箱登录”设计，因此浏览器中建议使用：`2385362680@qq.com / Baishuwan082508`
-- 如果后续希望前端直接支持用户名登录，需要把登录页的邮箱格式校验改成“用户名或邮箱”模式。
+### 5. 启动
 
-登录后会按角色自动跳转：
+```bash
+# 根目录，同时启动前后端
+pnpm dev
+```
 
-- 管理员 → `/admin`
-- 裁判 → `/referee`
-- 摄影师 → `/photographer`
-- 普通用户 → `/`
+前端 <http://localhost:3000>，后端 <http://localhost:4000/api>（健康检查 `/api/health`）。
 
-普通用户注册需先由管理员在后台生成邀请码。
+### 6. 体验主流程
 
-## 常见使用路径
-
-### 本地首次体验
-
-1. 执行 `pnpm seed`，确保默认管理员账号已同步。
-2. 启动前后端后访问 `/login`。
-3. 使用 `2385362680@qq.com / Baishuwan082508` 登录后台。
-4. 在“邀请码管理”中生成普通用户邀请码。
-5. 打开 `/signup` 完成普通用户注册。
-6. 使用普通用户登录后进入赛事报名页测试报名。
-7. 回到后台完成审核、抽签、排程与裁判分配。
-8. 在“图片管理”中上传赛事图片，配置水印设置。
-
-### 角色体验说明
-
-| 角色 | 入口 | 说明 |
-|---|---|---|
-| **管理员** | `/admin` | 使用默认管理员或后台新建管理员账号进入 |
-| **裁判** | `/referee` | 由管理员创建裁判账号后进入 |
-| **摄影师** | `/photographer` | 由管理员创建摄影师账号后进入 |
-| **普通用户** | `/` | 使用邀请码注册后，从门户进入赛事报名流程 |
-
-## 水印功能说明
-
-系统支持对上传的赛事图片自动添加水印：
-
-### Logo 水印
-- 支持上传多个 Logo（最多 5 个）
-- 可调整 Logo 大小（占图片高度的百分比）
-- 可调整 Logo 之间的间距
-- 支持横图和竖图不同位置设置
-
-### 文字水印
-- 支持自定义文字内容（最多 100 字符）
-- 支持三种字体：黑体、宋体、楷体
-- 支持自定义文字颜色（颜色选择器）
-- 支持调整文字大小（占图片高度的百分比）
-- 支持独立设置横图和竖图位置
-- 文字位置可与 Logo 相同（合并显示）或不同（独立显示）
-
-### 字体文件
-项目内嵌三种开源中文字体，确保跨平台一致性：
-- **黑体**: Noto Sans SC Bold
-- **宋体**: Noto Serif SC Regular
-- **楷体**: LXGW WenKai（霞鹜文楷）
-
-## 图片统计功能
-
-- **总浏览量**：所有赛事图片的浏览次数汇总
-- **总下载量**：所有赛事图片的下载次数汇总
-- **单图片统计**：每张图片的浏览量和下载量
-- **赛事统计**：各赛事的图片数、浏览量、下载量
+1. 用默认账号登录 `/login`（支持邮箱或用户名）。
+2. 在"邀请码管理"生成邀请码，到 `/signup` 注册普通用户。
+3. 在"赛事配置"创建赛事（管理员创建的需 ROOT 在"赛事审核"通过），在"单项管理"配置项目后发布。
+4. 普通用户报名，后台在赛事管理中审核报名。
+5. 抽签编排 → 场地排程 → 裁判分配，生成裁判授权二维码。
+6. 裁判账号扫码进入赛事，按场地领取比赛并记分，大屏 `/live-screen` 实时同步。
+7. 在图片管理中配置水印并上传图片，或由摄影师账号上传。
 
 ## 常用命令
 
@@ -294,247 +207,87 @@ pnpm dev
 pnpm dev                # 同时启动前后端
 pnpm dev:backend        # 仅启动后端
 pnpm dev:frontend       # 仅启动前端
-pnpm build:backend      # 构建后端
-pnpm build:frontend     # 构建前端
+pnpm build:backend
+pnpm build:frontend
 
-# 后端 (apps/backend)
-pnpm dev                # 启动后端 (watch 模式)
-pnpm db:push            # 推送 schema 变更到数据库
+# apps/backend
+pnpm dev                # watch 模式
+pnpm db:push            # 同步 schema 到数据库
 pnpm db:migrate         # 创建并应用迁移
-pnpm db:generate        # 重新生成 Prisma Client
-pnpm seed               # 强制同步默认管理员账号
-pnpm test               # 运行单元测试
-pnpm test:e2e           # 运行 e2e 测试
+pnpm db:generate        # 生成 Prisma Client
+pnpm seed               # 同步默认账号
+pnpm lint
+pnpm test
+pnpm test:e2e
 
-# 前端 (apps/frontend)
-pnpm dev                # 启动前端
-pnpm build              # 构建前端
-pnpm lint               # 运行 ESLint
+# apps/frontend
+pnpm dev
+pnpm build
+pnpm start
+pnpm lint
 ```
-
 ## 主要页面
 
-| 角色 | 路径 | 说明 |
-|---|---|---|
-| **公开** | `/` | 门户首页 |
-| **公开** | `/competitions` | 赛事列表 |
-| **公开** | `/competitions/:id/register` | 赛事报名 |
-| **公开** | `/competitions/:id/players` | 赛事选手名单 |
-| **公开** | `/schedule` | 赛程安排 |
-| **公开** | `/bracket` | 淘汰赛对阵表 |
-| **公开** | `/notice` | 通知公告 |
-| **公开** | `/history` | 历届数据 |
-| **公开** | `/photos` | 赛事图片 |
-| **公开** | `/signup` | 邀请码注册 |
-| **通用** | `/login` | 登录页 |
-| **管理员** | `/admin` | 管理后台首页（仪表盘） |
-| **管理员** | `/admin/users` | 用户管理 |
-| **管理员** | `/admin/invite-codes` | 邀请码管理 |
-| **管理员** | `/admin/players` | 选手管理 |
-| **管理员** | `/admin/competitions` | 赛事管理 |
-| **管理员** | `/admin/competitions/:id/photos` | 图片管理 |
-| **管理员** | `/admin/competitions/:id/watermark` | 水印设置 |
-| **管理员** | `/admin/events` | 单项管理 |
-| **管理员** | `/admin/team-competitions` | 团体赛管理 |
-| **管理员** | `/admin/draws` | 抽签编排 |
-| **管理员** | `/admin/scheduling` | 场地排程 |
-| **管理员** | `/admin/scoring` | 裁判分配 |
-| **管理员** | `/admin/announcements` | 公告管理 |
-| **管理员** | `/admin/exports` | 数据导出 |
-| **管理员** | `/admin/email` | 邮件通知 |
-| **裁判** | `/referee` | 裁判场次列表 |
-| **裁判** | `/referee/matches/:matchId` | 实时记分 |
-| **摄影师** | `/photographer` | 摄影师首页 |
-| **摄影师** | `/photographer/upload` | 图片上传 |
+| 分类 | 路径 |
+|---|---|
+| 公开 | `/` 首页、`/competitions` 赛事列表、`/competitions/:id` 详情、`/competitions/:id/players` 选手、`/competitions/:id/brackets` 签表 |
+| 公开 | `/schedule` 赛程、`/bracket` 对阵、`/ranking` 排行、`/history` 历届、`/notice` 公告、`/photos` 图片、`/photos/:accessToken` 分享图片、`/live-screen` 大屏 |
+| 账号 | `/login`、`/signup`、`/account`、`/my-registrations`、`/competitions/:id/register` |
+| 管理 | `/admin`、`/admin/users`、`/admin/invite-codes`、`/admin/approvals`、`/admin/tournaments`、`/admin/competitions`、`/admin/events`、`/admin/players`、`/admin/team-competitions` |
+| 管理 | `/admin/draws`、`/admin/scheduling`、`/admin/scoring`、`/admin/announcements`、`/admin/exports`、`/admin/email`、`/admin/ai-config`、`/admin/image-moderation` |
+| 管理（按赛事） | `/admin/competitions/:id/registrations`、`/players`、`/photos`、`/watermark` |
+| 裁判 | `/referee`、`/referee/scan`、`/referee/authorize/:accessCode`、`/referee/my-matches`、`/referee/tournaments/:tournamentId`、`.../courts/:venueId`、`/referee/matches/:matchId` |
+| 摄影师 | `/photographer/upload` |
 
 ## API 概览
 
-所有 API 默认前缀为 `/api`。
+所有接口前缀为 `/api`，需要登录的接口使用 `Authorization: Bearer <JWT>`。下表按模块列出路由前缀，具体参数见各模块 controller。
 
-### 认证与用户
-
-> 当前后端支持“邮箱或用户名”登录；但前端登录页输入框与校验规则当前按邮箱模式展示。
-
-| 方法 | 路径 | 说明 |
+| 模块 | 路由 | 说明 |
 |---|---|---|
-| POST | `/api/auth/register` | 使用邀请码注册 |
-| POST | `/api/auth/login` | 登录，返回 JWT |
-| GET | `/api/auth/me` | 获取当前用户信息 |
-| PATCH | `/api/auth/me/password` | 修改当前用户密码 |
-| GET | `/api/auth/users` | 列出用户 |
-| POST | `/api/auth/users/admin` | 创建管理员 |
-| POST | `/api/auth/users/referee` | 创建裁判 |
-| POST | `/api/auth/users/photographer` | 创建摄影师 |
-| PATCH | `/api/auth/users/:id/status` | 更新用户状态 |
-| POST | `/api/auth/users/:id/reset-password` | 重置用户密码 |
-| DELETE | `/api/auth/users/:id` | 删除用户 |
-| GET/POST | `/api/auth/invite-codes` | 查询/创建邀请码 |
-| PATCH/DELETE | `/api/auth/invite-codes/:id` | 更新状态/删除邀请码 |
+| 认证 | `/auth/*`（兼容 `/v1/auth/*`） | 注册、登录、刷新 Token、用户名/邮箱/邀请码校验、个人信息 |
+| 用户与邀请码 | `/auth/users/*`、`/auth/invite-codes/*` | 创建各角色账号、状态/角色/密码管理、邀请码 |
+| 赛事配置 | `/tournaments/*` | CRUD、封面上传、审核（approve/reject）、归档/恢复 |
+| 赛事发布与报名 | `/competitions/*`、`/admin/competitions/*`、`/admin/competition-registrations/*` | 公开列表、报名、我的报名；发布、审核、选手管理、图片分享链接 |
+| 单项/选手 | `/events/*`、`/players/*` | CRUD |
+| 团体赛 | `/team-competitions/*` | 队伍、导入、快速建队、对阵、阵容、裁判 |
+| 抽签 | `/events/:eventId/draw/*`、`/draw/redraw-requests/*`、`/events/:eventId/second-stage/*` | 草稿/执行、种子、交换、冻结、发布、重抽及审批、日志、第二阶段 |
+| 排程 | `/tournaments/:id/venues`、`/venues/:id`、`/scheduling/*`、`/matches/:id/schedule` | 场地、自动/手动排程、清空 |
+| 裁判与记分 | `/referee/*`、`/matches/:id/*`、`/tournaments/:id/referee-access-code` | 授权码、领取场次、记分、撤销、暂停、弃权、退赛、违例、红黄牌 |
+| 公告 | `/admin/announcements/*`、`/announcements/active` | 后台管理、前台展示 |
+| 图片 | `/photos/*`、`/photographer/*`、`/admin/photos/*`、`/admin/tournaments/:id/watermark` | 浏览/下载计数、分享访问、上传、原图、水印、操作日志 |
+| 图片审核 | `/admin/image-moderation` | 审核配置与测试（ROOT） |
+| 邮件 | `/admin/email/*` | SMTP 状态、全局设置、模板、赛事提醒、日志 |
+| 导出 | `/exports/*` | 赛事 Excel 导出、出场顺序表 |
+| AI | `/ai-chat/*`、`/admin/ai-config/*` | 对话（含流式）、配置、连通性测试、模型列表 |
+| 门户 | `/public/*` | home、lobby、screen、brackets、history、ranking、公告弹窗等聚合数据 |
+| 统计 | `/usage-metrics/summary` | 使用量概览 |
+| 静态文件 | `/uploads/covers/*`、`/uploads/photos/*` | 封面与图片 |
 
-### 赛事基础管理
+## 图片与水印
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET/POST/PATCH/DELETE | `/api/players` | 选手管理 |
-| GET/POST/PATCH/DELETE | `/api/tournaments` | 赛事管理 |
-| PATCH | `/api/tournaments/:id/archive` | 归档赛事 |
-| POST | `/api/tournaments/upload-cover` | 上传赛事封面 |
-| GET/POST/PATCH/DELETE | `/api/events` | 单项管理 |
-| GET/POST/PATCH/DELETE | `/api/announcements` | 公告管理 |
-| GET/POST/PATCH/DELETE | `/api/team-competitions` | 团体赛管理 |
-| GET/POST | `/api/team-competitions/:id/teams` | 团体队伍管理 |
-| POST | `/api/team-competitions/:id/teams/import` | 批量导入队员 |
-| POST | `/api/team-competitions/:id/teams/quick-preview` | 预览快速建队 |
-| POST | `/api/team-competitions/:id/teams/quick-create` | 快速建队 |
-| PATCH | `/api/team-competitions/teams/:teamId` | 更新队伍 |
-| PUT | `/api/team-competitions/teams/:teamId/members` | 替换队员名单 |
-| DELETE | `/api/team-competitions/teams/:teamId` | 删除队伍 |
-| POST | `/api/team-competitions/:id/draw` | 生成团体赛对阵 |
-| GET | `/api/team-competitions/team-matches/:teamMatchId/lineups` | 获取团体阵容 |
-| PUT | `/api/team-competitions/team-matches/:teamMatchId/lineups` | 设置团体阵容 |
-| PATCH | `/api/team-competitions/matches/:matchId/referee` | 分配团体赛裁判 |
+- 每张图片保存原图、带水印图、缩略图三份，存储在 `apps/backend/uploads/photos/{tournamentId}/`。
+- 原图不对外公开，只能通过后台鉴权接口下载。
+- Logo 水印：最多 5 个 Logo，可调大小、间距，横图/竖图分别设置位置。
+- 文字水印：最多 100 字符，支持黑体（Noto Sans SC）、宋体（Noto Serif SC）、楷体（霞鹜文楷），可调颜色、大小、位置。
+- 统计每张图片及每个赛事的浏览量、下载量。
+- 开启图片审核后，上传图片会先经过内容审核。
 
-### 赛事与报名
+## 部署
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/api/competitions` | 公开赛事列表 |
-| GET | `/api/competitions/:id` | 公开赛事详情 |
-| GET | `/api/competitions/:id/players` | 公开赛事选手名单 |
-| GET | `/api/competitions/:id/registration/me` | 当前用户报名信息 |
-| POST | `/api/competitions/:id/register` | 提交报名 |
-| GET | `/api/admin/competitions` | 后台赛事列表 |
-| PATCH | `/api/admin/competitions/:id/publish` | 发布赛事 |
-| PATCH | `/api/admin/competitions/:id/unpublish` | 取消发布 |
-| GET | `/api/admin/competitions/:id/registrations` | 报名审核列表 |
-| GET | `/api/admin/competitions/:id/players` | 后台赛事选手列表 |
-| PATCH | `/api/admin/competition-registrations/:registrationId/approve` | 通过报名 |
-| PATCH | `/api/admin/competition-registrations/:registrationId/reject` | 驳回报名 |
-| PATCH | `/api/admin/competition-registrations/:registrationId/remove` | 移除报名 |
+```bash
+pnpm install
+pnpm build:backend
+pnpm build:frontend
 
-### 图片管理
+cd apps/backend && pnpm start:prod     # 后端
+cd apps/frontend && pnpm start         # 前端
+```
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/api/photos` | 公开图片列表（按赛事） |
-| GET | `/api/photos/:id/download` | 下载图片（下载计数+1） |
-| POST | `/api/photos` | 摄影师上传图片 |
-| GET | `/api/admin/photos` | 后台图片列表 |
-| POST | `/api/admin/tournaments/:id/photos` | 管理员上传图片 |
-| DELETE | `/api/admin/photos/:id` | 删除图片 |
-| DELETE | `/api/admin/tournaments/:id/photos` | 批量删除赛事图片 |
-| GET | `/api/admin/tournaments/:id/watermark` | 获取水印配置 |
-| PUT | `/api/admin/tournaments/:id/watermark` | 更新水印配置 |
-| POST | `/api/admin/tournaments/:id/watermark/logos` | 上传水印 Logo |
-| DELETE | `/api/admin/tournaments/:id/watermark/logos` | 删除水印 Logo |
-
-### 公共展示
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/api/public/home` | 首页聚合数据 |
-| GET | `/api/public/lobby` | 大厅/门户数据 |
-| GET | `/api/public/screen` | 大屏数据 |
-| GET | `/api/public/team-competitions` | 团体赛公开数据 |
-| GET | `/api/public/announcements` | 公开公告 |
-| GET | `/api/public/brackets` | 公开签表 |
-| GET | `/api/public/history` | 历届数据 |
-
-### 排程、记分与导出
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| POST | `/api/events/:eventId/draw` | 生成签表草稿 |
-| POST | `/api/events/:eventId/draw/execute` | 执行抽签 |
-| PUT | `/api/events/:eventId/draw/seeds` | 更新种子 |
-| POST | `/api/events/:eventId/draw/swap` | 交换签位 |
-| POST | `/api/events/:eventId/draw/freeze` | 冻结签表 |
-| POST | `/api/events/:eventId/draw/unfreeze` | 解冻签表 |
-| POST | `/api/events/:eventId/draw/redraw` | 重抽 |
-| GET/POST | `/api/tournaments/:tournamentId/venues` | 查询/创建场地 |
-| PATCH/DELETE | `/api/venues/:id` | 修改/删除场地 |
-| GET | `/api/scheduling` | 查询赛程 |
-| POST | `/api/scheduling/auto` | 自动排程 |
-| PATCH | `/api/matches/:id/schedule` | 手动调整赛程 |
-| GET | `/api/referee/matches` | 裁判本人场次 |
-| GET | `/api/matches/:id/score` | 获取比赛状态 |
-| POST | `/api/matches/:id/start` | 开始比赛 |
-| POST | `/api/matches/:id/point` | 记分 |
-| POST | `/api/matches/:id/undo` | 撤销上一分 |
-| POST | `/api/matches/:id/events` | 记录比赛事件 |
-| PATCH | `/api/matches/:id/referee` | 分配单项赛裁判 |
-| GET | `/api/exports/tournaments/:id/:kind` | 导出赛事数据 |
-
-## 技术栈
-
-| 层 | 选型 |
-|---|---|
-| **前端** | Next.js 16 (App Router) + TypeScript + Ant Design 6 + Tailwind CSS 4 |
-| **后端** | NestJS 11 + TypeScript |
-| **数据库** | MySQL / MariaDB |
-| **ORM** | Prisma 7 |
-| **认证** | NextAuth.js v5 (前端) + Passport-JWT (后端) |
-| **实时通信** | Socket.IO |
-| **图片处理** | Sharp + @napi-rs/canvas |
-| **邮件发送** | Nodemailer |
-| **Excel 导出** | ExcelJS |
-| **包管理** | pnpm workspaces |
-
-## 项目特性
-
-- **模块化架构**：前后端分离，模块职责清晰
-- **角色权限控制**：细粒度的角色访问控制（管理员、超级管理员、裁判、摄影师、普通用户）
-- **图片水印系统**：支持 Logo 和文字水印，自定义字体、颜色、位置
-- **图片统计**：浏览量、下载量统计
-- **实时记分**：WebSocket 实时同步比赛状态
-- **邮件通知**：赛事相关邮件自动发送
-- **数据导出**：支持 Excel 格式数据导出
-- **响应式设计**：支持桌面端和移动端
-- **完整测试**：单元测试与集成测试
-
-## 开发规范
-
-- **代码风格**：使用 ESLint + Prettier 进行代码检查和格式化
-- **类型安全**：全项目使用 TypeScript，确保类型安全
-- **提交规范**：遵循常规提交规范（Conventional Commits）
-- **环境变量**：使用 `.env` 文件管理敏感配置，不提交到版本控制
-
-## 部署说明
-
-### 生产环境部署
-
-1. 构建前后端：
-   ```bash
-   pnpm build:backend
-   pnpm build:frontend
-   ```
-
-2. 配置生产环境变量：
-   - 后端：数据库连接、JWT 密钥、邮件配置
-   - 前端：API 地址、NextAuth 配置
-
-3. 启动后端服务：
-   ```bash
-   cd apps/backend
-   pnpm start:prod
-   ```
-
-4. 启动前端服务：
-   ```bash
-   cd apps/frontend
-   pnpm start
-   ```
-
-### 图片存储
-
-- 图片存储在 `apps/backend/uploads/photos/` 目录下
-- 包含原始图片、带水印图片、缩略图三种尺寸
-- 建议配合 CDN 或对象存储使用以提升访问性能
+- 生产环境需配置正式的 `JWT_SECRET`、`NEXTAUTH_SECRET`、`FRONTEND_URL`/`CORS_ORIGIN`、`NEXT_PUBLIC_API_URL`。
+- 建议用 Nginx 直接发布带水印的公开图片与封面，减轻 Node 负载，参考 [apps/backend/nginx-photos.conf.example](apps/backend/nginx-photos.conf.example)。
+- `.env` 文件包含密钥，不要提交到版本库。
 
 ## 许可证
 
-MIT License
-
-## 贡献
-
-欢迎提交 Issue 和 Pull Request！
+MIT

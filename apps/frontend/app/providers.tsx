@@ -15,6 +15,30 @@ export function Providers({
   initialAnnouncement?: ActiveAnnouncement | null;
 }) {
   const pathname = usePathname();
+
+  useEffect(() => {
+    const preventClipboardExport = (event: ClipboardEvent) => {
+      const selection = window.getSelection();
+      if (event.type === 'copy' && selection && !selection.isCollapsed && selection.rangeCount === 1) {
+        const container = selection.getRangeAt(0).commonAncestorContainer;
+        const element = container instanceof Element ? container : container.parentElement;
+        if (element?.closest('[data-allow-copy]')) return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    // Capture events from every page, including portals such as modals/drawers.
+    document.addEventListener('copy', preventClipboardExport, true);
+    document.addEventListener('cut', preventClipboardExport, true);
+
+    return () => {
+      document.removeEventListener('copy', preventClipboardExport, true);
+      document.removeEventListener('cut', preventClipboardExport, true);
+    };
+  }, []);
+
   return (
     <SessionProvider>
       <SessionExpiryHandler />

@@ -130,6 +130,24 @@ export class AdminCompetitionPlayerDto extends AdminBatchCompetitionPlayerDto {
   eventId?: string;
 }
 
+export class AdminCompetitionLibraryPlayerDto {
+  @IsString()
+  @MinLength(1)
+  eventId: string;
+
+  @IsString()
+  @MinLength(1)
+  player1Id: string;
+
+  @IsOptional()
+  @IsString()
+  player2Id?: string;
+
+  @IsOptional()
+  @IsString()
+  teamName?: string;
+}
+
 export class AdminBatchCompetitionPlayersDto {
   @IsString()
   @MinLength(1)

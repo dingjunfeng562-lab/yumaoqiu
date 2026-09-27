@@ -6,6 +6,7 @@ import { RolesGuard } from '../auth/roles.guard';
 import { CompetitionsService } from './competitions.service';
 import {
   AdminBatchCompetitionPlayersDto,
+  AdminCompetitionLibraryPlayerDto,
   AdminCompetitionPlayerDto,
   RejectRegistrationDto,
 } from './dto/competition-registration.dto';
@@ -80,6 +81,20 @@ export class AdminCompetitionsController {
     @Req() req: AuthRequest,
   ) {
     return this.competitionsService.createAdminPlayer(
+      id,
+      dto,
+      req.user?.id,
+    );
+  }
+
+  @Roles(Role.ADMIN)
+  @Post('competitions/:id/players/from-library')
+  createPlayerFromLibrary(
+    @Param('id') id: string,
+    @Body() dto: AdminCompetitionLibraryPlayerDto,
+    @Req() req: AuthRequest,
+  ) {
+    return this.competitionsService.createAdminPlayerFromLibrary(
       id,
       dto,
       req.user?.id,

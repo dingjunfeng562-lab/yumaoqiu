@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import dayjs from 'dayjs';
-import { Button, Card, Empty, InputNumber, Modal, Pagination, Select, Space, Table, Tag, Typography, message } from 'antd';
+import { Button, Card, Empty, InputNumber, Modal, Select, Space, Table, Tag, Typography, message } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { roundCn } from '@/lib/round';
@@ -22,9 +22,6 @@ const STATUS_LABELS: Record<string, { label: string; color: string }> = {
   LIVE: { label: '进行中', color: 'green' },
   COMPLETED: { label: '已结束', color: 'blue' },
 };
-
-const PAGE_SIZE = 15;
-
 
 interface Tournament {
   id: string;
@@ -122,7 +119,6 @@ export default function AdminScoringPage() {
   const [selectedEventId, setSelectedEventId] = useState('');
   const [bracket, setBracket] = useState<BracketData | null>(null);
   const [loading, setLoading] = useState(false);
-  const [currentPage, setCurrentPage] = useState(1);
   const [scoreTarget, setScoreTarget] = useState<MatchItem | null>(null);
   const [scoreGames, setScoreGames] = useState<GameScore[]>([]);
   const [scoreLoadingId, setScoreLoadingId] = useState('');
@@ -137,13 +133,6 @@ export default function AdminScoringPage() {
       ...(bracket.secondStageFormalMatches ?? []),
     ];
   }, [bracket]);
-  const lastPage = Math.max(1, Math.ceil(matches.length / PAGE_SIZE));
-  const visiblePage = Math.min(currentPage, lastPage);
-  const visibleMatches = matches.slice(
-    (visiblePage - 1) * PAGE_SIZE,
-    visiblePage * PAGE_SIZE,
-  );
-
   useEffect(() => {
     if (!token) return;
     let alive = true;
@@ -262,19 +251,10 @@ export default function AdminScoringPage() {
 
 
   return (
-    <div
-      style={{
-        height: '100%',
-        minHeight: 0,
-        display: 'flex',
-        flexDirection: 'column',
-        overflow: 'hidden',
-      }}
-    >
+    <div>
       <div
         style={{
           display: 'flex',
-          flex: '0 0 auto',
           justifyContent: 'space-between',
           alignItems: 'center',
           gap: 12,
@@ -290,7 +270,7 @@ export default function AdminScoringPage() {
         </Button>
       </div>
 
-      <Card style={{ flex: '0 0 auto', marginTop: 16, marginBottom: 16 }}>
+      <Card style={{ marginTop: 16, marginBottom: 16 }}>
         <div className="flex flex-wrap items-center justify-between gap-4">
         <Space wrap>
           <Select
@@ -298,7 +278,6 @@ export default function AdminScoringPage() {
             value={selectedTournamentId}
             options={tournaments.map((item) => ({ value: item.id, label: item.name }))}
             onChange={(value) => {
-              setCurrentPage(1);
               setSelectedTournamentId(value);
             }}
             placeholder="选择赛事"
@@ -308,7 +287,6 @@ export default function AdminScoringPage() {
             value={selectedEventId}
             options={events.map((item) => ({ value: item.id, label: EVENT_TYPE_LABELS[item.type] ?? item.type }))}
             onChange={(value) => {
-              setCurrentPage(1);
               setSelectedEventId(value);
             }}
             placeholder="选择单项"
@@ -321,17 +299,14 @@ export default function AdminScoringPage() {
         </div>
       </Card>
 
-      <Card
-        style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}
-        styles={{ body: { height: '100%', overflow: 'auto' } }}
-      >
+      <Card>
         {matches.length ? (
           <Table
             rowKey="id"
-            dataSource={visibleMatches}
+            dataSource={matches}
             loading={loading}
             pagination={false}
-            scroll={{ x: 1180 }}
+            tableLayout="fixed"
             columns={[
               { title: '组别/轮次', render: (_, row: MatchItem) => matchStageLabel(row) },
               { title: '时间', dataIndex: 'scheduledAt', render: (value: string | null) => formatTime(value) },
@@ -368,7 +343,7 @@ export default function AdminScoringPage() {
                 dataIndex: 'refereeId',
                 render: (value: string | null, row: MatchItem) => (
                   <Select
-                    style={{ width: 260 }}
+                    style={{ width: '100%' }}
                     value={value ?? undefined}
                     placeholder="选择执裁账号"
                     optionLabelProp="label"
@@ -403,23 +378,6 @@ export default function AdminScoringPage() {
           <Empty description="暂无场次，请先在抽签编排中生成对阵" />
         )}
       </Card>
-
-      <div
-        style={{
-          flex: '0 0 auto',
-          display: 'flex',
-          justifyContent: 'flex-end',
-          paddingTop: 12,
-        }}
-      >
-        <Pagination
-          current={visiblePage}
-          pageSize={PAGE_SIZE}
-          total={matches.length}
-          showSizeChanger={false}
-          onChange={setCurrentPage}
-        />
-      </div>
 
       <Modal
         title="修改比赛比分"

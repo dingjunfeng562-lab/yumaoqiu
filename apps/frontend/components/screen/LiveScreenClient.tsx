@@ -79,6 +79,20 @@ function sideFor(bracket: KnockoutBracketData, id?: string | null) {
   return bracket.participants.find((participant) => participant.id === id) ?? null;
 }
 
+function isByeMatch(bracket: KnockoutBracketData, match: BracketMatch) {
+  const side1 = sideFor(bracket, match.side1Id);
+  const side2 = sideFor(bracket, match.side2Id);
+  if (side1?.isBye || side2?.isBye) return true;
+
+  const hasMissingSide = !match.side1Id || !match.side2Id;
+  if (!hasMissingSide) return false;
+
+  // 首轮没有上游场次，缺少任意一方即为轮空。后续轮次在选手尚未晋级时也会
+  // 暂时缺少一方，只有系统已经自动完赛/取消时才可确定为轮空或空场。
+  const status = normalizeStatus(String(match.status));
+  return match.roundNo <= 1 || status === 'COMPLETED' || status === 'CANCELLED';
+}
+
 function sortMatches(matches: BracketMatch[]) {
   return [...matches].sort((a, b) => a.roundNo - b.roundNo || a.matchNo - b.matchNo);
 }
@@ -468,17 +482,22 @@ export function LiveScreenClient({
     };
   }, [reload]);
 
+  const visibleMatches = useMemo(
+    () => (selected ? selected.matches.filter((match) => !isByeMatch(selected, match)) : []),
+    [selected],
+  );
+
   const stats = useMemo(() => {
-    const matches = selected?.matches ?? [];
+    const matches = visibleMatches;
     return {
       total: matches.length,
       live: matches.filter((match) => normalizeStatus(String(match.status)) === 'LIVE').length,
       completed: matches.filter((match) => normalizeStatus(String(match.status)) === 'COMPLETED').length,
       scheduled: matches.filter((match) => match.scheduledAt).length,
     };
-  }, [selected]);
+  }, [visibleMatches]);
 
-  const matchGroups = useMemo(() => groupMatches(selected?.matches ?? []), [selected]);
+  const matchGroups = useMemo(() => groupMatches(visibleMatches), [visibleMatches]);
   const bracketHref = selected
     ? `/bracket/${encodeURIComponent(selected.id)}`
     : '/bracket';

@@ -1995,10 +1995,96 @@ a {
   line-height: 1.6;
 }
 
-/* 后台左侧导航是操作区，避免菜单文字和品牌被误选、复制。 */
-.admin-navigation-panel,
-.admin-navigation-panel * {
+/* Disable selection throughout the UI, including portals mounted under body. */
+body,
+body * {
   -webkit-user-select: none !important;
   user-select: none !important;
   -webkit-touch-callout: none !important;
+}
+
+/* Keep selection available for editing; Providers still blocks copy and cut. */
+body input,
+body textarea,
+body [contenteditable='true'],
+body [contenteditable='true'] *,
+body [contenteditable=''],
+body [contenteditable=''] *,
+body [contenteditable='plaintext-only'],
+body [contenteditable='plaintext-only'] * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+
+body [data-allow-copy],
+body [data-allow-copy] * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  -webkit-touch-callout: default !important;
+}
+
+.landing-contact {
+  display: flex;
+  width: min(calc(100% - 32px), 440px);
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-top: 3rem;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 20px;
+  padding: 16px 18px;
+  background: rgba(9, 33, 76, 0.82);
+  color: #dbeafe;
+  backdrop-filter: blur(12px);
+}
+
+.landing-contact__title {
+  color: #fff;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.landing-contact__topics {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.landing-contact__topics span {
+  border: 1px solid rgba(165, 243, 252, 0.2);
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: rgba(8, 145, 178, 0.14);
+  color: #cffafe;
+}
+
+.landing-contact__hint {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.landing-contact__email {
+  display: inline-flex;
+  max-width: 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
+  padding-top: 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.landing-contact__email svg {
+  flex: none;
+}
+
+@media (min-width: 640px) {
+  .landing-contact {
+    margin-top: 4rem;
+  }
 }

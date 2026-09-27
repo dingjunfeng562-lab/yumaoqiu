@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { Alert, Button, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography, message } from 'antd';
-import { AuditOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, PlusOutlined, RollbackOutlined, StopOutlined, UsergroupAddOutlined } from '@ant-design/icons';
+import { AuditOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, PlusOutlined, RollbackOutlined, StopOutlined, UserAddOutlined, UsergroupAddOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 
 type CompetitionEventOption = {
@@ -46,6 +46,15 @@ type Player = {
   eventName: string;
   createdAt: string;
   statusLabel: string;
+};
+
+type LibraryPlayer = {
+  id: string;
+  name: string;
+  gender: 'MALE' | 'FEMALE';
+  affiliation: string;
+  contact?: string | null;
+  notes?: string | null;
 };
 
 type BatchImportItem = {
@@ -111,6 +120,13 @@ type PlayerFormValues = {
   partnerSchool?: string;
   partnerClassName?: string;
   partnerContact?: string;
+};
+
+type LibrarySelectionFormValues = {
+  eventId: string;
+  player1Id: string;
+  player2Id?: string;
+  teamName?: string;
 };
 
 const GENDER_OPTIONS = [
@@ -240,6 +256,11 @@ export default function AdminCompetitionPlayersPage() {
   const [batchEventId, setBatchEventId] = useState<string>();
   const [batchText, setBatchText] = useState('');
   const [batchSubmitting, setBatchSubmitting] = useState(false);
+  const [libraryModalOpen, setLibraryModalOpen] = useState(false);
+  const [libraryPlayers, setLibraryPlayers] = useState<LibraryPlayer[]>([]);
+  const [libraryLoading, setLibraryLoading] = useState(false);
+  const [librarySubmitting, setLibrarySubmitting] = useState(false);
+  const [libraryForm] = Form.useForm<LibrarySelectionFormValues>();
   const [form] = Form.useForm<PlayerFormValues>();
   const [formModalOpen, setFormModalOpen] = useState(false);
   const [editingPlayer, setEditingPlayer] = useState<Player | null>(null);
@@ -247,6 +268,8 @@ export default function AdminCompetitionPlayersPage() {
   const [selectedPlayerIds, setSelectedPlayerIds] = useState<Key[]>([]);
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const watchedFormEventId = Form.useWatch('eventId', form);
+  const watchedLibraryEventId = Form.useWatch('eventId', libraryForm);
+  const watchedLibraryPlayer1Id = Form.useWatch('player1Id', libraryForm);
 
   const query = useMemo(() => {
     const params = new URLSearchParams();
@@ -272,6 +295,41 @@ export default function AdminCompetitionPlayersPage() {
     () => Boolean(competition?.eventOptions?.find((event) => event.id === watchedFormEventId)?.isDouble),
     [competition, watchedFormEventId],
   );
+  const selectedLibraryEvent = useMemo(
+    () => competition?.eventOptions?.find((event) => event.id === watchedLibraryEventId),
+    [competition, watchedLibraryEventId],
+  );
+  const libraryEventIsDouble = Boolean(selectedLibraryEvent?.isDouble);
+  const libraryPlayer1 = useMemo(
+    () => libraryPlayers.find((player) => player.id === watchedLibraryPlayer1Id),
+    [libraryPlayers, watchedLibraryPlayer1Id],
+  );
+  const eligibleLibraryPlayers = useMemo(() => {
+    if (!selectedLibraryEvent) return libraryPlayers;
+    if (selectedLibraryEvent.type.startsWith('MENS_')) {
+      return libraryPlayers.filter((player) => player.gender === 'MALE');
+    }
+    if (selectedLibraryEvent.type.startsWith('WOMENS_')) {
+      return libraryPlayers.filter((player) => player.gender === 'FEMALE');
+    }
+    return libraryPlayers;
+  }, [libraryPlayers, selectedLibraryEvent]);
+  const libraryPlayerOptions = useMemo(
+    () => eligibleLibraryPlayers.map((player) => ({
+      value: player.id,
+      label: `${player.name} · ${genderText(player.gender)} · ${player.affiliation}`,
+    })),
+    [eligibleLibraryPlayers],
+  );
+  const libraryPartnerOptions = useMemo(() => {
+    return eligibleLibraryPlayers
+      .filter((player) => player.id !== watchedLibraryPlayer1Id)
+      .filter((player) => selectedLibraryEvent?.type !== 'MIXED_DOUBLES' || !libraryPlayer1 || player.gender !== libraryPlayer1.gender)
+      .map((player) => ({
+        value: player.id,
+        label: `${player.name} · ${genderText(player.gender)} · ${player.affiliation}`,
+      }));
+  }, [eligibleLibraryPlayers, libraryPlayer1, selectedLibraryEvent, watchedLibraryPlayer1Id]);
   const parsedBatchRows = useMemo(
     () => parseBatchRows(batchText, Boolean(selectedBatchEvent?.isDouble)),
     [batchText, selectedBatchEvent?.isDouble],
@@ -363,6 +421,53 @@ export default function AdminCompetitionPlayersPage() {
       competition?.eventOptions?.[0];
     setBatchEventId(defaultEvent?.id);
     setBatchModalOpen(true);
+  }
+
+  async function openLibraryModal() {
+    if (!competition?.eventOptions?.length || !token) {
+      message.warning('当前赛事暂无参赛项目');
+      return;
+    }
+    const defaultEvent =
+      competition.eventOptions.find((event) => event.label === eventName) ?? competition.eventOptions[0];
+    libraryForm.resetFields();
+    libraryForm.setFieldsValue({ eventId: defaultEvent.id });
+    setLibraryModalOpen(true);
+    setLibraryLoading(true);
+    try {
+      const data = await apiFetch<LibraryPlayer[]>('/players', { token });
+      setLibraryPlayers(data);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '选手库加载失败');
+    } finally {
+      setLibraryLoading(false);
+    }
+  }
+
+  async function submitLibraryPlayer() {
+    if (!token || !id) return;
+    let values: LibrarySelectionFormValues;
+    try {
+      values = await libraryForm.validateFields();
+    } catch {
+      return;
+    }
+    setLibrarySubmitting(true);
+    try {
+      await apiFetch(`/admin/competitions/${id}/players/from-library`, {
+        method: 'POST',
+        token,
+        body: JSON.stringify(values),
+      });
+      message.success('已从选手库加入参赛名单');
+      setLibraryModalOpen(false);
+      libraryForm.resetFields();
+      await loadData();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '加入参赛名单失败');
+    } finally {
+      setLibrarySubmitting(false);
+    }
   }
 
   async function submitBatchPlayers() {
@@ -774,11 +879,18 @@ export default function AdminCompetitionPlayersPage() {
             <>
               <Button
                 type="primary"
+                icon={<UserAddOutlined />}
+                onClick={openLibraryModal}
+                disabled={!competition?.eventOptions?.length}
+              >
+                从选手库选择
+              </Button>
+              <Button
                 icon={<PlusOutlined />}
                 onClick={openCreateModal}
                 disabled={!competition?.eventOptions?.length}
               >
-                新增选手
+                手工新增
               </Button>
               <Button
                 icon={<UsergroupAddOutlined />}
@@ -826,6 +938,93 @@ export default function AdminCompetitionPlayersPage() {
         loading={loading}
         pagination={{ pageSize: 20 }}
       />
+      <Modal
+        title="从选手库选择参赛选手"
+        open={libraryModalOpen}
+        onCancel={() => {
+          setLibraryModalOpen(false);
+          libraryForm.resetFields();
+        }}
+        onOk={submitLibraryPlayer}
+        okText="加入参赛名单"
+        confirmLoading={librarySubmitting}
+        forceRender
+        width={560}
+      >
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="选手来源于后台“选手管理”中的正式选手"
+          description="系统会按参赛项目自动筛选性别，并检查重复报名和报名项目上限。"
+        />
+        <Form form={libraryForm} layout="vertical">
+          <Form.Item
+            label="参赛项目"
+            name="eventId"
+            rules={[{ required: true, message: '请选择参赛项目' }]}
+          >
+            <Select
+              options={eventOptions}
+              placeholder="选择参赛项目"
+              onChange={() => {
+                libraryForm.setFieldsValue({
+                  player1Id: undefined,
+                  player2Id: undefined,
+                  teamName: undefined,
+                });
+              }}
+            />
+          </Form.Item>
+          <Form.Item
+            label={libraryEventIsDouble ? '队员一' : '参赛选手'}
+            name="player1Id"
+            rules={[{ required: true, message: '请选择选手' }]}
+          >
+            <Select
+              showSearch
+              allowClear
+              loading={libraryLoading}
+              optionFilterProp="label"
+              options={libraryPlayerOptions}
+              placeholder={libraryLoading ? '正在加载选手库' : '搜索姓名、性别或学院班级'}
+              notFoundContent={libraryLoading ? '加载中...' : '选手库中没有符合当前项目的选手'}
+              onChange={() => libraryForm.setFieldValue('player2Id', undefined)}
+            />
+          </Form.Item>
+          {libraryEventIsDouble ? (
+            <>
+              <Form.Item
+                label="队员二（搭档）"
+                name="player2Id"
+                rules={[{ required: true, message: '请选择搭档' }]}
+              >
+                <Select
+                  showSearch
+                  allowClear
+                  disabled={!watchedLibraryPlayer1Id}
+                  loading={libraryLoading}
+                  optionFilterProp="label"
+                  options={libraryPartnerOptions}
+                  placeholder={watchedLibraryPlayer1Id ? '搜索搭档' : '请先选择队员一'}
+                />
+              </Form.Item>
+              <Form.Item
+                label="队伍名称"
+                name="teamName"
+                rules={[{ required: true, message: '请填写队伍名称' }]}
+              >
+                <Input placeholder="例如：飞羽队" maxLength={120} />
+              </Form.Item>
+            </>
+          ) : null}
+        </Form>
+        {!libraryLoading && libraryPlayers.length === 0 ? (
+          <Button type="link" style={{ paddingInline: 0 }} onClick={() => router.push('/admin/players')}>
+            选手库为空，前往选手管理添加
+          </Button>
+        ) : null}
+      </Modal>
       <Modal
         title="批量新增参赛选手"
         open={batchModalOpen}

@@ -1105,6 +1105,50 @@ export default function DrawsPage() {
         </Row>
       </section>
 
+      {canShowSwapControls && (
+        <section style={{ marginBottom: 16, border: '1px solid #faad14', borderRadius: 8, padding: 16, background: '#fffbe6' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+            <SwapOutlined style={{ color: '#d48806' }} />
+            <Typography.Text strong style={{ color: '#d48806' }}>签位调整</Typography.Text>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              发布前可交换任意两个签位的选手
+            </Typography.Text>
+          </div>
+          <Space wrap>
+            <Select
+              value={swapPosA}
+              onChange={setSwapPosA}
+              placeholder="选择签位 A"
+              style={{ width: 220 }}
+              options={slotOptions.filter((opt) => opt.value !== swapPosB)}
+            />
+            <Select
+              value={swapPosB}
+              onChange={setSwapPosB}
+              placeholder="选择签位 B"
+              style={{ width: 220 }}
+              options={slotOptions.filter((opt) => opt.value !== swapPosA)}
+            />
+            <Popconfirm
+              title={`确认交换签位 #${swapPosA} 与 #${swapPosB} 的选手？`}
+              onConfirm={handleSwap}
+              disabled={!swapPosA || !swapPosB}
+            >
+              <Button
+                type="primary"
+                icon={<SwapOutlined />}
+                disabled={!swapPosA || !swapPosB}
+              >
+                交换
+              </Button>
+            </Popconfirm>
+            {(swapPosA || swapPosB) && (
+              <Button onClick={() => { setSwapPosA(undefined); setSwapPosB(undefined); }}>清除</Button>
+            )}
+          </Space>
+        </section>
+      )}
+
       {pendingRedrawRequest && (
         <section
           style={{
@@ -1165,18 +1209,13 @@ export default function DrawsPage() {
 
       <Spin spinning={loading}>
         <Row gutter={[16, 16]}>
-          <Col xs={24} xl={8}>
+          <Col span={24}>
             <section
               style={{
                 border: '1px solid #f0f0f0',
                 borderRadius: 8,
                 padding: 16,
                 background: '#fff',
-                maxHeight: 'calc(100vh - 220px)',
-                minHeight: 360,
-                display: 'flex',
-                flexDirection: 'column',
-                overflow: 'hidden',
               }}
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
@@ -1211,70 +1250,21 @@ export default function DrawsPage() {
                 columns={registrationColumns}
                 dataSource={visibleRegistrations}
                 pagination={{ pageSize: 8, size: 'small', showSizeChanger: false }}
-                scroll={{ x: 520, y: 'calc(100vh - 500px)' }}
-                style={{ flex: 1, minHeight: 0 }}
+                tableLayout="fixed"
               />
             </section>
           </Col>
-          <Col xs={24} xl={16}>
+          <Col span={24}>
             <Space direction="vertical" size={12} style={{ width: '100%' }}>
-              {canShowSwapControls && (
-                <section style={{ border: '1px solid #faad14', borderRadius: 8, padding: 16, background: '#fffbe6' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-                    <SwapOutlined style={{ color: '#d48806' }} />
-                    <Typography.Text strong style={{ color: '#d48806' }}>签位调整</Typography.Text>
-                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                      发布前可交换任意两个签位的选手
-                    </Typography.Text>
-                  </div>
-                  <Space wrap>
-                    <Select
-                      value={swapPosA}
-                      onChange={setSwapPosA}
-                      placeholder="选择签位 A"
-                      style={{ width: 220 }}
-                      options={slotOptions.filter((opt) => opt.value !== swapPosB)}
-                    />
-                    <Select
-                      value={swapPosB}
-                      onChange={setSwapPosB}
-                      placeholder="选择签位 B"
-                      style={{ width: 220 }}
-                      options={slotOptions.filter((opt) => opt.value !== swapPosA)}
-                    />
-                    <Popconfirm
-                      title={`确认交换签位 #${swapPosA} 与 #${swapPosB} 的选手？`}
-                      onConfirm={handleSwap}
-                      disabled={!swapPosA || !swapPosB}
-                    >
-                      <Button
-                        type="primary"
-                        icon={<SwapOutlined />}
-                        disabled={!swapPosA || !swapPosB}
-                      >
-                        交换
-                      </Button>
-                    </Popconfirm>
-                    {(swapPosA || swapPosB) && (
-                      <Button onClick={() => { setSwapPosA(undefined); setSwapPosB(undefined); }}>清除</Button>
-                    )}
-                  </Space>
-                </section>
-              )}
               <section
                 style={{
                   border: '1px solid #f0f0f0',
                   borderRadius: 8,
                   padding: 16,
                   background: '#fff',
-                  maxHeight: 'calc(100vh - 140px)',
-                  minHeight: 440,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  overflow: 'hidden',
                 }}
               >
-                <div style={{ display: 'flex', flex: '0 0 auto', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12, flexWrap: 'wrap' }}>
                   <Typography.Title level={5} style={{ margin: 0 }}>对阵图</Typography.Title>
                   <Typography.Text type="secondary">
                     {selectedEvent?.drawGeneratedAt
@@ -1282,7 +1272,7 @@ export default function DrawsPage() {
                       : '尚未生成'}
                   </Typography.Text>
                 </div>
-                <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+                <div>
                   <BracketRenderer data={visibleBracket} />
                 </div>
               </section>
