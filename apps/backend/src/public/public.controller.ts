@@ -1,9 +1,19 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Header, Param } from '@nestjs/common';
 import { PublicService } from './public.service';
+import { TournamentScreenService } from './tournament-screen.service';
 
 @Controller('public')
 export class PublicController {
-  constructor(private publicService: PublicService) {}
+  constructor(
+    private publicService: PublicService,
+    private tournamentScreenService: TournamentScreenService,
+  ) {}
+
+  @Get('tournaments/:id/screen')
+  @Header('Cache-Control', 'no-store')
+  getTournamentScreen(@Param('id') id: string) {
+    return this.tournamentScreenService.getScreen(id);
+  }
 
   @Get('home')
   getHome() {

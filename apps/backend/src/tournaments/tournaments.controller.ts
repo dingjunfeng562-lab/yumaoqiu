@@ -23,6 +23,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { Role } from '@prisma/client';
+import { ScreenSettingsDto } from './dto/screen-settings.dto';
 
 type AuthedRequest = {
   user: { id: string; username?: string | null; role: Role };
@@ -91,6 +92,16 @@ export class TournamentsController {
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.tournamentsService.findOne(id);
+  }
+
+  @Get(':id/screen-settings')
+  getScreenSettings(@Param('id') id: string) {
+    return this.tournamentsService.getScreenSettings(id);
+  }
+
+  @Patch(':id/screen-settings')
+  updateScreenSettings(@Param('id') id: string, @Body() dto: ScreenSettingsDto) {
+    return this.tournamentsService.updateScreenSettings(id, dto);
   }
 
   @Patch(':id')

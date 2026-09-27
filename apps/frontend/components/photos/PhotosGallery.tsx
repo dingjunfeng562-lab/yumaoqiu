@@ -238,8 +238,6 @@ export function PhotosGallery({ accessToken }: { accessToken: string }) {
                 key={item.id}
                 className="photo-card"
                 style={{
-                  breakInside: 'avoid',
-                  marginBottom: 12,
                   borderRadius: 10,
                   overflow: 'hidden',
                   position: 'relative',
@@ -323,13 +321,13 @@ export function PhotosGallery({ accessToken }: { accessToken: string }) {
 
       <style jsx>{`
         .photo-grid {
-          column-gap: 12px;
-          column-width: 240px;
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+          align-items: start;
+          gap: 12px;
         }
         .photo-card {
-          -webkit-column-break-inside: avoid;
-          break-inside: avoid;
-          page-break-inside: avoid;
+          min-width: 0;
         }
         .photo-media {
           position: relative;
@@ -367,12 +365,10 @@ export function PhotosGallery({ accessToken }: { accessToken: string }) {
         }
         @media (max-width: 640px) {
           .photo-grid {
-            column-count: 2;
-            column-width: auto;
-            column-gap: 8px;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
           }
           .photo-card {
-            margin-bottom: 8px !important;
             border-radius: 8px !important;
           }
           .photo-overlay-btn {

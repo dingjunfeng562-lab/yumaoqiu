@@ -474,6 +474,7 @@ export default function DrawsPage() {
   const [registrationForm] = Form.useForm();
   const [editingRegistration, setEditingRegistration] = useState<Registration | null>(null);
   const [seedForm] = Form.useForm();
+  const [swapOpen, setSwapOpen] = useState(false);
   const [swapPosA, setSwapPosA] = useState<number | undefined>(undefined);
   const [swapPosB, setSwapPosB] = useState<number | undefined>(undefined);
   const [redrawRequests, setRedrawRequests] = useState<RedrawRequestItem[]>([]);
@@ -570,13 +571,41 @@ export default function DrawsPage() {
     [redrawRequests, selectedEventId],
   );
 
-  const canShowSwapControls = Boolean(
+  const canSwapSlots = Boolean(
     bracket?.currentDraw &&
       !selectedEvent?.drawPublished &&
       isSingleElimination(selectedEvent) &&
       slotOptions.length > 0 &&
       bracket.currentDraw.status === 'DRAWN',
   );
+
+  function openSwapDialog() {
+    if (!selectedEventId) {
+      message.warning('请先选择单项');
+      return;
+    }
+    if (!bracket?.currentDraw) {
+      message.warning('请先完成抽签，再调整签位');
+      return;
+    }
+    if (selectedEvent?.drawPublished) {
+      message.warning('对阵已发布，请先点击“取消发布”，再调整签位');
+      return;
+    }
+    if (!isSingleElimination(selectedEvent)) {
+      message.warning('当前仅支持单淘汰签表换签位');
+      return;
+    }
+    if (bracket.currentDraw.status !== 'DRAWN') {
+      message.warning('当前签表已冻结，暂时不能调整签位');
+      return;
+    }
+    if (!slotOptions.length) {
+      message.warning('当前没有可交换的签位');
+      return;
+    }
+    setSwapOpen(true);
+  }
 
   async function loadEvents(tournamentId: string) {
     if (!token || !tournamentId) return;
@@ -898,6 +927,7 @@ export default function DrawsPage() {
       });
       setSwapPosA(undefined);
       setSwapPosB(undefined);
+      setSwapOpen(false);
       await refreshDraw();
       message.success('签位已交换');
     } catch (error) {
@@ -1012,6 +1042,9 @@ export default function DrawsPage() {
         <Space wrap>
           <Button icon={<ReloadOutlined />} onClick={refreshDraw} disabled={!selectedEventId}>
             刷新
+          </Button>
+          <Button icon={<SwapOutlined />} onClick={openSwapDialog}>
+            换签位
           </Button>
           {isSuperAdmin && (
             <Popconfirm
@@ -1365,6 +1398,45 @@ export default function DrawsPage() {
           </Col>
         </Row>
       </Spin>
+
+      <Modal
+        title="换签位"
+        open={swapOpen}
+        onOk={handleSwap}
+        onCancel={() => {
+          setSwapOpen(false);
+          setSwapPosA(undefined);
+          setSwapPosB(undefined);
+        }}
+        okText="确认交换"
+        cancelText="取消"
+        okButtonProps={{ disabled: !canSwapSlots || !swapPosA || !swapPosB }}
+      >
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="选择两个签位进行交换"
+          description="交换后会立即更新当前对阵；确认无误后再发布。"
+        />
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Select
+            value={swapPosA}
+            onChange={setSwapPosA}
+            placeholder="选择第一个签位"
+            style={{ width: '100%' }}
+            options={slotOptions.filter((option) => option.value !== swapPosB)}
+          />
+          <SwapOutlined style={{ alignSelf: 'center', color: '#d48806', fontSize: 20 }} />
+          <Select
+            value={swapPosB}
+            onChange={setSwapPosB}
+            placeholder="选择第二个签位"
+            style={{ width: '100%' }}
+            options={slotOptions.filter((option) => option.value !== swapPosA)}
+          />
+        </Space>
+      </Modal>
 
       <Modal
         title="添加单项报名"

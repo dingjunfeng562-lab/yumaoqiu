@@ -168,7 +168,7 @@ async function main() {
       await dialog.getByRole('button', { name: '下载二维码' }).click();
       const download = await downloadPromise;
       assert.ok(download.suggestedFilename().endsWith('.png'));
-      const output = path.resolve('../../outputs/photo-access-qa');
+      const output = path.resolve(process.env.PHOTO_QA_OUTPUT || '../../outputs/photo-access-qa');
       await mkdir(output, { recursive: true });
       await page.screenshot({ path: path.join(output, 'admin-qr.png') });
 
@@ -199,6 +199,15 @@ async function main() {
         await mobile.getByText(label, { exact: true }).click();
         await responsePromise;
         await mobile.waitForFunction(id => document.querySelector('.photo-card img')?.getAttribute('src')?.includes(id), firstId);
+        const cardPositions = await mobile.locator('.photo-card').evaluateAll(cards => cards.slice(0, 3).map((card) => {
+          const rect = card.getBoundingClientRect();
+          return { left: Math.round(rect.left), top: Math.round(rect.top) };
+        }));
+        assert.equal(cardPositions.length, 3);
+        assert.ok(Math.abs(cardPositions[0].top - cardPositions[1].top) <= 1, `${sort}: first row must flow left to right`);
+        assert.ok(cardPositions[1].left > cardPositions[0].left, `${sort}: second photo must be to the right of the first`);
+        assert.ok(cardPositions[2].top > cardPositions[0].top, `${sort}: third photo must continue on the next row`);
+        assert.ok(Math.abs(cardPositions[2].left - cardPositions[0].left) <= 1, `${sort}: next row must restart on the left`);
       }
       assert.equal(await mobile.getByRole('tab').count(), 0, 'No cross-tournament tabs');
       assert.equal(await mobile.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);

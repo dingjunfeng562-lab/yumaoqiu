@@ -15,6 +15,7 @@ export function Providers({
   initialAnnouncement?: ActiveAnnouncement | null;
 }) {
   const pathname = usePathname();
+  const isTournamentScreen = pathname.startsWith('/live-screen/');
 
   useEffect(() => {
     const preventClipboardExport = (event: ClipboardEvent) => {
@@ -41,10 +42,10 @@ export function Providers({
 
   return (
     <SessionProvider>
-      <SessionExpiryHandler />
+      {!isTournamentScreen && <SessionExpiryHandler />}
       <AntdRegistry>
         {children}
-        {!pathname.startsWith('/photos/') && (
+        {!pathname.startsWith('/photos/') && !isTournamentScreen && (
           <GlobalAnnouncementModal initialAnnouncement={initialAnnouncement} />
         )}
       </AntdRegistry>

@@ -2968,6 +2968,7 @@ export class ScoringService {
 
   private compareRefereeMatchOrder(
     a: {
+      status: MatchStatus;
       scheduledAt: Date | null;
       venue: { sortOrder?: number | null; name: string } | null;
       roundNo: number;
@@ -2978,6 +2979,7 @@ export class ScoringService {
       createdAt: Date;
     },
     b: {
+      status: MatchStatus;
       scheduledAt: Date | null;
       venue: { sortOrder?: number | null; name: string } | null;
       roundNo: number;
@@ -2988,6 +2990,15 @@ export class ScoringService {
       createdAt: Date;
     },
   ) {
+    const statusOrder: Record<MatchStatus, number> = {
+      [MatchStatus.LIVE]: 0,
+      [MatchStatus.PENDING]: 1,
+      [MatchStatus.COMPLETED]: 2,
+      [MatchStatus.CANCELLED]: 2,
+    };
+    const statusCompare = statusOrder[a.status] - statusOrder[b.status];
+    if (statusCompare !== 0) return statusCompare;
+
     const aScheduled = a.scheduledAt ? 0 : 1;
     const bScheduled = b.scheduledAt ? 0 : 1;
     if (aScheduled !== bScheduled) return aScheduled - bScheduled;

@@ -284,6 +284,7 @@ model Tournament {
   isPublished           Boolean          @default(false)
   showOnHome            Boolean          @default(false)
   photoAccessToken      String?          @unique @db.VarChar(64)
+  screenSettings        Json?
   startDate             DateTime
   endDate               DateTime
   isArchived            Boolean          @default(false)

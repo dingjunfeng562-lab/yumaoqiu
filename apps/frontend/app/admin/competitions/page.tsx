@@ -7,6 +7,7 @@ import { Button, Input, Modal, Popconfirm, QRCode, Space, Table, Tag, Typography
 import {
   AuditOutlined,
   CopyOutlined,
+  DesktopOutlined,
   DownloadOutlined,
   EditOutlined,
   EyeOutlined,
@@ -71,6 +72,7 @@ export default function AdminCompetitionsPage() {
   const [qrLoadingId, setQrLoadingId] = useState<string>();
   const [photoAccess, setPhotoAccess] = useState<PhotoAccess>();
   const [qrOpen, setQrOpen] = useState(false);
+  const [screenAccess, setScreenAccess] = useState<{ id: string; title: string; url: string }>();
   const qrContainerRef = useRef<HTMLDivElement>(null);
 
   const loadCompetitions = useCallback(async () => {
@@ -281,6 +283,16 @@ export default function AdminCompetitionsPage() {
           >
             {record.photoAccessEnabled ? '查看图片二维码' : '生成图片二维码'}
           </Button>
+          <Button
+            icon={<DesktopOutlined />}
+            onClick={() => setScreenAccess({
+              id: record.id,
+              title: record.title,
+              url: new URL(`/live-screen/${encodeURIComponent(record.id)}`, window.location.origin).toString(),
+            })}
+          >
+            赛事大屏
+          </Button>
         </Space>
       ),
     },
@@ -313,6 +325,19 @@ export default function AdminCompetitionsPage() {
         loading={loading}
         pagination={{ pageSize: 10 }}
       />
+      <Modal title={screenAccess ? `${screenAccess.title} · 赛事大屏` : '赛事大屏'} open={Boolean(screenAccess)} onCancel={() => setScreenAccess(undefined)} footer={null}>
+        {screenAccess && <Space orientation="vertical" size={16} style={{ width: '100%' }}>
+          <Typography.Text type="secondary">打开大屏后，将鼠标移到右下角，点击“大屏设置”即可边调边看。</Typography.Text>
+          <div data-allow-copy><Input aria-label="赛事大屏链接" value={screenAccess.url} readOnly /></div>
+          <Space>
+            <Button type="primary" icon={<DesktopOutlined />} href={screenAccess.url} target="_blank" rel="noopener noreferrer">打开大屏</Button>
+            <Button icon={<CopyOutlined />} onClick={async () => {
+              try { await navigator.clipboard.writeText(screenAccess.url); message.success('大屏链接已复制'); }
+              catch { message.error('复制失败，请手动复制链接'); }
+            }}>复制链接</Button>
+          </Space>
+        </Space>}
+      </Modal>
       <Modal
         title={photoAccess ? `${photoAccess.title} · 图片二维码` : '赛事图片二维码'}
         open={qrOpen}
