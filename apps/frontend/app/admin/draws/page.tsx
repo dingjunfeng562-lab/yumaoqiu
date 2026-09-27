@@ -1138,50 +1138,6 @@ export default function DrawsPage() {
         </Row>
       </section>
 
-      {canShowSwapControls && (
-        <section style={{ marginBottom: 16, border: '1px solid #faad14', borderRadius: 8, padding: 16, background: '#fffbe6' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
-            <SwapOutlined style={{ color: '#d48806' }} />
-            <Typography.Text strong style={{ color: '#d48806' }}>签位调整</Typography.Text>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              发布前可交换任意两个签位的选手
-            </Typography.Text>
-          </div>
-          <Space wrap>
-            <Select
-              value={swapPosA}
-              onChange={setSwapPosA}
-              placeholder="选择签位 A"
-              style={{ width: 220 }}
-              options={slotOptions.filter((opt) => opt.value !== swapPosB)}
-            />
-            <Select
-              value={swapPosB}
-              onChange={setSwapPosB}
-              placeholder="选择签位 B"
-              style={{ width: 220 }}
-              options={slotOptions.filter((opt) => opt.value !== swapPosA)}
-            />
-            <Popconfirm
-              title={`确认交换签位 #${swapPosA} 与 #${swapPosB} 的选手？`}
-              onConfirm={handleSwap}
-              disabled={!swapPosA || !swapPosB}
-            >
-              <Button
-                type="primary"
-                icon={<SwapOutlined />}
-                disabled={!swapPosA || !swapPosB}
-              >
-                交换
-              </Button>
-            </Popconfirm>
-            {(swapPosA || swapPosB) && (
-              <Button onClick={() => { setSwapPosA(undefined); setSwapPosB(undefined); }}>清除</Button>
-            )}
-          </Space>
-        </section>
-      )}
-
       {pendingRedrawRequest && (
         <section
           style={{
