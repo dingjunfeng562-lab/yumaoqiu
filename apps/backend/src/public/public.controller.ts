@@ -1,4 +1,4 @@
-import { Controller, Get, Header, Param } from '@nestjs/common';
+import { Controller, Get, Header, Param, Query } from '@nestjs/common';
 import { PublicService } from './public.service';
 import { TournamentScreenService } from './tournament-screen.service';
 
@@ -56,7 +56,8 @@ export class PublicController {
   }
 
   @Get('ranking')
-  getRanking() {
-    return this.publicService.getRanking();
+  @Header('Cache-Control', 'no-store')
+  getRanking(@Query('tournamentId') tournamentId?: string) {
+    return this.publicService.getRanking(tournamentId);
   }
 }

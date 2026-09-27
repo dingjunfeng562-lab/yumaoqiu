@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { Format, MatchStatus, RegistrationStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SECOND_STAGE_FORMAL_ROUND_NO_BASE } from '../common/second-stage-bracket';
+import { applyFinalRankings, teamStandings } from '../common/final-rankings';
 import { buildOrderbookWorkbook } from './orderbook-workbook';
 
 const XLS_CONTENT_TYPE = 'application/vnd.ms-excel';
@@ -45,6 +46,7 @@ type StandingRow = {
 };
 
 type ExportRegistration = {
+  finalRank?: number | null;
   id: string;
   eventId: string;
   studentId: string | null;
@@ -153,6 +155,7 @@ type ExportVenue = {
 };
 
 type ExportTournament = {
+  teamCompetitions?: Array<Parameters<typeof teamStandings>[0] & { name: string }>;
   name: string;
   startDate: Date;
   endDate: Date;
@@ -245,6 +248,7 @@ export class ExportsService {
             teamName: true,
             isSeed: true,
             seedRank: true,
+            finalRank: true,
             player1: { select: { name: true, gender: true, affiliation: true, contact: true } },
             player2: { select: { name: true, gender: true, affiliation: true, contact: true } },
             competitionRegistration: {
@@ -422,6 +426,7 @@ export class ExportsService {
                   teamName: true,
                   isSeed: true,
                   seedRank: true,
+                  finalRank: true,
                   player1: {
                     select: {
                       name: true,
@@ -488,6 +493,7 @@ export class ExportsService {
       where: { id: tournamentId },
       select: {
         ...baseSelect,
+        teamCompetitions: { include: { teams: true, teamMatches: true } },
         venues: {
           orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
           select: { id: true, name: true, sortOrder: true },
@@ -511,6 +517,7 @@ export class ExportsService {
                 teamName: true,
                 isSeed: true,
                 seedRank: true,
+                finalRank: true,
                 player1: {
                   select: {
                     name: true,
@@ -694,7 +701,7 @@ export class ExportsService {
         rows.push([
           tournament.name,
           EVENT_TYPE_LABELS[event.type] ?? event.type,
-          row.rank,
+          row.rank ?? '未设置',
           row.name,
           row.affiliation,
           row.played,
@@ -705,6 +712,12 @@ export class ExportsService {
       }
     }
 
+    for (const competition of tournament.teamCompetitions ?? []) {
+      if (!competition.teams.some((team) => team.finalRank != null)) continue;
+      for (const row of teamStandings(competition)) {
+        rows.push([tournament.name, `团体赛 · ${competition.name}`, row.rank ?? '未设置', row.name, row.affiliation, row.played, row.wins, row.losses, row.gameDiff]);
+      }
+    }
     if (rows.length === 1) rows.push([tournament.name, '', '', '暂无名次', '', '', '', '', '']);
     return { name: '名次汇总', rows };
   }
@@ -961,9 +974,9 @@ export class ExportsService {
       }
     }
 
-    return rows
+    return applyFinalRankings(rows
       .sort((a, b) => b.wins - a.wins || b.gameDiff - a.gameDiff || a.losses - b.losses)
-      .map((row, index) => ({ rank: index + 1, ...row }));
+      .map((row, index) => ({ rank: index + 1, ...row })), event.registrations);
   }
 
   private formatDateTime(value?: Date | string | null) {

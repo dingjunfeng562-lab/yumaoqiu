@@ -4,6 +4,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { TeamCompetitionsService } from '../team-competitions/team-competitions.service';
 import { AnnouncementsService } from '../announcements/announcements.service';
 import { effectiveTournamentStatus } from '../tournaments/tournament-status';
+import { applyFinalRankings, limitRankings, teamStandings } from '../common/final-rankings';
+import { tournamentResultsReady } from '../common/tournament-results-ready';
 import { buildKnockoutSkeleton } from '../common/knockout-skeleton';
 
 const SECOND_STAGE_FORMAL_ROUND_NO_BASE = 100;
@@ -633,13 +635,28 @@ export class PublicService {
     };
   }
 
-  async getRanking() {
+  async getRanking(tournamentId?: string) {
+    if (!tournamentId) {
+      return {
+        tournaments: await this.prisma.tournament.findMany({
+          where: { isPublished: true, approvalStatus: 'APPROVED' },
+          select: { id: true, name: true },
+          orderBy: [{ startDate: 'desc' }, { edition: 'desc' }],
+        }),
+        generatedAt: new Date().toISOString(),
+      };
+    }
     const tournaments = await this.prisma.tournament.findMany({
       where: {
+        id: tournamentId,
         isPublished: true,
         approvalStatus: 'APPROVED',
       },
       include: {
+        teamCompetitions: {
+          include: { teams: true, teamMatches: true },
+          orderBy: { createdAt: 'asc' },
+        },
         events: {
           include: {
             registrations: {
@@ -655,6 +672,7 @@ export class PublicService {
             },
             secondStage: {
               include: {
+                matches: { select: { status: true } },
                 slots: { orderBy: { sortOrder: 'asc' } },
                 rankings: { orderBy: { rank: 'asc' } },
               },
@@ -668,6 +686,12 @@ export class PublicService {
 
     return {
       tournaments: tournaments.map((tournament) => {
+        if (!tournamentResultsReady(tournament)) {
+          return {
+            id: tournament.id, name: tournament.name, status: tournament.status,
+            rankingsAvailable: false, events: [],
+          };
+        }
         const events = tournament.events.map((event) => {
           const registrationMap = new Map(
             event.registrations.map((registration) => [registration.id, registration]),
@@ -683,10 +707,25 @@ export class PublicService {
             registrations: event.registrations.length,
             matches: event.matches.length,
             completedMatches: completedMatches.length,
-            standings,
+            rankingLimit: event.rankingLimit,
+            standings: limitRankings(standings, event.rankingLimit).map((row) => ({
+              id: row.id, rank: row.rank, name: row.name,
+              teamName: registrationMap.get(row.id)?.teamName ?? null,
+            })),
           };
         });
 
+        const teamEvents = tournament.teamCompetitions
+          .filter((competition) => competition.isPublished && competition.teams.length > 0)
+          .map((competition) => ({
+            id: competition.id, type: 'TEAM', typeLabel: `团体赛 · ${competition.name}`,
+            format: 'TEAM', registrations: competition.teams.length,
+            matches: competition.teamMatches.length,
+            completedMatches: competition.teamMatches.filter((match) => match.status === MatchStatus.COMPLETED).length,
+            rankingLimit: competition.rankingLimit,
+            standings: limitRankings(teamStandings(competition), competition.rankingLimit)
+              .map((row) => ({ id: row.id, rank: row.rank, name: row.name, teamName: null })),
+          }));
         return {
           id: tournament.id,
           name: tournament.name,
@@ -698,12 +737,13 @@ export class PublicService {
           status: tournament.status,
           statusLabel: deriveTournamentDisplayStatus(tournament),
           stats: {
-            events: events.length,
-            registrations: events.reduce((sum, event) => sum + event.registrations, 0),
-            matches: events.reduce((sum, event) => sum + event.matches, 0),
-            completedMatches: events.reduce((sum, event) => sum + event.completedMatches, 0),
+            events: events.length + teamEvents.length,
+            registrations: [...events, ...teamEvents].reduce((sum, event) => sum + event.registrations, 0),
+            matches: [...events, ...teamEvents].reduce((sum, event) => sum + event.matches, 0),
+            completedMatches: [...events, ...teamEvents].reduce((sum, event) => sum + event.completedMatches, 0),
           },
-          events,
+          rankingsAvailable: true,
+          events: [...events, ...teamEvents],
         };
       }),
       generatedAt: new Date().toISOString(),
@@ -1238,7 +1278,11 @@ export class PublicService {
   }
 
   private eventStandings(event: any, registrationMap: Map<string, any>) {
-    if (event.format === Format.SINGLE_ELIMINATION_PLUS_GROUP_RANKING) {
+    return applyFinalRankings(this.calculatedEventStandings(event, registrationMap), event.registrations);
+  }
+
+  private calculatedEventStandings(event: any, registrationMap: Map<string, any>) {
+    if (event.secondStage || event.format === Format.SINGLE_ELIMINATION_PLUS_GROUP_RANKING) {
       return this.singleEliminationPlusGroupRankingStandings(event, registrationMap);
     }
     if (event.format === Format.SINGLE_ELIMINATION) {
@@ -1247,10 +1291,10 @@ export class PublicService {
     if (event.format === Format.GROUP_PLUS_PLAYOFF) {
       return this.groupPlusPlayoffStandings(event, registrationMap);
     }
-    if (event.format === Format.GROUP_PLUS_KNOCKOUT_STD) {
+    if (event.format === Format.GROUP_PLUS_KNOCKOUT_STD || event.format === Format.GROUP_PLUS_KNOCKOUT) {
       return this.groupPlusKnockoutStdStandings(event, registrationMap);
     }
-    // ROUND_ROBIN（单组循环）与 GROUP_PLUS_KNOCKOUT 都按组内循环战绩排名。
+    // ROUND_ROBIN（单组循环）按组内循环战绩排名。
     return this.groupStageStandings(event, registrationMap);
   }
 

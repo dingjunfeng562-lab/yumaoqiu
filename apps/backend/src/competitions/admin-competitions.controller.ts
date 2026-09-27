@@ -4,6 +4,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { CompetitionsService } from './competitions.service';
+import { UpdateCompetitionRankingsDto } from './dto/competition-rankings.dto';
 import {
   AdminBatchCompetitionPlayersDto,
   AdminCompetitionLibraryPlayerDto,
@@ -38,6 +39,16 @@ export class AdminCompetitionsController {
   @Patch('competitions/:id/unpublish')
   unpublishCompetition(@Param('id') id: string) {
     return this.competitionsService.unpublishCompetition(id);
+  }
+
+  @Get('competitions/:id/rankings')
+  getRankings(@Param('id') id: string) {
+    return this.competitionsService.getRankings(id);
+  }
+
+  @Patch('competitions/:id/rankings')
+  updateRankings(@Param('id') id: string, @Body() dto: UpdateCompetitionRankingsDto) {
+    return this.competitionsService.updateRankings(id, dto);
   }
 
   @Post('competitions/:id/photo-access')

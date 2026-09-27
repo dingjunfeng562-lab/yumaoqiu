@@ -454,6 +454,7 @@ model Event {
   tournament         Tournament         @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
   type               EventType
   format             Format
+  rankingLimit       Int?
   scoringRule        ScoringRule
   scoringMode        ScoringMode
   customGamePoint    Int?
@@ -592,6 +593,7 @@ model Registration {
   rejectReason     String?
   isSeed           Boolean            @default(false)
   seedRank         Int?
+  finalRank        Int?
   groupName        String?
   drawSlots        DrawSlot[]
   drawSeedSettings DrawSeedSetting[]
@@ -661,6 +663,7 @@ model TeamCompetition {
   name         String
   description  String?               @db.Text
   winThreshold Int                   @default(3)
+  rankingLimit Int?
   isPublished  Boolean               @default(false)
   items        TeamCompetitionItem[]
   teams        Team[]
@@ -694,6 +697,7 @@ model Team {
   name              String
   affiliation       String
   notes             String?
+  finalRank         Int?
   members           TeamMember[]
   lineups           TeamLineup[]
   team1Matches      TeamMatch[]  @relation("team1Matches")

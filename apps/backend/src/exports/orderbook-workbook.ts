@@ -1,4 +1,5 @@
 import * as ExcelJS from 'exceljs';
+import { teamStandings } from '../common/final-rankings';
 import { buildKnockoutSkeleton } from '../common/knockout-skeleton';
 import type {
   ExportEvent,
@@ -1340,6 +1341,18 @@ function buildRankingSummarySheet(wb: ExcelJS.Workbook, tournament: ExportTourna
   });
   let row = 3;
   for (const event of tournament.events) {
+    if (event.registrations.some((registration) => registration.finalRank != null)) {
+      for (const registration of [...event.registrations].sort((a, b) => (a.finalRank ?? Infinity) - (b.finalRank ?? Infinity) || a.id.localeCompare(b.id))) {
+        ws.getCell(row, 1).value = eventLabel(event);
+        ws.getCell(row, 2).value = registration.finalRank == null ? '未设置' : `第${registration.finalRank}名`;
+        ws.getCell(row, 3).value = registrationName(registration);
+        ws.getCell(row, 4).value = '手动设置';
+        ws.getCell(row, 5).value = registration.finalRank == null ? '待定' : '已确定';
+        styleBodyRange(ws, row, row, 1, 5);
+        row++;
+      }
+      continue;
+    }
     const regMap = registrationMap(tournament);
     const rankingMap = new Map<number, { name: string; source: string; status: string }>();
     const stageRankings = event.secondStage?.rankings ?? [];
@@ -1369,6 +1382,18 @@ function buildRankingSummarySheet(wb: ExcelJS.Workbook, tournament: ExportTourna
       ws.getCell(row, 5).value = item.status;
       styleBodyRange(ws, row, row, 1, 5);
       row += 1;
+    }
+  }
+  for (const competition of tournament.teamCompetitions ?? []) {
+    if (!competition.teams.some((team) => team.finalRank != null)) continue;
+    for (const standing of teamStandings(competition)) {
+      ws.getCell(row, 1).value = `团体赛 · ${competition.name}`;
+      ws.getCell(row, 2).value = standing.rank == null ? '未设置' : `第${standing.rank}名`;
+      ws.getCell(row, 3).value = standing.name;
+      ws.getCell(row, 4).value = '手动设置';
+      ws.getCell(row, 5).value = standing.rank == null ? '待定' : '已确定';
+      styleBodyRange(ws, row, row, 1, 5);
+      row++;
     }
   }
   if (row === 3) ws.getCell(row, 1).value = '暂无名次数据';

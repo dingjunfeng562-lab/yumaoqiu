@@ -1,0 +1,2 @@
+ALTER TABLE `Registration` ADD COLUMN `finalRank` INTEGER NULL;
+ALTER TABLE `Team` ADD COLUMN `finalRank` INTEGER NULL;

@@ -24,7 +24,7 @@ type HistoryEvent = {
   typeLabel: string;
   registrations: Array<{ id: string; name: string; affiliation: string; groupName?: string | null }>;
   standings: Array<{
-    rank: number;
+    rank: number | null;
     name: string;
     affiliation: string;
     played: number;
@@ -149,7 +149,7 @@ export default async function HistoryPage() {
                         </div>
                         {event.standings.slice(0, 6).map((row) => (
                           <div key={`${event.id}-${row.name}`} className="grid grid-cols-[56px_1fr_72px_72px_72px] items-center border-t border-slate-100 px-3 py-2 text-sm">
-                            <strong className="text-blue-700">{row.rank}</strong>
+                            <strong className="text-blue-700">{row.rank ?? '未设置'}</strong>
                             <span className="min-w-0 truncate font-bold">{row.name}</span>
                             <span>{row.played}</span>
                             <span>{row.wins}</span>

@@ -27,6 +27,7 @@ import {
   SubmitCompetitionRegistrationDto,
 } from './dto/competition-registration.dto';
 import { effectiveTournamentStatus } from '../tournaments/tournament-status';
+import { UpdateCompetitionRankingsDto } from './dto/competition-rankings.dto';
 
 const EVENT_TYPE_LABELS: Record<EventType, string> = {
   MENS_SINGLES: '男子单打',
@@ -770,6 +771,84 @@ export class CompetitionsService {
     });
 
     return this.toRegistrationView(created);
+  }
+
+  async getRankings(id: string) {
+    const tournament = await this.prisma.tournament.findUnique({
+      where: { id },
+      include: {
+        events: {
+          orderBy: { type: 'asc' },
+          include: { registrations: {
+            where: { status: RegistrationStatus.APPROVED },
+            include: { player1: true, player2: true },
+            orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+          } },
+        },
+        teamCompetitions: {
+          orderBy: { createdAt: 'asc' },
+          include: { teams: { orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] } },
+        },
+      },
+    });
+    if (!tournament) throw new NotFoundException('赛事不存在');
+    return {
+      id, title: tournament.name,
+      groups: [
+        ...tournament.events.map((event) => ({
+          id: event.id, kind: 'event' as const, name: EVENT_TYPE_LABELS[event.type],
+          rankingLimit: event.rankingLimit,
+          entries: event.registrations.map((registration) => ({
+            id: registration.id,
+            name: [registration.player1.name, registration.player2?.name].filter(Boolean).join(' / '),
+            teamName: registration.teamName,
+            affiliation: [registration.player1.affiliation, registration.player2?.affiliation].filter(Boolean).join(' / '),
+            rank: registration.finalRank,
+          })),
+        })),
+        ...tournament.teamCompetitions.map((competition) => ({
+          id: competition.id, kind: 'team' as const, name: `团体赛 · ${competition.name}`,
+          rankingLimit: competition.rankingLimit,
+          entries: competition.teams.map((team) => ({
+            id: team.id, name: team.name, teamName: null, affiliation: team.affiliation, rank: team.finalRank,
+          })),
+        })),
+      ],
+    };
+  }
+
+  async updateRankings(id: string, dto: UpdateCompetitionRankingsDto) {
+    if (new Set(dto.entries.map((entry) => entry.id)).size !== dto.entries.length) {
+      throw new BadRequestException('同一参赛方不能重复设置');
+    }
+    await this.prisma.$transaction(async (tx) => {
+      const tournament = await tx.tournament.findUnique({ where: { id }, select: { id: true } });
+      if (!tournament) throw new NotFoundException('赛事不存在');
+      const group = dto.kind === 'event'
+        ? await tx.event.findFirst({ where: { id: dto.groupId, tournamentId: id }, select: { id: true } })
+        : await tx.teamCompetition.findFirst({ where: { id: dto.groupId, tournamentId: id }, select: { id: true } });
+      if (!group) throw new BadRequestException('该项目不属于当前赛事');
+      if (dto.rankingLimit !== undefined) {
+        if (dto.kind === 'event') {
+          await tx.event.update({ where: { id: group.id }, data: { rankingLimit: dto.rankingLimit } });
+        } else {
+          await tx.teamCompetition.update({ where: { id: group.id }, data: { rankingLimit: dto.rankingLimit } });
+        }
+      }
+      for (const entry of dto.entries) {
+        const result = dto.kind === 'event'
+          ? await tx.registration.updateMany({
+            where: { id: entry.id, eventId: dto.groupId, event: { tournamentId: id }, status: RegistrationStatus.APPROVED },
+            data: { finalRank: entry.rank },
+          })
+          : await tx.team.updateMany({
+            where: { id: entry.id, teamCompetitionId: dto.groupId, teamCompetition: { tournamentId: id } },
+            data: { finalRank: entry.rank },
+          });
+        if (result.count !== 1) throw new BadRequestException('参赛方不属于该赛事项目，或报名状态已变更，请刷新后重试');
+      }
+    });
+    return this.getRankings(id);
   }
 
   async createAdminPlayerFromLibrary(

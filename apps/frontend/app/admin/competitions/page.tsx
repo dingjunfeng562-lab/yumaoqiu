@@ -17,9 +17,11 @@ import {
   PlayCircleOutlined,
   QrcodeOutlined,
   TeamOutlined,
+  TrophyOutlined,
   UndoOutlined,
 } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
+import { CompetitionRankingsModal } from '@/components/admin/CompetitionRankingsModal';
 
 type Competition = {
   id: string;
@@ -69,6 +71,7 @@ export default function AdminCompetitionsPage() {
   const isRoot = session?.user?.role === 'ROOT';
   const [competitions, setCompetitions] = useState<Competition[]>([]);
   const [loading, setLoading] = useState(false);
+  const [rankingCompetition, setRankingCompetition] = useState<Competition>();
   const [qrLoadingId, setQrLoadingId] = useState<string>();
   const [photoAccess, setPhotoAccess] = useState<PhotoAccess>();
   const [qrOpen, setQrOpen] = useState(false);
@@ -270,6 +273,9 @@ export default function AdminCompetitionsPage() {
           >
             水印设置
           </Button>
+          <Button icon={<TrophyOutlined />} onClick={() => setRankingCompetition(record)}>
+            设置排名
+          </Button>
           <Button
             icon={<PictureOutlined />}
             onClick={() => router.push(competitionPath(record, 'photos'))}
@@ -325,6 +331,9 @@ export default function AdminCompetitionsPage() {
         loading={loading}
         pagination={{ pageSize: 10 }}
       />
+      {rankingCompetition && token && <CompetitionRankingsModal
+        key={rankingCompetition.id} competition={rankingCompetition} token={token}
+        onClose={() => setRankingCompetition(undefined)} />}
       <Modal title={screenAccess ? `${screenAccess.title} · 赛事大屏` : '赛事大屏'} open={Boolean(screenAccess)} onCancel={() => setScreenAccess(undefined)} footer={null}>
         {screenAccess && <Space orientation="vertical" size={16} style={{ width: '100%' }}>
           <Typography.Text type="secondary">打开大屏后，将鼠标移到右下角，点击“大屏设置”即可边调边看。</Typography.Text>
