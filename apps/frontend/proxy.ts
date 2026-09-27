@@ -6,6 +6,10 @@ function isAdminRole(role?: string | null) {
   return role === 'ADMIN' || role === 'SUPER_ADMIN' || role === 'ROOT';
 }
 
+function canSubmitRegistration(role?: string | null) {
+  return role === 'PLAYER' || role === 'SUPER_ADMIN' || role === 'ROOT';
+}
+
 function destinationForRole(role?: string | null) {
   if (role === 'REFEREE') return '/referee/my-matches';
   if (isAdminRole(role)) return '/admin';
@@ -65,10 +69,10 @@ export default async function proxy(req: NextRequest) {
   if (isRefereeRoute && session?.user?.role !== 'REFEREE') {
     return NextResponse.redirect(new URL('/forbidden', req.url));
   }
-  if (isRegisterRoute && session?.user?.role !== 'PLAYER') {
+  if (isRegisterRoute && !canSubmitRegistration(session?.user?.role)) {
     return NextResponse.redirect(new URL('/forbidden', req.url));
   }
-  if (isMyRegistrationsRoute && session?.user?.role !== 'PLAYER') {
+  if (isMyRegistrationsRoute && !canSubmitRegistration(session?.user?.role)) {
     return NextResponse.redirect(new URL('/forbidden', req.url));
   }
   if (isLoginPage && isLoggedIn && !hasInvalidSession) {

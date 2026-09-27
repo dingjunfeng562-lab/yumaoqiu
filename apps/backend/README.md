@@ -96,3 +96,40 @@ Nest is an MIT-licensed open source project. It can grow thanks to the sponsors 
 ## License
 
 Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+
+## 图片自动审核
+
+超级管理员（`ROOT`）可从后台“图片审核”菜单或仪表盘“图片审核设置”按钮进入设置页。
+配置独立的 DeepSeek API Key，选择是否需要审核并保存。新安装默认关闭，密钥留空保留已保存值。
+“测试连接”发送系统生成的测试图片，验证视觉输入和 JSON 输出，不保存配置；调用按服务商规则计费。
+
+启用后，管理员/摄影师赛事照片、赛事封面和水印 Logo 在写文件前统一调用
+`deepseek-flash`。只有完整有效的 `PASS` 结果才能继续上传。
+`BLOCK`、`REVIEW`、超时、拒答、异常响应均不保存图片，并向上传者返回失败原因。
+色情内容及所有二维码均禁止，包括普通微信、群聊、收款和赛事二维码，无安全用途例外。
+二维码先由本地 `jsqr` 识别，命中立即拦截；未命中再由 DeepSeek 检查，兼顾无法解码或遮挡的二维码。
+模型须同时输出 `hasSexualContent`、`hasQrCode`；任一为真即拦截，即使同时返回 `PASS`。
+本版本没有人工复核队列或历史图片重审；关闭后仅影响后续上传。
+审核启用时拒绝动图、多页图和超过 8000 万像素的图片；每个后端进程最多并发 3 个审核请求。
+密钥仅供后端调用，不返回浏览器，独立于网站 AI 助手配置。
+
+部署时需创建配置表并重新生成 Prisma 客户端，再构建/重启后端。在 `apps/backend` 执行：
+
+```sh
+node node_modules/prisma/build/index.js db execute --file prisma/migrations/20260927_image_moderation/migration.sql
+node node_modules/prisma/build/index.js generate
+node node_modules/typescript/bin/tsc --project tsconfig.build.json --incremental false
+```
+
+配置表 SQL 仅创建新表，可重复执行；不使用全库 `db push`。采用 Prisma migrations 管理的部署环境应通过其既有迁移流程应用此迁移。
+
+验证命令（同一目录）：
+
+```sh
+node node_modules/jest/bin/jest.js image-moderation --runInBand
+node test/image-moderation.smoke.cjs
+```
+
+冒烟检查要求本地后端运行于 4000 端口，创建并清理专属测试账号，不修改已保存的审核设置。
+若已有密钥，检查会调用一次真实图片审核；`--skip-live` 跳过该调用。
+可选 `--browser` 使用仓库本地 Playwright 和 Edge 验证 3000 端口页面并保存截图。

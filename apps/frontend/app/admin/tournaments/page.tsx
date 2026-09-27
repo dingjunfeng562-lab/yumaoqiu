@@ -32,6 +32,7 @@ import {
   EditOutlined,
   InboxOutlined,
   PlusOutlined,
+  UndoOutlined,
   UploadOutlined,
 } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
@@ -192,6 +193,7 @@ export default function TournamentsPage() {
   }, [token]);
 
   const role = liveRole ?? sessionRole;
+  const isRoot = role === 'ROOT';
   const isSuperAdmin = role === SUPER_ADMIN_ROLE || role === 'ROOT';
 
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
@@ -481,6 +483,17 @@ export default function TournamentsPage() {
     }
   };
 
+  const handleRestore = async (id: string) => {
+    if (!isRoot) return;
+    try {
+      await apiFetch(`/tournaments/${id}/restore`, { method: 'PATCH', token });
+      message.success('赛事已恢复');
+      await fetchTournaments();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '恢复失败');
+    }
+  };
+
   const handleStatusChange = async (record: Tournament, status: string) => {
     if (!isSuperAdmin || status === record.status) return;
     setStatusUpdatingId(record.id);
@@ -638,6 +651,11 @@ export default function TournamentsPage() {
               <Button icon={<InboxOutlined />} size="small">
                 归档
               </Button>
+            </Popconfirm>
+          )}
+          {record.isArchived && isRoot && (
+            <Popconfirm title="确认恢复该归档赛事？" onConfirm={() => handleRestore(record.id)}>
+              <Button icon={<UndoOutlined />} size="small">恢复赛事</Button>
             </Popconfirm>
           )}
           <Popconfirm title="确认删除？此操作不可恢复" onConfirm={() => handleDelete(record.id)}>

@@ -4,9 +4,9 @@ const BASE = process.env.NEXT_PUBLIC_API_URL!;
 
 export async function apiFetch<T>(
   path: string,
-  options: RequestInit & { token?: string } = {},
+  options: RequestInit & { token?: string; redirectOnForbidden?: boolean } = {},
 ): Promise<T> {
-  const { token, ...rest } = options;
+  const { token, redirectOnForbidden = true, ...rest } = options;
   const res = await fetch(`${BASE}${path}`, {
     ...rest,
     headers: {
@@ -25,7 +25,7 @@ export async function apiFetch<T>(
           redirect: true,
         });
       }
-      if (res.status === 403) {
+      if (res.status === 403 && redirectOnForbidden) {
         window.location.href = '/forbidden';
       }
     }

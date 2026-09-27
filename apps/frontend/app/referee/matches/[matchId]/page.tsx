@@ -130,7 +130,7 @@ type ScoreState = {
     customGamePoint?: number | null;
     customGameCap?: number | null;
     customGamesToWin?: number | null;
-    tournament: { name: string; edition: number };
+    tournament: { id: string; name: string; edition: number };
   };
   venue?: { id: string; name: string } | null;
   scheduledAt?: string | null;
@@ -992,7 +992,9 @@ function TopMatchBar({
       <div className="referee-top-match-inner flex min-w-0 flex-col gap-4 border-b border-slate-100 px-3 py-3 sm:px-5 sm:py-4 lg:flex-row lg:items-center lg:justify-between xl:px-6">
         <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
           <Link
-            href="/referee/my-matches"
+            href={score.event.tournament?.id && score.venue?.id
+              ? `/referee/tournaments/${encodeURIComponent(score.event.tournament.id)}/courts/${encodeURIComponent(score.venue.id)}`
+              : '/referee/my-matches'}
             className="inline-flex h-10 w-fit shrink-0 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-sm font-black text-[#0F172A] shadow-sm transition hover:border-blue-200 hover:bg-blue-50 hover:text-[#2563EB] active:scale-[0.98]"
           >
             <ArrowLeftOutlined />

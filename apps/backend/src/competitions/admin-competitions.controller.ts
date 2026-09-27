@@ -39,6 +39,11 @@ export class AdminCompetitionsController {
     return this.competitionsService.unpublishCompetition(id);
   }
 
+  @Post('competitions/:id/photo-access')
+  createPhotoAccess(@Param('id') id: string) {
+    return this.competitionsService.getOrCreatePhotoAccess(id);
+  }
+
   @Get('competitions/:id/registrations')
   listRegistrations(@Param('id') id: string, @Query('status') status?: string) {
     return this.competitionsService.listAdminRegistrations(id, status);

@@ -67,9 +67,15 @@ type BusyInterval = {
   end: number;
 };
 
+type DailyBreakInterval = {
+  start: number;
+  end: number;
+};
+
 type DailyWindow = {
   startMinutes: number;
   endMinutes: number;
+  breakPeriods: DailyBreakInterval[];
 };
 
 const SCHEDULE_TIME_ZONE = 'Asia/Shanghai';
@@ -174,9 +180,13 @@ export class SchedulingService {
     const startAt = this.parseScheduleDate(dto.startAt, dto.startAtLocal, '开始时间无效');
     const matchMinutes = dto.matchMinutes ?? tournament.defaultMatchMinutes;
     const breakMinutes = dto.breakMinutes ?? tournament.breakMinutes;
-    const dailyWindow = this.parseDailyWindow(tournament.dailyStartTime, tournament.dailyEndTime);
-    if (dailyWindow.endMinutes - dailyWindow.startMinutes < matchMinutes) {
-      throw new BadRequestException('每日比赛时段不足以安排一场比赛');
+    const dailyWindow = this.parseDailyWindow(
+      dto.dailyStartTime ?? tournament.dailyStartTime,
+      dto.dailyEndTime ?? tournament.dailyEndTime,
+      dto.breakPeriods,
+    );
+    if (this.longestPlayableMinutes(dailyWindow) < matchMinutes) {
+      throw new BadRequestException('每日可排程时段不足以安排一场比赛，请调整起止时间或休息时段');
     }
     const earliestScheduleStart = Math.max(
       startAt.getTime(),
@@ -744,35 +754,90 @@ export class SchedulingService {
     return this.dateFromScheduleParts(year, month, day, hour * 60 + minute, second, 0);
   }
 
-  private parseDailyWindow(startTime: string, endTime: string): DailyWindow {
+  private parseDailyWindow(
+    startTime: string,
+    endTime: string,
+    breakPeriods: AutoScheduleDto['breakPeriods'] = [],
+  ): DailyWindow {
     const startMinutes = this.timeToMinutes(startTime);
     const endMinutes = this.timeToMinutes(endTime);
     if (endMinutes <= startMinutes) {
       throw new BadRequestException('每日比赛结束时间必须晚于开始时间');
     }
-    return { startMinutes, endMinutes };
+
+    const parsedBreaks = (breakPeriods ?? [])
+      .map((period) => {
+        const start = this.timeToMinutes(period.startTime);
+        const end = start + period.durationMinutes;
+        if (start < startMinutes || end > endMinutes) {
+          throw new BadRequestException('休息时段必须完整位于每日排程起止时间内');
+        }
+        return { start, end };
+      })
+      .sort((a, b) => a.start - b.start);
+
+    for (let index = 1; index < parsedBreaks.length; index += 1) {
+      if (parsedBreaks[index].start < parsedBreaks[index - 1].end) {
+        throw new BadRequestException('休息时段不能重叠');
+      }
+    }
+
+    return { startMinutes, endMinutes, breakPeriods: parsedBreaks };
   }
 
   private timeToMinutes(value: string) {
-    const [hour, minute] = value.split(':').map(Number);
-    if (!Number.isInteger(hour) || !Number.isInteger(minute)) {
+    const match = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
+    if (!match) {
+      throw new BadRequestException('每日比赛时段设置无效');
+    }
+    const hour = Number(match[1]);
+    const minute = Number(match[2]);
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
       throw new BadRequestException('每日比赛时段设置无效');
     }
     return hour * 60 + minute;
   }
 
   private normalizeToDailyWindow(timestamp: number, matchMinutes: number, window: DailyWindow) {
-    const date = new Date(timestamp);
-    const parts = this.scheduleDateParts(date);
-    const minutes = parts.hour * 60 + parts.minute;
-    if (minutes < window.startMinutes) {
-      return this.withMinutesOfDay(date, window.startMinutes).getTime();
+    let candidate = timestamp;
+    while (true) {
+      const date = new Date(candidate);
+      const parts = this.scheduleDateParts(date);
+      const minutes = parts.hour * 60 + parts.minute;
+      if (minutes < window.startMinutes) {
+        candidate = this.withMinutesOfDay(date, window.startMinutes).getTime();
+        continue;
+      }
+      if (minutes + matchMinutes > window.endMinutes) {
+        const nextDay = this.addScheduleDays(parts, 1);
+        candidate = this.dateFromScheduleParts(
+          nextDay.year,
+          nextDay.month,
+          nextDay.day,
+          window.startMinutes,
+        ).getTime();
+        continue;
+      }
+
+      const overlappingBreak = window.breakPeriods.find(
+        (period) => minutes < period.end && minutes + matchMinutes > period.start,
+      );
+      if (overlappingBreak) {
+        candidate = this.withMinutesOfDay(date, overlappingBreak.end).getTime();
+        continue;
+      }
+      return candidate;
     }
-    if (minutes + matchMinutes > window.endMinutes) {
-      const nextDay = this.addScheduleDays(parts, 1);
-      return this.dateFromScheduleParts(nextDay.year, nextDay.month, nextDay.day, window.startMinutes).getTime();
+  }
+
+  private longestPlayableMinutes(window: DailyWindow) {
+    let longest = 0;
+    let cursor = window.startMinutes;
+    for (const period of window.breakPeriods) {
+      longest = Math.max(longest, period.start - cursor);
+      cursor = period.end;
     }
-    return timestamp;
+    return Math.max(longest, window.endMinutes - cursor);
   }
 
   private withMinutesOfDay(date: Date, minutes: number) {

@@ -255,9 +255,11 @@ export default function PhotographerUploadPage() {
             const res = JSON.parse(xhr.responseText) as {
               uploaded?: number;
               failed?: Array<{ name: string; reason: string }>;
+              message?: string | string[];
             };
             ok = xhr.status >= 200 && xhr.status < 300 && (res.uploaded ?? 0) >= 1;
             if (!ok && res.failed?.length) reason = res.failed[0].reason;
+            else if (!ok && res.message) reason = Array.isArray(res.message) ? res.message.join('；') : res.message;
           } catch {
             ok = false;
           }

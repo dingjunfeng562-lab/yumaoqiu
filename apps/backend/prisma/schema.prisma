@@ -192,6 +192,7 @@ model User {
   inviteCode        InviteCode?        @relation(fields: [inviteCodeId], references: [id], onDelete: SetNull)
   competitionRegistrations CompetitionRegistration[]
   matches           Match[]
+  refereeTournamentGrants RefereeTournamentGrant[]
   drawOperationLogs DrawOperationLog[] @relation("drawOperationLogOperator")
   drawSeedSettings  DrawSeedSetting[]  @relation("drawSeedSettingCreator")
   drawRedrawRequests        DrawRedrawRequest[] @relation("drawRedrawRequestRequester")
@@ -282,6 +283,7 @@ model Tournament {
   dailyEndTime          String           @default("18:00") @db.VarChar(5)
   isPublished           Boolean          @default(false)
   showOnHome            Boolean          @default(false)
+  photoAccessToken      String?          @unique @db.VarChar(64)
   startDate             DateTime
   endDate               DateTime
   isArchived            Boolean          @default(false)
@@ -298,10 +300,33 @@ model Tournament {
   watermark             TournamentWatermark?
   emailSettings         EventEmailSetting[]
   emailLogs             EmailLog[]
+  refereeAccessCode     RefereeTournamentAccessCode?
+  refereeGrants         RefereeTournamentGrant[]
   createdAt             DateTime         @default(now())
   updatedAt             DateTime         @updatedAt
 
   @@index([approvalStatus, isPublished])
+}
+
+model RefereeTournamentAccessCode {
+  tournamentId String @id
+  tournament Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade, map: "referee_access_code_tournament_fkey")
+  token String @unique @db.VarChar(64)
+  createdAt DateTime @default(now())
+
+  @@map("referee_tournament_access_code")
+}
+
+model RefereeTournamentGrant {
+  tournamentId String
+  tournament Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade, map: "referee_grant_tournament_fkey")
+  userId String
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade, map: "referee_grant_user_fkey")
+  grantedAt DateTime @default(now())
+
+  @@id([tournamentId, userId])
+  @@index([userId])
+  @@map("referee_tournament_grant")
 }
 
 model EmailGlobalSetting {
@@ -975,6 +1000,16 @@ model AiConfig {
   updatedAt      DateTime @updatedAt
 
   @@map("ai_config")
+}
+
+model ImageModerationConfig {
+  id        String   @id @default("default") @db.VarChar(191)
+  enabled   Boolean  @default(false)
+  apiKey    String   @default("") @db.VarChar(512) @map("api_key")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("image_moderation_config")
 }
 
 model UsageMetric {

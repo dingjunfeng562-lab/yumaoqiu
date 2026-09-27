@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import sharp from 'sharp';
 import { TournamentsService } from './tournaments.service';
+import { ImageModerationService } from '../image-moderation/image-moderation.service';
 import { CreateTournamentDto, UpdateTournamentDto } from './dto/tournament.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
@@ -31,7 +32,10 @@ type AuthedRequest = {
 @Roles(Role.ADMIN, Role.SUPER_ADMIN)
 @Controller('tournaments')
 export class TournamentsController {
-  constructor(private tournamentsService: TournamentsService) {}
+  constructor(
+    private tournamentsService: TournamentsService,
+    private moderation: ImageModerationService,
+  ) {}
 
   @Post('upload-cover')
   @UseInterceptors(
@@ -44,6 +48,7 @@ export class TournamentsController {
   )
   async uploadCover(@UploadedFile() file: any) {
     if (!file?.buffer) throw new BadRequestException('请上传有效的图片文件');
+    await this.moderation.assertAllowed(file.buffer);
     const dir = join(process.cwd(), 'uploads', 'covers');
     mkdirSync(dir, { recursive: true });
     // 封面只作展示用,统一压成 ≤1600px 宽的 WebP,2MB 级原图会缩到约 100-300KB
@@ -96,6 +101,12 @@ export class TournamentsController {
   @Patch(':id/archive')
   archive(@Param('id') id: string) {
     return this.tournamentsService.archive(id);
+  }
+
+  @Patch(':id/restore')
+  @Roles(Role.ROOT)
+  restore(@Param('id') id: string, @Req() req: AuthedRequest) {
+    return this.tournamentsService.restore(id, req.user);
   }
 
   @Delete(':id')

@@ -38,19 +38,21 @@ export class PhotosController {
   // ----- Public gallery -----
 
   @Get('photos')
+  @Header('Cache-Control', 'private, no-store')
   listPublic(@Query() query: PublicPhotoQueryDto) {
     return this.photosService.listPublicPhotos(query);
   }
 
-  @Get('photos/tournaments')
-  listTournaments() {
-    return this.photosService.listTournamentsWithPhotos();
+  @Get('photos/access/:accessToken')
+  @Header('Cache-Control', 'private, no-store')
+  getPublicGallery(@Param('accessToken') accessToken: string) {
+    return this.photosService.getPublicGallery(accessToken);
   }
 
   @Get('photos/:id/thumb')
   @Header('Cache-Control', 'no-store')
-  async thumb(@Param('id') id: string) {
-    const { absolutePath } = await this.photosService.getPublicThumb(id);
+  async thumb(@Param('id') id: string, @Query('accessToken') accessToken: string) {
+    const { absolutePath } = await this.photosService.getPublicThumb(id, accessToken);
     return new StreamableFile(createReadStream(absolutePath), {
       type: 'image/jpeg',
       disposition: 'inline',
@@ -59,8 +61,8 @@ export class PhotosController {
 
   @Get('photos/:id/view')
   @Header('Cache-Control', 'no-store')
-  async view(@Param('id') id: string) {
-    const { absolutePath } = await this.photosService.getPublicView(id);
+  async view(@Param('id') id: string, @Query('accessToken') accessToken: string) {
+    const { absolutePath } = await this.photosService.getPublicView(id, accessToken);
     const ext = extname(absolutePath).toLowerCase();
     const type = ext === '.png' ? 'image/png' : 'image/jpeg';
     return new StreamableFile(createReadStream(absolutePath), {
@@ -70,10 +72,11 @@ export class PhotosController {
   }
 
   // Download the high-res watermarked version as an attachment. Public, like the
-  // gallery itself; goes through the API so the filename is server-controlled.
+  // token-protected gallery itself; goes through the API so the filename is server-controlled.
   @Get('photos/:id/download')
-  async download(@Param('id') id: string) {
-    const { absolutePath, filename } = await this.photosService.getDownload(id);
+  @Header('Cache-Control', 'private, no-store')
+  async download(@Param('id') id: string, @Query('accessToken') accessToken: string) {
+    const { absolutePath, filename } = await this.photosService.getDownload(id, accessToken);
     const ext = extname(absolutePath).toLowerCase();
     const type = ext === '.png' ? 'image/png' : 'image/jpeg';
     const asciiFallback = filename.replace(/[^\x20-\x7e]/g, '_');

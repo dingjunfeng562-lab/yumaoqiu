@@ -17,6 +17,12 @@ import { PhotoCategory } from '@prisma/client';
 
 const CATEGORIES: PhotoCategory[] = ['PLAYER', 'MATCH', 'AWARD'];
 
+export enum PublicPhotoSort {
+  POPULAR = 'POPULAR',
+  DOWNLOADS = 'DOWNLOADS',
+  LATEST = 'LATEST',
+}
+
 export class UploadPhotosDto {
   @IsString()
   tournamentId: string;
@@ -27,7 +33,12 @@ export class UploadPhotosDto {
 
 export class PublicPhotoQueryDto {
   @IsString()
-  tournamentId: string;
+  @Matches(/^[A-Za-z0-9_-]{32,64}$/, { message: '图片访问地址无效' })
+  accessToken: string;
+
+  @IsOptional()
+  @IsIn(Object.values(PublicPhotoSort))
+  sort?: PublicPhotoSort;
 
   @IsOptional()
   @IsIn(CATEGORIES)

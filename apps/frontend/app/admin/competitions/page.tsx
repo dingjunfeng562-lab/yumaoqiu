@@ -1,18 +1,22 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { Button, Popconfirm, Space, Table, Tag, Typography, message } from 'antd';
+import { Button, Input, Modal, Popconfirm, QRCode, Space, Table, Tag, Typography, message } from 'antd';
 import {
   AuditOutlined,
+  CopyOutlined,
+  DownloadOutlined,
   EditOutlined,
   EyeOutlined,
   PauseCircleOutlined,
   PictureOutlined,
   PlusOutlined,
   PlayCircleOutlined,
+  QrcodeOutlined,
   TeamOutlined,
+  UndoOutlined,
 } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 
@@ -29,6 +33,7 @@ type Competition = {
   isPublished: boolean;
   approvalStatus?: 'PENDING' | 'APPROVED' | 'REJECTED';
   rejectReason?: string | null;
+  photoAccessEnabled?: boolean;
   counts: {
     all: number;
     pending: number;
@@ -36,6 +41,14 @@ type Competition = {
     rejected: number;
     removed: number;
   };
+};
+
+type PhotoAccess = {
+  competitionId: string;
+  title: string;
+  accessToken: string;
+  path: string;
+  url: string;
 };
 
 function formatDate(value: string) {
@@ -52,8 +65,13 @@ export default function AdminCompetitionsPage() {
   const router = useRouter();
   const { data: session } = useSession();
   const token = session?.user?.accessToken as string | undefined;
+  const isRoot = session?.user?.role === 'ROOT';
   const [competitions, setCompetitions] = useState<Competition[]>([]);
   const [loading, setLoading] = useState(false);
+  const [qrLoadingId, setQrLoadingId] = useState<string>();
+  const [photoAccess, setPhotoAccess] = useState<PhotoAccess>();
+  const [qrOpen, setQrOpen] = useState(false);
+  const qrContainerRef = useRef<HTMLDivElement>(null);
 
   const loadCompetitions = useCallback(async () => {
     if (!token) return;
@@ -85,6 +103,62 @@ export default function AdminCompetitionsPage() {
     } catch (error) {
       message.error(error instanceof Error ? error.message : '操作失败');
     }
+  }
+
+  async function restoreCompetition(record: Competition) {
+    if (!token || !isRoot) return;
+    try {
+      await apiFetch(`/tournaments/${encodeURIComponent(record.id)}/restore`, {
+        method: 'PATCH',
+        token,
+      });
+      message.success('赛事已恢复');
+      await loadCompetitions();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '恢复失败');
+    }
+  }
+
+  async function showPhotoQrCode(record: Competition) {
+    if (!token) return;
+    setQrLoadingId(record.id);
+    try {
+      const data = await apiFetch<Omit<PhotoAccess, 'url'>>(
+        `/admin/competitions/${encodeURIComponent(record.id)}/photo-access`,
+        { method: 'POST', token },
+      );
+      const url = new URL(data.path, window.location.origin).toString();
+      setPhotoAccess({ ...data, url });
+      setCompetitions((current) =>
+        current.map((item) =>
+          item.id === record.id ? { ...item, photoAccessEnabled: true } : item,
+        ),
+      );
+      setQrOpen(true);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '二维码生成失败');
+    } finally {
+      setQrLoadingId(undefined);
+    }
+  }
+
+  async function copyPhotoAccessUrl() {
+    if (!photoAccess) return;
+    try {
+      await navigator.clipboard.writeText(photoAccess.url);
+      message.success('访问地址已复制');
+    } catch {
+      message.error('复制失败，请手动复制地址');
+    }
+  }
+
+  function downloadQrCode() {
+    const canvas = qrContainerRef.current?.querySelector('canvas');
+    if (!canvas || !photoAccess) return;
+    const link = document.createElement('a');
+    link.download = `${photoAccess.title}-赛事图片二维码.png`;
+    link.href = canvas.toDataURL('image/png');
+    link.click();
   }
 
   const columns = [
@@ -150,23 +224,31 @@ export default function AdminCompetitionsPage() {
           <Button icon={<EditOutlined />} onClick={() => router.push('/admin/tournaments')}>
             编辑赛事
           </Button>
-          <Popconfirm
-            title={record.isPublished ? '确认下架该赛事？' : '确认发布该赛事？'}
-            onConfirm={() => togglePublication(record)}
-            disabled={!record.isPublished && record.approvalStatus !== 'APPROVED'}
-          >
-            <Button
-              icon={record.isPublished ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
+          {record.isArchived ? (
+            isRoot ? (
+              <Popconfirm title="确认恢复该归档赛事？" onConfirm={() => restoreCompetition(record)}>
+                <Button icon={<UndoOutlined />}>恢复赛事</Button>
+              </Popconfirm>
+            ) : null
+          ) : (
+            <Popconfirm
+              title={record.isPublished ? '确认下架该赛事？' : '确认发布该赛事？'}
+              onConfirm={() => togglePublication(record)}
               disabled={!record.isPublished && record.approvalStatus !== 'APPROVED'}
-              title={
-                !record.isPublished && record.approvalStatus !== 'APPROVED'
-                  ? '需要总管理员审核通过后才能发布'
-                  : undefined
-              }
             >
-              {record.isPublished ? '下架' : '发布'}
-            </Button>
-          </Popconfirm>
+              <Button
+                icon={record.isPublished ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
+                disabled={!record.isPublished && record.approvalStatus !== 'APPROVED'}
+                title={
+                  !record.isPublished && record.approvalStatus !== 'APPROVED'
+                    ? '需要总管理员审核通过后才能发布'
+                    : undefined
+                }
+              >
+                {record.isPublished ? '下架' : '发布'}
+              </Button>
+            </Popconfirm>
+          )}
           <Button
             type="primary"
             icon={<AuditOutlined />}
@@ -191,6 +273,13 @@ export default function AdminCompetitionsPage() {
             onClick={() => router.push(competitionPath(record, 'photos'))}
           >
             图片管理
+          </Button>
+          <Button
+            icon={<QrcodeOutlined />}
+            loading={qrLoadingId === record.id}
+            onClick={() => showPhotoQrCode(record)}
+          >
+            {record.photoAccessEnabled ? '查看图片二维码' : '生成图片二维码'}
           </Button>
         </Space>
       ),
@@ -224,6 +313,33 @@ export default function AdminCompetitionsPage() {
         loading={loading}
         pagination={{ pageSize: 10 }}
       />
+      <Modal
+        title={photoAccess ? `${photoAccess.title} · 图片二维码` : '赛事图片二维码'}
+        open={qrOpen}
+        footer={null}
+        onCancel={() => setQrOpen(false)}
+        width={440}
+      >
+        {photoAccess ? (
+          <Space direction="vertical" size={18} style={{ width: '100%', alignItems: 'center', paddingTop: 8 }}>
+            <div ref={qrContainerRef} style={{ padding: 12, borderRadius: 12, background: '#fff' }}>
+              <QRCode type="canvas" value={photoAccess.url} size={260} bordered={false} />
+            </div>
+            <Typography.Text type="secondary" style={{ textAlign: 'center' }}>
+              扫码后先显示本次比赛封面，点击封面任意位置进入照片墙。
+            </Typography.Text>
+            <Input value={photoAccess.url} readOnly addonAfter={<CopyOutlined onClick={copyPhotoAccessUrl} />} />
+            <Space>
+              <Button icon={<CopyOutlined />} onClick={copyPhotoAccessUrl}>
+                复制地址
+              </Button>
+              <Button type="primary" icon={<DownloadOutlined />} onClick={downloadQrCode}>
+                下载二维码
+              </Button>
+            </Space>
+          </Space>
+        ) : null}
+      </Modal>
     </div>
   );
 }

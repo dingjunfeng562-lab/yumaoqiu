@@ -196,8 +196,8 @@ export class CompetitionsService {
     if (!user) {
       throw new NotFoundException('用户不存在');
     }
-    if (user.role !== Role.PLAYER) {
-      throw new ForbiddenException('只有普通用户可以提交报名');
+    if (user.role !== Role.PLAYER && user.role !== Role.SUPER_ADMIN && user.role !== Role.ROOT) {
+      throw new ForbiddenException('只有普通用户和超级管理员可以提交报名');
     }
     if (!dto.className?.trim() || !dto.contact?.trim()) {
       throw new BadRequestException('请完整填写学院班级和联系方式');
@@ -490,6 +490,7 @@ export class CompetitionsService {
       isPublished: competition.isPublished,
       approvalStatus: competition.approvalStatus,
       rejectReason: competition.rejectReason,
+      photoAccessEnabled: Boolean(competition.photoAccessToken),
       counts: {
         all: competition.competitionRegistrations.length,
         pending: competition.competitionRegistrations.filter((item) => item.status === RegistrationStatus.PENDING)
@@ -506,13 +507,15 @@ export class CompetitionsService {
 
   async publishCompetition(id: string) {
     const existing = await this.findCompetition(id, true);
+    if (existing.isArchived) {
+      throw new ForbiddenException('赛事已归档，请先由超级管理员恢复后再发布');
+    }
     if (existing.approvalStatus !== 'APPROVED') {
       throw new BadRequestException('赛事尚未通过总管理员审核,无法发布');
     }
     const competition = await this.prisma.tournament.update({
       where: { id },
       data: {
-        isArchived: false,
         isPublished: true,
       },
       include: {
@@ -556,6 +559,33 @@ export class CompetitionsService {
       },
     });
     return this.toCompetitionView(competition, true);
+  }
+
+  async getOrCreatePhotoAccess(id: string) {
+    await this.findCompetition(id, true);
+    const generatedToken = randomUUID().replace(/-/g, '');
+
+    // updateMany makes concurrent first-time requests safe: only one request
+    // can fill a null token, and all callers read back the same final value.
+    await this.prisma.tournament.updateMany({
+      where: { id, photoAccessToken: null },
+      data: { photoAccessToken: generatedToken },
+    });
+
+    const competition = await this.prisma.tournament.findUnique({
+      where: { id },
+      select: { name: true, photoAccessToken: true },
+    });
+    if (!competition?.photoAccessToken) {
+      throw new NotFoundException('赛事不存在');
+    }
+
+    return {
+      competitionId: id,
+      title: competition.name,
+      accessToken: competition.photoAccessToken,
+      path: `/photos/${competition.photoAccessToken}`,
+    };
   }
 
   async listAdminRegistrations(competitionId: string, status?: string) {

@@ -73,6 +73,7 @@ const baseMenuItems: MenuItem[] = [
   { key: '/admin/scoring', icon: <FieldTimeOutlined />, label: '裁判分配' },
   { key: '/admin/announcements', icon: <NotificationOutlined />, label: '公告管理', superOnly: true },
   { key: '/admin/ai-config', icon: <MessageOutlined />, label: 'AI 助手配置', superOnly: true },
+  { key: '/admin/image-moderation', icon: <AuditOutlined />, label: '图片审核', rootOnly: true },
   { key: '/admin/email', icon: <MailOutlined />, label: '邮件通知设置', rootOnly: true },
 ];
 
@@ -82,6 +83,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const [passwordSubmitting, setPasswordSubmitting] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
+  const [menuNavigation, setMenuNavigation] = useState<{
+    key: string;
+    fromPathname: string;
+  } | null>(null);
   const [passwordForm] = Form.useForm();
   const pathname = usePathname();
   const router = useRouter();
@@ -96,11 +101,6 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     mql.addEventListener('change', apply);
     return () => mql.removeEventListener('change', apply);
   }, []);
-
-  // Close mobile drawer whenever the route changes
-  useEffect(() => {
-    setMobileDrawerOpen(false);
-  }, [pathname]);
 
   const token = session?.user?.accessToken as string | undefined;
   const sessionRole = (session?.user as { role?: string } | undefined)?.role;
@@ -158,13 +158,19 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
   const menuItems = visibleMenuItems.map((item) => {
     if (item.key !== '/admin/approvals') {
-      return { key: item.key, icon: item.icon, label: item.label };
+      return {
+        key: item.key,
+        icon: item.icon,
+        label: item.label,
+        onMouseEnter: () => router.prefetch(item.key),
+      };
     }
     return {
       key: item.key,
       icon: item.icon,
+      onMouseEnter: () => router.prefetch(item.key),
       label: (
-        <span style={{ display: 'inline-flex', alignItems: 'center', color: '#ffffff' }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center' }}>
           <span>{item.label}</span>
           {pendingApprovalCount > 0 ? (
             <Badge
@@ -184,6 +190,8 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     : pathname === '/admin'
       ? '/admin'
       : '';
+  const displayedSelectedKey =
+    menuNavigation?.fromPathname === pathname ? menuNavigation.key : selectedKey;
 
   async function submitPasswordChange() {
     const values = await passwordForm.validateFields();
@@ -246,11 +254,17 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     <Menu
       theme="dark"
       mode="inline"
-      selectedKeys={[selectedKey]}
+      selectedKeys={[displayedSelectedKey]}
       items={menuItems}
       onClick={({ key }) => {
-        router.push(String(key));
+        const targetPath = String(key);
         setMobileDrawerOpen(false);
+        if (targetPath === pathname) return;
+
+        // Highlight immediately while Next.js loads the target route.
+        setMenuNavigation({ key: targetPath, fromPathname: pathname });
+        router.prefetch(targetPath);
+        router.push(targetPath);
       }}
     />
   );
@@ -259,9 +273,11 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     <Layout style={{ height: '100vh', minHeight: '100vh', overflow: 'hidden' }}>
       {!isMobile && (
         <Sider
+          className="admin-navigation-panel"
           collapsible
           collapsed={collapsed}
           onCollapse={setCollapsed}
+          onCopy={(event) => event.preventDefault()}
           theme="dark"
           style={{
             height: '100vh',
@@ -280,7 +296,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       {/* Mobile slide-in drawer instead of the persistent Sider */}
       <Drawer
         placement="left"
-        width={260}
+        size={260}
         open={isMobile && mobileDrawerOpen}
         onClose={() => setMobileDrawerOpen(false)}
         styles={{
@@ -289,8 +305,13 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         }}
         rootClassName="admin-mobile-drawer"
       >
-        {brandRow(false)}
-        {navMenu}
+        <div
+          className="admin-navigation-panel"
+          onCopy={(event) => event.preventDefault()}
+        >
+          {brandRow(false)}
+          {navMenu}
+        </div>
       </Drawer>
 
       <Layout style={{ height: '100vh', minWidth: 0, overflow: 'hidden' }}>

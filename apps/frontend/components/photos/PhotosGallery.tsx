@@ -1,21 +1,18 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Empty, Image, Segmented, Spin, Tabs, Typography, message } from 'antd';
+import { Empty, Image, Segmented, Spin, Typography, message } from 'antd';
 import { DownloadOutlined, EyeOutlined } from '@ant-design/icons';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 const API_ORIGIN = API_BASE.replace(/\/api$/, '');
 const PAGE_SIZE = 30;
-
-type TournamentTab = {
-  id: string;
-  name: string;
-  edition: number;
-  startDate: string;
-  endDate: string;
-  photoCount: number;
-};
+type PhotoSort = 'POPULAR' | 'DOWNLOADS' | 'LATEST';
+const SORT_OPTIONS: { label: string; value: PhotoSort }[] = [
+  { label: '热门排行', value: 'POPULAR' },
+  { label: '下载最多', value: 'DOWNLOADS' },
+  { label: '最新上传', value: 'LATEST' },
+];
 
 type PhotoItem = {
   id: string;
@@ -23,6 +20,7 @@ type PhotoItem = {
   seq: number;
   url: string;
   thumbUrl: string;
+  downloadUrl: string;
   width: number;
   height: number;
   uploadedAt: string;
@@ -58,29 +56,19 @@ function fullUrl(path: string) {
   return `${API_ORIGIN}${path}`;
 }
 
-function viewUrl(id: string) {
-  return `${API_BASE}/photos/${id}/view`;
-}
-
-function downloadUrl(id: string) {
-  return `${API_BASE}/photos/${id}/download`;
-}
-
 function formatDateTime(value: string) {
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? value : d.toLocaleString('zh-CN', { hour12: false });
 }
 
-export function PhotosGallery() {
-  const [tournaments, setTournaments] = useState<TournamentTab[]>([]);
-  const [tournamentId, setTournamentId] = useState<string | undefined>();
+export function PhotosGallery({ accessToken }: { accessToken: string }) {
   const [category, setCategory] = useState<string>('ALL');
+  const [sort, setSort] = useState<PhotoSort>('POPULAR');
   const [photos, setPhotos] = useState<PhotoItem[]>([]);
   const [total, setTotal] = useState(0);
   const [photoStats, setPhotoStats] = useState({ viewCount: 0, downloadCount: 0 });
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
-  const [initialLoading, setInitialLoading] = useState(true);
 
   const [previewVisible, setPreviewVisible] = useState(false);
   const [previewIndex, setPreviewIndex] = useState(0);
@@ -94,36 +82,16 @@ export function PhotosGallery() {
   const requestKeyRef = useRef(0);
   const countedThumbIdsRef = useRef<Set<string>>(new Set());
 
-  // Load the tournament tabs once.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(`${API_BASE}/photos/tournaments`, { cache: 'no-store' });
-        const data = (res.ok ? await res.json() : []) as TournamentTab[];
-        if (cancelled) return;
-        setTournaments(data);
-        if (data.length) setTournamentId(data[0].id);
-      } catch {
-        /* ignore */
-      } finally {
-        if (!cancelled) setInitialLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   const loadPage = useCallback(
     async (targetPage: number, replace: boolean) => {
-      if (!tournamentId || loadingRef.current) return;
+      if (!accessToken || loadingRef.current) return;
       const requestKey = ++requestKeyRef.current;
       loadingRef.current = true;
       setLoading(true);
       try {
         const params = new URLSearchParams({
-          tournamentId,
+          accessToken,
+          sort,
           page: String(targetPage),
           pageSize: String(PAGE_SIZE),
         });
@@ -141,18 +109,20 @@ export function PhotosGallery() {
         if (replace) countedThumbIdsRef.current.clear();
         setPhotos((prev) => (replace ? data.items : [...prev, ...data.items]));
       } catch {
-        message.error('图片加载失败');
+        if (requestKey === requestKeyRef.current) message.error('图片加载失败');
       } finally {
-        loadingRef.current = false;
-        setLoading(false);
+        if (requestKey === requestKeyRef.current) {
+          loadingRef.current = false;
+          setLoading(false);
+        }
       }
     },
-    [tournamentId, category],
+    [accessToken, category, sort],
   );
 
-  // Reset + load first page whenever tournament or category changes.
+  // Start from page one when the category, ordering, or access address changes.
   useEffect(() => {
-    if (!tournamentId) return;
+    if (!accessToken) return;
     // Cancel any in-flight request so a fast filter/tab switch cannot block the new load.
     requestKeyRef.current += 1;
     loadingRef.current = false;
@@ -161,8 +131,14 @@ export function PhotosGallery() {
     setPhotoStats({ viewCount: 0, downloadCount: 0 });
     countedThumbIdsRef.current.clear();
     setPage(1);
+    setPreviewVisible(false);
+    setPreviewIndex(0);
     void loadPage(1, true);
-  }, [tournamentId, category, loadPage]);
+    return () => {
+      requestKeyRef.current += 1;
+      loadingRef.current = false;
+    };
+  }, [accessToken, category, sort, loadPage]);
 
   // Infinite scroll.
   useEffect(() => {
@@ -207,40 +183,28 @@ export function PhotosGallery() {
     // streams the high-res watermarked version with a 赛事名-分类-序号.ext filename.
     incrementLocalStat(item.id, 'downloadCount');
     const a = document.createElement('a');
-    a.href = downloadUrl(item.id);
+    a.href = fullUrl(item.downloadUrl);
     document.body.appendChild(a);
     a.click();
     a.remove();
   }
 
-  if (initialLoading) {
-    return (
-      <div style={{ textAlign: 'center', padding: 48 }}>
-        <Spin size="large" />
-      </div>
-    );
-  }
-
-  if (tournaments.length === 0) {
-    return <Empty description="暂无赛事图片" style={{ padding: 48 }} />;
-  }
-
   return (
     <div>
-      <Tabs
-        activeKey={tournamentId}
-        onChange={setTournamentId}
-        items={tournaments.map((t) => ({
-          key: t.id,
-          label: `${t.name}(${t.photoCount})`,
-        }))}
-      />
-
       <div style={{ marginBottom: 16 }}>
         <Segmented
           options={CATEGORY_OPTIONS.map((o) => ({ label: o.label, value: o.value }))}
           value={category}
           onChange={(v) => setCategory(String(v))}
+        />
+      </div>
+
+      <div style={{ marginBottom: 16 }}>
+        <Segmented<PhotoSort>
+          aria-label="照片排序"
+          options={SORT_OPTIONS}
+          value={sort}
+          onChange={setSort}
         />
       </div>
 
@@ -256,7 +220,7 @@ export function PhotosGallery() {
         <Empty description="该分类下暂无图片" style={{ padding: 48 }} />
       ) : (
         <Image.PreviewGroup
-          items={photos.map((p) => viewUrl(p.id))}
+          items={photos.map((p) => fullUrl(p.url))}
           preview={{
             visible: previewVisible,
             current: previewIndex,

@@ -16,12 +16,14 @@ import {
   Popconfirm,
   Select,
   Space,
+  Switch,
   Table,
   Tag,
+  TimePicker,
   Typography,
   message,
 } from 'antd';
-import { DeleteOutlined, DownloadOutlined, DownOutlined, EditOutlined, ReloadOutlined } from '@ant-design/icons';
+import { DeleteOutlined, DownloadOutlined, DownOutlined, EditOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { roundCn } from '@/lib/round';
 
@@ -186,6 +188,11 @@ function defaultAutoStart(tournament?: Tournament) {
   return date.hour(hour || 0).minute(minute || 0).second(0).millisecond(0);
 }
 
+function dailyTimeValue(value?: string, fallback = '18:00') {
+  const [hour, minute] = (value || fallback).split(':').map(Number);
+  return dayjs().hour(hour || 0).minute(minute || 0).second(0).millisecond(0);
+}
+
 export default function AdminSchedulingPage() {
   const { data: session } = useSession();
   const token = session?.user?.accessToken;
@@ -287,6 +294,9 @@ export default function AdminSchedulingPage() {
 
   async function autoSchedule(values: {
     startAt: Dayjs;
+    dailyEndTime: Dayjs;
+    hasBreakPeriods?: boolean;
+    breakPeriods?: Array<{ startTime: Dayjs; durationMinutes: number }>;
     matchMinutes: number;
     breakMinutes: number;
     venueIds?: string[];
@@ -303,6 +313,14 @@ export default function AdminSchedulingPage() {
           eventId: selectedEventId || undefined,
           startAt: values.startAt.toISOString(),
           startAtLocal: values.startAt.format('YYYY-MM-DD HH:mm'),
+          dailyStartTime: values.startAt.format('HH:mm'),
+          dailyEndTime: values.dailyEndTime.format('HH:mm'),
+          breakPeriods: values.hasBreakPeriods
+            ? (values.breakPeriods ?? []).map((period) => ({
+                startTime: period.startTime.format('HH:mm'),
+                durationMinutes: period.durationMinutes,
+              }))
+            : [],
           matchMinutes: values.matchMinutes,
           breakMinutes: values.breakMinutes,
           venueIds: values.venueIds,
@@ -390,6 +408,9 @@ export default function AdminSchedulingPage() {
   function openAutoSchedule() {
     autoForm.setFieldsValue({
       startAt: defaultAutoStart(selectedTournament),
+      dailyEndTime: dailyTimeValue(selectedTournament?.dailyEndTime),
+      hasBreakPeriods: false,
+      breakPeriods: [{ startTime: dailyTimeValue('12:00'), durationMinutes: 60 }],
       matchMinutes: selectedTournament?.defaultMatchMinutes ?? 45,
       breakMinutes: selectedTournament?.breakMinutes ?? 10,
       venueIds: undefined,
@@ -465,8 +486,21 @@ export default function AdminSchedulingPage() {
           font-size: 11px;
           line-height: 18px;
         }
-        .schedule-table-compact .ant-input-number-group-wrapper {
-          width: 72px !important;
+        .schedule-duration-grid {
+          display: grid;
+          grid-template-columns: 80px minmax(0, 1fr);
+          align-items: center;
+          column-gap: 8px;
+          min-width: 0;
+        }
+        .schedule-duration-grid .ant-input-number-group-wrapper {
+          width: 80px !important;
+        }
+        .schedule-duration-actual {
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
         }
         .schedule-table-compact .ant-input-number-input {
           height: 22px;
@@ -581,8 +615,8 @@ export default function AdminSchedulingPage() {
           dataSource={schedule.matches}
           loading={loading}
           rowClassName={rowConflictClass}
-          pagination={{ pageSize: 10, size: 'small', showSizeChanger: false }}
-          scroll={{ x: 820 }}
+          pagination={{ pageSize: 15, size: 'small', showSizeChanger: false }}
+          scroll={{ x: 940 }}
           columns={[
             {
               title: '冲突',
@@ -619,33 +653,40 @@ export default function AdminSchedulingPage() {
               },
             },
             {
-              title: '预估',
-              dataIndex: 'durationMinutes',
-              width: 78,
-              render: (value: number, row: ScheduleMatch) => (
-                <InputNumber
-                  key={`${row.id}-${value}`}
-                  size="small"
-                  min={1}
-                  defaultValue={value}
-                  onBlur={(e) => {
-                    const next = Number((e.target as HTMLInputElement).value);
-                    if (Number.isFinite(next)) quickUpdateDuration(row, next);
-                  }}
-                  onPressEnter={(e) => {
-                    const next = Number((e.target as HTMLInputElement).value);
-                    if (Number.isFinite(next)) quickUpdateDuration(row, next);
-                  }}
-                  addonAfter="分"
-                  style={{ width: 72 }}
-                />
+              title: (
+                <div className="schedule-duration-grid">
+                  <span>预估</span>
+                  <span>实际</span>
+                </div>
               ),
-            },
-            {
-              title: '实际',
-              width: 82,
-              ellipsis: true,
-              render: (_: unknown, row: ScheduleMatch) => formatActualDuration(row),
+              dataIndex: 'durationMinutes',
+              width: 176,
+              render: (value: number, row: ScheduleMatch) => {
+                const actualDuration = formatActualDuration(row);
+                return (
+                  <div className="schedule-duration-grid">
+                    <InputNumber
+                      key={`${row.id}-${value}`}
+                      size="small"
+                      min={1}
+                      defaultValue={value}
+                      onBlur={(e) => {
+                        const next = Number((e.target as HTMLInputElement).value);
+                        if (Number.isFinite(next)) quickUpdateDuration(row, next);
+                      }}
+                      onPressEnter={(e) => {
+                        const next = Number((e.target as HTMLInputElement).value);
+                        if (Number.isFinite(next)) quickUpdateDuration(row, next);
+                      }}
+                      addonAfter="分"
+                      style={{ width: 80 }}
+                    />
+                    <span className="schedule-duration-actual" title={actualDuration}>
+                      {actualDuration}
+                    </span>
+                  </div>
+                );
+              },
             },
             {
               title: '操作',
@@ -658,19 +699,116 @@ export default function AdminSchedulingPage() {
         />
       </Card>
 
-      <Modal title="自动排程" open={autoModalOpen} onCancel={() => setAutoModalOpen(false)} onOk={() => autoForm.submit()} destroyOnHidden>
+      <Modal
+        title="自动排程"
+        open={autoModalOpen}
+        onCancel={() => setAutoModalOpen(false)}
+        onOk={() => autoForm.submit()}
+        destroyOnHidden
+        width={640}
+      >
         <Form
           form={autoForm}
           layout="vertical"
           onFinish={autoSchedule}
           initialValues={{
             startAt: defaultAutoStart(selectedTournament),
+            dailyEndTime: dailyTimeValue(selectedTournament?.dailyEndTime),
+            hasBreakPeriods: false,
+            breakPeriods: [{ startTime: dailyTimeValue('12:00'), durationMinutes: 60 }],
             matchMinutes: selectedTournament?.defaultMatchMinutes ?? 45,
             breakMinutes: selectedTournament?.breakMinutes ?? 10,
           }}
         >
-          <Form.Item name="startAt" label="开始时间" rules={[{ required: true, message: '请选择开始时间' }]}>
+          <Form.Item name="startAt" label="首日开始时间" rules={[{ required: true, message: '请选择首日开始时间' }]}>
             <DatePicker showTime format="YYYY-MM-DD HH:mm" style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item
+            name="dailyEndTime"
+            label="每日结束时间"
+            dependencies={['startAt']}
+            rules={[
+              { required: true, message: '请选择每日结束时间' },
+              ({ getFieldValue }) => ({
+                validator(_, value: Dayjs | undefined) {
+                  const startAt: Dayjs | undefined = getFieldValue('startAt');
+                  if (!value || !startAt) return Promise.resolve();
+                  const startMinutes = startAt.hour() * 60 + startAt.minute();
+                  const endMinutes = value.hour() * 60 + value.minute();
+                  return endMinutes > startMinutes
+                    ? Promise.resolve()
+                    : Promise.reject(new Error('每日结束时间必须晚于开始时间'));
+                },
+              }),
+            ]}
+          >
+            <TimePicker format="HH:mm" minuteStep={5} style={{ width: '100%' }} />
+          </Form.Item>
+          <Typography.Text type="secondary" style={{ display: 'block', marginTop: -12, marginBottom: 16 }}>
+            第一天排不完时，会按相同的每日起止时间自动续排到第二天及后续日期。
+          </Typography.Text>
+          <Form.Item name="hasBreakPeriods" label="是否安排中途休息" valuePropName="checked">
+            <Switch checkedChildren="安排" unCheckedChildren="不安排" />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(previous, current) => previous.hasBreakPeriods !== current.hasBreakPeriods}>
+            {({ getFieldValue }) =>
+              getFieldValue('hasBreakPeriods') ? (
+                <Form.List
+                  name="breakPeriods"
+                  rules={[
+                    {
+                      validator(_, value) {
+                        return value?.length
+                          ? Promise.resolve()
+                          : Promise.reject(new Error('请至少添加一个休息时段'));
+                      },
+                    },
+                  ]}
+                >
+                  {(fields, { add, remove }, { errors }) => (
+                    <Space direction="vertical" size={8} style={{ width: '100%', marginBottom: 16 }}>
+                      {fields.map(({ key, ...field }, index) => (
+                        <Space key={key} align="baseline" style={{ display: 'flex' }}>
+                          <Form.Item
+                            {...field}
+                            name={[field.name, 'startTime']}
+                            label={index === 0 ? '休息开始' : undefined}
+                            rules={[{ required: true, message: '请选择休息开始时间' }]}
+                            style={{ flex: 1, marginBottom: 0 }}
+                          >
+                            <TimePicker format="HH:mm" minuteStep={5} style={{ width: '100%' }} />
+                          </Form.Item>
+                          <Form.Item
+                            {...field}
+                            name={[field.name, 'durationMinutes']}
+                            label={index === 0 ? '休息时长' : undefined}
+                            rules={[{ required: true, message: '请输入休息时长' }]}
+                            style={{ width: 170, marginBottom: 0 }}
+                          >
+                            <InputNumber min={1} max={1440} addonAfter="分钟" style={{ width: '100%' }} />
+                          </Form.Item>
+                          <Button
+                            danger
+                            icon={<DeleteOutlined />}
+                            onClick={() => remove(field.name)}
+                            aria-label={`删除第 ${index + 1} 个休息时段`}
+                          />
+                        </Space>
+                      ))}
+                      <Button
+                        type="dashed"
+                        icon={<PlusOutlined />}
+                        onClick={() => add({ startTime: dailyTimeValue(fields.length ? '18:00' : '12:00'), durationMinutes: 60 })}
+                        block
+                      >
+                        添加休息时段（如午休、晚餐）
+                      </Button>
+                      <Form.ErrorList errors={errors} />
+                    </Space>
+                  )}
+                </Form.List>
+              ) : null
+            }
           </Form.Item>
           <Form.Item name="scheduleStage" label="排程范围" rules={[{ required: true }]}>
             <Select

@@ -145,6 +145,9 @@ export class TournamentsService {
   }
 
   async update(id: string, dto: UpdateTournamentDto, user?: AuthUser) {
+    if (dto.isArchived === false && user?.role !== Role.ROOT) {
+      throw new ForbiddenException('仅超级管理员可恢复归档赛事');
+    }
     if (dto.status !== undefined && !isSuperAdmin(user)) {
       throw new ForbiddenException('仅总管理员可修改赛事状态');
     }
@@ -200,6 +203,17 @@ export class TournamentsService {
     return this.prisma.tournament.update({
       where: { id },
       data: { isArchived: true },
+    });
+  }
+
+  async restore(id: string, user: AuthUser) {
+    if (user.role !== Role.ROOT) {
+      throw new ForbiddenException('仅超级管理员可恢复归档赛事');
+    }
+    await this.findOne(id);
+    return this.prisma.tournament.update({
+      where: { id },
+      data: { isArchived: false },
     });
   }
 

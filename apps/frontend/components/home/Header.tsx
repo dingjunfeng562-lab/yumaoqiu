@@ -10,7 +10,6 @@ const navItems = [
   { label: '首页', href: '/' },
   { label: '赛事列表', href: '/competitions' },
   { label: '直播大屏幕', href: '/live-screen' },
-  { label: '赛事图片', href: '/photos' },
   { label: '成绩排行', href: '/ranking' },
   { label: '通知公告', href: '/notice' },
 ];

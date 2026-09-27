@@ -1083,6 +1083,7 @@ export class DrawsService {
     const registrationMap = new Map(registrations.map((item) => [item.id, item]));
     const matches = await this.prisma.match.findMany({
       where: { eventId },
+      include: { games: { orderBy: { gameNo: 'asc' } } },
       orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }],
     });
     const sortedMatches = [...matches].sort((a, b) => this.bracketMatchCompare(a, b));

@@ -271,8 +271,18 @@ export default function AdminPhotosPage() {
         const err = await res.json().catch(() => ({ message: '上传失败' }));
         throw new Error(err.message ?? '上传失败');
       }
-      const data = await res.json();
-      message.success(`上传成功: ${data.uploaded} 张${data.failed?.length ? `,失败 ${data.failed.length} 张` : ''}`);
+      const data = await res.json() as { uploaded: number; failed?: Array<{ name: string; reason: string }> };
+      if (data.uploaded > 0) message.success(`上传成功：${data.uploaded} 张`);
+      if (data.failed?.length) {
+        Modal.warning({
+          title: `${data.failed.length} 张图片上传未成功`,
+          width: 560,
+          content: <div style={{ maxHeight: 320, overflowY: 'auto' }}>{data.failed.map((item, index) => (
+            <p key={index} style={{ overflowWrap: 'anywhere' }}><strong>{item.name}</strong>：{item.reason}</p>
+          ))}</div>,
+          okText: '知道了',
+        });
+      }
       setUploadOpen(false);
       setUploadFileList([]);
       void load();

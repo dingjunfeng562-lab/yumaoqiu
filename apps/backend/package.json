@@ -43,6 +43,7 @@
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
     "exceljs": "^4.4.0",
+    "jsqr": "1.4.0",
     "mariadb": "^3.5.2",
     "nodemailer": "^8.0.10",
     "p-limit": "^3.0.2",

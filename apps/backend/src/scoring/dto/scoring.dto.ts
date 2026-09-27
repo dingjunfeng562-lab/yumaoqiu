@@ -1,5 +1,25 @@
 import { MatchEventType } from '@prisma/client';
-import { IsEnum, IsIn, IsOptional, IsString } from 'class-validator';
+import { Type } from 'class-transformer';
+import {
+  ArrayMaxSize,
+  ArrayMinSize,
+  IsArray,
+  IsEnum,
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  Matches,
+  Max,
+  Min,
+  ValidateNested,
+} from 'class-validator';
+
+export class AuthorizeRefereeTournamentDto {
+  @IsString()
+  @Matches(/^[a-f0-9]{64}$/)
+  accessCode: string;
+}
 
 export class ScorePointDto {
   @IsIn([1, 2])
@@ -9,6 +29,27 @@ export class ScorePointDto {
 export class AssignRefereeDto {
   @IsString()
   refereeId: string;
+}
+
+export class CorrectGameScoreDto {
+  @IsInt()
+  @Min(0)
+  @Max(999)
+  side1Score: number;
+
+  @IsInt()
+  @Min(0)
+  @Max(999)
+  side2Score: number;
+}
+
+export class CorrectMatchScoreDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(9)
+  @ValidateNested({ each: true })
+  @Type(() => CorrectGameScoreDto)
+  games: CorrectGameScoreDto[];
 }
 
 export class StartMatchDto {

@@ -102,10 +102,18 @@ function groupMatches(matches: BracketMatch[]) {
 function statusClasses(status?: string | null, paused?: boolean) {
   if (paused) return 'border-amber-300/50 bg-amber-300/12 text-amber-100';
   const normalized = normalizeStatus(status);
-  if (normalized === 'LIVE') return 'border-emerald-300/55 bg-emerald-400/12 text-emerald-100';
-  if (normalized === 'COMPLETED') return 'border-sky-300/35 bg-sky-400/10 text-sky-100';
+  if (normalized === 'LIVE') return 'border-yellow-300/60 bg-yellow-400/15 text-yellow-100';
+  if (normalized === 'COMPLETED') return 'border-red-400/55 bg-red-500/15 text-red-100';
   if (normalized === 'CANCELLED') return 'border-white/15 bg-white/[0.05] text-white/52';
   return 'border-white/12 bg-white/[0.07] text-white/72';
+}
+
+function statusPillClasses(status?: string | null, paused?: boolean) {
+  if (paused) return 'bg-amber-300 text-slate-950';
+  const normalized = normalizeStatus(status);
+  if (normalized === 'LIVE') return 'bg-yellow-300 text-slate-950';
+  if (normalized === 'COMPLETED') return 'bg-red-500 text-white';
+  return 'bg-white/12 text-white/72';
 }
 
 async function fetchBrackets() {
@@ -184,9 +192,7 @@ function MatchCard({ bracket, match }: { bracket: KnockoutBracketData; match: Br
               : formatTime(match.scheduledAt)}
           </p>
         </div>
-        <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-black ${
-          status === 'LIVE' && !paused ? 'bg-emerald-300 text-slate-950' : 'bg-white/12 text-white/72'
-        }`}>
+        <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-black ${statusPillClasses(String(match.status), paused)}`}>
           {paused ? '比赛暂停' : statusText(String(match.status))}
         </span>
       </div>
@@ -473,12 +479,9 @@ export function LiveScreenClient({
   }, [selected]);
 
   const matchGroups = useMemo(() => groupMatches(selected?.matches ?? []), [selected]);
-  const targetTournamentId = selected?.tournamentId ?? initialTournamentId ?? null;
-  const bracketHref = targetTournamentId
-    ? `/competitions/${encodeURIComponent(targetTournamentId)}#brackets`
-    : selected
-      ? `/bracket/${encodeURIComponent(selected.id)}`
-      : '/bracket';
+  const bracketHref = selected
+    ? `/bracket/${encodeURIComponent(selected.id)}`
+    : '/bracket';
 
   return (
     <main className="min-h-screen bg-[#06111f] text-white">

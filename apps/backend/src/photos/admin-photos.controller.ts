@@ -53,7 +53,7 @@ function imageContentType(path: string) {
 }
 
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.ADMIN, Role.SUPER_ADMIN)
+@Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.ROOT)
 @Controller('admin')
 export class AdminPhotosController {
   constructor(private photosService: PhotosService) {}
@@ -96,6 +96,11 @@ export class AdminPhotosController {
   }
 
   // ----- Photo management -----
+
+  @Get('photos/tournaments')
+  listTournamentStats() {
+    return this.photosService.listTournamentsWithPhotos();
+  }
 
   @Post('tournaments/:id/photos')
   @UseInterceptors(

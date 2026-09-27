@@ -109,15 +109,17 @@ export default function MyRegistrationsPage() {
     );
   }
 
-  if (role && role !== 'PLAYER') {
+  const canAccessRegistrations = role === 'PLAYER' || role === 'SUPER_ADMIN' || role === 'ROOT';
+
+  if (role && !canAccessRegistrations) {
     return (
       <main className="min-h-screen bg-[#f5f8ff]">
         <Header activeHref="/my-registrations" />
         <div className="mx-auto max-w-[800px] px-4 py-10">
           <div className="rounded-xl border border-blue-100 bg-white p-8 text-center shadow-sm">
-            <h2 className="text-lg font-black text-slate-900">仅选手账号可访问"我的报名"</h2>
+            <h2 className="text-lg font-black text-slate-900">当前账号不能访问“我的报名”</h2>
             <p className="mt-2 text-sm font-semibold text-slate-500">
-              当前账号角色为 {role},请使用选手账号登录后查看本人报名信息。
+              当前账号角色为 {role}，请使用选手或超级管理员账号查看本人报名信息。
             </p>
           </div>
         </div>

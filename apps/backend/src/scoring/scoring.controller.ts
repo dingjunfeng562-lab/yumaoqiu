@@ -5,7 +5,9 @@ import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import {
   AssignRefereeDto,
+  AuthorizeRefereeTournamentDto,
   CardMatchDto,
+  CorrectMatchScoreDto,
   FaultMatchDto,
   ForfeitMatchDto,
   LogMatchEventDto,
@@ -32,13 +34,66 @@ export class ScoringController {
     private scoringGateway: ScoringGateway,
   ) {}
 
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @Get('scoring/referees')
+  listAssignableReferees() {
+    return this.scoringService.listAssignableReferees();
+  }
+
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @Post('tournaments/:tournamentId/referee-access-code')
+  getRefereeAccessCode(@Param('tournamentId') tournamentId: string) {
+    return this.scoringService.getRefereeAccessCode(tournamentId);
+  }
+
+  @Roles(Role.REFEREE)
+  @Post('referee/authorize')
+  authorizeTournament(@Body() dto: AuthorizeRefereeTournamentDto, @Req() req: RequestWithUser) {
+    return this.scoringService.authorizeTournament(dto.accessCode, req.user);
+  }
+
+  @Roles(Role.REFEREE)
+  @Get('referee/tournaments')
+  listAuthorizedTournaments(@Req() req: RequestWithUser) {
+    return this.scoringService.listAuthorizedTournaments(req.user);
+  }
+
   @Roles(Role.REFEREE)
   @Get('referee/matches')
   listRefereeMatches(@Req() req: RequestWithUser) {
     return this.scoringService.listRefereeMatches(req.user);
   }
 
-  @Roles(Role.ADMIN, Role.REFEREE)
+  @Roles(Role.REFEREE)
+  @Get('referee/tournaments/:tournamentId/courts')
+  listTournamentCourts(@Param('tournamentId') tournamentId: string, @Req() req: RequestWithUser) {
+    return this.scoringService.listTournamentCourts(tournamentId, req.user);
+  }
+
+  @Roles(Role.REFEREE)
+  @Get('referee/tournaments/:tournamentId/courts/:venueId/matches')
+  listCourtMatches(
+    @Param('tournamentId') tournamentId: string,
+    @Param('venueId') venueId: string,
+    @Req() req: RequestWithUser,
+  ) {
+    return this.scoringService.listCourtMatches(tournamentId, venueId, req.user);
+  }
+
+  @Roles(Role.REFEREE)
+  @Post('referee/tournaments/:tournamentId/courts/:venueId/matches/:id/claim')
+  async claimCourtMatch(
+    @Param('tournamentId') tournamentId: string,
+    @Param('venueId') venueId: string,
+    @Param('id') id: string,
+    @Req() req: RequestWithUser,
+  ) {
+    const result = await this.scoringService.claimCourtMatch(tournamentId, venueId, id, req.user);
+    this.scoringGateway.emitBracketUpdate({ tournamentId, matchId: id });
+    return result;
+  }
+
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.REFEREE)
   @Get('matches/:id/score')
   getMatchScore(@Param('id') id: string, @Req() req: RequestWithUser) {
     return this.scoringService.getMatchState(id, req.user);
@@ -191,6 +246,14 @@ export class ScoringController {
       dto.reason,
       dto.playerIndex,
     );
+    this.scoringGateway.emitMatchState(id, state);
+    return state;
+  }
+
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @Patch('matches/:id/score')
+  async correctMatchScore(@Param('id') id: string, @Body() dto: CorrectMatchScoreDto) {
+    const state = await this.scoringService.correctMatchScore(id, dto.games);
     this.scoringGateway.emitMatchState(id, state);
     return state;
   }

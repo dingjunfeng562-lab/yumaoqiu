@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, normalize } from 'node:path';
 import { PrismaService } from '../prisma/prisma.service';
+import { ImageModerationService } from '../image-moderation/image-moderation.service';
+import { signedPhotoPreviewUrl } from './photo-file-access';
 import { WatermarkService, WATERMARK_POSITIONS, WatermarkPosition, TEXT_FONT_OPTIONS, TextFontType } from './watermark.service';
 
 const DEFAULT_LOGO_HEIGHT_PERCENT = WatermarkService.DEFAULT_LOGO_HEIGHT_PERCENT;
@@ -22,6 +24,7 @@ const MAX_TEXT_LENGTH = WatermarkService.MAX_TEXT_LENGTH;
 import {
   AdminPhotoQueryDto,
   PublicPhotoQueryDto,
+  PublicPhotoSort,
   UpdateWatermarkDto,
   WatermarkLogoDto,
 } from './dto/photo.dto';
@@ -62,6 +65,7 @@ export class PhotosService {
   constructor(
     private prisma: PrismaService,
     private watermark: WatermarkService,
+    private moderation: ImageModerationService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -317,6 +321,7 @@ export class PhotosService {
             if ((file.size ?? file.buffer.length) > MAX_UPLOAD_FILE_SIZE) {
               throw new Error('单张图片不能超过 15MB');
             }
+            await this.moderation.assertAllowed(file.buffer);
             const uuid = randomUUID();
             const info = await this.watermark.imageInfo(file.buffer);
             const origExt = this.originalImageExtension(info.format);
@@ -426,15 +431,55 @@ export class PhotosService {
     return `/api/uploads/${relPath}`;
   }
 
-  private photoThumbUrl(photoId: string) {
-    return `/api/photos/${photoId}/thumb`;
+  private photoAccessUrl(photoId: string, action: 'thumb' | 'view' | 'download', accessToken: string) {
+    return `/api/photos/${photoId}/${action}?accessToken=${encodeURIComponent(accessToken)}`;
+  }
+
+  private validateAccessToken(accessToken?: string) {
+    if (typeof accessToken !== 'string' || !/^[A-Za-z0-9_-]{32,64}$/.test(accessToken)) {
+      throw new NotFoundException('图片访问地址不存在');
+    }
+    return accessToken;
+  }
+
+  private async findGalleryByAccessToken(accessToken: string) {
+    const validAccessToken = this.validateAccessToken(accessToken);
+    const tournament = await this.prisma.tournament.findUnique({
+      where: { photoAccessToken: validAccessToken },
+      select: {
+        id: true,
+        name: true,
+        subtitle: true,
+        coverImageUrl: true,
+        startDate: true,
+        endDate: true,
+        location: true,
+      },
+    });
+    if (!tournament) throw new NotFoundException('图片访问地址不存在');
+    return tournament;
+  }
+
+  async getPublicGallery(accessToken: string) {
+    const tournament = await this.findGalleryByAccessToken(accessToken);
+    const photoCount = await this.prisma.photo.count({
+      where: { tournamentId: tournament.id, deletedAt: null },
+    });
+    return { ...tournament, photoCount };
   }
 
   async listPublicPhotos(query: PublicPhotoQueryDto) {
+    const tournament = await this.findGalleryByAccessToken(query.accessToken);
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 30;
+    const orderBy: Prisma.PhotoOrderByWithRelationInput[] =
+      query.sort === PublicPhotoSort.DOWNLOADS
+        ? [{ downloadCount: 'desc' }, { viewCount: 'desc' }, { uploadedAt: 'desc' }, { id: 'desc' }]
+        : query.sort === PublicPhotoSort.LATEST
+          ? [{ uploadedAt: 'desc' }, { id: 'desc' }]
+          : [{ viewCount: 'desc' }, { downloadCount: 'desc' }, { uploadedAt: 'desc' }, { id: 'desc' }];
     const where: Prisma.PhotoWhereInput = {
-      tournamentId: query.tournamentId,
+      tournamentId: tournament.id,
       deletedAt: null,
       ...(query.category ? { category: query.category } : {}),
     };
@@ -450,7 +495,7 @@ export class PhotosService {
       }),
       this.prisma.photo.findMany({
         where,
-        orderBy: { uploadedAt: 'desc' },
+        orderBy,
         skip: (page - 1) * pageSize,
         take: pageSize,
         select: {
@@ -480,8 +525,9 @@ export class PhotosService {
         id: r.id,
         category: r.category,
         seq: r.seq,
-        url: this.url(r.fullPath),
-        thumbUrl: this.photoThumbUrl(r.id),
+        url: this.photoAccessUrl(r.id, 'view', query.accessToken),
+        thumbUrl: this.photoAccessUrl(r.id, 'thumb', query.accessToken),
+        downloadUrl: this.photoAccessUrl(r.id, 'download', query.accessToken),
         width: r.width,
         height: r.height,
         uploadedAt: r.uploadedAt,
@@ -491,9 +537,14 @@ export class PhotosService {
     };
   }
 
-  async getPublicThumb(photoId: string) {
-    const photo = await this.prisma.photo.findUnique({
-      where: { id: photoId },
+  async getPublicThumb(photoId: string, accessToken: string) {
+    const validAccessToken = this.validateAccessToken(accessToken);
+    const photo = await this.prisma.photo.findFirst({
+      where: {
+        id: photoId,
+        deletedAt: null,
+        tournament: { photoAccessToken: validAccessToken },
+      },
     });
     if (!photo || photo.deletedAt) throw new NotFoundException('图片不存在');
     const abs = this.absolute(photo.thumbnailPath);
@@ -507,9 +558,14 @@ export class PhotosService {
     return { absolutePath: abs };
   }
 
-  async getPublicView(photoId: string) {
-    const photo = await this.prisma.photo.findUnique({
-      where: { id: photoId },
+  async getPublicView(photoId: string, accessToken: string) {
+    const validAccessToken = this.validateAccessToken(accessToken);
+    const photo = await this.prisma.photo.findFirst({
+      where: {
+        id: photoId,
+        deletedAt: null,
+        tournament: { photoAccessToken: validAccessToken },
+      },
     });
     if (!photo || photo.deletedAt) throw new NotFoundException('图片不存在');
     const abs = this.absolute(photo.fullPath);
@@ -638,6 +694,7 @@ export class PhotosService {
     const logos = this.parseLogos(config?.logos);
     if (logos.length >= 5) throw new BadRequestException('最多只能添加 5 个 Logo');
 
+    await this.moderation.assertAllowed(file.buffer);
     const uuid = randomUUID();
     const path = `photos/${tournamentId}/logos/${uuid}.png`;
     this.writeRelative(path, file.buffer);
@@ -731,8 +788,8 @@ export class PhotosService {
         id: r.id,
         category: r.category,
         seq: r.seq,
-        url: this.url(r.fullPath),
-        thumbUrl: this.url(r.thumbnailPath),
+        url: signedPhotoPreviewUrl(r.fullPath),
+        thumbUrl: signedPhotoPreviewUrl(r.thumbnailPath),
         originalUrl: `/api/admin/photos/${r.id}/original`,
         fileSize: r.fileSize,
         width: r.width,
@@ -770,9 +827,14 @@ export class PhotosService {
    * (rather than a raw /uploads URL) so the filename is server-controlled and
    * future access control / counting can hook in here. Filename: 赛事名-分类-序号.ext.
    */
-  async getDownload(photoId: string) {
-    const photo = await this.prisma.photo.findUnique({
-      where: { id: photoId },
+  async getDownload(photoId: string, accessToken: string) {
+    const validAccessToken = this.validateAccessToken(accessToken);
+    const photo = await this.prisma.photo.findFirst({
+      where: {
+        id: photoId,
+        deletedAt: null,
+        tournament: { photoAccessToken: validAccessToken },
+      },
       include: { tournament: { select: { name: true } } },
     });
     if (!photo || photo.deletedAt) throw new NotFoundException('图片不存在');

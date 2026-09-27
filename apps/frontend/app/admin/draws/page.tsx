@@ -1261,8 +1261,20 @@ export default function DrawsPage() {
                   </Space>
                 </section>
               )}
-              <section style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 16, background: '#fff' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12, flexWrap: 'wrap' }}>
+              <section
+                style={{
+                  border: '1px solid #f0f0f0',
+                  borderRadius: 8,
+                  padding: 16,
+                  background: '#fff',
+                  maxHeight: 'calc(100vh - 140px)',
+                  minHeight: 440,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  overflow: 'hidden',
+                }}
+              >
+                <div style={{ display: 'flex', flex: '0 0 auto', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12, flexWrap: 'wrap' }}>
                   <Typography.Title level={5} style={{ margin: 0 }}>对阵图</Typography.Title>
                   <Typography.Text type="secondary">
                     {selectedEvent?.drawGeneratedAt
@@ -1270,7 +1282,9 @@ export default function DrawsPage() {
                       : '尚未生成'}
                   </Typography.Text>
                 </div>
-                <BracketRenderer data={visibleBracket} />
+                <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+                  <BracketRenderer data={visibleBracket} />
+                </div>
               </section>
               {isSecondStageFormat && (
                 <section style={{ border: '1px solid #d9f7be', borderRadius: 8, padding: 16, background: '#fff' }}>

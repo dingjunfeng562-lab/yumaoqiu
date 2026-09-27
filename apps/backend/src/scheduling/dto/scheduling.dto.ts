@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   IsArray,
   IsBoolean,
   IsDateString,
@@ -7,8 +8,21 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  Max,
   Min,
+  ValidateNested,
 } from 'class-validator';
+
+export class ScheduleBreakPeriodDto {
+  @IsString()
+  startTime: string;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(24 * 60)
+  durationMinutes: number;
+}
 
 export class CreateVenueDto {
   @IsString()
@@ -51,6 +65,21 @@ export class AutoScheduleDto {
   @IsOptional()
   @IsString()
   startAtLocal?: string;
+
+  @IsOptional()
+  @IsString()
+  dailyStartTime?: string;
+
+  @IsOptional()
+  @IsString()
+  dailyEndTime?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(8)
+  @ValidateNested({ each: true })
+  @Type(() => ScheduleBreakPeriodDto)
+  breakPeriods?: ScheduleBreakPeriodDto[];
 
   @IsOptional()
   @Type(() => Number)

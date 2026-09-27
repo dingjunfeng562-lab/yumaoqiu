@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
+import { usePathname } from 'next/navigation';
 import { SessionProvider, signOut, useSession } from 'next-auth/react';
 import { AntdRegistry } from '@ant-design/nextjs-registry';
 import { GlobalAnnouncementModal } from '@/components/GlobalAnnouncementModal';
@@ -13,12 +14,15 @@ export function Providers({
   children: React.ReactNode;
   initialAnnouncement?: ActiveAnnouncement | null;
 }) {
+  const pathname = usePathname();
   return (
     <SessionProvider>
       <SessionExpiryHandler />
       <AntdRegistry>
         {children}
-        <GlobalAnnouncementModal initialAnnouncement={initialAnnouncement} />
+        {!pathname.startsWith('/photos/') && (
+          <GlobalAnnouncementModal initialAnnouncement={initialAnnouncement} />
+        )}
       </AntdRegistry>
     </SessionProvider>
   );

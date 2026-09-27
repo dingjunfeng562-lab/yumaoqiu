@@ -1994,3 +1994,11 @@ a {
   font-size: 12px;
   line-height: 1.6;
 }
+
+/* 后台左侧导航是操作区，避免菜单文字和品牌被误选、复制。 */
+.admin-navigation-panel,
+.admin-navigation-panel * {
+  -webkit-user-select: none !important;
+  user-select: none !important;
+  -webkit-touch-callout: none !important;
+}

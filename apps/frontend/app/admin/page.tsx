@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Card, Empty, Progress, Spin, Typography } from 'antd';
+import { Button, Card, Empty, Progress, Spin, Typography } from 'antd';
+import Link from 'next/link';
 import {
   DownloadOutlined,
   EyeOutlined,
@@ -10,8 +11,6 @@ import {
 } from '@ant-design/icons';
 import { useSession } from 'next-auth/react';
 import { apiFetch } from '@/lib/api';
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 
 type TournamentStat = {
   id: string;
@@ -43,10 +42,12 @@ export default function AdminDashboard() {
     (async () => {
       try {
         const [photoStats, usageStats] = await Promise.all([
-          fetch(`${API_BASE}/photos/tournaments`, { cache: 'no-store' }).then(async (res) => {
-            if (!res.ok) return [];
-            return (await res.json()) as TournamentStat[];
-          }),
+          token
+            ? apiFetch<TournamentStat[]>('/admin/photos/tournaments', {
+                token,
+                cache: 'no-store',
+              }).catch(() => [])
+            : Promise.resolve([]),
           token
             ? apiFetch<UsageMetrics>('/usage-metrics/summary', { token, cache: 'no-store' }).catch(() => EMPTY_USAGE_METRICS)
             : Promise.resolve(EMPTY_USAGE_METRICS),
@@ -101,7 +102,9 @@ export default function AdminDashboard() {
         </div>
       </Card>
 
-      <Card title="图片统计总览" style={{ marginBottom: 24 }}>
+      <Card title="图片统计总览" style={{ marginBottom: 24 }} extra={session?.user?.role === 'ROOT' ? (
+        <Link href="/admin/image-moderation"><Button icon={<PictureOutlined />}>图片审核设置</Button></Link>
+      ) : undefined}>
         <div style={{ display: 'flex', gap: 48, flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
             <div style={{ width: 80, height: 80 }}>

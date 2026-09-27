@@ -268,5 +268,6 @@ export class UpdateTournamentDto {
   showOnHome?: boolean;
 
   @IsOptional()
+  @IsBoolean()
   isArchived?: boolean;
 }
