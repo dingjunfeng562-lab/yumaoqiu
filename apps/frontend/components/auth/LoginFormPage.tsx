@@ -15,6 +15,7 @@ import {
   MailOutlined
 } from '@ant-design/icons';
 import { Alert, Button, Checkbox, ConfigProvider, Form, Input } from 'antd';
+import { firstAdminPage } from '@/lib/admin-permissions';
 
 type LoginType = 'username' | 'email';
 
@@ -32,9 +33,10 @@ const jetbrainsMono = { className: 'font-mono' };
 const sessionReadyAttempts = 8;
 const sessionReadyDelayMs = 120;
 
-function destinationForRole(role?: string | null) {
+function destinationForRole(role?: string | null, permissions?: string[]) {
+  const adminPage = firstAdminPage(role ?? undefined, permissions);
+  if (adminPage) return adminPage;
   if (role === 'REFEREE') return '/referee/my-matches';
-  if (role === 'ADMIN' || role === 'SUPER_ADMIN' || role === 'ROOT') return '/admin';
   if (role === 'PLAYER') return '/my-registrations';
   if (role === 'PHOTOGRAPHER') return '/photographer/upload';
   return '/';
@@ -95,7 +97,7 @@ function LoginContent() {
       }
 
       const session = await waitForReadySession();
-      const destination = safeRedirect(searchParams.get('redirect')) ?? destinationForRole(session?.user?.role);
+      const destination = safeRedirect(searchParams.get('redirect')) ?? destinationForRole(session?.user?.role, session?.user?.permissions);
       window.location.assign(destination);
     } catch {
       setError('登录服务暂时不可用,请稍后重试');

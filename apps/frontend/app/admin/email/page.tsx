@@ -1,6 +1,7 @@
 'use client';
+import { useCurrentAccess } from '@/lib/use-current-role';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { createContext, useContext, useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import {
@@ -35,6 +36,8 @@ import {
   UndoOutlined,
 } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
+
+const EmailWriteContext = createContext(false);
 
 // ---------------- 类型 ----------------
 
@@ -137,6 +140,7 @@ function formatDate(value: string) {
 // ---------------- 基础设置 ----------------
 
 function GlobalSettingsTab({ token }: { token: string }) {
+  const canEdit = useContext(EmailWriteContext);
   const [settings, setSettings] = useState<GlobalSettings | null>(null);
   const [loading, setLoading] = useState(false);
   const [toggling, setToggling] = useState(false);
@@ -197,7 +201,7 @@ function GlobalSettingsTab({ token }: { token: string }) {
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
       <Card size="small" title="全局开关" loading={loading && !settings}>
         <Space size={12}>
-          <Switch
+          <Switch disabled={!canEdit}
             checked={settings?.enabled ?? false}
             loading={toggling}
             onChange={toggleEnabled}
@@ -250,7 +254,7 @@ function GlobalSettingsTab({ token }: { token: string }) {
             <Input placeholder="收件邮箱" style={{ width: 260 }} />
           </Form.Item>
           <Form.Item>
-            <Button type="primary" icon={<SendOutlined />} loading={testing} onClick={sendTest}>
+            <Button disabled={!canEdit} type="primary" icon={<SendOutlined />} loading={testing} onClick={sendTest}>
               发送测试邮件
             </Button>
           </Form.Item>
@@ -263,6 +267,7 @@ function GlobalSettingsTab({ token }: { token: string }) {
 // ---------------- 模板管理 ----------------
 
 function TemplatesTab({ token }: { token: string }) {
+  const canEdit = useContext(EmailWriteContext);
   const [templates, setTemplates] = useState<TemplateItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [editing, setEditing] = useState<TemplateItem | null>(null);
@@ -389,7 +394,7 @@ function TemplatesTab({ token }: { token: string }) {
             key: 'enabled',
             width: 80,
             render: (_: unknown, record: TemplateItem) => (
-              <Switch
+              <Switch disabled={!canEdit}
                 checked={record.enabled}
                 onChange={(checked) => toggleTemplate(record, checked)}
               />
@@ -408,14 +413,14 @@ function TemplatesTab({ token }: { token: string }) {
             width: 260,
             render: (_: unknown, record: TemplateItem) => (
               <Space>
-                <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>
+                <Button disabled={!canEdit} size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>
                   编辑
                 </Button>
                 <Button size="small" icon={<EyeOutlined />} onClick={() => showPreview(record)}>
                   预览
                 </Button>
                 <Popconfirm title="恢复为系统默认模板？" onConfirm={() => resetTemplate(record)}>
-                  <Button size="small" icon={<UndoOutlined />}>
+                  <Button disabled={!canEdit} size="small" icon={<UndoOutlined />}>
                     恢复默认
                   </Button>
                 </Popconfirm>
@@ -446,7 +451,7 @@ function TemplatesTab({ token }: { token: string }) {
             <Input.TextArea rows={14} />
           </Form.Item>
           <Form.Item name="enabled" label="启用该模板" valuePropName="checked">
-            <Switch />
+            <Switch disabled={!canEdit} />
           </Form.Item>
         </Form>
       </Modal>
@@ -481,6 +486,7 @@ function EventSwitchesTab({
   token: string;
   onViewLogs: (eventId: string) => void;
 }) {
+  const canEdit = useContext(EmailWriteContext);
   const [events, setEvents] = useState<EventRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [edits, setEdits] = useState<Record<string, RowEdit>>({});
@@ -589,7 +595,7 @@ function EventSwitchesTab({
 
   function renderSwitch(row: EventRow, key: keyof Pick<RowEdit, 'registration_submitted' | 'registration_approved' | 'registration_rejected'>) {
     return (
-      <Switch
+      <Switch disabled={!canEdit}
         checked={edits[row.id]?.[key] ?? false}
         onChange={(checked) => patchEdit(row.id, { [key]: checked } as Partial<RowEdit>)}
       />
@@ -660,12 +666,12 @@ function EventSwitchesTab({
               return (
                 <Space direction="vertical" size={4}>
                   <Space size={8}>
-                    <Switch
+                    <Switch disabled={!canEdit}
                       checked={edit?.match_reminder ?? false}
                       onChange={(checked) => patchEdit(record.id, { match_reminder: checked })}
                     />
                     <Typography.Text type="secondary">比赛前</Typography.Text>
-                    <InputNumber
+                    <InputNumber disabled={!canEdit}
                       size="small"
                       min={5}
                       max={30 * 24 * 60}
@@ -704,7 +710,7 @@ function EventSwitchesTab({
                   type="primary"
                   icon={<SaveOutlined />}
                   loading={savingId === record.id}
-                  disabled={!isDirty(record)}
+                  disabled={!canEdit || !isDirty(record)}
                   onClick={() => saveRow(record)}
                 >
                   保存
@@ -714,7 +720,7 @@ function EventSwitchesTab({
                   description="已成功收到过赛前提醒的邮箱会自动跳过。"
                   onConfirm={() => sendReminderNow(record)}
                 >
-                  <Button size="small" icon={<SendOutlined />} loading={sendingId === record.id}>
+                  <Button disabled={!canEdit} size="small" icon={<SendOutlined />} loading={sendingId === record.id}>
                     立即发送提醒
                   </Button>
                 </Popconfirm>
@@ -918,9 +924,10 @@ export default function AdminEmailPage() {
     if (tab) setActiveTab(tab);
   }, []);
 
+  const access = useCurrentAccess();
   const role = liveRole ?? sessionRole;
-  // 邮件设置仅超级管理员(ROOT)可用,降权后的总管理员不再可见。
-  const isSuperAdmin = role === 'ROOT';
+  // 超级管理员可查看全部设置，修改权限保留给 ROOT。
+  const isSuperAdmin = access.can('EMAIL');
 
   const tabs = useMemo(() => {
     if (!token) return [];
@@ -963,7 +970,7 @@ export default function AdminEmailPage() {
       <Result
         status="403"
         title="无权访问"
-        subTitle="邮件通知设置仅总管理员可见。"
+        subTitle="邮件通知设置仅超级管理员可见。"
         extra={
           <Button type="primary" onClick={() => router.push('/admin')}>
             返回仪表板
@@ -981,10 +988,10 @@ export default function AdminEmailPage() {
           邮件通知设置
         </Typography.Title>
         <Typography.Text type="secondary">
-          全局开关、模板与每场赛事的邮件通知策略（仅总管理员可操作）。
+          全局开关、模板与每场赛事的邮件通知策略。具有邮件权限的账号可以查看和修改。
         </Typography.Text>
       </div>
-      <Tabs activeKey={activeTab} onChange={setActiveTab} items={tabs} destroyOnHidden />
+      <EmailWriteContext.Provider value={access.can('EMAIL')}><Tabs activeKey={activeTab} onChange={setActiveTab} items={tabs} destroyOnHidden /></EmailWriteContext.Provider>
     </div>
   );
 }

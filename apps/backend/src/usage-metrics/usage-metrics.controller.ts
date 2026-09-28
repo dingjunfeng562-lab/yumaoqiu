@@ -10,7 +10,7 @@ export class UsageMetricsController {
   constructor(private readonly usageMetricsService: UsageMetricsService) {}
 
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @Roles(Role.ROOT)
   @Get('summary')
   getSummary() {
     return this.usageMetricsService.getSummary();

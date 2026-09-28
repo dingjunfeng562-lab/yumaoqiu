@@ -1,4 +1,5 @@
 'use client';
+import { useCurrentAccess } from '@/lib/use-current-role';
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
@@ -11,6 +12,8 @@ type AuthorizedTournament = { id: string; name: string; courtCount: number };
 
 export default function RefereeHomePage() {
   const { data: session, status } = useSession();
+  const access = useCurrentAccess();
+  const canReferee = access.ready && access.can('REFEREE');
   const token = session?.user?.accessToken;
   const role = session?.user?.role;
   const [tournaments, setTournaments] = useState<AuthorizedTournament[]>([]);
@@ -19,17 +22,17 @@ export default function RefereeHomePage() {
   const [revision, setRevision] = useState(0);
 
   useEffect(() => {
-    if (!token || role !== 'REFEREE') return;
+    if (!token || !canReferee) return;
     const controller = new AbortController();
     apiFetch<AuthorizedTournament[]>('/referee/tournaments', { token, signal: controller.signal })
       .then((result) => { if (!controller.signal.aborted) { setTournaments(result); setError(''); } })
       .catch((err) => { if (!controller.signal.aborted) setError(err instanceof Error ? err.message : '加载已授权赛事失败'); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [token, role, revision]);
+  }, [token, canReferee, revision]);
 
   if (status === 'loading') return <div className="grid min-h-screen place-items-center"><Spin /></div>;
-  if (!token || role !== 'REFEREE') return <main className="!p-6"><Alert type="info" title="请使用裁判账号登录" /><Button href="/login?redirect=%2Freferee%2Fmy-matches">去登录</Button></main>;
+  if (!token || !canReferee) return <main className="!p-6"><Alert type="info" title="请使用裁判账号登录" /><Button href="/login?redirect=%2Freferee%2Fmy-matches">去登录</Button></main>;
 
   return <main className="min-h-screen bg-gradient-to-b from-blue-50 to-white !px-4 !py-5 text-slate-900">
     <div className="!mx-auto flex max-w-4xl flex-col gap-5">

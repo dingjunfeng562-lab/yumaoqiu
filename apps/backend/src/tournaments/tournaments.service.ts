@@ -1,3 +1,4 @@
+import { hasPermission } from '../auth/permissions';
 import {
   BadRequestException,
   ConflictException,
@@ -19,17 +20,19 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateTournamentDto, UpdateTournamentDto } from './dto/tournament.dto';
 import { sanitizeAnnouncementContent } from '../announcements/announcement-content';
 import { ScreenSettingsDto } from './dto/screen-settings.dto';
+import { AuthActor, tournamentScope } from '../auth/admin-scope';
 
 export type AuthUser = {
   id: string;
   username?: string | null;
   role?: Role | null;
+  permissions?: Prisma.JsonValue;
 };
 
-// 赛事审核/状态等"总管理员级"能力:降权后的总管理员(SUPER_ADMIN)仍保留,
+// 赛事审核和状态管理能力由功能权限控制，ROOT 固定拥有全部权限。
 // 超级管理员(ROOT)作为最高权限同样拥有。
 function isSuperAdmin(user?: AuthUser | null) {
-  return user?.role === Role.SUPER_ADMIN || user?.role === Role.ROOT;
+  return !!user?.role && hasPermission({ role: user.role, permissions: user.permissions }, 'TOURNAMENT_ADMIN');
 }
 
 const EVENT_TYPE_LABELS: Record<EventType, string> = {
@@ -108,7 +111,7 @@ export class TournamentsService {
 
   async approve(id: string, approver: AuthUser) {
     if (!isSuperAdmin(approver)) {
-      throw new ForbiddenException('仅总管理员可审核赛事');
+      throw new ForbiddenException('仅超级管理员可审核赛事');
     }
     const tournament = await this.findOne(id);
     if (tournament.approvalStatus === TournamentApprovalStatus.APPROVED) {
@@ -129,7 +132,7 @@ export class TournamentsService {
 
   async reject(id: string, approver: AuthUser, reason?: string) {
     if (!isSuperAdmin(approver)) {
-      throw new ForbiddenException('仅总管理员可审核赛事');
+      throw new ForbiddenException('仅超级管理员可审核赛事');
     }
     await this.findOne(id);
     return this.prisma.tournament.update({
@@ -146,8 +149,9 @@ export class TournamentsService {
     });
   }
 
-  async findAll() {
+  async findAll(actor?: AuthActor) {
     const tournaments = await this.prisma.tournament.findMany({
+      where: tournamentScope(actor),
       include: this.listInclude(),
       orderBy: [{ edition: 'desc' }],
     });
@@ -164,11 +168,14 @@ export class TournamentsService {
   }
 
   async update(id: string, dto: UpdateTournamentDto, user?: AuthUser) {
-    if (dto.isArchived === false && user?.role !== Role.ROOT) {
+    if (!isSuperAdmin(user) && dto.isArchived !== undefined) {
+      throw new ForbiddenException('管理员无权归档或恢复赛事');
+    }
+    if (dto.isArchived === false && !isSuperAdmin(user)) {
       throw new ForbiddenException('仅超级管理员可恢复归档赛事');
     }
     if (dto.status !== undefined && !isSuperAdmin(user)) {
-      throw new ForbiddenException('仅总管理员可修改赛事状态');
+      throw new ForbiddenException('仅超级管理员可修改赛事状态');
     }
     // showOnHome is super-admin-only (same as create) — silently keep the
     // current value for other roles instead of letting an ADMIN edit take
@@ -226,7 +233,7 @@ export class TournamentsService {
   }
 
   async restore(id: string, user: AuthUser) {
-    if (user.role !== Role.ROOT) {
+    if (!isSuperAdmin(user)) {
       throw new ForbiddenException('仅超级管理员可恢复归档赛事');
     }
     await this.findOne(id);
@@ -479,7 +486,7 @@ export class TournamentsService {
     if (new Set(items).size !== items.length) throw new BadRequestException(message);
   }
 
-  // Admin endpoints surface the raw stored status so the SUPER_ADMIN's manual
+  // Admin endpoints surface the raw stored status so the administrator's manual
   // override in 赛事配置 takes effect immediately — public-facing callers
   // apply effectiveTournamentStatus() themselves where time-based auto-advance
   // is desired.

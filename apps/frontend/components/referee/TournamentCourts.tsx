@@ -1,4 +1,5 @@
 'use client';
+import { useCurrentAccess } from '@/lib/use-current-role';
 
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -36,9 +37,11 @@ const statuses = {
 
 export default function TournamentCourts({ tournamentId, initialCourt }: { tournamentId: string; initialCourt?: string }) {
   const { data: session, status } = useSession();
+  const access = useCurrentAccess();
+  const canReferee = access.ready && access.can('REFEREE');
   const router = useRouter();
   const token = session?.user?.accessToken;
-  const isReferee = session?.user?.role === 'REFEREE';
+  const isReferee = canReferee;
   const [data, setData] = useState<CourtsData | null>(null);
   const courtId = initialCourt ?? '';
   const [matches, setMatches] = useState<CourtMatch[]>([]);

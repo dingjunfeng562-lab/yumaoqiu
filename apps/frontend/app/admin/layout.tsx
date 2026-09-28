@@ -42,26 +42,23 @@ import {
   MessageOutlined,
 } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
+import { canAccessAdminPage, firstAdminPage } from '@/lib/admin-permissions';
+import { useCurrentAccess } from '@/lib/use-current-role';
 
 const { Header, Sider, Content } = Layout;
 const MOBILE_QUERY = '(max-width: 1023px)';
 
-// superOnly: 总管理员(SUPER_ADMIN)与超级管理员(ROOT)可见。
-// rootOnly: 仅超级管理员(ROOT)可见 —— 用户管理 / 邀请码 / 邮件设置等敏感项。
 type MenuItem = {
   key: string;
   icon: React.ReactNode;
   label: string;
-  superOnly?: boolean;
-  rootOnly?: boolean;
 };
 
 const baseMenuItems: MenuItem[] = [
   { key: '/admin', icon: <DashboardOutlined />, label: '仪表板' },
-  // 用户管理 / 邀请码 仅超级管理员可用;赛事审核 总管理员也可用。
-  { key: '/admin/users', icon: <TeamOutlined />, label: '用户管理', rootOnly: true },
-  { key: '/admin/invite-codes', icon: <KeyOutlined />, label: '邀请码管理', rootOnly: true },
-  { key: '/admin/approvals', icon: <AuditOutlined />, label: '赛事审核', superOnly: true },
+  { key: '/admin/users', icon: <TeamOutlined />, label: '用户管理' },
+  { key: '/admin/invite-codes', icon: <KeyOutlined />, label: '邀请码管理' },
+  { key: '/admin/approvals', icon: <AuditOutlined />, label: '赛事审核' },
   { key: '/admin/players', icon: <UserOutlined />, label: '选手管理' },
   { key: '/admin/tournaments', icon: <TrophyOutlined />, label: '赛事配置' },
   { key: '/admin/competitions', icon: <TrophyOutlined />, label: '赛事管理' },
@@ -71,10 +68,10 @@ const baseMenuItems: MenuItem[] = [
   { key: '/admin/scheduling', icon: <CalendarOutlined />, label: '场地排程' },
   { key: '/admin/exports', icon: <DownloadOutlined />, label: '秩序册/数据导出' },
   { key: '/admin/scoring', icon: <FieldTimeOutlined />, label: '裁判分配' },
-  { key: '/admin/announcements', icon: <NotificationOutlined />, label: '公告管理', superOnly: true },
-  { key: '/admin/ai-config', icon: <MessageOutlined />, label: 'AI 助手配置', superOnly: true },
-  { key: '/admin/image-moderation', icon: <AuditOutlined />, label: '图片审核', rootOnly: true },
-  { key: '/admin/email', icon: <MailOutlined />, label: '邮件通知设置', rootOnly: true },
+  { key: '/admin/announcements', icon: <NotificationOutlined />, label: '公告管理' },
+  { key: '/admin/ai-config', icon: <MessageOutlined />, label: 'AI 助手配置' },
+  { key: '/admin/image-moderation', icon: <AuditOutlined />, label: '图片审核' },
+  { key: '/admin/email', icon: <MailOutlined />, label: '邮件通知设置' },
 ];
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
@@ -103,31 +100,15 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   }, []);
 
   const token = session?.user?.accessToken as string | undefined;
-  const sessionRole = (session?.user as { role?: string } | undefined)?.role;
-
-  // The session JWT can be stale (issued before a server-side role change).
-  // Always re-fetch the current role from /auth/me on mount so SUPER_ADMIN
-  // promotions show up without forcing the user to log out and back in.
-  const [liveRole, setLiveRole] = useState<string | undefined>(sessionRole);
+  const access = useCurrentAccess();
+  const role = access.role;
+  // 功能菜单随个人权限逐项显示。
+  const isSuperOrRoot = access.can('TOURNAMENT_ADMIN');
   useEffect(() => {
-    if (!token) return;
-    let cancelled = false;
-    apiFetch<{ role?: string }>('/auth/me', { token })
-      .then((me) => {
-        if (!cancelled && me?.role) setLiveRole(me.role);
-      })
-      .catch(() => {
-        /* fall back to session role */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [token]);
-
-  const role = liveRole ?? sessionRole;
-  const isRoot = role === 'ROOT';
-  // 总管理员(SUPER_ADMIN)与超级管理员(ROOT)都可见赛事审核/公告。
-  const isSuperOrRoot = role === 'SUPER_ADMIN' || role === 'ROOT';
+    if (access.ready && !canAccessAdminPage(role, pathname, access.permissions)) {
+      router.replace(pathname === '/admin' ? firstAdminPage(role, access.permissions) ?? '/forbidden' : '/forbidden');
+    }
+  }, [access.ready, access.permissions, role, pathname, router]);
 
   const [pendingApprovalCount, setPendingApprovalCount] = useState(0);
 
@@ -153,7 +134,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   }, [token, pathname, isSuperOrRoot]);
 
   const visibleMenuItems = baseMenuItems.filter(
-    (item) => (!item.superOnly || isSuperOrRoot) && (!item.rootOnly || isRoot),
+    (item) => canAccessAdminPage(role, item.key, access.permissions),
   );
 
   const menuItems = visibleMenuItems.map((item) => {
@@ -397,7 +378,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             overflow: 'auto',
           }}
         >
-          {children}
+          {access.ready && canAccessAdminPage(role, pathname, access.permissions) ? children : null}
         </Content>
         <Modal
           title="修改密码"

@@ -32,6 +32,8 @@ const EMPTY_USAGE_METRICS: UsageMetrics = {
 export default function AdminDashboard() {
   const { data: session } = useSession();
   const token = session?.user?.accessToken;
+  // AI chat usage is platform-wide; other admins only see their own tournaments' photos.
+  const isRoot = session?.user?.role === 'ROOT';
   const [stats, setStats] = useState<TournamentStat[]>([]);
   const [usageMetrics, setUsageMetrics] = useState<UsageMetrics>(EMPTY_USAGE_METRICS);
   const [loading, setLoading] = useState(true);
@@ -48,7 +50,7 @@ export default function AdminDashboard() {
                 cache: 'no-store',
               }).catch(() => [])
             : Promise.resolve([]),
-          token
+          token && isRoot
             ? apiFetch<UsageMetrics>('/usage-metrics/summary', { token, cache: 'no-store' }).catch(() => EMPTY_USAGE_METRICS)
             : Promise.resolve(EMPTY_USAGE_METRICS),
         ]);
@@ -69,7 +71,7 @@ export default function AdminDashboard() {
     return () => {
       cancelled = true;
     };
-  }, [token]);
+  }, [token, isRoot]);
 
   const totalPhotos = stats.reduce((sum, s) => sum + s.photoCount, 0);
   const totalViews = stats.reduce((sum, s) => sum + s.viewCount, 0);
@@ -82,7 +84,7 @@ export default function AdminDashboard() {
         欢迎使用羽动云赛。请从左侧菜单选择赛事、报名、抽签、裁判记分等功能。
       </p>
 
-      <Card title="智能工具使用统计" style={{ marginBottom: 24 }}>
+      {isRoot && <Card title="智能工具使用统计" style={{ marginBottom: 24 }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16 }}>
           <div
             style={{
@@ -100,9 +102,9 @@ export default function AdminDashboard() {
             </Typography.Title>
           </div>
         </div>
-      </Card>
+      </Card>}
 
-      <Card title="图片统计总览" style={{ marginBottom: 24 }} extra={session?.user?.role === 'ROOT' ? (
+      <Card title="图片统计总览" style={{ marginBottom: 24 }} extra={isRoot ? (
         <Link href="/admin/image-moderation"><Button icon={<PictureOutlined />}>图片审核设置</Button></Link>
       ) : undefined}>
         <div style={{ display: 'flex', gap: 48, flexWrap: 'wrap' }}>

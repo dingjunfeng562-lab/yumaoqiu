@@ -2,11 +2,12 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useSession } from 'next-auth/react';
-import { Button, Card, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography, message } from 'antd';
+import { Button, Card, Checkbox, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Typography, message } from 'antd';
 import { DeleteOutlined, PlusOutlined, ReloadOutlined, LockOutlined, StopOutlined, CheckCircleOutlined, EditOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
+import { useCurrentRole } from '@/lib/use-current-role';
 
-type UserRole = 'ROOT' | 'SUPER_ADMIN' | 'ADMIN' | 'REFEREE' | 'PLAYER' | 'PHOTOGRAPHER';
+type UserRole = 'ROOT' | 'ADMIN' | 'REFEREE' | 'PLAYER' | 'PHOTOGRAPHER';
 
 type UserItem = {
   id: string;
@@ -18,9 +19,14 @@ type UserItem = {
   inviteCode: string | null;
   refereedMatchesCount?: number;
   createdAt: string;
+  managerId?: string | null;
+  staffInviteLimit?: number;
+  staffInviteUsed?: number;
+  staffInviteRemaining?: number;
+  permissionsCustomized?: boolean;
 };
 
-type CreatableRole = 'SUPER_ADMIN' | 'ADMIN' | 'REFEREE' | 'PLAYER' | 'PHOTOGRAPHER';
+type CreatableRole = 'ROOT' | 'ADMIN' | 'REFEREE' | 'PLAYER' | 'PHOTOGRAPHER';
 
 type CreatedUserPayload = {
   username: string;
@@ -31,7 +37,6 @@ type CreatedUserPayload = {
 
 const roleLabels: Record<UserRole, string> = {
   ROOT: '超级管理员',
-  SUPER_ADMIN: '总管理员',
   ADMIN: '管理员',
   REFEREE: '裁判',
   PLAYER: '选手',
@@ -40,7 +45,6 @@ const roleLabels: Record<UserRole, string> = {
 
 const roleColors: Record<UserRole, string> = {
   ROOT: 'red',
-  SUPER_ADMIN: 'magenta',
   ADMIN: 'blue',
   REFEREE: 'green',
   PLAYER: 'gold',
@@ -48,7 +52,7 @@ const roleColors: Record<UserRole, string> = {
 };
 
 const ROLE_CREATE_ENDPOINT: Record<CreatableRole, string> = {
-  SUPER_ADMIN: '/auth/users/super-admin',
+  ROOT: '/auth/users/root',
   ADMIN: '/auth/users/admin',
   REFEREE: '/auth/users/referee',
   PLAYER: '/auth/users/player',
@@ -65,7 +69,6 @@ const statusLabels: Record<UserItem['status'], string> = {
 const ROLE_FILTER_OPTIONS: Array<{ value: UserRole | 'ALL'; label: string }> = [
   { value: 'ALL', label: '全部角色' },
   { value: 'ROOT', label: '超级管理员' },
-  { value: 'SUPER_ADMIN', label: '总管理员' },
   { value: 'ADMIN', label: '管理员' },
   { value: 'REFEREE', label: '裁判' },
   { value: 'PLAYER', label: '选手' },
@@ -75,6 +78,17 @@ const ROLE_FILTER_OPTIONS: Array<{ value: UserRole | 'ALL'; label: string }> = [
 export default function AdminUsersPage() {
   const { data: session } = useSession();
   const token = session?.user?.accessToken;
+  const role = useCurrentRole();
+  const [quotaTarget, setQuotaTarget] = useState<UserItem | null>(null);
+  const [quotaLimit, setQuotaLimit] = useState(50);
+  const [quotaSaving, setQuotaSaving] = useState(false);
+  const [ownQuota, setOwnQuota] = useState<{ limit: number | null; used: number; remaining: number | null }>();
+  const [permissionTarget, setPermissionTarget] = useState<UserItem | null>(null);
+  const [permissionOptions, setPermissionOptions] = useState<Array<{ key: string; label: string; group: string }>>([]);
+  const [permissionDefaults, setPermissionDefaults] = useState<Record<string, string[]>>({});
+  const [selectedPermissions, setSelectedPermissions] = useState<string[]>([]);
+  const [customPermissions, setCustomPermissions] = useState(false);
+  const [permissionSaving, setPermissionSaving] = useState(false);
   const currentUserId = (session?.user as { id?: string } | undefined)?.id;
   const [users, setUsers] = useState<UserItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -102,12 +116,64 @@ export default function AdminUsersPage() {
   );
   const selectedCount = selectedUserIds.length;
 
+  async function openPermissions(user: UserItem) {
+    if (!token) return;
+    try {
+      const [catalog, saved] = await Promise.all([
+        apiFetch<{ options: Array<{ key: string; label: string; group: string }>; defaults: Record<string, string[]> }>('/auth/permission-options', { token }),
+        apiFetch<{ permissions: string[]; customized: boolean }>(`/auth/users/${user.id}/permissions`, { token }),
+      ]);
+      setPermissionOptions(catalog.options);
+      setPermissionDefaults(catalog.defaults);
+      setSelectedPermissions(saved.permissions);
+      setCustomPermissions(saved.customized);
+      setPermissionTarget(user);
+    } catch (error) { message.error(error instanceof Error ? error.message : '加载功能权限失败'); }
+  }
+
+  async function savePermissions() {
+    if (!token || !permissionTarget) return;
+    setPermissionSaving(true);
+    try {
+      await apiFetch(`/auth/users/${permissionTarget.id}/permissions`, { method: 'PATCH', token, body: JSON.stringify({ permissions: customPermissions ? selectedPermissions : null }) });
+      message.success('功能权限已保存，接口权限立即生效');
+      window.dispatchEvent(new Event('permissions-updated'));
+      setPermissionTarget(null);
+      await loadUsers();
+    } catch (error) { message.error(error instanceof Error ? error.message : '保存功能权限失败'); }
+    finally { setPermissionSaving(false); }
+  }
+
+  function canManageUser(user: UserItem) {
+    return role === 'ROOT' || (user.managerId === currentUserId && ['PLAYER', 'REFEREE', 'PHOTOGRAPHER'].includes(user.role));
+  }
+
+  function canCreateRole(value: string) {
+    return role === 'ROOT' || ['PLAYER', 'REFEREE', 'PHOTOGRAPHER'].includes(value);
+  }
+
+  async function saveQuota() {
+    if (!token || !quotaTarget) return;
+    setQuotaSaving(true);
+    try {
+      await apiFetch(`/auth/users/${quotaTarget.id}/invite-quota`, { method: 'PATCH', token, body: JSON.stringify({ limit: quotaLimit }) });
+      message.success('邀请码总额度已更新');
+      setQuotaTarget(null);
+      await loadUsers();
+    } catch (error) { message.error(error instanceof Error ? error.message : '更新额度失败'); }
+    finally { setQuotaSaving(false); }
+  }
+
   async function loadUsers() {
     if (!token) return;
     setLoading(true);
     try {
-      const data = await apiFetch<UserItem[]>('/auth/users', { token });
+      const [data, quota] = await Promise.all([
+        apiFetch<UserItem[]>('/auth/users', { token }),
+        apiFetch<{ limit: number | null; used: number; remaining: number | null }>('/auth/invite-quota', { token }),
+      ]);
       setUsers(data);
+      setOwnQuota(quota);
       setSelectedUserIds((prev) => {
         const selectableIds = new Set(data.filter((user) => user.id !== currentUserId).map((user) => user.id));
         return prev.filter((id) => selectableIds.has(id));
@@ -296,14 +362,14 @@ export default function AdminUsersPage() {
         <div>
           <Typography.Title level={3} style={{ margin: 0 }}>用户管理</Typography.Title>
           <Typography.Text type="secondary">
-            管理 <strong>总管理员 / 管理员 / 裁判 / 选手</strong> 四类账号,支持状态切换和临时密码重置。
+            管理 <strong>超级管理员 / 管理员 / 裁判 / 选手</strong> 四类账号,支持状态切换和临时密码重置。
           </Typography.Text>
         </div>
         <Space>
           <Select
             value={roleFilter}
             onChange={(value) => setRoleFilter(value)}
-            options={ROLE_FILTER_OPTIONS}
+            options={ROLE_FILTER_OPTIONS.filter((item) => role === 'ROOT' || ['ALL', 'PLAYER', 'REFEREE', 'PHOTOGRAPHER'].includes(item.value))}
             style={{ width: 140 }}
           />
           <Popconfirm
@@ -323,6 +389,10 @@ export default function AdminUsersPage() {
         </Space>
       </div>
 
+      {role !== 'ROOT' && ownQuota && <Card size="small" title="裁判 / 图片员共享名额">
+        <Typography.Text strong>总额度 {ownQuota.limit} · 累计已使用 {ownQuota.used} · 剩余 {ownQuota.remaining}</Typography.Text>
+        <Typography.Paragraph type="secondary" style={{ margin: '8px 0 0' }}>注册或直接创建账号时扣除，删除不返还。选手账号不占额度。</Typography.Paragraph>
+      </Card>}
       <Card>
         <Table
           rowKey="id"
@@ -332,7 +402,7 @@ export default function AdminUsersPage() {
             selectedRowKeys: selectedUserIds,
             onChange: (keys) => setSelectedUserIds(keys.map(String)),
             getCheckboxProps: (row) => ({
-              disabled: row.id === currentUserId,
+              disabled: row.id === currentUserId || !canManageUser(row),
               name: row.username ?? row.email ?? row.id,
             }),
           }}
@@ -365,6 +435,11 @@ export default function AdminUsersPage() {
               render: (value: string | null) => value || '-',
             },
             {
+              title: '裁判 / 图片员名额',
+              key: 'staffQuota',
+              render: (_: unknown, row: UserItem) => row.role !== 'ROOT' ? `已用 ${row.staffInviteUsed ?? 0} / 总额 ${row.staffInviteLimit ?? 50}` : '-',
+            },
+            {
               title: '已裁场次',
               dataIndex: 'refereedMatchesCount',
               render: (value: number | undefined, row: UserItem) =>
@@ -381,7 +456,7 @@ export default function AdminUsersPage() {
             },
             {
               title: '操作',
-              render: (_, row: UserItem) => (
+              render: (_, row: UserItem) => canManageUser(row) ? (
                 <Space wrap>
                   {row.status === 'ACTIVE' ? (
                     <Button
@@ -400,14 +475,16 @@ export default function AdminUsersPage() {
                   <Button icon={<EditOutlined />} onClick={() => openRename(row)}>
                     改名
                   </Button>
-                  <Button
+                  {role === 'ROOT' && <Button
                     icon={<SafetyCertificateOutlined />}
                     onClick={() => openRole(row)}
                     disabled={row.id === currentUserId}
                     title={row.id === currentUserId ? '不能修改自己的角色' : undefined}
                   >
-                    权限
-                  </Button>
+                    角色
+                  </Button>}
+                  {role === 'ROOT' && <Button disabled={row.role === 'ROOT'} onClick={() => openPermissions(row)} title={row.role === 'ROOT' ? '超级管理员固定拥有全部权限' : undefined}>功能权限</Button>}
+                  {row.role !== 'ROOT' && role === 'ROOT' && <Button onClick={() => { setQuotaTarget(row); setQuotaLimit(row.staffInviteLimit ?? 50); }}>分配名额</Button>}
                   <Button
                     icon={<LockOutlined />}
                     onClick={() => {
@@ -428,23 +505,44 @@ export default function AdminUsersPage() {
                     </Popconfirm>
                   )}
                 </Space>
-              ),
+              ) : <Typography.Text type="secondary">只读</Typography.Text>,
             },
           ]}
         />
       </Card>
 
+      <Modal title={permissionTarget ? `功能权限：${permissionTarget.username}` : '功能权限'} open={!!permissionTarget} onCancel={() => setPermissionTarget(null)} onOk={savePermissions} confirmLoading={permissionSaving} width={760} okText="保存权限">
+        <Typography.Paragraph type="secondary">自定义功能不会扩大赛事归属范围，也不会重置裁判和图片员的累计名额。修改角色会恢复角色默认权限。</Typography.Paragraph>
+        <Space style={{ marginBottom: 16 }}>
+          <Switch checked={customPermissions} onChange={(checked) => { setCustomPermissions(checked); if (!checked && permissionTarget) setSelectedPermissions(permissionDefaults[permissionTarget.role] ?? []); }} />
+          <Typography.Text>{customPermissions ? '自定义功能' : '使用角色默认权限'}</Typography.Text>
+          {customPermissions && <Button onClick={() => setSelectedPermissions(permissionOptions.map((item) => item.key))}>全选</Button>}
+          {customPermissions && <Button onClick={() => setSelectedPermissions([])}>清空</Button>}
+        </Space>
+        <Checkbox.Group value={selectedPermissions} disabled={!customPermissions} onChange={(keys) => setSelectedPermissions(keys as string[])} style={{ width: '100%' }}>
+          {[...new Set(permissionOptions.map((item) => item.group))].map((group) => <div key={group} style={{ width: '100%', marginBottom: 16 }}>
+            <Typography.Text strong>{group}</Typography.Text>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10, marginTop: 10 }}>
+              {permissionOptions.filter((item) => item.group === group).map((item) => <Checkbox key={item.key} value={item.key}>{item.label}</Checkbox>)}
+            </div>
+          </div>)}
+        </Checkbox.Group>
+      </Modal>
+      <Modal title={quotaTarget ? `分配名额：${quotaTarget.username}` : '分配名额'} open={!!quotaTarget} onCancel={() => setQuotaTarget(null)} onOk={saveQuota} confirmLoading={quotaSaving}>
+        <Typography.Paragraph>裁判和图片员共用总额度，默认 50。已累计使用 {quotaTarget?.staffInviteUsed ?? 0} 个，删除账号不会返还。</Typography.Paragraph>
+        <InputNumber aria-label="邀请码总额度" min={quotaTarget?.staffInviteUsed ?? 0} max={2147483647} precision={0} value={quotaLimit} onChange={(value) => setQuotaLimit(value ?? 0)} style={{ width: '100%' }} />
+      </Modal>
       <Modal title="新建账号" open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} destroyOnHidden>
         <Form form={form} layout="vertical" onFinish={createUser} initialValues={{ role: 'REFEREE' }}>
-          <Form.Item name="role" label="角色" rules={[{ required: true }]} extra="超级管理员(最高权限)账号无法在此创建,如有需要请直接修改数据库。">
+          <Form.Item name="role" label="角色" rules={[{ required: true }]} extra="管理员只能创建自己的选手、裁判和图片员账号。裁判和图片员共用名额，删除不返还。">
             <Select
               options={[
-                { value: 'SUPER_ADMIN', label: '总管理员 · 赛事运营管理(不含邮件/邀请码/用户管理,选手报名只读)' },
-                { value: 'ADMIN', label: '管理员 · 可新建/编辑赛事,需总管理员审核' },
+                { value: 'ROOT', label: '超级管理员 · 查看全部并分配管理员名额' },
+                { value: 'ADMIN', label: '管理员 · 管理自己的赛事和选手，导出秩序册' },
                 { value: 'REFEREE', label: '裁判 · 仅可记分,无后台权限' },
                 { value: 'PLAYER', label: '选手 · 仅可查看本人报名信息' },
                 { value: 'PHOTOGRAPHER', label: '图片上传员 · 仅可进入赛事图片上传页' },
-              ]}
+              ].filter((item) => canCreateRole(item.value))}
             />
           </Form.Item>
           <Form.Item
@@ -487,7 +585,7 @@ export default function AdminUsersPage() {
       </Modal>
 
       <Modal
-        title={roleTarget ? `修改权限：${roleTarget.username || roleTarget.email}` : '修改权限'}
+        title={roleTarget ? `修改角色：${roleTarget.username || roleTarget.email}` : '修改角色'}
         open={roleOpen}
         onOk={submitRole}
         onCancel={() => {
@@ -501,7 +599,7 @@ export default function AdminUsersPage() {
         destroyOnHidden
       >
         <Typography.Paragraph type="secondary">
-          超级管理员可将该用户调整为任意角色(包括超级管理员)。角色变更在后端即时生效;对方刷新页面或重新登录后,前端显示与菜单权限同步更新。
+          超级管理员可将该用户调整为任意角色(包括超级管理员)。角色变更会恢复该角色的默认功能权限，在后端即时生效;对方刷新页面或重新登录后,前端显示与菜单权限同步更新。
         </Typography.Paragraph>
         <Form form={roleForm} layout="vertical">
           <Form.Item name="role" label="角色" rules={[{ required: true, message: '请选择角色' }]}>
@@ -530,7 +628,7 @@ export default function AdminUsersPage() {
         destroyOnHidden
       >
         <Typography.Paragraph type="secondary">
-          总管理员修改昵称不消耗用户本人的改名次数。昵称在所有用户中唯一，且会同步为登录用户名。
+          超级管理员修改昵称不消耗用户本人的改名次数。昵称在所有用户中唯一，且会同步为登录用户名。
         </Typography.Paragraph>
         <Form form={renameForm} layout="vertical">
           <Form.Item

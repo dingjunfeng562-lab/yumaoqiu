@@ -1,3 +1,4 @@
+import { AuthActor, tournamentScope } from '../auth/admin-scope';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PhotoCategory, Prisma } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
@@ -145,10 +146,10 @@ export class PhotosService {
   }
 
   /** Tournaments that have at least one (non-deleted) public photo. */
-  async listTournamentsWithPhotos() {
+  async listTournamentsWithPhotos(actor?: AuthActor) {
     const grouped = await this.prisma.photo.groupBy({
       by: ['tournamentId'],
-      where: { deletedAt: null },
+      where: { deletedAt: null, tournament: tournamentScope(actor) },
       _count: { _all: true },
       _sum: { viewCount: true, downloadCount: true },
     });
@@ -740,11 +741,12 @@ export class PhotosService {
   // Admin photo management
   // ---------------------------------------------------------------------------
 
-  async adminListPhotos(query: AdminPhotoQueryDto) {
+  async adminListPhotos(query: AdminPhotoQueryDto, actor?: AuthActor) {
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 30;
     const where: Prisma.PhotoWhereInput = {
       tournamentId: query.tournamentId,
+      tournament: tournamentScope(actor),
       deletedAt: null,
       ...(query.category ? { category: query.category } : {}),
       ...(query.uploaderId ? { uploaderId: query.uploaderId } : {}),

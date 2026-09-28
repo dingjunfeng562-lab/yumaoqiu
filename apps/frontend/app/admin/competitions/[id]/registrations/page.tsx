@@ -1,4 +1,5 @@
 'use client';
+import { useCurrentAccess } from '@/lib/use-current-role';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
@@ -69,6 +70,7 @@ export default function AdminCompetitionRegistrationsPage() {
   const id = normalizeRouteParam(params?.id);
   const router = useRouter();
   const { data: session } = useSession();
+  const access = useCurrentAccess();
   const token = session?.user?.accessToken as string | undefined;
   const [competition, setCompetition] = useState<Competition | null>(null);
   const [registrations, setRegistrations] = useState<Registration[]>([]);
@@ -77,7 +79,7 @@ export default function AdminCompetitionRegistrationsPage() {
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState('');
 
-  // 邮件通知设置模块仅总管理员可见；普通管理员既不渲染也无法调用相关接口（后端 403）
+  // 邮件通知设置模块仅超级管理员可见；普通管理员既不渲染也无法调用相关接口（后端 403）
   const sessionRole = (session?.user as { role?: string } | undefined)?.role;
   const [liveRole, setLiveRole] = useState<string | undefined>(sessionRole);
   useEffect(() => {
@@ -96,8 +98,8 @@ export default function AdminCompetitionRegistrationsPage() {
   }, [token]);
   const effectiveRole = liveRole ?? sessionRole;
   const isRoot = effectiveRole === 'ROOT';
-  // 报名审核为写操作:降权后的总管理员(SUPER_ADMIN)只读,仅管理员/超级管理员可操作。
-  const canManage = effectiveRole === 'ADMIN' || effectiveRole === 'ROOT';
+  // 报名审核写操作由实时的选手管理权限控制。
+  const canManage = access.can('PLAYERS');
 
   const loadData = useCallback(async () => {
     if (!token || !id) return;

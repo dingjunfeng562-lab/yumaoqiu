@@ -1,3 +1,5 @@
+import { hasPermission } from '../auth/permissions';
+import { AuthActor } from '../auth/admin-scope';
 import {
   Body,
   Controller,
@@ -43,7 +45,7 @@ type AuthRequest = {
 };
 
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.ADMIN, Role.SUPER_ADMIN)
+@Roles(Role.ADMIN, Role.ROOT)
 @Controller()
 export class DrawsController {
   constructor(private drawsService: DrawsService) {}
@@ -197,10 +199,11 @@ export class DrawsController {
       req.user?.id ?? '',
       req.user?.username ?? req.user?.id ?? null,
       (req.user?.role ?? Role.ADMIN) as Role,
+      !!req.user && hasPermission(req.user as AuthActor, 'DRAWS'),
     );
   }
 
-  @Roles(Role.SUPER_ADMIN)
+  @Roles(Role.ROOT)
   @Post('tournaments/:tournamentId/draws/clear')
   clearAllDraws(
     @Param('tournamentId') tournamentId: string,
@@ -228,11 +231,11 @@ export class DrawsController {
   }
 
   @Get('draw/redraw-requests')
-  listRedrawRequests(@Query() query: ListRedrawRequestsQueryDto) {
-    return this.drawsService.listRedrawRequests(query);
+  listRedrawRequests(@Query() query: ListRedrawRequestsQueryDto, @Req() req: { user: AuthActor }) {
+    return this.drawsService.listRedrawRequests(query, req.user);
   }
 
-  @Roles(Role.SUPER_ADMIN)
+  @Roles(Role.ROOT)
   @Post('draw/redraw-requests/:id/approve')
   approveRedrawRequest(@Param('id') id: string, @Req() req: AuthRequest) {
     return this.drawsService.approveRedrawRequest(
@@ -242,7 +245,7 @@ export class DrawsController {
     );
   }
 
-  @Roles(Role.SUPER_ADMIN)
+  @Roles(Role.ROOT)
   @Post('draw/redraw-requests/:id/reject')
   rejectRedrawRequest(
     @Param('id') id: string,
@@ -277,13 +280,13 @@ export class DrawsController {
     return this.drawsService.getBracket(eventId);
   }
 
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.REFEREE)
+  @Roles(Role.ADMIN, Role.ROOT, Role.REFEREE)
   @Get('events/:eventId/second-stage')
   getSecondStage(@Param('eventId') eventId: string) {
     return this.drawsService.getSecondStage(eventId);
   }
 
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.REFEREE)
+  @Roles(Role.ADMIN, Role.ROOT, Role.REFEREE)
   @Post('events/:eventId/second-stage/confirm')
   confirmSecondStage(
     @Param('eventId') eventId: string,

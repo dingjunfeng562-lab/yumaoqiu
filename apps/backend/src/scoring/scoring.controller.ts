@@ -34,13 +34,13 @@ export class ScoringController {
     private scoringGateway: ScoringGateway,
   ) {}
 
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @Roles(Role.ADMIN, Role.ROOT)
   @Get('scoring/referees')
-  listAssignableReferees() {
-    return this.scoringService.listAssignableReferees();
+  listAssignableReferees(@Req() req: RequestWithUser) {
+    return this.scoringService.listAssignableReferees(req.user);
   }
 
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @Roles(Role.ADMIN, Role.ROOT)
   @Post('tournaments/:tournamentId/referee-access-code')
   getRefereeAccessCode(@Param('tournamentId') tournamentId: string) {
     return this.scoringService.getRefereeAccessCode(tournamentId);
@@ -93,7 +93,7 @@ export class ScoringController {
     return result;
   }
 
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.REFEREE)
+  @Roles(Role.ADMIN, Role.ROOT, Role.REFEREE)
   @Get('matches/:id/score')
   getMatchScore(@Param('id') id: string, @Req() req: RequestWithUser) {
     return this.scoringService.getMatchState(id, req.user);
@@ -250,7 +250,7 @@ export class ScoringController {
     return state;
   }
 
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @Roles(Role.ADMIN, Role.ROOT)
   @Patch('matches/:id/score')
   async correctMatchScore(@Param('id') id: string, @Body() dto: CorrectMatchScoreDto) {
     const state = await this.scoringService.correctMatchScore(id, dto.games);
@@ -258,7 +258,7 @@ export class ScoringController {
     return state;
   }
 
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @Roles(Role.ADMIN, Role.ROOT)
   @Patch('matches/:id/referee')
   async assignReferee(@Param('id') id: string, @Body() dto: AssignRefereeDto) {
     const state = await this.scoringService.assignReferee(id, dto.refereeId);

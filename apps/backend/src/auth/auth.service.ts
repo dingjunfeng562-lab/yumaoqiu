@@ -11,6 +11,8 @@ import { Prisma, Role, UserStatus } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
+import { AuthActor, MANAGED_ROLES, STAFF_ROLES } from './admin-scope';
+import { effectivePermissions, hasPermission } from './permissions';
 import { LoginDto } from './dto/login.dto';
 import {
   CheckEmailDto,
@@ -75,6 +77,23 @@ export class AuthService {
 
     try {
       const user = await this.prisma.$transaction(async (tx) => {
+        // Invite ownership is durable: registering through an ADMIN invite
+        // creates a managed account and atomically consumes the shared quota.
+        const issuer = inviteCode.createdById
+          ? await tx.user.findUnique({ where: { id: inviteCode.createdById } })
+          : null;
+        if (inviteCode.createdById && (!issuer || issuer.status !== UserStatus.ACTIVE)) {
+          throw new ForbiddenException('邀请码发放人已停用');
+        }
+        if (issuer && !hasPermission(issuer, 'INVITES')) {
+          throw new ForbiddenException('邀请码发放人已无发放权限');
+        }
+        if (issuer && issuer.role !== Role.ROOT && !MANAGED_ROLES.includes(inviteCode.role)) {
+          throw new ForbiddenException('管理员不能发放此角色的邀请码');
+        }
+        const managerId = issuer && issuer.role !== Role.ROOT ? issuer.id : null;
+        const staffQuotaCharged = Boolean(managerId && STAFF_ROLES.includes(inviteCode.role));
+        if (staffQuotaCharged) await this.consumeStaffQuota(tx, managerId!);
         const updatedInviteCode = await tx.inviteCode.updateMany({
           where: {
             id: inviteCode.id,
@@ -96,6 +115,8 @@ export class AuthService {
             passwordHash,
             role: inviteCode.role,
             inviteCodeId: inviteCode.id,
+            managerId,
+            staffQuotaCharged,
           },
         });
       });
@@ -287,24 +308,24 @@ export class AuthService {
     return this.serializeUser(user);
   }
 
-  async createSuperAdmin(username: string, email: string, password: string) {
-    return this.createManagedUser(Role.SUPER_ADMIN, username, email, password);
+  async createRoot(username: string, email: string, password: string, actor: AuthActor) {
+    return this.createManagedUser(Role.ROOT, username, email, password, actor);
   }
 
-  async createAdmin(username: string, email: string, password: string) {
-    return this.createManagedUser(Role.ADMIN, username, email, password);
+  async createAdmin(username: string, email: string, password: string, actor: AuthActor) {
+    return this.createManagedUser(Role.ADMIN, username, email, password, actor);
   }
 
-  async createReferee(username: string, email: string, password: string) {
-    return this.createManagedUser(Role.REFEREE, username, email, password);
+  async createReferee(username: string, email: string, password: string, actor: AuthActor) {
+    return this.createManagedUser(Role.REFEREE, username, email, password, actor);
   }
 
-  async createPlayer(username: string, email: string, password: string) {
-    return this.createManagedUser(Role.PLAYER, username, email, password);
+  async createPlayer(username: string, email: string, password: string, actor: AuthActor) {
+    return this.createManagedUser(Role.PLAYER, username, email, password, actor);
   }
 
-  async createPhotographer(username: string, email: string, password: string) {
-    return this.createManagedUser(Role.PHOTOGRAPHER, username, email, password);
+  async createPhotographer(username: string, email: string, password: string, actor: AuthActor) {
+    return this.createManagedUser(Role.PHOTOGRAPHER, username, email, password, actor);
   }
 
   async changePassword(userId: string, currentPassword: string, newPassword: string) {
@@ -332,7 +353,8 @@ export class AuthService {
     return { success: true };
   }
 
-  async resetUserPassword(userId: string) {
+  async resetUserPassword(userId: string, actor: AuthActor) {
+    await this.requireManageableUser(userId, actor);
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
       throw new NotFoundException('用户不存在');
@@ -357,7 +379,9 @@ export class AuthService {
     };
   }
 
-  async updateUserStatus(userId: string, dto: UpdateUserStatusDto, requesterId?: string) {
+  async updateUserStatus(userId: string, dto: UpdateUserStatusDto, actor: AuthActor) {
+    await this.requireManageableUser(userId, actor);
+    const requesterId = actor.id;
     // Disabling now invalidates the target's active sessions immediately, so a
     // super admin must not be able to lock themselves out of the console.
     if (dto.status === UserStatus.DISABLED && requesterId && requesterId === userId) {
@@ -400,9 +424,18 @@ export class AuthService {
     if (user.role === role) {
       return this.serializeUser(user);
     }
-    const updated = await this.prisma.user.update({
-      where: { id: userId },
-      data: { role },
+    const updated = await this.prisma.$transaction(async (tx) => {
+      // Lock the account so simultaneous promotions cannot double-charge it.
+      await tx.$queryRaw`SELECT id FROM User WHERE id = ${userId} FOR UPDATE`;
+      const current = await tx.user.findUniqueOrThrow({ where: { id: userId } });
+      const charge = Boolean(current.managerId && !current.staffQuotaCharged && STAFF_ROLES.includes(role));
+      if (charge) await this.consumeStaffQuota(tx, current.managerId!);
+      // Existing privileged invitations cannot survive a role change.
+      await tx.inviteCode.updateMany({ where: { createdById: userId }, data: { isEnabled: false } });
+      return tx.user.update({
+        where: { id: userId },
+        data: { role, permissions: Prisma.DbNull, ...(charge ? { staffQuotaCharged: true } : {}) },
+      });
     });
     return this.serializeUser(updated);
   }
@@ -457,7 +490,8 @@ export class AuthService {
    * Super-admin rename of any account. Does NOT consume the user's own quota
    * and is not bound by the per-year limit.
    */
-  async renameUser(userId: string, nameInput: string) {
+  async renameUser(userId: string, nameInput: string, actor: AuthActor) {
+    await this.requireManageableUser(userId, actor);
     const name = this.normalizeUsername(nameInput);
     this.assertValidUsername(name);
 
@@ -480,8 +514,9 @@ export class AuthService {
     }
   }
 
-  async listUsers() {
+  async listUsers(actor: AuthActor) {
     const users = await this.prisma.user.findMany({
+      where: actor.role !== Role.ROOT ? { managerId: actor.id, role: { in: MANAGED_ROLES } } : {},
       include: {
         inviteCode: {
           select: { code: true },
@@ -503,11 +538,16 @@ export class AuthService {
       // Total matches assigned to this user as referee (includes pending,
       // live, completed and cancelled — gives an at-a-glance workload view).
       refereedMatchesCount: user._count.matches,
+      managerId: user.managerId,
+      staffInviteLimit: user.staffInviteLimit,
+      staffInviteUsed: user.staffInviteUsed,
+      staffInviteRemaining: Math.max(0, user.staffInviteLimit - user.staffInviteUsed),
       createdAt: user.createdAt,
     }));
   }
 
-  async createInviteCode(dto: CreateInviteCodeDto) {
+  async createInviteCode(dto: CreateInviteCodeDto, actor: AuthActor) {
+    this.assertCreatableRole(dto.role as Role, actor);
     const code = await this.generateUniqueInviteCode();
     const expiresAt = dto.expiresAt ? new Date(dto.expiresAt) : null;
     if (expiresAt && Number.isNaN(expiresAt.getTime())) {
@@ -521,28 +561,32 @@ export class AuthService {
         maxUses: dto.maxUses,
         expiresAt,
         remark: dto.remark?.trim() || null,
+        createdById: actor.id,
       },
     });
   }
 
-  async listInviteCodes() {
+  async listInviteCodes(actor: AuthActor) {
     return this.prisma.inviteCode.findMany({
+      where: actor.role !== Role.ROOT ? { createdById: actor.id } : {},
+      include: { createdBy: { select: { id: true, username: true, role: true } } },
       orderBy: { createdAt: 'desc' },
     });
   }
 
-  async updateInviteCode(id: string, isEnabled: boolean) {
+  async updateInviteCode(id: string, isEnabled: boolean, actor: AuthActor) {
     const inviteCode = await this.prisma.inviteCode.findUnique({ where: { id } });
     if (!inviteCode) {
       throw new NotFoundException('邀请码不存在');
     }
+    await this.requireManageableInvite(inviteCode, actor);
     return this.prisma.inviteCode.update({
       where: { id },
       data: { isEnabled },
     });
   }
 
-  async deleteInviteCode(id: string) {
+  async deleteInviteCode(id: string, actor: AuthActor) {
     const inviteCode = await this.prisma.inviteCode.findUnique({
       where: { id },
       include: { users: { select: { id: true } } },
@@ -550,13 +594,16 @@ export class AuthService {
     if (!inviteCode) {
       throw new NotFoundException('邀请码不存在');
     }
+    await this.requireManageableInvite(inviteCode, actor);
     if (inviteCode.users.length) {
       throw new BadRequestException('该邀请码已被使用，不能删除');
     }
     return this.prisma.inviteCode.delete({ where: { id } });
   }
 
-  async deleteUser(id: string, requesterId?: string) {
+  async deleteUser(id: string, actor: AuthActor) {
+    await this.requireManageableUser(id, actor);
+    const requesterId = actor.id;
     if (requesterId && requesterId === id) {
       throw new BadRequestException('不能删除自己的账号');
     }
@@ -565,10 +612,15 @@ export class AuthService {
     if (!user) {
       throw new NotFoundException('用户不存在');
     }
-    return this.prisma.user.delete({ where: { id } });
+    return this.prisma.$transaction(async (tx) => {
+      await tx.inviteCode.updateMany({ where: { createdById: id }, data: { isEnabled: false } });
+      // Never decrement staffInviteUsed: it measures lifetime consumption.
+      return tx.user.delete({ where: { id } });
+    });
   }
 
-  async deleteUsers(ids: string[], requesterId?: string) {
+  async deleteUsers(ids: string[], actor: AuthActor) {
+    const requesterId = actor.id;
     const uniqueIds = Array.from(new Set(ids.map((id) => id.trim()).filter(Boolean)));
     if (!uniqueIds.length) {
       throw new BadRequestException('请选择要删除的账号');
@@ -576,6 +628,7 @@ export class AuthService {
     if (requesterId && uniqueIds.includes(requesterId)) {
       throw new BadRequestException('不能删除自己的账号');
     }
+    for (const id of uniqueIds) await this.requireManageableUser(id, actor);
 
     const users = await this.prisma.user.findMany({
       where: { id: { in: uniqueIds } },
@@ -585,13 +638,15 @@ export class AuthService {
       throw new NotFoundException('部分账号不存在，请刷新后重试');
     }
 
-    const result = await this.prisma.user.deleteMany({
-      where: { id: { in: uniqueIds } },
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.inviteCode.updateMany({ where: { createdById: { in: uniqueIds } }, data: { isEnabled: false } });
+      return tx.user.deleteMany({ where: { id: { in: uniqueIds } } });
     });
     return { deleted: result.count };
   }
 
-  private async createManagedUser(role: Role, usernameInput: string, emailInput: string, password: string) {
+  private async createManagedUser(role: Role, usernameInput: string, emailInput: string, password: string, actor: AuthActor) {
+    this.assertCreatableRole(role, actor);
     const username = this.normalizeUsername(usernameInput);
     const email = this.normalizeEmail(emailInput);
     this.assertValidUsername(username);
@@ -609,10 +664,85 @@ export class AuthService {
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
-    const user = await this.prisma.user.create({
-      data: { username, email, passwordHash, role },
+    const user = await this.prisma.$transaction(async (tx) => {
+      const managerId = actor.role !== Role.ROOT ? actor.id : null;
+      const staffQuotaCharged = Boolean(managerId && STAFF_ROLES.includes(role));
+      if (staffQuotaCharged) await this.consumeStaffQuota(tx, managerId!);
+      return tx.user.create({ data: { username, email, passwordHash, role, managerId, staffQuotaCharged } });
     });
     return this.serializeUser(user);
+  }
+
+  private assertCreatableRole(role: Role, actor: AuthActor) {
+    if (actor.role !== Role.ROOT && !MANAGED_ROLES.includes(role)) throw new ForbiddenException('无权创建此角色的账号或邀请码');
+  }
+
+  private async requireManageableUser(id: string, actor: AuthActor) {
+    const target = await this.prisma.user.findUnique({ where: { id } });
+    if (!target) throw new NotFoundException('用户不存在');
+    if (actor.role !== Role.ROOT && !(target.managerId === actor.id && MANAGED_ROLES.includes(target.role))) {
+      throw new ForbiddenException('无权管理此账号');
+    }
+    return target;
+  }
+
+  private async requireManageableInvite(invite: { createdById: string | null; role: Role }, actor: AuthActor) {
+    if (actor.role === Role.ROOT) return;
+    if (invite.createdById === actor.id && MANAGED_ROLES.includes(invite.role)) return;
+    throw new ForbiddenException('无权管理此邀请码');
+  }
+
+  private async consumeStaffQuota(tx: Prisma.TransactionClient, managerId: string) {
+    const updated = await tx.user.updateMany({
+      where: {
+        id: managerId, role: { not: Role.ROOT }, status: UserStatus.ACTIVE,
+        staffInviteUsed: { lt: tx.user.fields.staffInviteLimit },
+      },
+      data: { staffInviteUsed: { increment: 1 } },
+    });
+    if (updated.count !== 1) {
+      const manager = await tx.user.findUnique({ where: { id: managerId } });
+      if (!manager || manager.role === Role.ROOT || manager.status !== UserStatus.ACTIVE) {
+        throw new ForbiddenException('管理员已停用或角色已变更');
+      }
+      throw new BadRequestException('裁判和图片员的共享名额已用尽，请联系超级管理员分配');
+    }
+  }
+
+  async getInviteQuota(actor: AuthActor) {
+    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: actor.id } });
+    return {
+      limit: actor.role !== Role.ROOT ? user.staffInviteLimit : null,
+      used: actor.role !== Role.ROOT ? user.staffInviteUsed : 0,
+      remaining: actor.role !== Role.ROOT ? Math.max(0, user.staffInviteLimit - user.staffInviteUsed) : null,
+    };
+  }
+
+  async updateInviteQuota(id: string, limit: number, actor: AuthActor) {
+    if (actor.role !== Role.ROOT) throw new ForbiddenException();
+    // The conditional UPDATE also serializes with concurrent registrations.
+    const updated = await this.prisma.user.updateMany({
+      where: { id, role: { not: Role.ROOT }, staffInviteUsed: { lte: limit } },
+      data: { staffInviteLimit: limit },
+    });
+    if (!updated.count) throw new BadRequestException('只能给非超级管理员账号分配名额，且总额度不能低于已使用数量');
+    const user = await this.prisma.user.findUniqueOrThrow({ where: { id } });
+    return { limit: user.staffInviteLimit, used: user.staffInviteUsed, remaining: user.staffInviteLimit - user.staffInviteUsed };
+  }
+
+  async getUserPermissions(userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('用户不存在');
+    return { permissions: effectivePermissions(user), customized: Array.isArray(user.permissions), role: user.role };
+  }
+
+  async setUserPermissions(userId: string, permissions: string[] | null) {
+    if (permissions === undefined) throw new BadRequestException('请选择功能或恢复角色默认权限');
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('用户不存在');
+    if (user.role === Role.ROOT) throw new BadRequestException('超级管理员固定拥有全部权限；如需限制，请先调整角色');
+    await this.prisma.user.update({ where: { id: userId }, data: { permissions: permissions === null ? Prisma.DbNull : permissions } });
+    return this.getUserPermissions(userId);
   }
 
   private buildTokenPayload(user: {
@@ -690,6 +820,7 @@ export class AuthService {
     mustChangePassword?: boolean;
     nameChangeCount?: number | null;
     nameChangeWindowStart?: Date | null;
+    permissions?: Prisma.JsonValue;
     createdAt?: Date;
   }) {
     const quota = this.getRenameQuota(user);
@@ -701,6 +832,8 @@ export class AuthService {
       role: user.role,
       status: user.status ?? UserStatus.ACTIVE,
       mustChangePassword: Boolean(user.mustChangePassword),
+      permissions: effectivePermissions(user),
+      permissionsCustomized: Array.isArray(user.permissions),
       renameLimit: quota.limit,
       renameUsed: quota.used,
       renameRemaining: quota.remaining,

@@ -1,3 +1,4 @@
+import { RolesGuard } from '../auth/roles.guard';
 import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
 import { CompetitionsService } from './competitions.service';
 import { SubmitCompetitionRegistrationDto } from './dto/competition-registration.dto';
@@ -20,7 +21,7 @@ export class CompetitionsController {
 
   // Must be declared BEFORE the `:id` route so Nest matches "/me/registrations"
   // verbatim instead of treating "me" as an id parameter.
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Get('me/registrations')
   listMyRegistrations(@Req() req: AuthRequest) {
     return this.competitionsService.listMyRegistrations(req.user?.id ?? '');
@@ -31,13 +32,13 @@ export class CompetitionsController {
     return this.competitionsService.getPublicCompetition(id);
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Get(':id/registration/me')
   getMyRegistration(@Param('id') id: string, @Req() req: AuthRequest) {
     return this.competitionsService.getMyRegistration(id, req.user?.id ?? '');
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Post(':id/register')
   submitRegistration(
     @Param('id') id: string,

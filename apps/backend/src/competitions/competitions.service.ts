@@ -1,3 +1,4 @@
+import { hasPermission } from '../auth/permissions';
 import {
   BadRequestException,
   ConflictException,
@@ -18,6 +19,7 @@ import {
 } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
+import { AuthActor, tournamentScope } from '../auth/admin-scope';
 import { EmailService } from '../mail/email.service';
 import {
   AdminBatchCompetitionPlayerDto,
@@ -198,7 +200,7 @@ export class CompetitionsService {
     if (!user) {
       throw new NotFoundException('用户不存在');
     }
-    if (user.role !== Role.PLAYER && user.role !== Role.SUPER_ADMIN && user.role !== Role.ROOT) {
+    if (!hasPermission(user, 'REGISTRATION')) {
       throw new ForbiddenException('只有普通用户和超级管理员可以提交报名');
     }
     if (!dto.className?.trim() || !dto.contact?.trim()) {
@@ -463,8 +465,9 @@ export class CompetitionsService {
     return this.groupPlayers(registrations);
   }
 
-  async listAdminCompetitions() {
+  async listAdminCompetitions(actor?: AuthActor) {
     const competitions = await this.prisma.tournament.findMany({
+      where: tournamentScope(actor),
       include: {
         events: {
           include: {
@@ -513,7 +516,7 @@ export class CompetitionsService {
       throw new ForbiddenException('赛事已归档，请先由超级管理员恢复后再发布');
     }
     if (existing.approvalStatus !== 'APPROVED') {
-      throw new BadRequestException('赛事尚未通过总管理员审核,无法发布');
+      throw new BadRequestException('赛事尚未通过超级管理员审核,无法发布');
     }
     const competition = await this.prisma.tournament.update({
       where: { id },

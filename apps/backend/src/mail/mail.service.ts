@@ -37,7 +37,7 @@ export class MailService {
     return this.transporter !== null;
   }
 
-  /** SMTP 配置概览，仅供总管理员查看；绝不返回密码 */
+  /** SMTP 配置概览，仅供超级管理员查看；绝不返回密码 */
   smtpInfo() {
     return {
       configured: this.enabled,

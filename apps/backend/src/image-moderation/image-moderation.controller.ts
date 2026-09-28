@@ -12,6 +12,7 @@ import { ImageModerationService } from './image-moderation.service';
 export class ImageModerationController {
   constructor(private readonly moderation: ImageModerationService) {}
 
+  @Roles(Role.ROOT)
   @Get()
   @Header('Cache-Control', 'no-store')
   getConfig() {

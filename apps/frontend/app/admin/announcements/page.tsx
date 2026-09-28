@@ -357,7 +357,7 @@ export default function AdminAnnouncementsPage() {
           <Typography.Title level={3} style={{ margin: 0 }}>
             公告管理
           </Typography.Title>
-          <Typography.Text type="secondary">由总管理员统一维护全站弹窗、横幅等公告。</Typography.Text>
+          <Typography.Text type="secondary">由已开通公告管理权限的账号维护全站弹窗、横幅等公告。</Typography.Text>
         </div>
         <Space>
           <Button icon={<ReloadOutlined />} onClick={loadAnnouncements} loading={loading}>

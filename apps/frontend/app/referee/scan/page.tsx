@@ -1,4 +1,5 @@
 'use client';
+import { useCurrentAccess } from '@/lib/use-current-role';
 
 import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
@@ -11,6 +12,8 @@ import { parseRefereeEntry } from '@/lib/referee-entry';
 export default function RefereeScanPage() {
   const router = useRouter();
   const { data: session, status } = useSession();
+  const access = useCurrentAccess();
+  const canReferee = access.ready && access.can('REFEREE');
   const video = useRef<HTMLVideoElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const stream = useRef<MediaStream | null>(null);
@@ -123,7 +126,7 @@ export default function RefereeScanPage() {
   }
 
   if (status === 'loading') return <div className="grid min-h-screen place-items-center"><Spin /></div>;
-  if (session?.user?.role !== 'REFEREE') return <Alert type="error" title="请使用裁判账号登录后扫码" />;
+  if (!canReferee) return <Alert type="error" title="请使用裁判账号登录后扫码" />;
 
   return (
     <main className="min-h-screen bg-slate-50 !px-4 !py-6">

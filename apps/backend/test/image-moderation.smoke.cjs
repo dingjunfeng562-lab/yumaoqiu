@@ -25,7 +25,7 @@ async function main() {
   const password = `ModerationQa${randomUUID()}!`;
   const passwordHash = await bcrypt.hash(password, 10);
   const accounts = {};
-  for (const role of ['ROOT', 'SUPER_ADMIN', 'ADMIN', 'PHOTOGRAPHER', 'PLAYER', 'REFEREE']) {
+  for (const role of ['ROOT', 'ADMIN', 'PHOTOGRAPHER', 'PLAYER', 'REFEREE']) {
     const id = randomUUID();
     const email = `${id}@moderation-test.invalid`;
     await prisma.user.create({ data: { id, username: `moderation-${role}-${runId}`, email, passwordHash, role } });
@@ -33,7 +33,7 @@ async function main() {
     accounts[role] = { email, headers: { Authorization: `Bearer ${jwt.sign({ sub: id }, { expiresIn: '10m' })}` } };
   }
   assert.equal((await fetch(base)).status, 401);
-  for (const role of ['SUPER_ADMIN', 'ADMIN', 'PHOTOGRAPHER', 'PLAYER', 'REFEREE']) {
+  for (const role of ['ADMIN', 'PHOTOGRAPHER', 'PLAYER', 'REFEREE']) {
     for (const [method, suffix] of [['GET', ''], ['PATCH', ''], ['POST', '/test']]) {
       const res = await fetch(base + suffix, {
         method, headers: { ...accounts[role].headers, 'Content-Type': 'application/json' },
@@ -148,13 +148,13 @@ async function main() {
       await page.getByRole('button', { name: '打开后台菜单' }).waitFor();
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
       await page.screenshot({ path: path.join(output, 'mobile.png'), fullPage: true });
-      const restricted = await login('SUPER_ADMIN', { width: 1440, height: 1000 });
+      const restricted = await login('ADMIN', { width: 1440, height: 1000 });
       const deniedPage = await restricted.newPage();
       await deniedPage.goto('http://localhost:3000/admin/image-moderation');
       await deniedPage.getByText('仅超级管理员可设置图片审核', { exact: true }).waitFor();
       assert.equal(await deniedPage.getByRole('menuitem', { name: '图片审核', exact: true }).count(), 0);
       assert.deepEqual(errors, [], 'Browser runtime errors');
-      console.log('PASS: ROOT dashboard button + settings page, toggle/save UX, saved-state reload, hidden key, mobile layout, denied SUPER_ADMIN page.');
+      console.log('PASS: ROOT dashboard button + settings page, toggle/save UX, saved-state reload, hidden key, mobile layout, denied ADMIN page.');
     } finally { await browser.close(); }
   }
 }

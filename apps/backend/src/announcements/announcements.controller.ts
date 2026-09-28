@@ -14,7 +14,7 @@ type AuthRequest = {
 };
 
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.SUPER_ADMIN)
+@Roles(Role.ROOT)
 @Controller('admin/announcements')
 export class AdminAnnouncementsController {
   constructor(private announcementsService: AnnouncementsService) {}

@@ -14,7 +14,7 @@ import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.SUPER_ADMIN)
+@Roles(Role.ROOT)
 @Controller('admin/ai-config')
 export class AiConfigController {
   constructor(private readonly aiConfigService: AiConfigService) {}

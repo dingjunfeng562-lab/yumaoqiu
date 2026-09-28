@@ -1,3 +1,4 @@
+import { AuthActor } from '../auth/admin-scope';
 import {
   Body,
   Controller,
@@ -6,6 +7,7 @@ import {
   Post,
   Put,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import { Role } from '@prisma/client';
@@ -22,7 +24,7 @@ import {
 
 /**
  * 邮件通知系统管理接口。
- * 仅超级管理员（ROOT）可访问，总管理员/普通管理员/其他角色一律 403。
+ * 仅超级管理员（ROOT）可访问，超级管理员/普通管理员/其他角色一律 403。
  */
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(Role.ROOT)
@@ -32,6 +34,7 @@ export class AdminEmailController {
 
   // ---------- 基础设置 ----------
 
+  @Roles(Role.ROOT)
   @Get('settings')
   getSettings() {
     return this.emailService.getGlobalSettings();
@@ -49,6 +52,7 @@ export class AdminEmailController {
 
   // ---------- 模板管理 ----------
 
+  @Roles(Role.ROOT)
   @Get('templates')
   listTemplates() {
     return this.emailService.listTemplates();
@@ -64,6 +68,7 @@ export class AdminEmailController {
     return this.emailService.resetTemplate(key);
   }
 
+  @Roles(Role.ROOT)
   @Get('templates/:key/preview')
   previewTemplate(@Param('key') key: string) {
     return this.emailService.previewTemplate(key);
@@ -71,11 +76,13 @@ export class AdminEmailController {
 
   // ---------- 赛事邮件开关 ----------
 
+  @Roles(Role.ROOT)
   @Get('events/settings')
-  listEventSettings() {
-    return this.emailService.listEventSettings();
+  listEventSettings(@Req() req: { user: AuthActor }) {
+    return this.emailService.listEventSettings(req.user);
   }
 
+  @Roles(Role.ROOT)
   @Get('events/:eventId/settings')
   getEventSettings(@Param('eventId') eventId: string) {
     return this.emailService.getEventSettings(eventId);
@@ -94,23 +101,27 @@ export class AdminEmailController {
     return this.emailService.sendReminderForTournament(eventId, 'manual');
   }
 
+  @Roles(Role.ROOT)
   @Get('events/:eventId/logs')
   listEventLogs(
     @Param('eventId') eventId: string,
     @Query('status') status?: string,
     @Query('templateKey') templateKey?: string,
+    @Req() req?: { user: AuthActor },
   ) {
-    return this.emailService.listLogs({ tournamentId: eventId, status, templateKey });
+    return this.emailService.listLogs({ tournamentId: eventId, status, templateKey }, req?.user);
   }
 
   // ---------- 发送日志 ----------
 
+  @Roles(Role.ROOT)
   @Get('logs')
   listLogs(
     @Query('eventId') eventId?: string,
     @Query('status') status?: string,
     @Query('templateKey') templateKey?: string,
+    @Req() req?: { user: AuthActor },
   ) {
-    return this.emailService.listLogs({ tournamentId: eventId, status, templateKey });
+    return this.emailService.listLogs({ tournamentId: eventId, status, templateKey }, req?.user);
   }
 }

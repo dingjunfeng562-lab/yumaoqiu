@@ -5,12 +5,22 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { ExportsService } from './exports.service';
+import { ExportFilesService } from './export-files.service';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.ADMIN, Role.SUPER_ADMIN)
+@Roles(Role.ADMIN, Role.ROOT)
 @Controller('exports')
 export class ExportsController {
-  constructor(private exportsService: ExportsService) {}
+  constructor(
+    private exportsService: ExportsService,
+    private exportFilesService: ExportFilesService,
+  ) {}
+
+  /** 该赛事已生成的导出文件；赛事数据变动后会自动重建并替换。 */
+  @Get('tournaments/:id')
+  listFiles(@Param('id') id: string) {
+    return this.exportFilesService.list(id);
+  }
 
   @Get('tournaments/:id/:kind')
   async download(
@@ -18,7 +28,7 @@ export class ExportsController {
     @Param('kind') kind: string,
     @Res() res: Response,
   ) {
-    const file = await this.exportsService.exportTournament(id, kind);
+    const file = await this.exportFilesService.getFresh(id, kind);
     this.sendFile(res, file);
   }
 

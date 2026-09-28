@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { Role } from '@prisma/client';
+import { AuthActor } from '../auth/admin-scope';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
@@ -21,14 +22,14 @@ type AuthRequest = {
 };
 
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.ROOT)
+@Roles(Role.ADMIN, Role.ROOT)
 @Controller('admin')
 export class AdminCompetitionsController {
   constructor(private competitionsService: CompetitionsService) {}
 
   @Get('competitions')
-  listCompetitions() {
-    return this.competitionsService.listAdminCompetitions();
+  listCompetitions(@Req() req: { user: AuthActor }) {
+    return this.competitionsService.listAdminCompetitions(req.user);
   }
 
   @Patch('competitions/:id/publish')

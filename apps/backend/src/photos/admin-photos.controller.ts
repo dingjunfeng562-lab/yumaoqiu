@@ -1,3 +1,4 @@
+import { AuthActor } from '../auth/admin-scope';
 import {
   BadRequestException,
   Body,
@@ -53,7 +54,7 @@ function imageContentType(path: string) {
 }
 
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.ROOT)
+@Roles(Role.ADMIN, Role.ROOT)
 @Controller('admin')
 export class AdminPhotosController {
   constructor(private photosService: PhotosService) {}
@@ -98,8 +99,8 @@ export class AdminPhotosController {
   // ----- Photo management -----
 
   @Get('photos/tournaments')
-  listTournamentStats() {
-    return this.photosService.listTournamentsWithPhotos();
+  listTournamentStats(@Req() req: { user: AuthActor }) {
+    return this.photosService.listTournamentsWithPhotos(req.user);
   }
 
   @Post('tournaments/:id/photos')
@@ -133,8 +134,8 @@ export class AdminPhotosController {
   }
 
   @Get('photos')
-  listPhotos(@Query() query: AdminPhotoQueryDto) {
-    return this.photosService.adminListPhotos(query);
+  listPhotos(@Query() query: AdminPhotoQueryDto, @Req() req: { user: AuthActor }) {
+    return this.photosService.adminListPhotos(query, req.user);
   }
 
   @Get('photos/:id/original')

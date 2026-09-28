@@ -9,7 +9,6 @@ datasource db {
 
 enum Role {
   ROOT
-  SUPER_ADMIN
   ADMIN
   REFEREE
   PLAYER
@@ -167,10 +166,13 @@ model InviteCode {
   isEnabled   Boolean  @default(true)
   remark      String?  @db.VarChar(255)
   users       User[]
+  createdById String?
+  createdBy   User?    @relation("IssuedInvites", fields: [createdById], references: [id], onDelete: SetNull)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   @@index([role])
+  @@index([createdById])
   @@index([isEnabled])
   @@index([expiresAt])
 }
@@ -190,6 +192,15 @@ model User {
   nameChangeWindowStart DateTime?
   inviteCodeId      String?
   inviteCode        InviteCode?        @relation(fields: [inviteCodeId], references: [id], onDelete: SetNull)
+  managerId         String?
+  manager           User?              @relation("ManagedUsers", fields: [managerId], references: [id], onDelete: SetNull)
+  managedUsers      User[]             @relation("ManagedUsers")
+  issuedInvites     InviteCode[]       @relation("IssuedInvites")
+  staffInviteLimit  Int                @default(50)
+  staffInviteUsed   Int                @default(0)
+  permissions       Json?
+  staffQuotaCharged Boolean            @default(false)
+  ownedPlayers     Player[]
   competitionRegistrations CompetitionRegistration[]
   matches           Match[]
   refereeTournamentGrants RefereeTournamentGrant[]
@@ -205,6 +216,7 @@ model User {
   @@index([role])
   @@index([status])
   @@index([inviteCodeId])
+  @@index([managerId])
 }
 
 model Announcement {
@@ -249,6 +261,8 @@ model Player {
   contact           String?
   notes             String?
   isTemporary       Boolean        @default(false)
+  ownerId           String?
+  owner             User?          @relation(fields: [ownerId], references: [id], onDelete: SetNull)
   registrationsAsP1 Registration[] @relation("registrationPlayer1")
   registrationsAsP2 Registration[] @relation("registrationPlayer2")
   teamMembers       TeamMember[]
@@ -256,6 +270,7 @@ model Player {
   teamLineupsAsP2   TeamLineup[]   @relation("teamLineupPlayer2")
   createdAt         DateTime       @default(now())
   updatedAt         DateTime       @updatedAt
+  @@index([ownerId])
 }
 
 model Tournament {
@@ -307,6 +322,7 @@ model Tournament {
   updatedAt             DateTime         @updatedAt
 
   @@index([approvalStatus, isPublished])
+  @@index([submittedById])
 }
 
 model RefereeTournamentAccessCode {

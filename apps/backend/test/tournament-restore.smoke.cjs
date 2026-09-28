@@ -63,7 +63,7 @@ async function main() {
   const publish = '/admin/competitions/fixture/publish';
   let checks = 0;
   try {
-    for (const role of [null, 'ADMIN', 'SUPER_ADMIN', 'PLAYER', 'REFEREE', 'PHOTOGRAPHER']) {
+    for (const role of [null, 'ADMIN', 'PLAYER', 'REFEREE', 'PHOTOGRAPHER']) {
       for (const [url, body] of [[restore, {}], [update, { isArchived: false }], [publish, {}]]) {
         reset();
         const req = client.patch(url);
@@ -89,7 +89,7 @@ async function main() {
     await client.patch(update).set('x-test-role', 'ROOT').send({ isArchived: false }).expect(200);
     assert.equal(state.isArchived, false);
     checks++;
-    for (const role of ['ADMIN', 'SUPER_ADMIN', 'ROOT']) {
+    for (const role of ['ADMIN', 'ROOT']) {
       for (const invalid of ['false', 0, '', [], {}]) {
         reset();
         await client.patch(update).set('x-test-role', role).send({ isArchived: invalid }).expect(400);

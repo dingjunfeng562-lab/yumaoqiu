@@ -1,4 +1,5 @@
 'use client';
+import { useCurrentAccess } from '@/lib/use-current-role';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSession } from 'next-auth/react';
@@ -158,23 +159,24 @@ function moveItem<T>(items: T[], from: number, to: number) {
   return next;
 }
 
-const SUPER_ADMIN_ROLE = 'SUPER_ADMIN';
+const ROOT_ROLE = 'ROOT';
 
 const APPROVAL_META: Record<
   'PENDING' | 'APPROVED' | 'REJECTED',
   { label: string; color: string }
 > = {
-  PENDING: { label: '待总管理员审核', color: 'gold' },
+  PENDING: { label: '待超级管理员审核', color: 'gold' },
   APPROVED: { label: '已通过审核', color: 'green' },
   REJECTED: { label: '已驳回', color: 'red' },
 };
 
 export default function TournamentsPage() {
   const { data: session } = useSession();
+  const access = useCurrentAccess();
   const token = session?.user?.accessToken as string | undefined;
   const sessionRole = (session?.user as { role?: string } | undefined)?.role;
 
-  // Pull the live role from /auth/me so a promotion to SUPER_ADMIN takes
+  // Pull live access from /auth/me so role and personal permission changes take
   // effect immediately even if the cached session JWT still shows ADMIN.
   const [liveRole, setLiveRole] = useState<string | undefined>(sessionRole);
   useEffect(() => {
@@ -193,8 +195,8 @@ export default function TournamentsPage() {
   }, [token]);
 
   const role = liveRole ?? sessionRole;
-  const isRoot = role === 'ROOT';
-  const isSuperAdmin = role === SUPER_ADMIN_ROLE || role === 'ROOT';
+  const isRoot = access.can('TOURNAMENT_ADMIN');
+  const isSuperAdmin = access.can('TOURNAMENT_ADMIN');
 
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
   const [loading, setLoading] = useState(false);
@@ -514,7 +516,7 @@ export default function TournamentsPage() {
 
   const handleApprove = async (record: Tournament) => {
     if (!isSuperAdmin) {
-      message.error('仅总管理员可审核赛事');
+      message.error('仅超级管理员可审核赛事');
       return;
     }
     try {
@@ -528,7 +530,7 @@ export default function TournamentsPage() {
 
   const openReject = (record: Tournament) => {
     if (!isSuperAdmin) {
-      message.error('仅总管理员可审核赛事');
+      message.error('仅超级管理员可审核赛事');
       return;
     }
     setReviewTarget(record);
@@ -646,7 +648,7 @@ export default function TournamentsPage() {
           <Button icon={<EditOutlined />} size="small" onClick={() => openEdit(record)} disabled={record.isArchived}>
             编辑
           </Button>
-          {!record.isArchived && (
+          {isSuperAdmin && !record.isArchived && (
             <Popconfirm title="归档后不建议继续编辑，确认归档？" onConfirm={() => handleArchive(record.id)}>
               <Button icon={<InboxOutlined />} size="small">
                 归档
@@ -658,11 +660,11 @@ export default function TournamentsPage() {
               <Button icon={<UndoOutlined />} size="small">恢复赛事</Button>
             </Popconfirm>
           )}
-          <Popconfirm title="确认删除？此操作不可恢复" onConfirm={() => handleDelete(record.id)}>
+          {isSuperAdmin && <Popconfirm title="确认删除？此操作不可恢复" onConfirm={() => handleDelete(record.id)}>
             <Button icon={<DeleteOutlined />} size="small" danger>
               删除
             </Button>
-          </Popconfirm>
+          </Popconfirm>}
         </Space>
       ),
     },
@@ -678,7 +680,7 @@ export default function TournamentsPage() {
             赛事配置
           </Typography.Title>
           <Typography.Text type="secondary">
-            创建赛事,新建后须由<strong>总管理员</strong>审核通过,赛事才会向公众发布。
+            创建赛事,新建后须由<strong>超级管理员</strong>审核通过,赛事才会向公众发布。
           </Typography.Text>
         </div>
         <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
@@ -694,7 +696,7 @@ export default function TournamentsPage() {
           message={
             isSuperAdmin
               ? `有 ${pendingCount} 个赛事等待你审核`
-              : `已提交 ${pendingCount} 个赛事,等待总管理员审核`
+              : `已提交 ${pendingCount} 个赛事,等待超级管理员审核`
           }
           description={
             isSuperAdmin

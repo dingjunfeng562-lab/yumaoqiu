@@ -1,3 +1,4 @@
+import { AuthActor, tournamentScope } from '../auth/admin-scope';
 import {
   BadRequestException,
   Injectable,
@@ -154,9 +155,9 @@ export class EmailService {
 
   // ---------------- 赛事邮件开关 ----------------
 
-  async listEventSettings() {
+  async listEventSettings(actor?: AuthActor) {
     const tournaments = await this.prisma.tournament.findMany({
-      where: { isArchived: false },
+      where: { isArchived: false, ...tournamentScope(actor) },
       select: {
         id: true,
         name: true,
@@ -242,7 +243,7 @@ export class EmailService {
     status?: string;
     templateKey?: string;
     take?: number;
-  }) {
+  }, actor?: AuthActor) {
     const status = filters.status?.toUpperCase();
     if (status && !Object.values(EmailLogStatus).includes(status as EmailLogStatus)) {
       throw new BadRequestException('日志状态筛选有误');
@@ -251,6 +252,7 @@ export class EmailService {
     const logs = await this.prisma.emailLog.findMany({
       where: {
         ...(filters.tournamentId ? { tournamentId: filters.tournamentId } : {}),
+        ...(actor && actor.role !== 'ROOT' ? { tournament: tournamentScope(actor) } : {}),
         ...(status ? { status: status as EmailLogStatus } : {}),
         ...(filters.templateKey ? { templateKey: filters.templateKey } : {}),
       },
@@ -388,7 +390,7 @@ export class EmailService {
       return { total: 0, success: 0, failed: 0, skipped: 0 };
     }
 
-    // 手动发送由总管理员显式触发，不检查赛事级开关；自动发送由扫描任务保证开关已开启
+    // 手动发送由超级管理员显式触发，不检查赛事级开关；自动发送由扫描任务保证开关已开启
     const gate = await this.resolveGate(tournamentId, 'match_reminder', { skipEventCheck: true });
     if (!gate.ok) {
       await this.writeLog({

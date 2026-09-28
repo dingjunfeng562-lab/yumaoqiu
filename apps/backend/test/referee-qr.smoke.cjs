@@ -143,7 +143,7 @@ async function browserChecks(tournament, courts, uiMatch, codePath) {
 }
 
 async function main() {
-  for (const name of ['ADMIN', 'SUPER_ADMIN', 'ROOT', 'PLAYER', 'PHOTOGRAPHER', 'REFEREE_A', 'REFEREE_B']) {
+  for (const name of ['ADMIN', 'ROOT', 'PLAYER', 'PHOTOGRAPHER', 'REFEREE_A', 'REFEREE_B']) {
     const id = randomUUID();
     const role = name.startsWith('REFEREE') ? 'REFEREE' : name;
     const user = await prisma.user.create({ data: { id, role, username: `qr-${name}-${run}`, email: `${id}@qr-test.invalid`, passwordHash: 'test-no-login' } });
@@ -188,20 +188,20 @@ async function main() {
   const listUrl = `${base}/${courts[0].id}/matches`;
   const claim = (id) => `${listUrl}/${id}/claim`;
   await request(base, null, 'GET', null, 401);
-  for (const role of ['ADMIN', 'SUPER_ADMIN', 'ROOT']) {
+  for (const role of ['ADMIN', 'ROOT']) {
     assert.ok((await request('/scoring/referees', role)).some((user) => user.id === users.REFEREE_A.id));
   }
   await request('/scoring/referees', 'PLAYER', 'GET', null, 403);
   const codeEndpoint = `/tournaments/${tournament.id}/referee-access-code`;
   await request(codeEndpoint, 'REFEREE_A', 'POST', null, 403);
-  const codes = await Promise.all(['ADMIN', 'SUPER_ADMIN', 'ROOT'].map((role) => request(codeEndpoint, role, 'POST', null, 201)));
+  const codes = await Promise.all(['ADMIN', 'ROOT'].map((role) => request(codeEndpoint, role, 'POST', null, 201)));
   assert.equal(new Set(codes.map((code) => code.path)).size, 1, 'Concurrent generation preserves one QR per tournament');
   const otherCode = await request(`/tournaments/${tournamentIds[1]}/referee-access-code`, 'ADMIN', 'POST', null, 201);
   assert.notEqual(otherCode.path, codes[0].path, 'Every tournament has a different QR');
   const accessCode = codes[0].path.split('/').at(-1);
   assert.match(accessCode, /^[a-f0-9]{64}$/);
   await request('/referee/authorize', null, 'POST', { accessCode }, 401);
-  for (const role of ['ADMIN', 'SUPER_ADMIN', 'ROOT', 'PLAYER', 'PHOTOGRAPHER']) {
+  for (const role of ['ADMIN', 'ROOT', 'PLAYER', 'PHOTOGRAPHER']) {
     await request(base, role, 'GET', null, 403);
     await request(listUrl, role, 'GET', null, 403);
     await request(claim(target.id), role, 'POST', null, 403);

@@ -1,3 +1,5 @@
+import { AuthActor } from '../auth/admin-scope';
+import { hasPermission } from '../auth/permissions';
 import {
   BadRequestException,
   ConflictException,
@@ -23,10 +25,7 @@ import { isSecondStageFormalRoundNo } from '../common/second-stage-bracket';
 import { SecondStageProgressService } from '../common/second-stage-progress.service';
 import { randomBytes } from 'node:crypto';
 
-type AuthUser = {
-  id: string;
-  role: Role;
-};
+type AuthUser = AuthActor;
 
 type PlayerIndex = 1 | 2;
 type CourtSide = 'left' | 'right';
@@ -177,9 +176,9 @@ export class ScoringService {
     if (grant.tournament.isArchived) throw new NotFoundException('赛事已归档');
   }
 
-  async listAssignableReferees() {
+  async listAssignableReferees(actor?: AuthActor) {
     const users = await this.prisma.user.findMany({
-      where: { role: Role.REFEREE, status: 'ACTIVE' },
+      where: { role: Role.REFEREE, status: 'ACTIVE', ...(actor && actor.role !== Role.ROOT ? { managerId: actor.id } : {}) },
       select: { id: true, username: true, role: true, _count: { select: { matches: true } } },
       orderBy: { username: 'asc' },
     });
@@ -188,7 +187,7 @@ export class ScoringService {
 
   private requireReferee(user: AuthUser) {
     // The general roles guard also admits ROOT; QR access is referee-only.
-    if (user.role !== Role.REFEREE) {
+    if (!hasPermission(user, 'REFEREE')) {
       throw new ForbiddenException('请使用裁判账号扫码进入赛事');
     }
   }
@@ -1676,12 +1675,12 @@ export class ScoringService {
       },
     });
     if (!match) throw new NotFoundException('场次不存在');
-    if (user.role === Role.REFEREE) {
+    if (!hasPermission(user, 'SCORING')) {
       const tournamentId = match.event?.tournamentId ?? match.teamMatch?.teamCompetition.tournamentId;
       if (!tournamentId) throw new ForbiddenException('该场次未关联赛事');
       await this.requireTournamentAuthorization(tournamentId, user);
     }
-    if (user.role === Role.REFEREE && match.refereeId !== user.id) {
+    if (!hasPermission(user, 'SCORING') && match.refereeId !== user.id) {
       throw new ForbiddenException('无权操作未分配给你的场次');
     }
   }

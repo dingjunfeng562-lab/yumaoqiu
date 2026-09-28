@@ -1,4 +1,5 @@
 'use client';
+import { useCurrentAccess } from '@/lib/use-current-role';
 
 import type { Key } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -227,6 +228,7 @@ export default function AdminCompetitionPlayersPage() {
   const id = normalizeRouteParam(params?.id);
   const router = useRouter();
   const { data: session } = useSession();
+  const access = useCurrentAccess();
   const token = session?.user?.accessToken as string | undefined;
   const sessionRole = (session?.user as { role?: string } | undefined)?.role;
   const [liveRole, setLiveRole] = useState<string | undefined>(sessionRole);
@@ -245,8 +247,8 @@ export default function AdminCompetitionPlayersPage() {
     };
   }, [token]);
   const role = liveRole ?? sessionRole;
-  // 参赛选手写操作:降权后的总管理员(SUPER_ADMIN)只读,仅管理员/超级管理员可增删改。
-  const canManage = role === 'ADMIN' || role === 'ROOT';
+  // 参赛选手写操作由实时的选手管理权限控制。
+  const canManage = access.can('PLAYERS');
   const [competition, setCompetition] = useState<Competition | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
   const [eventName, setEventName] = useState('all');

@@ -57,8 +57,8 @@ function formatDateTime(value: string | null) {
 
 /**
  * 赛事详情中的邮件通知设置模块。
- * 仅总管理员可见——父组件必须先确认 SUPER_ADMIN 身份再渲染本组件，
- * 后端接口本身也只允许总管理员访问。
+ * 仅开通邮件设置权限的账号可见，父组件需先完成权限判断。
+ * 后端接口本身也只允许超级管理员访问。
  */
 export default function CompetitionEmailSettingsCard({
   competitionId,
@@ -167,7 +167,7 @@ export default function CompetitionEmailSettingsCard({
         <Space>
           <MailOutlined />
           <span>邮件通知设置</span>
-          <Tag color="magenta">仅总管理员可见</Tag>
+          <Tag color="magenta">仅超级管理员可见</Tag>
         </Space>
       }
       extra={

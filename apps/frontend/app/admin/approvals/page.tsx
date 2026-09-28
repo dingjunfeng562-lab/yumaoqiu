@@ -23,7 +23,7 @@ import dayjs from 'dayjs';
 import { apiFetch } from '@/lib/api';
 import { announcementPlainText } from '@/lib/announcement-html';
 
-const SUPER_ADMIN_ROLE = 'SUPER_ADMIN';
+const ROOT_ROLE = 'ROOT';
 
 type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
 
@@ -81,7 +81,7 @@ export default function ApprovalsPage() {
   const token = session?.user?.accessToken as string | undefined;
   const sessionRole = (session?.user as { role?: string } | undefined)?.role;
 
-  // Re-fetch the real role from /auth/me so promotions to SUPER_ADMIN apply
+  // Re-fetch live access so role and personal permission updates apply
   // immediately without a fresh sign-in (session JWT can be stale).
   const [liveRole, setLiveRole] = useState<string | undefined>(sessionRole);
   useEffect(() => {
@@ -100,7 +100,7 @@ export default function ApprovalsPage() {
   }, [token]);
 
   const role = liveRole ?? sessionRole;
-  const isSuperAdmin = role === SUPER_ADMIN_ROLE || role === 'ROOT';
+  const isSuperAdmin = role === ROOT_ROLE || role === 'ROOT';
 
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
   const [loading, setLoading] = useState(false);
@@ -139,7 +139,7 @@ export default function ApprovalsPage() {
 
   async function handleApprove(record: Tournament) {
     if (!isSuperAdmin) {
-      message.error('仅总管理员可审核赛事');
+      message.error('仅超级管理员可审核赛事');
       return;
     }
     try {
@@ -188,7 +188,7 @@ export default function ApprovalsPage() {
             赛事审核
           </Typography.Title>
           <Typography.Text type="secondary">
-            管理员新建的赛事会进入此队列,需要<Typography.Text strong>总管理员</Typography.Text>审核通过后才会向公众发布。
+            管理员新建的赛事会进入此队列,需要<Typography.Text strong>超级管理员</Typography.Text>审核通过后才会向公众发布。
           </Typography.Text>
         </div>
         <Button icon={<ReloadOutlined />} onClick={loadTournaments} loading={loading}>
@@ -202,7 +202,7 @@ export default function ApprovalsPage() {
           showIcon
           style={{ marginBottom: 16 }}
           message="当前账号无审核权限"
-          description="只有总管理员可以通过或驳回赛事。你可以在此查看当前审核进度。"
+          description="只有超级管理员可以通过或驳回赛事。你可以在此查看当前审核进度。"
         />
       ) : counts.PENDING > 0 ? (
         <Alert

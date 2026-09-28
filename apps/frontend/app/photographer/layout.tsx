@@ -1,4 +1,5 @@
 'use client';
+import { useCurrentAccess } from '@/lib/use-current-role';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,7 +14,8 @@ const { Header, Content } = Layout;
 export default function PhotographerLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const { data: session, status } = useSession();
-  const role = (session?.user as { role?: string } | undefined)?.role;
+  const access = useCurrentAccess();
+  const allowed = access.can('PHOTO_UPLOAD');
 
   useEffect(() => {
     if (status === 'loading') return;
@@ -21,12 +23,12 @@ export default function PhotographerLayout({ children }: { children: React.React
       router.replace('/login?redirect=/photographer/upload');
       return;
     }
-    if (role && role !== 'PHOTOGRAPHER') {
+    if (access.ready && !allowed) {
       router.replace('/forbidden');
     }
-  }, [status, role, router]);
+  }, [status, access.ready, allowed, router]);
 
-  if (status === 'loading' || (status === 'authenticated' && role !== 'PHOTOGRAPHER')) {
+  if (status === 'loading' || (status === 'authenticated' && (!access.ready || !allowed))) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh' }}>
         <Spin size="large" />

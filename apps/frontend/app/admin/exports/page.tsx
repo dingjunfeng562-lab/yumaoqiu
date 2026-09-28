@@ -5,6 +5,7 @@ import { useSession } from 'next-auth/react';
 import { Button, Card, Select, Space, Table, Tag, Typography, message } from 'antd';
 import { DownloadOutlined, FileExcelOutlined, ReloadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
+import { useCurrentAccess } from '@/lib/use-current-role';
 import { apiFetch } from '@/lib/api';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
@@ -36,6 +37,20 @@ const exportKinds = [
   { key: 'orderbook', title: '秩序册', description: '按参考模板生成秩序表、分组表、小组赛、日程表、名次汇总、淘汰赛和流程表。' },
 ];
 
+type StoredExportFile = {
+  kind: string;
+  filename: string;
+  size: number;
+  generatedAt: string;
+};
+
+// 已生成的文件在赛事数据变动后由后端自动重建，这里定时刷新显示的生成时间。
+const FILES_POLL_MS = 30_000;
+
+function toFileMap(files: StoredExportFile[]) {
+  return Object.fromEntries(files.map((file) => [file.kind, file])) as Record<string, StoredExportFile>;
+}
+
 function fileNameFromDisposition(disposition: string | null, fallback: string) {
   if (!disposition) return fallback;
   const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/)?.[1];
@@ -53,11 +68,15 @@ function exportFallbackName(tournament: Tournament | null, kind: string) {
 
 export default function AdminExportsPage() {
   const { data: session } = useSession();
+  const access = useCurrentAccess();
   const token = session?.user?.accessToken;
+  const role = access.role;
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
   const [selectedTournamentId, setSelectedTournamentId] = useState('');
   const [loading, setLoading] = useState(false);
   const [downloading, setDownloading] = useState('');
+  const [storedFileState, setStoredFileState] = useState<{ tournamentId: string; files: Record<string, StoredExportFile> }>({ tournamentId: '', files: {} });
+  const storedFiles = storedFileState.tournamentId === selectedTournamentId ? storedFileState.files : {};
 
   const selectedTournament = useMemo(
     () => tournaments.find((item) => item.id === selectedTournamentId) ?? null,
@@ -100,6 +119,32 @@ export default function AdminExportsPage() {
     };
   }, [token]);
 
+  async function loadStoredFiles(tournamentId: string) {
+    if (!token || !tournamentId) return;
+    const files = await apiFetch<StoredExportFile[]>(`/exports/tournaments/${tournamentId}`, { token });
+    setStoredFileState({ tournamentId, files: toFileMap(files) });
+  }
+
+  useEffect(() => {
+    if (!token || !selectedTournamentId) return;
+    let cancelled = false;
+    const refresh = () => {
+      apiFetch<StoredExportFile[]>(`/exports/tournaments/${selectedTournamentId}`, { token })
+        .then((files) => {
+          if (!cancelled) setStoredFileState({ tournamentId: selectedTournamentId, files: toFileMap(files) });
+        })
+        .catch(() => {
+          if (!cancelled) setStoredFileState({ tournamentId: selectedTournamentId, files: {} });
+        });
+    };
+    refresh();
+    const timer = window.setInterval(refresh, FILES_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [token, selectedTournamentId]);
+
   async function download(kind: string) {
     if (!token || !selectedTournamentId) return;
     setDownloading(kind);
@@ -124,6 +169,7 @@ export default function AdminExportsPage() {
       link.remove();
       window.URL.revokeObjectURL(url);
       message.success('导出已开始');
+      loadStoredFiles(selectedTournamentId).catch(() => undefined);
     } catch (error) {
       message.error(error instanceof Error ? error.message : '导出失败');
     } finally {
@@ -136,7 +182,7 @@ export default function AdminExportsPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
         <div>
           <Typography.Title level={3} style={{ margin: 0 }}>数据导出</Typography.Title>
-          <Typography.Text type="secondary">导出赛事赛程表、成绩册和报名表，文件可直接用 Excel 打开。</Typography.Text>
+          <Typography.Text type="secondary">{role === 'ADMIN' ? '导出自己管理的赛事秩序册，文件可直接用 Excel 打开。' : '导出赛事赛程表、成绩册和报名表，文件可直接用 Excel 打开。'}</Typography.Text>
         </div>
         <Button icon={<ReloadOutlined />} onClick={loadTournaments} loading={loading}>
           刷新
@@ -165,7 +211,7 @@ export default function AdminExportsPage() {
       </Card>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 16 }}>
-        {exportKinds.map((item) => (
+        {exportKinds.filter((item) => access.can(item.key === 'orderbook' ? 'ORDERBOOK' : 'DATA_EXPORT')).map((item) => (
           <Card key={item.key}>
             <Space direction="vertical" size={12} style={{ width: '100%' }}>
               <FileExcelOutlined style={{ fontSize: 28, color: '#16a34a' }} />
@@ -173,6 +219,16 @@ export default function AdminExportsPage() {
                 <Typography.Title level={4} style={{ margin: 0 }}>{item.title}</Typography.Title>
                 <Typography.Text type="secondary">{item.description}</Typography.Text>
               </div>
+              {storedFiles[item.key] ? (
+                <div>
+                  <Typography.Text ellipsis={{ tooltip: storedFiles[item.key].filename }} style={{ display: 'block' }}>
+                    {storedFiles[item.key].filename}
+                  </Typography.Text>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    生成于 {dayjs(storedFiles[item.key].generatedAt).format('YYYY/MM/DD HH:mm:ss')}，赛事信息变动后自动重新生成
+                  </Typography.Text>
+                </div>
+              ) : null}
               <Button
                 type="primary"
                 icon={<DownloadOutlined />}

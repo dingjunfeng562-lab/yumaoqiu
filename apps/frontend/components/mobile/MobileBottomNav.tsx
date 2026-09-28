@@ -1,4 +1,6 @@
 'use client';
+import { useCurrentAccess } from '@/lib/use-current-role';
+import { firstAdminPage } from '@/lib/admin-permissions';
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
@@ -58,28 +60,10 @@ export function MobileBottomNav({ activeHref }: { activeHref?: string } = {}) {
   const pathname = usePathname() ?? '/';
   const current = activeHref ?? pathname;
   const { data: session } = useSession();
-  const role = (session?.user as { role?: string } | undefined)?.role;
+  const access = useCurrentAccess();
   const authed = Boolean(session?.user);
-
-  const myHref =
-    role === 'REFEREE'
-      ? '/referee/my-matches'
-      : role === 'PLAYER'
-        ? '/my-registrations'
-        : role === 'ADMIN' || role === 'SUPER_ADMIN' || role === 'ROOT'
-          ? '/admin'
-          : authed
-            ? '/my-registrations'
-            : '/login';
-
-  const adminHref =
-    role === 'ADMIN' || role === 'SUPER_ADMIN' || role === 'ROOT'
-      ? '/admin'
-      : role === 'REFEREE'
-        ? '/referee/my-matches'
-        : authed
-          ? '/forbidden'
-          : '/login?redirect=/admin';
+  const adminHref = firstAdminPage(access.role, access.permissions) ?? (access.can('REFEREE') ? '/referee/my-matches' : authed ? '/account' : '/login');
+  const myHref = access.can('REGISTRATION') ? '/my-registrations' : access.can('PHOTO_UPLOAD') ? '/photographer/upload' : adminHref;
 
   const items: NavItem[] = [
     {

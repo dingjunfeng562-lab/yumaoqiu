@@ -1,18 +1,16 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { auth } from '@/auth';
-
-function isAdminRole(role?: string | null) {
-  return role === 'ADMIN' || role === 'SUPER_ADMIN' || role === 'ROOT';
-}
+import { firstAdminPage } from '@/lib/admin-permissions';
 
 function canSubmitRegistration(role?: string | null) {
-  return role === 'PLAYER' || role === 'SUPER_ADMIN' || role === 'ROOT';
+  return role === 'PLAYER' || role === 'ROOT';
 }
 
-function destinationForRole(role?: string | null) {
+function destinationForRole(role?: string | null, permissions?: string[]) {
+  const adminPage = firstAdminPage(role ?? undefined, permissions);
+  if (adminPage) return adminPage;
   if (role === 'REFEREE') return '/referee/my-matches';
-  if (isAdminRole(role)) return '/admin';
   if (role === 'PLAYER') return '/my-registrations';
   return '/';
 }
@@ -63,20 +61,8 @@ export default async function proxy(req: NextRequest) {
   ) {
     return loginRedirect(req);
   }
-  if (isAdminRoute && !isAdminRole(session?.user?.role)) {
-    return NextResponse.redirect(new URL('/forbidden', req.url));
-  }
-  if (isRefereeRoute && session?.user?.role !== 'REFEREE') {
-    return NextResponse.redirect(new URL('/forbidden', req.url));
-  }
-  if (isRegisterRoute && !canSubmitRegistration(session?.user?.role)) {
-    return NextResponse.redirect(new URL('/forbidden', req.url));
-  }
-  if (isMyRegistrationsRoute && !canSubmitRegistration(session?.user?.role)) {
-    return NextResponse.redirect(new URL('/forbidden', req.url));
-  }
   if (isLoginPage && isLoggedIn && !hasInvalidSession) {
-    return NextResponse.redirect(new URL(destinationForRole(session?.user?.role), req.url));
+    return NextResponse.redirect(new URL(destinationForRole(session?.user?.role, session?.user?.permissions), req.url));
   }
   return NextResponse.next();
 }

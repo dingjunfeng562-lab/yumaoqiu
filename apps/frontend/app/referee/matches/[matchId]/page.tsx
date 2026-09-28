@@ -1,4 +1,5 @@
 'use client';
+import { useCurrentAccess } from '@/lib/use-current-role';
 
 import Link from 'next/link';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -445,6 +446,8 @@ export default function RefereeScoringPage() {
   const params = useParams<{ matchId: string }>();
   const matchId = params.matchId;
   const { data: session, status: sessionStatus } = useSession();
+  const access = useCurrentAccess();
+  const canReferee = access.ready && access.can('REFEREE');
   const token = session?.user?.accessToken;
   const [score, setScore] = useState<ScoreState | null>(null);
   const [loading, setLoading] = useState(false);
@@ -567,7 +570,7 @@ export default function RefereeScoringPage() {
     );
   }
 
-  if (!token || session?.user?.role !== 'REFEREE') {
+  if (!token || !canReferee) {
     return (
       <main className="grid min-h-screen place-items-center bg-[#07152F] px-5 text-white">
         <div className="max-w-md rounded-2xl border border-white/10 bg-white/10 p-6 text-center shadow-2xl backdrop-blur">

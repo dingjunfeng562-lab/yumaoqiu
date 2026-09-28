@@ -1,3 +1,4 @@
+import { AuthActor, tournamentScope } from '../auth/admin-scope';
 import {
   BadRequestException,
   ConflictException,
@@ -781,6 +782,7 @@ export class DrawsService {
     operatorId: string,
     operatorName: string | null,
     operatorRole: Role,
+    canRedrawPublished = false,
   ) {
     if (!confirm) throw new BadRequestException('重新抽签需要确认');
     const event = await this.ensureEvent(eventId);
@@ -792,10 +794,9 @@ export class DrawsService {
 
     if (
       event.drawPublished &&
-      operatorRole !== Role.SUPER_ADMIN &&
-      operatorRole !== Role.ROOT
+      operatorRole !== Role.ROOT && !canRedrawPublished
     ) {
-      throw new ForbiddenException('对阵已发布，普通管理员请提交重抽申请，由总管理员审批');
+      throw new ForbiddenException('对阵已发布，普通管理员请提交重抽申请，由超级管理员审批');
     }
 
     const next = await this.executeDraw(eventId, operatorId, operatorName, true);
@@ -906,8 +907,8 @@ export class DrawsService {
     });
   }
 
-  async listRedrawRequests(query: { eventId?: string; status?: string }) {
-    const where: Prisma.DrawRedrawRequestWhereInput = {};
+  async listRedrawRequests(query: { eventId?: string; status?: string }, actor?: AuthActor) {
+    const where: Prisma.DrawRedrawRequestWhereInput = { event: { tournament: tournamentScope(actor) } };
     if (query.eventId) where.eventItemId = query.eventId;
     if (query.status) {
       const statuses = query.status

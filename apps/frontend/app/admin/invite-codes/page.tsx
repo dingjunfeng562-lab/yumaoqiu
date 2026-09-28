@@ -5,8 +5,9 @@ import { useSession } from 'next-auth/react';
 import { Button, Card, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Typography, message } from 'antd';
 import { DeleteOutlined, PlusOutlined, ReloadOutlined, CopyOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
+import { useCurrentRole } from '@/lib/use-current-role';
 
-type InviteRole = 'SUPER_ADMIN' | 'ADMIN' | 'REFEREE' | 'PLAYER' | 'PHOTOGRAPHER';
+type InviteRole = 'ROOT' | 'ADMIN' | 'REFEREE' | 'PLAYER' | 'PHOTOGRAPHER';
 
 type InviteCodeItem = {
   id: string;
@@ -18,6 +19,8 @@ type InviteCodeItem = {
   isEnabled: boolean;
   remark?: string | null;
   createdAt: string;
+  createdById?: string | null;
+  createdBy?: { id: string; username: string; role: string } | null;
 };
 
 type CreateInviteCodePayload = {
@@ -28,7 +31,7 @@ type CreateInviteCodePayload = {
 };
 
 const roleLabels: Record<InviteRole, string> = {
-  SUPER_ADMIN: '总管理员',
+  ROOT: '超级管理员（已停用的历史邀请码）',
   ADMIN: '管理员',
   REFEREE: '裁判',
   PLAYER: '选手',
@@ -36,7 +39,7 @@ const roleLabels: Record<InviteRole, string> = {
 };
 
 const roleColors: Record<InviteRole, string> = {
-  SUPER_ADMIN: 'magenta',
+  ROOT: 'red',
   ADMIN: 'blue',
   REFEREE: 'green',
   PLAYER: 'gold',
@@ -46,6 +49,8 @@ const roleColors: Record<InviteRole, string> = {
 export default function InviteCodesPage() {
   const { data: session } = useSession();
   const token = session?.user?.accessToken;
+  const role = useCurrentRole();
+  const [quota, setQuota] = useState<{ limit: number | null; used: number; remaining: number | null }>();
   const [inviteCodes, setInviteCodes] = useState<InviteCodeItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
@@ -55,8 +60,12 @@ export default function InviteCodesPage() {
     if (!token) return;
     setLoading(true);
     try {
-      const data = await apiFetch<InviteCodeItem[]>('/auth/invite-codes', { token });
+      const [data, currentQuota] = await Promise.all([
+        apiFetch<InviteCodeItem[]>('/auth/invite-codes', { token }),
+        apiFetch<{ limit: number | null; used: number; remaining: number | null }>('/auth/invite-quota', { token }),
+      ]);
       setInviteCodes(data);
+      setQuota(currentQuota);
     } catch (error) {
       message.error(error instanceof Error ? error.message : '加载邀请码失败');
     } finally {
@@ -116,6 +125,12 @@ export default function InviteCodesPage() {
     message.success('邀请码已复制');
   }
 
+  function canManage(item: InviteCodeItem) {
+    if (role === 'ROOT') return true;
+    if (role !== 'ROOT') return item.createdById === session?.user?.id;
+    return false;
+  }
+
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
@@ -129,6 +144,12 @@ export default function InviteCodesPage() {
         </Space>
       </div>
 
+      {role !== 'ROOT' && quota && <Card size="small" title="裁判 / 图片员共享名额">
+        <Typography.Text strong>总额度 {quota.limit} · 累计已使用 {quota.used} · 剩余 {quota.remaining}</Typography.Text>
+        <Typography.Paragraph type="secondary" style={{ margin: '8px 0 0' }}>
+          注册成功或直接创建账号后扣除名额，未使用的邀请码不占额度。删除账号或邀请码不返还名额，选手账号不占额度。额度不足时可联系超级管理员分配。
+        </Typography.Paragraph>
+      </Card>}
       <Card>
         <Table
           rowKey="id"
@@ -136,6 +157,7 @@ export default function InviteCodesPage() {
           dataSource={inviteCodes}
           columns={[
             { title: '邀请码', dataIndex: 'code' },
+            ...(role === 'ROOT' ? [{ title: '发放人', key: 'issuer', render: (_: unknown, row: InviteCodeItem) => row.createdBy?.username ?? '历史邀请码' }] : []),
             {
               title: '角色',
               dataIndex: 'role',
@@ -171,9 +193,9 @@ export default function InviteCodesPage() {
               render: (_, row: InviteCodeItem) => (
                 <Space wrap>
                   <Button icon={<CopyOutlined />} onClick={() => copyCode(row.code)}>复制</Button>
-                  <Switch checked={row.isEnabled} checkedChildren="启用" unCheckedChildren="禁用" onChange={(checked) => updateStatus(row, checked)} />
-                  <Popconfirm title="确认删除该邀请码？" onConfirm={() => deleteInviteCode(row.id)}>
-                    <Button danger icon={<DeleteOutlined />}>删除</Button>
+                  <Switch disabled={!canManage(row)} checked={row.isEnabled} checkedChildren="启用" unCheckedChildren="禁用" onChange={(checked) => updateStatus(row, checked)} />
+                  <Popconfirm title="确认删除该邀请码？已使用的账号名额不会返还。" disabled={!canManage(row)} onConfirm={() => deleteInviteCode(row.id)}>
+                    <Button disabled={!canManage(row)} danger icon={<DeleteOutlined />}>删除</Button>
                   </Popconfirm>
                 </Space>
               ),
@@ -188,7 +210,7 @@ export default function InviteCodesPage() {
             name="role"
             label="角色"
             rules={[{ required: true }]}
-            extra="总管理员账号不通过邀请码发放,请直接在数据库标记。"
+            extra="选手账号不限总量；裁判和图片员在注册成功时扣除共享名额。"
           >
             <Select
               options={[
@@ -196,7 +218,7 @@ export default function InviteCodesPage() {
                 { value: 'REFEREE', label: '裁判' },
                 { value: 'ADMIN', label: '管理员' },
                 { value: 'PHOTOGRAPHER', label: '图片上传员' },
-              ]}
+              ].filter((item) => role === 'ROOT' || item.value !== 'ADMIN')}
             />
           </Form.Item>
           <Form.Item name="maxUses" label="最大使用次数" rules={[{ required: true, message: '请输入最大使用次数' }]}>

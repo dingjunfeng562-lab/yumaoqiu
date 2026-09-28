@@ -1,0 +1,5 @@
+UPDATE `User` SET `role` = 'ROOT' WHERE `role` = 'SUPER_ADMIN';
+UPDATE `InviteCode` SET `role` = 'ROOT', `isEnabled` = false WHERE `role` = 'SUPER_ADMIN';
+ALTER TABLE `User` MODIFY `role` ENUM('ROOT', 'ADMIN', 'REFEREE', 'PLAYER', 'PHOTOGRAPHER') NOT NULL,
+  ADD COLUMN `permissions` JSON NULL;
+ALTER TABLE `InviteCode` MODIFY `role` ENUM('ROOT', 'ADMIN', 'REFEREE', 'PLAYER', 'PHOTOGRAPHER') NOT NULL;

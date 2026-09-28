@@ -32,7 +32,7 @@ async function main() {
   const password = `PhotoQa${randomUUID()}!`;
   const passwordHash = await bcrypt.hash(password, 10);
   let adminEmail;
-  for (const role of ['ADMIN', 'SUPER_ADMIN', 'ROOT', 'PLAYER', 'REFEREE', 'PHOTOGRAPHER']) {
+  for (const role of ['ADMIN', 'ROOT', 'PLAYER', 'REFEREE', 'PHOTOGRAPHER']) {
     const id = randomUUID();
     await prisma.user.create({ data: {
       id, username: `photo-test-${role}-${runId}`, email: `${id}@photo-test.invalid`,
@@ -69,7 +69,7 @@ async function main() {
     await request(endpoint, { method: 'POST', headers: headers[role] }, 403);
   }
   const tokens = [];
-  for (const role of ['ADMIN', 'SUPER_ADMIN', 'ROOT']) {
+  for (const role of ['ADMIN', 'ROOT']) {
     const data = await (await request(endpoint, { method: 'POST', headers: headers[role] }, 201)).json();
     tokens.push(data.accessToken);
     assert.equal(data.path, `/photos/${data.accessToken}`);

@@ -17,6 +17,7 @@ export default function ImageModerationPage() {
   const [form] = Form.useForm<Values>();
   const [config, setConfig] = useState<Config | null>(null);
   const [forbidden, setForbidden] = useState(false);
+  const [canEdit, setCanEdit] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [reload, setReload] = useState(0);
   const [saving, setSaving] = useState(false);
@@ -29,12 +30,13 @@ export default function ImageModerationPage() {
     let cancelled = false;
     async function load() {
       try {
-        const me = await apiFetch<{ role: string }>('/auth/me', { token });
+        const me = await apiFetch<{ role: string; permissions: string[] }>('/auth/me', { token });
         if (cancelled) return;
-        if (me.role !== 'ROOT') {
+        if (me.role !== 'ROOT' && !me.permissions.includes('IMAGE_MODERATION')) {
           setForbidden(true);
           return;
         }
+        setCanEdit(me.role === 'ROOT' || me.permissions.includes('IMAGE_MODERATION'));
         const saved = await apiFetch<Config>(endpoint, { token, cache: 'no-store', redirectOnForbidden: false });
         if (cancelled) return;
         setConfig(saved);
@@ -83,7 +85,7 @@ export default function ImageModerationPage() {
     }
   }
 
-  if (forbidden) return <Result status="403" title="仅超级管理员可设置图片审核" />;
+  if (forbidden) return <Result status="403" title="仅超级管理员和超级管理员可查看图片审核" />;
   if (loadError) return <Result status="error" title="无法加载图片审核设置" subTitle={loadError}
     extra={<Button onClick={() => setReload((value) => value + 1)}>重新加载</Button>} />;
   if (!config) return <div style={{ padding: 48, textAlign: 'center' }}><Spin /></div>;
@@ -92,10 +94,10 @@ export default function ImageModerationPage() {
     <div style={{ maxWidth: 820, margin: '0 auto' }}>
       <Typography.Title level={3} style={{ marginTop: 0 }}><SafetyCertificateOutlined /> 图片审核</Typography.Title>
       <Typography.Paragraph type="secondary">
-        使用 DeepSeek 自动审核新上传的赛事照片、封面和水印 Logo。
+        使用 DeepSeek 自动审核新上传的赛事照片、封面和水印 Logo。具有图片审核配置权限的账号可以查看和修改。
       </Typography.Paragraph>
       <Card title="自动审核设置" extra={<Tag color={config.enabled ? 'green' : 'default'}>{config.enabled ? '已开启' : '已关闭'}</Tag>}>
-        <Form form={form} layout="vertical" onFinish={save} disabled={saving || testing}
+        <Form form={form} layout="vertical" onFinish={save} disabled={!canEdit || saving || testing}
           onValuesChange={() => { setDirty(true); setTestResult(null); }}>
           <Form.Item name="enabled" label="是否需要图片审核" valuePropName="checked"
             extra="修改后点击保存生效。关闭后，新图片将直接上传。">
@@ -122,8 +124,8 @@ export default function ImageModerationPage() {
             title={testResult.success ? `连接成功${testResult.latencyMs ? ` · ${testResult.latencyMs}ms` : ''}` : '连接失败'}
             description={testResult.message} />}
           <Space wrap>
-            <Button type="primary" htmlType="submit" icon={<SaveOutlined />} loading={saving} disabled={testing}>保存设置</Button>
-            <Button icon={<ApiOutlined />} loading={testing} disabled={saving} onClick={test}>测试连接</Button>
+            <Button type="primary" htmlType="submit" icon={<SaveOutlined />} loading={saving} disabled={!canEdit || testing}>保存设置</Button>
+            <Button icon={<ApiOutlined />} loading={testing} disabled={!canEdit || saving} onClick={test}>测试连接</Button>
             {dirty && <Typography.Text type="warning">有未保存的修改</Typography.Text>}
           </Space>
         </Form>

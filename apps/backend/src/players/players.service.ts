@@ -1,18 +1,20 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreatePlayerDto, UpdatePlayerDto } from './dto/player.dto';
+import { AuthActor, playerScope } from '../auth/admin-scope';
 
 @Injectable()
 export class PlayersService {
   constructor(private prisma: PrismaService) {}
 
-  create(dto: CreatePlayerDto) {
-    return this.prisma.player.create({ data: dto });
+  create(dto: CreatePlayerDto, actor?: AuthActor) {
+    return this.prisma.player.create({ data: { ...dto, ownerId: actor?.id } });
   }
 
-  findAll(search?: string, includeTemporary = false) {
+  findAll(search?: string, includeTemporary = false, actor?: AuthActor) {
     return this.prisma.player.findMany({
       where: {
+        ...playerScope(actor),
         ...(includeTemporary ? {} : { isTemporary: false }),
         ...(search
           ? {

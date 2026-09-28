@@ -30,7 +30,7 @@ type AuthedRequest = {
 };
 
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.ADMIN, Role.SUPER_ADMIN)
+@Roles(Role.ADMIN, Role.ROOT)
 @Controller('tournaments')
 export class TournamentsController {
   constructor(
@@ -85,8 +85,8 @@ export class TournamentsController {
   }
 
   @Get()
-  findAll() {
-    return this.tournamentsService.findAll();
+  findAll(@Req() req: AuthedRequest) {
+    return this.tournamentsService.findAll(req.user);
   }
 
   @Get(':id')

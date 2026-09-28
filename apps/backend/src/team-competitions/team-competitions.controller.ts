@@ -1,3 +1,4 @@
+import { AuthActor } from '../auth/admin-scope';
 import {
   Body,
   Controller,
@@ -8,6 +9,7 @@ import {
   Post,
   Put,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import { Role } from '@prisma/client';
@@ -29,7 +31,7 @@ import {
 import { TeamCompetitionsService } from './team-competitions.service';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.ADMIN, Role.SUPER_ADMIN)
+@Roles(Role.ADMIN, Role.ROOT)
 @Controller('team-competitions')
 export class TeamCompetitionsController {
   constructor(private readonly teamCompetitionsService: TeamCompetitionsService) {}
@@ -40,8 +42,8 @@ export class TeamCompetitionsController {
   }
 
   @Get()
-  list(@Query('tournamentId') tournamentId?: string) {
-    return this.teamCompetitionsService.list(tournamentId);
+  list(@Req() req: { user: AuthActor }, @Query('tournamentId') tournamentId?: string) {
+    return this.teamCompetitionsService.list(tournamentId, req.user);
   }
 
   @Get(':id')

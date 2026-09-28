@@ -1,4 +1,5 @@
 'use client';
+import { useCurrentAccess } from '@/lib/use-current-role';
 
 import { useEffect, useMemo, useState } from 'react';
 import { useSession } from 'next-auth/react';
@@ -458,10 +459,11 @@ function BracketRenderer({ data }: { data?: BracketData | null }) {
 
 export default function DrawsPage() {
   const { data: session } = useSession();
+  const access = useCurrentAccess();
   const token = session?.user?.accessToken as string | undefined;
   const userRole = session?.user?.role;
   const userId = session?.user?.id;
-  const isSuperAdmin = userRole === 'SUPER_ADMIN' || userRole === 'ROOT';
+  const isSuperAdmin = access.can('DRAWS');
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
   const [events, setEvents] = useState<EventItem[]>([]);
   const [players, setPlayers] = useState<Player[]>([]);
@@ -857,7 +859,7 @@ export default function DrawsPage() {
         token,
         body: JSON.stringify({ reason: values.reason ?? '' }),
       });
-      message.success('已提交重抽申请，等待总管理员审批');
+      message.success('已提交重抽申请，等待超级管理员审批');
       setRequestOpen(false);
       requestForm.resetFields();
       loadRedrawRequests(selectedEventId);
@@ -1486,13 +1488,13 @@ export default function DrawsPage() {
           showIcon
           style={{ marginBottom: 12 }}
           message="对阵已发布"
-          description="申请通过后，总管理员会清空当前所有比赛结果并重新生成对阵（不会自动重新发布）。"
+          description="申请通过后，超级管理员会清空当前所有比赛结果并重新生成对阵（不会自动重新发布）。"
         />
         <Form form={requestForm} layout="vertical">
           <Form.Item
             name="reason"
             label="申请理由"
-            rules={[{ required: true, message: '请填写申请理由，便于总管理员审批' }]}
+            rules={[{ required: true, message: '请填写申请理由，便于超级管理员审批' }]}
           >
             <Input.TextArea rows={4} maxLength={500} showCount placeholder="例如：发现报名信息有误 / 选手退赛需要重新分签等" />
           </Form.Item>

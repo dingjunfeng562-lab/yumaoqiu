@@ -1,4 +1,5 @@
 'use client';
+import { useCurrentAccess } from '@/lib/use-current-role';
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
@@ -65,6 +66,7 @@ function formatDateTime(value?: string | null) {
 
 export default function MyRegistrationsPage() {
   const { data: session, status } = useSession();
+  const access = useCurrentAccess();
   const token = session?.user?.accessToken as string | undefined;
   const role = (session?.user as { role?: string } | undefined)?.role;
 
@@ -109,7 +111,7 @@ export default function MyRegistrationsPage() {
     );
   }
 
-  const canAccessRegistrations = role === 'PLAYER' || role === 'SUPER_ADMIN' || role === 'ROOT';
+  const canAccessRegistrations = access.can('REGISTRATION');
 
   if (role && !canAccessRegistrations) {
     return (

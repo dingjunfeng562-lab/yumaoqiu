@@ -88,7 +88,7 @@ function SideRow({ side, score }: { side: Side; score: number | null }) {
 
 export function TournamentScreen({ tournamentId }: { tournamentId: string }) {
   const { data: session } = useSession();
-  const canSaveGlobally = !session?.authError && ['ADMIN', 'SUPER_ADMIN', 'ROOT'].includes(session?.user?.role ?? '');
+  const canSaveGlobally = !session?.authError && ['ADMIN', 'ROOT'].includes(session?.user?.role ?? '');
   const settingsToken = canSaveGlobally ? session?.user?.accessToken as string | undefined : undefined;
   const [data, setData] = useState<ScreenData | null>(null);
   const [error, setError] = useState('');

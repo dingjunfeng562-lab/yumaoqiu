@@ -213,7 +213,7 @@ describe('Image moderation upload gate and ROOT settings', () => {
 
     afterEach(async () => { await app.close(); });
 
-    it.each([Role.ADMIN, Role.SUPER_ADMIN, Role.PHOTOGRAPHER, Role.PLAYER, Role.REFEREE])('denies %s access to settings, saving and connection tests', async (role) => {
+    it.each([Role.ADMIN, Role.ROOT, Role.PHOTOGRAPHER, Role.PLAYER, Role.REFEREE])('denies %s access to settings, saving and connection tests', async (role) => {
       const http = request(app.getHttpServer());
       await http.get('/admin/image-moderation').set('x-test-role', role).expect(403);
       await http.patch('/admin/image-moderation').set('x-test-role', role).send({ enabled: false }).expect(403);

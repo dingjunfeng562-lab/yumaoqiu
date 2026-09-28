@@ -21,6 +21,7 @@ import {
   UndoOutlined,
 } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
+import { useCurrentAccess } from '@/lib/use-current-role';
 import { CompetitionRankingsModal } from '@/components/admin/CompetitionRankingsModal';
 
 type Competition = {
@@ -67,8 +68,11 @@ function competitionPath(record: Competition, suffix: string) {
 export default function AdminCompetitionsPage() {
   const router = useRouter();
   const { data: session } = useSession();
+  const access = useCurrentAccess();
   const token = session?.user?.accessToken as string | undefined;
-  const isRoot = session?.user?.role === 'ROOT';
+  const role = access.role;
+  const isRoot = access.can('TOURNAMENT_ADMIN');
+  const canOperate = access.can('TOURNAMENT_ADMIN');
   const [competitions, setCompetitions] = useState<Competition[]>([]);
   const [loading, setLoading] = useState(false);
   const [rankingCompetition, setRankingCompetition] = useState<Competition>();
@@ -198,7 +202,7 @@ export default function AdminCompetitionsPage() {
             {record.isArchived ? '已归档' : record.isPublished ? record.statusLabel : '未发布'}
           </Tag>
           {record.approvalStatus === 'PENDING' ? (
-            <Tag color="gold">待总管理员审核</Tag>
+            <Tag color="gold">待超级管理员审核</Tag>
           ) : record.approvalStatus === 'REJECTED' ? (
             <Tag color="red">审核驳回</Tag>
           ) : null}
@@ -229,7 +233,7 @@ export default function AdminCompetitionsPage() {
           <Button icon={<EditOutlined />} onClick={() => router.push('/admin/tournaments')}>
             编辑赛事
           </Button>
-          {record.isArchived ? (
+          {canOperate && (record.isArchived ? (
             isRoot ? (
               <Popconfirm title="确认恢复该归档赛事？" onConfirm={() => restoreCompetition(record)}>
                 <Button icon={<UndoOutlined />}>恢复赛事</Button>
@@ -246,14 +250,14 @@ export default function AdminCompetitionsPage() {
                 disabled={!record.isPublished && record.approvalStatus !== 'APPROVED'}
                 title={
                   !record.isPublished && record.approvalStatus !== 'APPROVED'
-                    ? '需要总管理员审核通过后才能发布'
+                    ? '需要超级管理员审核通过后才能发布'
                     : undefined
                 }
               >
                 {record.isPublished ? '下架' : '发布'}
               </Button>
             </Popconfirm>
-          )}
+          ))}
           <Button
             type="primary"
             icon={<AuditOutlined />}
@@ -267,13 +271,14 @@ export default function AdminCompetitionsPage() {
           >
             参赛选手
           </Button>
+          {access.can('PHOTOS') && <>
           <Button
             icon={<PictureOutlined />}
             onClick={() => router.push(competitionPath(record, 'watermark'))}
           >
             水印设置
           </Button>
-          <Button icon={<TrophyOutlined />} onClick={() => setRankingCompetition(record)}>
+          <Button disabled={!canOperate} icon={<TrophyOutlined />} onClick={() => setRankingCompetition(record)}>
             设置排名
           </Button>
           <Button
@@ -299,6 +304,7 @@ export default function AdminCompetitionsPage() {
           >
             赛事大屏
           </Button>
+          </>}
         </Space>
       ),
     },
@@ -312,7 +318,7 @@ export default function AdminCompetitionsPage() {
             赛事管理
           </Typography.Title>
           <Typography.Text type="secondary">
-            管理赛事发布状态，并按赛事进入独立的报名审核和参赛选手列表。
+            {role === 'ADMIN' ? '查看自己的赛事，并管理报名和参赛选手。首页仍公开展示所有管理员发布的赛事。' : '管理赛事发布状态，并按赛事进入独立的报名审核和参赛选手列表。'}
           </Typography.Text>
         </div>
         <Space>

@@ -1,4 +1,5 @@
 'use client';
+import { useCurrentAccess } from '@/lib/use-current-role';
 
 import { useEffect, useState, useCallback } from 'react';
 import { useSession } from 'next-auth/react';
@@ -35,10 +36,11 @@ interface Player {
 
 export default function PlayersPage() {
   const { data: session } = useSession();
+  const access = useCurrentAccess();
   const token = session?.user?.accessToken as string | undefined;
   const role = (session?.user as { role?: string } | undefined)?.role;
-  // 选手库写操作:降权后的总管理员(SUPER_ADMIN)只读,仅管理员/超级管理员可增删改。
-  const canManage = role === 'ADMIN' || role === 'ROOT';
+  // 选手库写操作由实时的选手管理权限控制。
+  const canManage = access.can('PLAYERS');
 
   const [players, setPlayers] = useState<Player[]>([]);
   const [loading, setLoading] = useState(false);

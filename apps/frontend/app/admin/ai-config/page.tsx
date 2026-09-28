@@ -36,6 +36,7 @@ import {
   ThunderboltOutlined,
 } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
+import { useCurrentAccess } from '@/lib/use-current-role';
 
 type AiConfigResponse = {
   id: string;
@@ -114,10 +115,8 @@ type TestResult = {
 export default function AdminAiConfigPage() {
   const router = useRouter();
   const { data: session, status } = useSession();
+  const access = useCurrentAccess();
   const token = session?.user?.accessToken as string | undefined;
-  const sessionRole = (session?.user as { role?: string } | undefined)?.role;
-  const [liveRole, setLiveRole] = useState<string | undefined>(sessionRole);
-  const [roleChecked, setRoleChecked] = useState(false);
   const [config, setConfig] = useState<AiConfigResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -127,25 +126,7 @@ export default function AdminAiConfigPage() {
   const [fetchedModels, setFetchedModels] = useState<string[]>([]);
   const [form] = Form.useForm<AiConfigFormValues>();
 
-  useEffect(() => {
-    if (!token) return;
-    let cancelled = false;
-    apiFetch<{ role?: string }>('/auth/me', { token })
-      .then((me) => {
-        if (cancelled) return;
-        if (me?.role) setLiveRole(me.role);
-        setRoleChecked(true);
-      })
-      .catch(() => {
-        if (!cancelled) setRoleChecked(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [token]);
-
-  const role = liveRole ?? sessionRole;
-  const allowed = role === 'ROOT' || role === 'SUPER_ADMIN';
+  const allowed = access.can('AI_CONFIG');
 
   const load = useCallback(async () => {
     if (!token) return;
@@ -162,9 +143,9 @@ export default function AdminAiConfigPage() {
   }, [form, token]);
 
   useEffect(() => {
-    if (!token || !roleChecked || !allowed) return;
+    if (!token || !access.ready || !allowed) return;
     void load();
-  }, [allowed, load, roleChecked, token]);
+  }, [access.ready, allowed, load, token]);
 
   const selectedProvider = Form.useWatch('provider', form);
   const selectedPreset = useMemo(
@@ -269,7 +250,7 @@ export default function AdminAiConfigPage() {
     }
   }
 
-  if (status === 'loading' || (token && !roleChecked)) {
+  if (status === 'loading' || (token && !access.ready)) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', padding: 80 }}>
         <Spin />
@@ -297,7 +278,7 @@ export default function AdminAiConfigPage() {
       <Result
         status="403"
         title="无权访问"
-        subTitle="AI 助手配置仅总管理员和超级管理员可操作。"
+        subTitle="当前账号未开通 AI 配置功能。"
         extra={
           <Button type="primary" onClick={() => router.push('/admin')}>
             返回仪表板

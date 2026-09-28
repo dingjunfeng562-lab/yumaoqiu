@@ -1,3 +1,4 @@
+import { AuthActor, tournamentScope } from '../auth/admin-scope';
 import {
   BadRequestException,
   ConflictException,
@@ -143,9 +144,9 @@ export class TeamCompetitionsService {
     });
   }
 
-  list(tournamentId?: string) {
+  list(tournamentId?: string, actor?: AuthActor) {
     return this.prisma.teamCompetition.findMany({
-      where: tournamentId ? { tournamentId } : undefined,
+      where: { tournamentId, tournament: tournamentScope(actor) },
       include: {
         tournament: true,
         items: { orderBy: { sortOrder: 'asc' } },

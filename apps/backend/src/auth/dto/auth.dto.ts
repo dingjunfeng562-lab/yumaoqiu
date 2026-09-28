@@ -11,10 +11,12 @@ import {
   Length,
   Matches,
   Min,
+  Max,
   MinLength,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { Role } from '@prisma/client';
+import { PERMISSION_KEYS } from '../permissions';
 
 export const USERNAME_PATTERN = /^[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9_-]{1,19}$/;
 export const PASSWORD_PATTERN = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[^\s\u4e00-\u9fa5]{8,32}$/;
@@ -96,6 +98,7 @@ export class CreateInviteCodeDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
+  @Max(2147483647)
   maxUses: number;
 
   @IsOptional()
@@ -115,6 +118,22 @@ export class UpdateUserStatusDto {
 export class UpdateUserRoleDto {
   @IsIn(Object.values(Role))
   role: Role;
+}
+
+export class UpdateInviteQuotaDto {
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(2147483647)
+  limit: number;
+}
+
+export class SetUserPermissionsDto {
+  @IsOptional()
+  @IsArray()
+  @ArrayUnique()
+  @IsIn(PERMISSION_KEYS, { each: true })
+  permissions: string[] | null;
 }
 
 export class BatchDeleteUsersDto {

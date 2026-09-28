@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Format, MatchStatus, RegistrationStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -19,7 +20,8 @@ const exportDateTimeFormatter = new Intl.DateTimeFormat('en-CA', {
   hourCycle: 'h23',
 });
 
-type ExportKind = 'schedule' | 'results' | 'registrations' | 'bracket' | 'orderbook';
+export type ExportKind = 'schedule' | 'results' | 'registrations' | 'bracket' | 'orderbook';
+export const EXPORT_KINDS: ExportKind[] = ['schedule', 'results', 'registrations', 'bracket', 'orderbook'];
 type CellValue = string | number | boolean | null | undefined;
 type Worksheet = {
   name: string;
@@ -187,6 +189,15 @@ export class ExportsService {
   constructor(private prisma: PrismaService) {}
 
   async exportTournament(tournamentId: string, kind: string) {
+    const snapshot = await this.tournamentSnapshot(tournamentId, kind);
+    return this.buildTournamentExport(snapshot.tournament, snapshot.kind);
+  }
+
+  /**
+   * 读取导出所需的全部赛事数据并计算指纹：数据任何变动（赛程、比分、报名、名次、赛事名称等）都会让指纹变化，
+   * 已生成的导出文件据此判断是否需要重建。
+   */
+  async tournamentSnapshot(tournamentId: string, kind: string) {
     if (!this.isExportKind(kind)) {
       throw new BadRequestException('导出类型必须是 schedule、results、registrations、bracket 或 orderbook');
     }
@@ -194,6 +205,11 @@ export class ExportsService {
     const tournament = await this.findTournamentForExport(tournamentId, kind);
     if (!tournament) throw new NotFoundException('赛事不存在');
 
+    const fingerprint = createHash('sha256').update(kind).update(JSON.stringify(tournament)).digest('hex');
+    return { kind, tournament, fingerprint };
+  }
+
+  async buildTournamentExport(tournament: ExportTournament, kind: ExportKind) {
     // 秩序册走高保真 .xlsx（含日程表、秩序表、各项目流程表）；其余沿用轻量 .xls。
     if (kind === 'orderbook') {
       return {
@@ -993,7 +1009,7 @@ export class ExportsService {
   }
 
   private isExportKind(kind: string): kind is ExportKind {
-    return ['schedule', 'results', 'registrations', 'bracket', 'orderbook'].includes(kind);
+    return (EXPORT_KINDS as string[]).includes(kind);
   }
 
   private toWorkbookXml(worksheets: Worksheet[]) {

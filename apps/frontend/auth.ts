@@ -29,6 +29,7 @@ async function refreshAccessToken(token: Record<string, unknown>): Promise<Recor
     // log out and back in.
     const fresh = (data.user ?? {}) as {
       role?: string;
+      permissions?: string[];
       status?: string;
       mustChangePassword?: boolean;
       username?: string;
@@ -42,6 +43,7 @@ async function refreshAccessToken(token: Record<string, unknown>): Promise<Recor
       accessTokenExpiresAt: new Date(data.accessTokenExpiresAt).getTime(),
       refreshTokenExpiresAt: new Date(data.refreshTokenExpiresAt).getTime(),
       role: fresh.role ?? token.role,
+      permissions: fresh.permissions ?? token.permissions,
       status: fresh.status ?? token.status,
       mustChangePassword: fresh.mustChangePassword ?? token.mustChangePassword,
       username: fresh.username ?? token.username,
@@ -91,6 +93,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           username: data.user.username,
           email: data.user.email,
           role: data.user.role,
+          permissions: data.user.permissions,
           status: data.user.status,
           mustChangePassword: data.user.mustChangePassword,
           accessToken: data.access_token,
@@ -105,6 +108,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     async jwt({ token, user, trigger, session }) {
       if (user) {
         token.role = (user as { role: string }).role;
+        token.permissions = (user as { permissions?: string[] }).permissions;
         token.accessToken = (user as { accessToken: string }).accessToken;
         token.refreshToken = (user as { refreshToken: string }).refreshToken;
         token.accessTokenExpiresAt = (user as { accessTokenExpiresAt: number }).accessTokenExpiresAt;
@@ -133,6 +137,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     session({ session, token }) {
       session.user.id = token.sub ?? session.user.id;
       session.user.role = token.role as string;
+      session.user.permissions = token.permissions as string[] | undefined;
       session.user.accessToken = token.accessToken as string;
       session.user.status = token.status as string;
       session.user.mustChangePassword = Boolean(token.mustChangePassword);

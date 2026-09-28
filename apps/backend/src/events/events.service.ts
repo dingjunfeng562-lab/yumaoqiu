@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { AuthActor, tournamentScope } from '../auth/admin-scope';
 import {
   CreateEventDto,
   STAGE_SCORING_KEYS,
@@ -33,9 +34,9 @@ export class EventsService {
     });
   }
 
-  findByTournament(tournamentId: string) {
+  findByTournament(tournamentId: string, actor?: AuthActor) {
     return this.prisma.event.findMany({
-      where: { tournamentId },
+      where: { tournamentId, tournament: tournamentScope(actor) },
       include: { tournament: true },
       orderBy: { type: 'asc' },
     });

@@ -1,4 +1,6 @@
 'use client';
+import { useCurrentAccess } from '@/lib/use-current-role';
+import { firstAdminPage } from '@/lib/admin-permissions';
 
 import Image from 'next/image';
 import Link from 'next/link';
@@ -26,17 +28,8 @@ export function Header({ activeHref }: { activeHref?: string }) {
   const pathname = usePathname() ?? '/';
   const currentPath = activeHref ?? pathname;
   const { data: session, status } = useSession();
-  const role = session?.user?.role;
-  const roleHref =
-    role === 'ADMIN' || role === 'SUPER_ADMIN' || role === 'ROOT'
-      ? '/admin'
-      : role === 'REFEREE'
-        ? '/referee/my-matches'
-        : role === 'PLAYER'
-          ? '/my-registrations'
-          : role === 'PHOTOGRAPHER'
-            ? '/photographer/upload'
-            : '/';
+  const access = useCurrentAccess();
+  const roleHref = firstAdminPage(access.role, access.permissions) ?? (access.can('REFEREE') ? '/referee/my-matches' : access.can('REGISTRATION') ? '/my-registrations' : access.can('PHOTO_UPLOAD') ? '/photographer/upload' : '/account');
   const [menuOpen, setMenuOpen] = useState(false);
 
   // Lock body scroll while menu is open + close on Escape
