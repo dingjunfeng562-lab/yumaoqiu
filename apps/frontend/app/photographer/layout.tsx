@@ -4,7 +4,7 @@ import { useCurrentAccess } from '@/lib/use-current-role';
 export const dynamic = 'force-dynamic';
 
 import { useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { signOut, useSession } from 'next-auth/react';
 import { Button, Layout, Spin, Typography } from 'antd';
 import { CameraOutlined, LogoutOutlined, UserOutlined } from '@ant-design/icons';
@@ -13,6 +13,7 @@ const { Header, Content } = Layout;
 
 export default function PhotographerLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
+  const pathname = usePathname();
   const { data: session, status } = useSession();
   const access = useCurrentAccess();
   const allowed = access.can('PHOTO_UPLOAD');
@@ -20,13 +21,13 @@ export default function PhotographerLayout({ children }: { children: React.React
   useEffect(() => {
     if (status === 'loading') return;
     if (status === 'unauthenticated') {
-      router.replace('/login?redirect=/photographer/upload');
+      router.replace(`/login?redirect=${encodeURIComponent(pathname)}`);
       return;
     }
     if (access.ready && !allowed) {
       router.replace('/forbidden');
     }
-  }, [status, access.ready, allowed, router]);
+  }, [status, access.ready, allowed, router, pathname]);
 
   if (status === 'loading' || (status === 'authenticated' && (!access.ready || !allowed))) {
     return (

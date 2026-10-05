@@ -92,9 +92,23 @@ export class PhotosController {
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.PHOTOGRAPHER)
-  @Get('photographer/tournaments')
-  listUploadable() {
-    return this.photosService.listUploadableTournaments();
+  @Get('photographer/targets')
+  listUploadable(@Req() req: AuthedRequest) {
+    return this.photosService.listAuthorizedUploadTargets(req.user.id);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.PHOTOGRAPHER)
+  @Get('photographer/upload-access/:token')
+  uploadAccessInfo(@Param('token') token: string) {
+    return this.photosService.getPhotoUploadAccess(token);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.PHOTOGRAPHER)
+  @Post('photographer/upload-access/:token')
+  authorizeUpload(@Param('token') token: string, @Req() req: AuthedRequest) {
+    return this.photosService.authorizePhotoUpload(token, req.user.id);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -116,12 +130,15 @@ export class PhotosController {
       limits: { fileSize: MAX_FILE_SIZE, files: MAX_FILES },
     }),
   )
-  upload(
+  async upload(
     @UploadedFiles() files: Array<{ originalname?: string; mimetype?: string; size?: number; buffer?: Buffer }>,
     @Body() dto: UploadPhotosDto,
     @Req() req: AuthedRequest,
   ) {
     if (!files?.length) throw new BadRequestException('请上传有效的图片文件');
-    return this.photosService.uploadPhotos(dto.tournamentId, dto.category, files, req.user.id);
+    await this.photosService.assertPhotoUploadAuthorized(req.user.id, dto.targetType, dto.targetId);
+    return dto.targetType === 'ACTIVITY'
+      ? this.photosService.uploadActivityPhotos(dto.targetId, dto.category, files, req.user.id)
+      : this.photosService.uploadPhotos(dto.targetId, dto.category, files, req.user.id);
   }
 }

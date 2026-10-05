@@ -41,12 +41,12 @@ const CATEGORIES = [
 
 type CategoryValue = (typeof CATEGORIES)[number]['value'];
 
-type Tournament = {
+type UploadTarget = {
   id: string;
+  targetType: 'TOURNAMENT' | 'ACTIVITY';
   name: string;
-  edition: number;
-  startDate: string;
-  endDate: string;
+  startAt: string;
+  endAt: string | null;
 };
 
 type QueueStatus = 'pending' | 'uploading' | 'processing' | 'done' | 'error';
@@ -95,7 +95,7 @@ export default function PhotographerUploadPage() {
   const { data: session } = useSession();
   const token = session?.user?.accessToken as string | undefined;
 
-  const [tournaments, setTournaments] = useState<Tournament[]>([]);
+  const [tournaments, setTournaments] = useState<UploadTarget[]>([]);
   const [tournamentId, setTournamentId] = useState<string | undefined>();
   const [category, setCategory] = useState<CategoryValue | undefined>();
   const [queue, setQueue] = useState<QueueItem[]>([]);
@@ -133,11 +133,11 @@ export default function PhotographerUploadPage() {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`${API_BASE}/photographer/tournaments`, {
+        const res = await fetch(`${API_BASE}/photographer/targets`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (!res.ok) throw new Error('赛事加载失败');
-        const data = (await res.json()) as Tournament[];
+        const data = (await res.json()) as UploadTarget[];
         if (!cancelled) setTournaments(data);
       } catch {
         if (!cancelled) message.error('赛事列表加载失败');
@@ -223,12 +223,13 @@ export default function PhotographerUploadPage() {
   const uploadOne = useCallback(
     (item: QueueItem) =>
       new Promise<boolean>((resolve) => {
-        if (!token || !tournamentId || !category) {
+        if (!token || !tournamentId || !category || !selectedTournament) {
           resolve(false);
           return;
         }
         const form = new FormData();
-        form.append('tournamentId', tournamentId);
+        form.append('targetType', selectedTournament.targetType);
+        form.append('targetId', tournamentId);
         form.append('category', category);
         form.append('photos', item.file);
 
@@ -287,7 +288,7 @@ export default function PhotographerUploadPage() {
         );
         xhr.send(form);
       }),
-    [token, tournamentId, category],
+    [token, tournamentId, category, selectedTournament],
   );
 
   // Bounded-concurrency runner over a set of queue items.
@@ -356,6 +357,13 @@ export default function PhotographerUploadPage() {
       <Typography.Title level={4} style={{ marginTop: 0 }}>
         现场图片上传
       </Typography.Title>
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 12 }}
+        title="请先扫描管理员提供的上传授权二维码"
+        description="这里只有已经扫码授权的赛事和活动。浏览相册二维码不能用于上传授权。"
+      />
 
       {/* Step 1: tournament */}
       <Card size="small" title="第一步:选择赛事" style={{ marginBottom: 12 }}>
@@ -366,7 +374,7 @@ export default function PhotographerUploadPage() {
           onChange={setTournamentId}
           options={tournaments.map((t) => ({
             value: t.id,
-            label: `${t.name}(${formatDate(t.startDate)} - ${formatDate(t.endDate)})`,
+            label: `${t.targetType === 'ACTIVITY' ? '活动' : '赛事'} · ${t.name}（${formatDate(t.startAt)}${t.endAt ? ` - ${formatDate(t.endAt)}` : ''}）`,
           }))}
           showSearch
           optionFilterProp="label"

@@ -103,6 +103,11 @@ export class AdminPhotosController {
     return this.photosService.listTournamentsWithPhotos(req.user);
   }
 
+  @Post('tournaments/:id/photo-upload-access')
+  createPhotoUploadAccess(@Param('id') id: string) {
+    return this.photosService.createTournamentUploadAccess(id);
+  }
+
   @Post('tournaments/:id/photos')
   @UseInterceptors(
     FilesInterceptor('photos', MAX_UPLOAD_FILES, {

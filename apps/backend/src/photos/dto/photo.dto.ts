@@ -24,8 +24,11 @@ export enum PublicPhotoSort {
 }
 
 export class UploadPhotosDto {
+  @IsIn(['TOURNAMENT', 'ACTIVITY'])
+  targetType: 'TOURNAMENT' | 'ACTIVITY';
+
   @IsString()
-  tournamentId: string;
+  targetId: string;
 
   @IsIn(CATEGORIES)
   category: PhotoCategory;

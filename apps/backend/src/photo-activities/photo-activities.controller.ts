@@ -7,7 +7,7 @@ import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { DeleteTournamentPhotosDto, UpdateWatermarkDto } from '../photos/dto/photo.dto';
 import { PhotosService } from '../photos/photos.service';
-import { CreatePhotoActivityDto, RejectPhotoActivityDto } from './dto/photo-activity.dto';
+import { CreatePhotoActivityDto, DeletePhotoActivityDto, RejectPhotoActivityDto } from './dto/photo-activity.dto';
 import { PhotoActivitiesService } from './photo-activities.service';
 
 const PHOTO_MIME_RE = /^image\/(?!svg\+xml$).+/;
@@ -53,6 +53,18 @@ export class PhotoActivitiesController {
 
   @Post(':id/photo-access')
   photoAccess(@Param('id') id: string, @Req() req: { user: AuthActor }) { return this.activities.createPhotoAccess(id, req.user); }
+
+  @Post(':id/photo-upload-access')
+  async photoUploadAccess(@Param('id') id: string, @Req() req: { user: AuthActor }) {
+    await this.activities.requireManageable(id, req.user);
+    return this.photos.createActivityUploadAccess(id);
+  }
+
+  @Delete(':id')
+  @Roles(Role.ROOT)
+  delete(@Param('id') id: string, @Body() dto: DeletePhotoActivityDto, @Req() req: { user: AuthActor }) {
+    return this.activities.delete(id, dto.confirmTitle, req.user);
+  }
 
   @Get(':id/watermark')
   async getWatermark(@Param('id') id: string, @Req() req: { user: AuthActor }) {

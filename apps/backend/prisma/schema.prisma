@@ -212,6 +212,7 @@ model User {
   createdPhotoActivities PhotoActivity[] @relation("PhotoActivityCreator")
   approvedPhotoActivities PhotoActivity[] @relation("PhotoActivityApprover")
   photoOperationLogs PhotoOperationLog[]
+  photoUploadGrants PhotoUploadGrant[]
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
 
@@ -301,6 +302,7 @@ model Tournament {
   isPublished           Boolean          @default(false)
   showOnHome            Boolean          @default(false)
   photoAccessToken      String?          @unique @db.VarChar(64)
+  photoUploadToken      String?          @unique @db.VarChar(64)
   screenSettings        Json?
   startDate             DateTime
   endDate               DateTime
@@ -320,6 +322,7 @@ model Tournament {
   emailLogs             EmailLog[]
   refereeAccessCode     RefereeTournamentAccessCode?
   refereeGrants         RefereeTournamentGrant[]
+  photoUploadGrants     PhotoUploadGrant[]
   broadcasts            BroadcastSession[]
   createdAt             DateTime         @default(now())
   updatedAt             DateTime         @updatedAt
@@ -580,7 +583,9 @@ model PhotoActivity {
   approvedAt       DateTime?
   rejectReason     String?                  @db.VarChar(500)
   photoAccessToken String?                  @unique @db.VarChar(64)
+  photoUploadToken String?                  @unique @db.VarChar(64)
   photos           Photo[]
+  photoUploadGrants PhotoUploadGrant[]
   watermark        PhotoActivityWatermark?
   createdAt        DateTime                 @default(now())
   updatedAt        DateTime                 @updatedAt
@@ -622,6 +627,23 @@ model PhotoOperationLog {
   @@index([tournamentId, createdAt])
   @@index([activityId, createdAt])
   @@index([operatorId])
+}
+
+model PhotoUploadGrant {
+  id           String         @id @default(cuid())
+  userId       String
+  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tournamentId String?
+  tournament   Tournament?    @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  activityId   String?
+  activity     PhotoActivity? @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  grantedAt    DateTime       @default(now())
+
+  @@unique([userId, tournamentId])
+  @@unique([userId, activityId])
+  @@index([userId, grantedAt])
+  @@index([tournamentId])
+  @@index([activityId])
 }
 
 model Event {

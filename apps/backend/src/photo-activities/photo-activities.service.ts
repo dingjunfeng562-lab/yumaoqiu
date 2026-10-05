@@ -124,6 +124,22 @@ export class PhotoActivitiesService {
     });
   }
 
+  async delete(id: string, confirmTitle: string, actor: AuthActor) {
+    this.assertRoot(actor);
+    const activity = await this.requireExists(id);
+    if (confirmTitle.trim() !== activity.title) {
+      throw new BadRequestException('请输入完整活动名称以确认删除');
+    }
+    await this.prisma.$transaction([
+      this.prisma.photoOperationLog.deleteMany({ where: { activityId: id } }),
+      this.prisma.photoActivity.delete({ where: { id } }),
+    ]);
+    this.removeCover(activity.coverImageUrl);
+    const photoDirectory = join(process.cwd(), 'uploads', 'photos', id);
+    if (existsSync(photoDirectory)) rmSync(photoDirectory, { recursive: true, force: true });
+    return { deleted: true };
+  }
+
   async createPhotoAccess(id: string, actor: AuthActor) {
     const activity = await this.requireManageable(id, actor);
     if (activity.approvalStatus !== TournamentApprovalStatus.APPROVED) {

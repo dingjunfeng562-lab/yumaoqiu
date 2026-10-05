@@ -21,3 +21,9 @@ export class RejectPhotoActivityDto {
   @MaxLength(500)
   reason: string;
 }
+
+export class DeletePhotoActivityDto {
+  @IsString()
+  @MaxLength(120)
+  confirmTitle: string;
+}

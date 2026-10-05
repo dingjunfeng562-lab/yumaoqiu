@@ -13,6 +13,7 @@ import {
   Modal,
   Pagination,
   Popconfirm,
+  QRCode,
   Segmented,
   Select,
   Space,
@@ -24,10 +25,12 @@ import {
 } from 'antd';
 import {
   ArrowLeftOutlined,
+  CopyOutlined,
   DeleteOutlined,
   EyeOutlined,
   FileSearchOutlined,
   ReloadOutlined,
+  QrcodeOutlined,
   UploadOutlined,
 } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
@@ -122,6 +125,8 @@ export default function AdminPhotosPage() {
   const [uploadCategory, setUploadCategory] = useState<'PLAYER' | 'MATCH' | 'AWARD'>('MATCH');
   const [uploading, setUploading] = useState(false);
   const [uploadFileList, setUploadFileList] = useState<any[]>([]);
+  const [uploadAccess, setUploadAccess] = useState<{ url: string } | null>(null);
+  const [uploadAccessLoading, setUploadAccessLoading] = useState(false);
 
   // Uploader options accumulated from loaded photos.
   const [uploaderOptions, setUploaderOptions] = useState<Uploader[]>([]);
@@ -299,6 +304,22 @@ export default function AdminPhotosPage() {
     }
   }
 
+  async function showUploadAccessQr() {
+    if (!token || !id) return;
+    setUploadAccessLoading(true);
+    try {
+      const data = await apiFetch<{ path: string }>(
+        isActivity ? `/admin/photo-activities/${id}/photo-upload-access` : `/admin/tournaments/${id}/photo-upload-access`,
+        { method: 'POST', token, body: '{}' },
+      );
+      setUploadAccess({ url: `${window.location.origin}${data.path}` });
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '生成上传授权二维码失败');
+    } finally {
+      setUploadAccessLoading(false);
+    }
+  }
+
   const allSelected = photos.length > 0 && photos.every((p) => selected.has(p.id));
 
   const logColumns = useMemo(
@@ -370,6 +391,9 @@ export default function AdminPhotosPage() {
       <Space style={{ marginBottom: 12 }} wrap>
         <Button type="primary" icon={<UploadOutlined />} onClick={() => setUploadOpen(true)}>
           上传图片
+        </Button>
+        <Button icon={<QrcodeOutlined />} loading={uploadAccessLoading} onClick={() => void showUploadAccessQr()}>
+          上传授权二维码
         </Button>
         <Checkbox
           checked={allSelected}
@@ -467,6 +491,20 @@ export default function AdminPhotosPage() {
           />
         </div>
       )}
+
+      <Modal
+        title={`${targetLabel}图片上传授权`}
+        open={!!uploadAccess}
+        onCancel={() => setUploadAccess(null)}
+        footer={null}
+        width={420}
+      >
+        {uploadAccess ? <Space direction="vertical" size={16} style={{ width: '100%', alignItems: 'center' }}>
+          <QRCode value={uploadAccess.url} size={260} bordered={false} />
+          <Typography.Text type="secondary">仅图片上传员登录后扫码授权，其他角色无法领取。</Typography.Text>
+          <Input value={uploadAccess.url} readOnly addonAfter={<CopyOutlined onClick={() => void navigator.clipboard.writeText(uploadAccess.url)} />} />
+        </Space> : null}
+      </Modal>
 
       <Modal
         title="删除全部图片"

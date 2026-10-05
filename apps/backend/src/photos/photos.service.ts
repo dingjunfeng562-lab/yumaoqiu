@@ -1,7 +1,7 @@
 import { AuthActor, tournamentScope } from '../auth/admin-scope';
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PhotoCategory, Prisma } from '@prisma/client';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, normalize } from 'node:path';
 import { PrismaService } from '../prisma/prisma.service';
@@ -239,6 +239,108 @@ export class PhotosService {
           config.position,
       ),
     };
+  }
+
+  async createTournamentUploadAccess(tournamentId: string) {
+    const tournament = await this.prisma.tournament.findUnique({
+      where: { id: tournamentId },
+      select: { photoUploadToken: true, approvalStatus: true },
+    });
+    if (!tournament) throw new NotFoundException('赛事不存在');
+    if (tournament.approvalStatus !== 'APPROVED') throw new BadRequestException('赛事审核通过后才能生成上传授权二维码');
+    const token = tournament.photoUploadToken ?? randomBytes(24).toString('base64url');
+    if (!tournament.photoUploadToken) {
+      await this.prisma.tournament.update({ where: { id: tournamentId }, data: { photoUploadToken: token } });
+    }
+    return { token, path: `/photographer/authorize/${token}` };
+  }
+
+  async createActivityUploadAccess(activityId: string) {
+    const activity = await this.prisma.photoActivity.findUnique({
+      where: { id: activityId },
+      select: { photoUploadToken: true, approvalStatus: true },
+    });
+    if (!activity) throw new NotFoundException('活动不存在');
+    if (activity.approvalStatus !== 'APPROVED') throw new BadRequestException('活动审核通过后才能生成上传授权二维码');
+    const token = activity.photoUploadToken ?? randomBytes(24).toString('base64url');
+    if (!activity.photoUploadToken) {
+      await this.prisma.photoActivity.update({ where: { id: activityId }, data: { photoUploadToken: token } });
+    }
+    return { token, path: `/photographer/authorize/${token}` };
+  }
+
+  async getPhotoUploadAccess(token: string) {
+    const validToken = this.validUploadToken(token);
+    const tournament = await this.prisma.tournament.findUnique({
+      where: { photoUploadToken: validToken },
+      select: { id: true, name: true, startDate: true, endDate: true },
+    });
+    if (tournament) return { targetType: 'TOURNAMENT' as const, id: tournament.id, name: tournament.name, startAt: tournament.startDate, endAt: tournament.endDate };
+    const activity = await this.prisma.photoActivity.findFirst({
+      where: { photoUploadToken: validToken, approvalStatus: 'APPROVED' },
+      select: { id: true, title: true, startAt: true, endAt: true },
+    });
+    if (activity) return { targetType: 'ACTIVITY' as const, id: activity.id, name: activity.title, startAt: activity.startAt, endAt: activity.endAt };
+    throw new NotFoundException('上传授权二维码无效');
+  }
+
+  async authorizePhotoUpload(token: string, userId: string) {
+    const target = await this.getPhotoUploadAccess(token);
+    if (target.targetType === 'TOURNAMENT') {
+      await this.prisma.photoUploadGrant.upsert({
+        where: { userId_tournamentId: { userId, tournamentId: target.id } },
+        create: { userId, tournamentId: target.id },
+        update: { grantedAt: new Date() },
+      });
+    } else {
+      await this.prisma.photoUploadGrant.upsert({
+        where: { userId_activityId: { userId, activityId: target.id } },
+        create: { userId, activityId: target.id },
+        update: { grantedAt: new Date() },
+      });
+    }
+    return target;
+  }
+
+  async listAuthorizedUploadTargets(userId: string) {
+    const grants = await this.prisma.photoUploadGrant.findMany({
+      where: { userId },
+      include: {
+        tournament: { select: { id: true, name: true, startDate: true, endDate: true, isArchived: true, approvalStatus: true } },
+        activity: { select: { id: true, title: true, startAt: true, endAt: true, approvalStatus: true } },
+      },
+      orderBy: { grantedAt: 'desc' },
+    });
+    const targets: Array<{
+      targetType: 'TOURNAMENT' | 'ACTIVITY';
+      id: string;
+      name: string;
+      startAt: Date;
+      endAt: Date | null;
+    }> = [];
+    grants.forEach((grant) => {
+      if (grant.tournament && !grant.tournament.isArchived && grant.tournament.approvalStatus === 'APPROVED') {
+        targets.push({ targetType: 'TOURNAMENT', id: grant.tournament.id, name: grant.tournament.name, startAt: grant.tournament.startDate, endAt: grant.tournament.endDate });
+      } else if (grant.activity?.approvalStatus === 'APPROVED') {
+        targets.push({ targetType: 'ACTIVITY', id: grant.activity.id, name: grant.activity.title, startAt: grant.activity.startAt, endAt: grant.activity.endAt });
+      }
+    });
+    return targets;
+  }
+
+  async assertPhotoUploadAuthorized(userId: string, targetType: 'TOURNAMENT' | 'ACTIVITY', targetId: string) {
+    const grant = await this.prisma.photoUploadGrant.findFirst({
+      where: targetType === 'TOURNAMENT'
+        ? { userId, tournamentId: targetId, tournament: { isArchived: false, approvalStatus: 'APPROVED' } }
+        : { userId, activityId: targetId, activity: { approvalStatus: 'APPROVED' } },
+      select: { id: true },
+    });
+    if (!grant) throw new ForbiddenException('请先扫描上传授权二维码');
+  }
+
+  private validUploadToken(token: string) {
+    if (!/^[A-Za-z0-9_-]{32}$/.test(token)) throw new NotFoundException('上传授权二维码无效');
+    return token;
   }
 
   private async loadActivityLogoConfig(activityId: string): Promise<Awaited<ReturnType<PhotosService['loadLogoConfig']>>> {

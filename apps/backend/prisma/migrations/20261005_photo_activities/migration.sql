@@ -11,11 +11,31 @@ CREATE TABLE `PhotoActivity` (
   `approvedAt` DATETIME(3) NULL,
   `rejectReason` VARCHAR(500) NULL,
   `photoAccessToken` VARCHAR(64) NULL,
+  `photoUploadToken` VARCHAR(64) NULL,
   `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `updatedAt` DATETIME(3) NOT NULL,
   UNIQUE INDEX `PhotoActivity_photoAccessToken_key`(`photoAccessToken`),
+  UNIQUE INDEX `PhotoActivity_photoUploadToken_key`(`photoUploadToken`),
   INDEX `PhotoActivity_submittedById_createdAt_idx`(`submittedById`, `createdAt`),
   INDEX `PhotoActivity_approvalStatus_createdAt_idx`(`approvalStatus`, `createdAt`),
+  PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+ALTER TABLE `Tournament`
+  ADD COLUMN `photoUploadToken` VARCHAR(64) NULL,
+  ADD UNIQUE INDEX `Tournament_photoUploadToken_key`(`photoUploadToken`);
+
+CREATE TABLE `PhotoUploadGrant` (
+  `id` VARCHAR(191) NOT NULL,
+  `userId` VARCHAR(191) NOT NULL,
+  `tournamentId` VARCHAR(191) NULL,
+  `activityId` VARCHAR(191) NULL,
+  `grantedAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  UNIQUE INDEX `PhotoUploadGrant_userId_tournamentId_key`(`userId`, `tournamentId`),
+  UNIQUE INDEX `PhotoUploadGrant_userId_activityId_key`(`userId`, `activityId`),
+  INDEX `PhotoUploadGrant_userId_grantedAt_idx`(`userId`, `grantedAt`),
+  INDEX `PhotoUploadGrant_tournamentId_idx`(`tournamentId`),
+  INDEX `PhotoUploadGrant_activityId_idx`(`activityId`),
   PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
@@ -58,3 +78,8 @@ ALTER TABLE `PhotoActivityWatermark`
 
 ALTER TABLE `Photo`
   ADD CONSTRAINT `Photo_activityId_fkey` FOREIGN KEY (`activityId`) REFERENCES `PhotoActivity`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
+
+ALTER TABLE `PhotoUploadGrant`
+  ADD CONSTRAINT `PhotoUploadGrant_userId_fkey` FOREIGN KEY (`userId`) REFERENCES `User`(`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  ADD CONSTRAINT `PhotoUploadGrant_tournamentId_fkey` FOREIGN KEY (`tournamentId`) REFERENCES `Tournament`(`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  ADD CONSTRAINT `PhotoUploadGrant_activityId_fkey` FOREIGN KEY (`activityId`) REFERENCES `PhotoActivity`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;

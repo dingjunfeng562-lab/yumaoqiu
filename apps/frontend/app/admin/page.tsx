@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { Button, Card, Empty, Progress, Spin, Typography } from 'antd';
 import Link from 'next/link';
 import {
+  CalendarOutlined,
   DownloadOutlined,
   EyeOutlined,
   MessageOutlined,
@@ -25,6 +26,16 @@ type UsageMetrics = {
   aiChat: number;
 };
 
+type PhotoActivityStat = {
+  id: string;
+  title: string;
+  dateMode: 'SINGLE' | 'RANGE';
+  startAt: string;
+  endAt: string | null;
+  approvalStatus: 'PENDING' | 'APPROVED' | 'REJECTED';
+  photoCount: number;
+};
+
 const EMPTY_USAGE_METRICS: UsageMetrics = {
   aiChat: 0,
 };
@@ -35,6 +46,7 @@ export default function AdminDashboard() {
   // AI chat usage is platform-wide; other admins only see their own tournaments' photos.
   const isRoot = session?.user?.role === 'ROOT';
   const [stats, setStats] = useState<TournamentStat[]>([]);
+  const [activityStats, setActivityStats] = useState<PhotoActivityStat[]>([]);
   const [usageMetrics, setUsageMetrics] = useState<UsageMetrics>(EMPTY_USAGE_METRICS);
   const [loading, setLoading] = useState(true);
 
@@ -43,7 +55,7 @@ export default function AdminDashboard() {
 
     (async () => {
       try {
-        const [photoStats, usageStats] = await Promise.all([
+        const [photoStats, usageStats, photoActivityStats] = await Promise.all([
           token
             ? apiFetch<TournamentStat[]>('/admin/photos/tournaments', {
                 token,
@@ -53,14 +65,19 @@ export default function AdminDashboard() {
           token && isRoot
             ? apiFetch<UsageMetrics>('/usage-metrics/summary', { token, cache: 'no-store' }).catch(() => EMPTY_USAGE_METRICS)
             : Promise.resolve(EMPTY_USAGE_METRICS),
+          token && isRoot
+            ? apiFetch<PhotoActivityStat[]>('/admin/photo-activities', { token, cache: 'no-store' }).catch(() => [])
+            : Promise.resolve([]),
         ]);
 
         if (cancelled) return;
         setStats(photoStats);
         setUsageMetrics(usageStats);
+        setActivityStats(photoActivityStats);
       } catch {
         if (!cancelled) {
           setStats([]);
+          setActivityStats([]);
           setUsageMetrics(EMPTY_USAGE_METRICS);
         }
       } finally {
@@ -76,6 +93,21 @@ export default function AdminDashboard() {
   const totalPhotos = stats.reduce((sum, s) => sum + s.photoCount, 0);
   const totalViews = stats.reduce((sum, s) => sum + s.viewCount, 0);
   const totalDownloads = stats.reduce((sum, s) => sum + s.downloadCount, 0);
+  const totalActivityPhotos = activityStats.reduce((sum, activity) => sum + activity.photoCount, 0);
+  const pendingActivities = activityStats.filter((activity) => activity.approvalStatus === 'PENDING').length;
+  const approvedActivities = activityStats.filter((activity) => activity.approvalStatus === 'APPROVED').length;
+
+  const activityStatus = {
+    PENDING: { color: '#d97706', label: '待审核' },
+    APPROVED: { color: '#16a34a', label: '已通过' },
+    REJECTED: { color: '#dc2626', label: '已驳回' },
+  } as const;
+
+  const formatActivityTime = (activity: PhotoActivityStat) => {
+    const start = new Date(activity.startAt).toLocaleString('zh-CN', { hour12: false });
+    if (activity.dateMode === 'SINGLE' || !activity.endAt) return start;
+    return `${start} 至 ${new Date(activity.endAt).toLocaleString('zh-CN', { hour12: false })}`;
+  };
 
   return (
     <div>
@@ -175,6 +207,56 @@ export default function AdminDashboard() {
           </div>
         </div>
       </Card>
+
+      {isRoot && (
+        <Card
+          title="活动图片统计"
+          style={{ marginBottom: 24 }}
+          extra={<Link href="/admin/photo-activities"><Button icon={<CalendarOutlined />}>管理活动图片</Button></Link>}
+        >
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 20 }}>
+            {[
+              { label: '活动总数', value: activityStats.length, color: '#1677ff' },
+              { label: '待审核', value: pendingActivities, color: '#d97706' },
+              { label: '已通过', value: approvedActivities, color: '#16a34a' },
+              { label: '活动图片总数', value: totalActivityPhotos, color: '#722ed1' },
+            ].map((item) => (
+              <div key={item.label} style={{ padding: 16, border: '1px solid #f0f0f0', borderRadius: 8, background: '#fafafa' }}>
+                <Typography.Text type="secondary">{item.label}</Typography.Text>
+                <Typography.Title level={3} style={{ margin: '4px 0 0', color: item.color }}>
+                  {item.value.toLocaleString()}
+                </Typography.Title>
+              </div>
+            ))}
+          </div>
+
+          {activityStats.length === 0 ? (
+            <Empty description="暂无活动图片数据" />
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+              {activityStats.map((activity) => {
+                const status = activityStatus[activity.approvalStatus];
+                return (
+                  <Link key={activity.id} href="/admin/photo-activities" style={{ color: 'inherit' }}>
+                    <div style={{ padding: 16, border: '1px solid #f0f0f0', borderRadius: 8, background: '#fff', height: '100%' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                        <Typography.Title level={5} ellipsis style={{ margin: 0 }}>{activity.title}</Typography.Title>
+                        <span style={{ color: status.color, whiteSpace: 'nowrap', fontSize: 13 }}>{status.label}</span>
+                      </div>
+                      <Typography.Text type="secondary" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
+                        {formatActivityTime(activity)}
+                      </Typography.Text>
+                      <div style={{ marginTop: 12, color: '#722ed1', fontWeight: 700 }}>
+                        <PictureOutlined /> {activity.photoCount.toLocaleString()} 张图片
+                      </div>
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          )}
+        </Card>
+      )}
 
       <Card title="各赛事图片统计">
         {loading ? (

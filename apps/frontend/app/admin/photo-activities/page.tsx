@@ -6,7 +6,7 @@ import { useSession } from 'next-auth/react';
 import dayjs, { Dayjs } from 'dayjs';
 import { Button, Card, DatePicker, Form, Image, Input, Modal, QRCode, Radio, Space, Table, Tag, Typography, Upload, message } from 'antd';
 import type { UploadFile } from 'antd';
-import { CheckOutlined, CopyOutlined, DownloadOutlined, EditOutlined, PictureOutlined, PlusOutlined, QrcodeOutlined, SafetyCertificateOutlined, StopOutlined, UploadOutlined } from '@ant-design/icons';
+import { CheckOutlined, CopyOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, PictureOutlined, PlusOutlined, QrcodeOutlined, SafetyCertificateOutlined, StopOutlined, UploadOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { useCurrentRole } from '@/lib/use-current-role';
 
@@ -64,6 +64,9 @@ export default function PhotoActivitiesPage() {
   const [coverFiles, setCoverFiles] = useState<UploadFile[]>([]);
   const [rejecting, setRejecting] = useState<Activity | null>(null);
   const [rejectReason, setRejectReason] = useState('');
+  const [deleting, setDeleting] = useState<Activity | null>(null);
+  const [deleteInput, setDeleteInput] = useState('');
+  const [deleteLoading, setDeleteLoading] = useState(false);
   const [qr, setQr] = useState<{ title: string; url: string }>();
   const [qrLoading, setQrLoading] = useState<string>();
   const qrRef = useRef<HTMLDivElement>(null);
@@ -141,6 +144,19 @@ export default function PhotoActivitiesPage() {
     } catch (error) { message.error(error instanceof Error ? error.message : '驳回失败'); }
   }
 
+  async function deleteActivity() {
+    if (!token || !deleting) return;
+    setDeleteLoading(true);
+    try {
+      await apiFetch(`/admin/photo-activities/${deleting.id}`, {
+        method: 'DELETE', token, body: JSON.stringify({ confirmTitle: deleteInput }),
+      });
+      message.success('活动及其全部图片已删除');
+      setDeleting(null); setDeleteInput(''); await load();
+    } catch (error) { message.error(error instanceof Error ? error.message : '删除失败'); }
+    finally { setDeleteLoading(false); }
+  }
+
   async function showQr(item: Activity) {
     if (!token) return;
     setQrLoading(item.id);
@@ -178,6 +194,7 @@ export default function PhotoActivitiesPage() {
       <Button icon={<QrcodeOutlined />} loading={qrLoading === item.id} disabled={item.approvalStatus !== 'APPROVED'} title={item.approvalStatus !== 'APPROVED' ? '审核通过后才能生成二维码' : undefined} onClick={() => void showQr(item)}>{item.photoAccessEnabled ? '查看二维码' : '生成二维码'}</Button>
       {role === 'ROOT' && item.approvalStatus !== 'APPROVED' ? <Button icon={<CheckOutlined />} onClick={() => void approve(item)}>通过</Button> : null}
       {role === 'ROOT' && item.approvalStatus !== 'REJECTED' ? <Button danger icon={<StopOutlined />} onClick={() => setRejecting(item)}>驳回</Button> : null}
+      {role === 'ROOT' ? <Button danger type="primary" icon={<DeleteOutlined />} onClick={() => { setDeleting(item); setDeleteInput(''); }}>删除</Button> : null}
     </Space> },
   ];
 
@@ -202,6 +219,12 @@ export default function PhotoActivitiesPage() {
     </Modal>
 
     <Modal title={rejecting ? `驳回：${rejecting.title}` : '驳回活动'} open={!!rejecting} onCancel={() => setRejecting(null)} onOk={() => void reject()} okButtonProps={{ danger: true, disabled: !rejectReason.trim() }} okText="确认驳回"><Input.TextArea value={rejectReason} onChange={(event) => setRejectReason(event.target.value)} maxLength={500} showCount rows={4} placeholder="填写驳回原因" /></Modal>
+
+    <Modal title={deleting ? `删除活动：${deleting.title}` : '删除活动'} open={!!deleting} onCancel={() => { setDeleting(null); setDeleteInput(''); }} onOk={() => void deleteActivity()} okText="永久删除" okButtonProps={{ danger: true, loading: deleteLoading, disabled: !deleting || deleteInput.trim() !== deleting.title }}>
+      <Typography.Paragraph>此操作会永久删除活动、封面、Logo、全部图片、二维码和操作记录，无法恢复。</Typography.Paragraph>
+      <Typography.Paragraph>请输入活动名称 <Typography.Text code>{deleting?.title}</Typography.Text> 进行确认：</Typography.Paragraph>
+      <Input value={deleteInput} onChange={(event) => setDeleteInput(event.target.value)} placeholder="输入完整活动名称" />
+    </Modal>
 
     <Modal title={qr ? `${qr.title} · 活动图片二维码` : '活动图片二维码'} open={!!qr} onCancel={() => setQr(undefined)} footer={null} width={440}>
       {qr ? <Space direction="vertical" size={18} style={{ width: '100%', alignItems: 'center' }}>
