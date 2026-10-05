@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { join } from 'node:path';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
 import { PlayersModule } from './players/players.module';
@@ -19,12 +20,14 @@ import { MailModule } from './mail/mail.module';
 import { AiConfigModule } from './ai-config/ai-config.module';
 import { AiChatModule } from './ai-chat/ai-chat.module';
 import { UsageMetricsModule } from './usage-metrics/usage-metrics.module';
+import { BroadcastsModule } from './broadcasts/broadcasts.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    // Resolve the backend's own environment even when launched from the workspace root.
+    ConfigModule.forRoot({ isGlobal: true, envFilePath: join(__dirname, '../.env') }),
     PrismaModule,
     AuthModule,
     PlayersModule,
@@ -44,6 +47,7 @@ import { AppService } from './app.service';
     AiConfigModule,
     UsageMetricsModule,
     AiChatModule,
+    BroadcastsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

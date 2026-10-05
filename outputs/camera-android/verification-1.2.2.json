@@ -1,0 +1,15 @@
+﻿{
+    "version":  "1.2.2-multicamera",
+    "versionCode":  5,
+    "apk":  "D:\\Ayumaoqiu\\outputs\\camera-android\\Ayumaoqiu-Camera-1.2.2-debug.apk",
+    "sha256":  "BA86F3D27B6295044391B7D6A517FCF59451DE4DE521F9AC0326CF489CD8E2F4",
+    "sizeBytes":  67365876,
+    "signatureVerified":  true,
+    "sameSigningCertificateAs121":  true,
+    "unitTests":  40,
+    "failures":  0,
+    "errors":  0,
+    "lint":  "passed",
+    "livePairingApiAndBrowser":  "passed",
+    "androidHardware":  "not connected; installation, orientation and sustained streaming not verified"
+}

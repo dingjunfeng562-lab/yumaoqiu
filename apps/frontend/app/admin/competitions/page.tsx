@@ -19,6 +19,7 @@ import {
   TeamOutlined,
   TrophyOutlined,
   UndoOutlined,
+  VideoCameraOutlined,
 } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { useCurrentAccess } from '@/lib/use-current-role';
@@ -305,6 +306,15 @@ export default function AdminCompetitionsPage() {
             赛事大屏
           </Button>
           </>}
+          {/* 直播管理仅超级管理员可见，入口带上本赛事条件。 */}
+          {role === 'ROOT' && (
+            <Button
+              icon={<VideoCameraOutlined />}
+              onClick={() => router.push(`/admin/broadcasts?tournamentId=${encodeURIComponent(record.id)}`)}
+            >
+              赛事直播
+            </Button>
+          )}
         </Space>
       ),
     },

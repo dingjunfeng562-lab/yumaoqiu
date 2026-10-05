@@ -1,0 +1,26 @@
+# Run MediaMTX separately from Nest. RTMP is reachable by the phone; HLS is
+# loopback ONLY. Never expose port 8888 or the unpublished picture bypasses ROOT.
+# See docs/camera-live.md for the local installation and firewall rule.
+logLevel: info
+authMethod: http
+authHTTPAddress: http://127.0.0.1:4000/api/media/auth
+authHTTPExclude: []
+rtsp: no
+rtmp: yes
+rtmpAddress: :1935
+hls: yes
+hlsAddress: 127.0.0.1:8888
+hlsAlwaysRemux: yes
+# Plain fMP4 HLS (~2 s segments). The default lowLatency variant emits 200 ms
+# parts and blocking playlist reloads; every one of those would go through the
+# Nest media proxy. A few seconds of extra latency is fine for this use.
+hlsVariant: fmp4
+webrtc: no
+srt: no
+# MediaMTX 1.21 enables MoQ (8892/8893) by default; this project does not use it.
+moq: no
+api: no
+metrics: no
+paths:
+  all_others:
+    source: publisher

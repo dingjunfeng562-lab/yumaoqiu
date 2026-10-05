@@ -1,0 +1,19 @@
+/* OBS composites this page over the camera feed, so every layer that normally
+   carries the site background must stay transparent and scroll-free. The
+   :has() guard keeps these rules limited to the overlay route. */
+html:has([data-broadcast-overlay='live']),
+body:has([data-broadcast-overlay='live']) {
+  background: transparent !important;
+  overflow: hidden !important;
+  height: 100%;
+}
+
+body:has([data-broadcast-overlay='live']) {
+  margin: 0;
+  /* No native scrollbars inside the captured frame. */
+  scrollbar-width: none;
+}
+
+body:has([data-broadcast-overlay='live'])::-webkit-scrollbar {
+  display: none;
+}

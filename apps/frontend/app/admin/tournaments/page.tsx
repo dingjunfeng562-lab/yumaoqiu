@@ -39,6 +39,8 @@ import {
 import { apiFetch } from '@/lib/api';
 import { RichTextEditor } from '@/components/RichTextEditor';
 import dayjs, { Dayjs } from 'dayjs';
+import locale from 'antd/locale/zh_CN';
+import 'dayjs/locale/zh-cn';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL!;
 const API_ORIGIN = API_BASE.replace(/\/api$/, '');
@@ -367,10 +369,16 @@ export default function TournamentsPage() {
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     beforeUpload(file) {
       const isValidType = file.type === 'image/jpeg' || file.type === 'image/png';
-      if (!isValidType) message.error('仅支持 jpg / png 图片');
+      if (!isValidType) {
+        message.error('仅支持 jpg / png 图片');
+        return false;
+      }
       const isSmallEnough = file.size / 1024 / 1024 < 2;
-      if (!isSmallEnough) message.error('图片需小于 2MB');
-      return isValidType && isSmallEnough;
+      if (!isSmallEnough) {
+        message.error('图片需小于 2MB');
+        return false;
+      }
+      return true;
     },
     onChange(info) {
       setCoverFileList(info.fileList);
@@ -379,9 +387,15 @@ export default function TournamentsPage() {
         if (url) {
           form.setFieldValue('coverImageUrl', url);
           message.success('封面上传成功');
+        } else {
+          message.error('上传成功但未返回图片地址');
         }
       }
-      if (info.file.status === 'error') message.error('封面上传失败');
+      if (info.file.status === 'error') {
+        const errorMsg = info.file.response?.message || info.file.error?.message || '封面上传失败';
+        message.error(errorMsg);
+        console.error('Upload error:', info.file.response, info.file.error);
+      }
     },
     onRemove() {
       form.setFieldValue('coverImageUrl', undefined);
@@ -572,7 +586,7 @@ export default function TournamentsPage() {
       title: '时间',
       key: 'dates',
       render: (_: unknown, record: Tournament) =>
-        `${dayjs(record.startDate).format('YYYY/MM/DD')} - ${dayjs(record.endDate).format('YYYY/MM/DD')}`,
+        `${dayjs(record.startDate).format('YYYY年MM月DD日')} - ${dayjs(record.endDate).format('YYYY年MM月DD日')}`,
     },
     {
       title: '项目',
@@ -747,7 +761,7 @@ export default function TournamentsPage() {
                 rules={[{ required: true, message: '请选择赛事开始日期' }]}
                 style={{ flex: 1 }}
               >
-                <DatePicker style={{ width: '100%' }} disabledDate={editing ? undefined : disabledPastDate} />
+                <DatePicker format="YYYY年MM月DD日" locale={locale.DatePicker} style={{ width: '100%' }} disabledDate={editing ? undefined : disabledPastDate} />
               </Form.Item>
               <Form.Item
                 name="endDate"
@@ -766,6 +780,8 @@ export default function TournamentsPage() {
                 style={{ flex: 1 }}
               >
                 <DatePicker
+                  format="YYYY年MM月DD日"
+                  locale={locale.DatePicker}
                   style={{ width: '100%' }}
                   disabledDate={(current) => (!editing && disabledPastDate(current)) || (startDate && current.isBefore(startDate, 'day'))}
                 />
@@ -903,7 +919,7 @@ export default function TournamentsPage() {
                 ]}
                 style={{ flex: 1 }}
               >
-                <DatePicker showTime style={{ width: '100%' }} />
+                <DatePicker showTime format="YYYY年MM月DD日 HH:mm" locale={locale.DatePicker} style={{ width: '100%' }} />
               </Form.Item>
               <Form.Item
                 name="registrationEndDate"
@@ -924,7 +940,7 @@ export default function TournamentsPage() {
                 ]}
                 style={{ flex: 1 }}
               >
-                <DatePicker showTime style={{ width: '100%' }} />
+                <DatePicker showTime format="YYYY年MM月DD日 HH:mm" locale={locale.DatePicker} style={{ width: '100%' }} />
               </Form.Item>
             </Space>
             <Form.Item name="needsRegistrationReview" label="是否需要审核" valuePropName="checked">

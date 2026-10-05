@@ -5,6 +5,7 @@ import {
   WebSocketGateway,
   WebSocketServer,
 } from '@nestjs/websockets';
+import { Subject } from 'rxjs';
 import { Server, Socket } from 'socket.io';
 
 @WebSocketGateway({
@@ -17,6 +18,11 @@ import { Server, Socket } from 'socket.io';
 export class ScoringGateway {
   @WebSocketServer()
   server!: Server;
+
+  // In-process notification that a match changed after a successful scoring
+  // write. Broadcast overlays subscribe here instead of importing
+  // ScoringService internals, which keeps the dependency one-directional.
+  readonly matchChanges = new Subject<string>();
 
   @SubscribeMessage('joinMatch')
   joinMatch(@ConnectedSocket() client: Socket, @MessageBody() body: { matchId?: string }) {
@@ -35,6 +41,7 @@ export class ScoringGateway {
   emitMatchState(matchId: string, state: unknown) {
     this.server.to(this.matchRoom(matchId)).emit('match:update', state);
     this.server.emit('scoreboard:update', state);
+    this.matchChanges.next(matchId);
   }
 
   // Broadcast that the bracket has changed (winner advanced, slot cleared, or
@@ -43,6 +50,7 @@ export class ScoringGateway {
   // instead of polling.
   emitBracketUpdate(payload: { tournamentId?: string | null; eventId?: string | null; matchId?: string | null }) {
     if (!payload.tournamentId && !payload.eventId && !payload.matchId) return;
+    if (payload.matchId) this.matchChanges.next(payload.matchId);
     this.server.emit('bracket:update', {
       tournamentId: payload.tournamentId ?? null,
       eventId: payload.eventId ?? null,

@@ -59,13 +59,16 @@ export class TournamentsService {
     if (!tournament) throw new NotFoundException('赛事不存在');
     const courtCount = tournament._count.venues;
     const columns = courtCount <= 3 ? Math.max(1, courtCount) : courtCount <= 6 ? 3 : 4;
-    const defaults = { columns, rows: Math.min(8, Math.max(1, Math.ceil(courtCount / columns))), scale: 100, titleFontSize: 48, cardWidth: 560, cardHeight: 360, boundaryPadding: 28, cardFontScale: 100 };
+    const defaultCardWidth = courtCount > 6 ? 770 : 560;
+    const defaultCardHeight = courtCount > 6 ? 495 : 360;
+    const defaultCardFontScale = courtCount > 6 ? 150 : 100;
+    const defaults = { columns, rows: Math.min(8, Math.max(1, Math.ceil(courtCount / columns))), scale: 100, titleFontSize: 48, cardWidth: defaultCardWidth, cardHeight: defaultCardHeight, boundaryPadding: 0, cardFontScale: defaultCardFontScale };
     return { settings: tournament.screenSettings ?? defaults, defaults, courtCount };
   }
 
   async updateScreenSettings(id: string, dto: ScreenSettingsDto) {
-    await this.getScreenSettings(id);
-    await this.prisma.tournament.update({ where: { id }, data: { screenSettings: { cardWidth: 560, cardHeight: 360, boundaryPadding: 28, cardFontScale: 100, ...dto } } });
+    const current = await this.getScreenSettings(id);
+    await this.prisma.tournament.update({ where: { id }, data: { screenSettings: { cardWidth: current.defaults.cardWidth, cardHeight: current.defaults.cardHeight, boundaryPadding: 0, cardFontScale: current.defaults.cardFontScale, ...dto } } });
     return this.getScreenSettings(id);
   }
 

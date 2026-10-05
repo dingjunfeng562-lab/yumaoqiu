@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+  android:layout_width="match_parent"
+  android:layout_height="wrap_content">
+
+  <LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <TextView
+      android:id="@+id/serverInfo"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:textSize="13sp"
+      android:textColor="#444444" />
+
+    <TextView
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="14dp"
+      android:text="麦克风输入（DJI Mic 插上后会出现在这里）"
+      android:textSize="13sp" />
+
+    <Spinner
+      android:id="@+id/micSpinner"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content" />
+
+    <TextView
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="14dp"
+      android:text="画质与帧率（按手机能力选择）"
+      android:textSize="13sp" />
+
+    <TextView
+      android:id="@+id/qualityInfo"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="4dp"
+      android:textColor="#222222"
+      android:textSize="14sp" />
+
+    <Spinner
+      android:id="@+id/qualitySpinner"
+      android:layout_width="match_parent"
+      android:layout_height="48dp" />
+
+    <TextView
+      android:id="@+id/qualityHint"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:textSize="12sp"
+      android:textColor="#777777" />
+
+    <CheckBox
+      android:id="@+id/forceLandscape"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="8dp"
+      android:text="横屏推流（比赛场地建议开启）" />
+
+    <TextView
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="6dp"
+      android:text="预览等比铺满屏幕，超宽屏会裁切预览边缘，直播仍输出完整 16:9。可选择设备支持的分辨率和帧率；调整画质会短暂重新接入。高分辨率和高帧率需要更好的网络。"
+      android:textSize="12sp"
+      android:textColor="#777777" />
+
+    <TextView
+      android:id="@+id/deviceInfo"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="10dp"
+      android:textSize="12sp"
+      android:textColor="#666666" />
+  </LinearLayout>
+</ScrollView>

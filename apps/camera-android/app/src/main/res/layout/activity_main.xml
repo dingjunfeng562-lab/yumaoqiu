@@ -1,0 +1,232 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Camera-style screen: a complete 16:9 viewfinder; controls float on
+  top of the whole window. Only the controls themselves take touches, so a
+  two-finger pinch works anywhere on the picture.
+
+  The centered viewfinder fits inside the screen without stretching or cropping.
+  Wide/portrait displays have black margins; the encoded stream remains 16:9.
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+  android:id="@+id/root"
+  android:layout_width="match_parent"
+  android:layout_height="match_parent"
+  android:background="#000000">
+
+  <!-- match_parent is what gives this view the parent's size to compute from;
+       it then measures itself to the largest 16:9 box that fits inside it. -->
+  <com.ayumaoqiu.camera.AspectFrameLayout
+    android:id="@+id/viewfinder"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:layout_gravity="center">
+
+    <SurfaceView
+      android:id="@+id/preview"
+      android:layout_width="match_parent"
+      android:layout_height="match_parent" />
+  </com.ayumaoqiu.camera.AspectFrameLayout>
+
+
+  <!-- Focus ring, moved to wherever the operator taps. -->
+  <View
+    android:id="@+id/focusRing"
+    android:layout_width="72dp"
+    android:layout_height="72dp"
+    android:alpha="0"
+    android:visibility="invisible" />
+
+  <!-- Top status strip -->
+  <LinearLayout
+    android:id="@+id/topBar"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_gravity="top"
+    android:orientation="vertical"
+    android:background="#99000000"
+    android:paddingLeft="14dp"
+    android:paddingRight="14dp"
+    android:paddingTop="10dp"
+    android:paddingBottom="10dp">
+
+    <LinearLayout
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:orientation="horizontal"
+      android:gravity="center_vertical">
+
+      <View
+        android:id="@+id/stateDot"
+        android:layout_width="10dp"
+        android:layout_height="10dp"
+        android:layout_marginRight="8dp" />
+
+      <TextView
+        android:id="@+id/stateText"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:textColor="#FFFFFF"
+        android:textSize="15sp"
+        android:textStyle="bold"
+        android:singleLine="true"
+        android:ellipsize="end"
+        android:text="未配对" />
+
+      <TextView
+        android:id="@+id/metricsText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textColor="#B9F6CA"
+        android:textSize="12sp"
+        android:text="" />
+    </LinearLayout>
+
+    <TextView
+      android:id="@+id/titleText"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="2dp"
+      android:textColor="#E3F2FD"
+      android:textSize="12sp"
+      android:singleLine="true"
+      android:ellipsize="end"
+      android:text="" />
+  </LinearLayout>
+
+  <!-- Shown until the phone is paired with the site. -->
+  <LinearLayout
+    android:id="@+id/pairPanel"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:layout_gravity="center"
+    android:orientation="vertical"
+    android:gravity="center_horizontal"
+    android:background="#E6101820"
+    android:padding="24dp"
+    android:visibility="gone">
+
+    <TextView
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:textColor="#FFFFFF"
+      android:textSize="18sp"
+      android:textStyle="bold"
+      android:text="@string/pair_title" />
+
+    <TextView
+      android:layout_width="280dp"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="8dp"
+      android:gravity="center"
+      android:textColor="#B0BEC5"
+      android:textSize="13sp"
+      android:text="@string/pair_hint" />
+
+    <Button
+      android:id="@+id/scanButton"
+      android:layout_width="220dp"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="16dp"
+      android:text="@string/pair_scan" />
+
+    <Button
+      android:id="@+id/manualButton"
+      style="?android:attr/borderlessButtonStyle"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:textColor="#90CAF9"
+      android:text="@string/pair_manual" />
+  </LinearLayout>
+
+  <!-- Bottom: lens stops above the shutter row, as in a camera app. -->
+  <LinearLayout
+    android:id="@+id/bottomBar"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_gravity="bottom"
+    android:orientation="vertical"
+    android:gravity="center_horizontal"
+    android:paddingBottom="16dp">
+
+    <!-- Small zoom read-out above the lens stops while pinching, as in the
+         system camera; it must not cover the middle of the picture. -->
+    <TextView
+      android:id="@+id/zoomBadge"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:layout_marginBottom="6dp"
+      android:paddingLeft="10dp"
+      android:paddingRight="10dp"
+      android:paddingTop="3dp"
+      android:paddingBottom="3dp"
+      android:textColor="#FFD54F"
+      android:textSize="13sp"
+      android:alpha="0"
+      android:text="1.0×" />
+
+    <LinearLayout
+      android:id="@+id/presetRow"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:orientation="horizontal"
+      android:gravity="center"
+      android:padding="4dp"
+      android:layout_marginBottom="14dp" />
+
+    <LinearLayout
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:orientation="horizontal"
+      android:gravity="center_vertical">
+
+      <FrameLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1">
+
+        <TextView
+          android:id="@+id/settingsButton"
+          android:layout_width="56dp"
+          android:layout_height="56dp"
+          android:layout_gravity="center"
+          android:gravity="center"
+          android:textColor="#FFFFFF"
+          android:textSize="13sp"
+          android:text="@string/action_settings" />
+      </FrameLayout>
+
+      <!-- The shutter: a red dot to start, a red square while live. -->
+      <FrameLayout
+        android:id="@+id/shutter"
+        android:layout_width="78dp"
+        android:layout_height="78dp"
+        android:clickable="true"
+        android:focusable="true"
+        android:contentDescription="@string/action_start">
+
+        <View
+          android:id="@+id/shutterCore"
+          android:layout_width="58dp"
+          android:layout_height="58dp"
+          android:layout_gravity="center" />
+      </FrameLayout>
+
+      <FrameLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1">
+
+        <TextView
+          android:id="@+id/switchButton"
+          android:layout_width="56dp"
+          android:layout_height="56dp"
+          android:layout_gravity="center"
+          android:gravity="center"
+          android:textColor="#FFFFFF"
+          android:textSize="13sp"
+          android:text="@string/action_switch" />
+      </FrameLayout>
+    </LinearLayout>
+  </LinearLayout>
+</FrameLayout>

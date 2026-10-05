@@ -1,24 +1,20 @@
 'use client';
 
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { Fragment, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { io } from 'socket.io-client';
 import { useSession } from 'next-auth/react';
 import { SettingOutlined } from '@ant-design/icons';
-import { defaultScreenSettings, readLocalScreenSettings, screenLayout, type ScreenSettings } from '@/lib/screen-settings';
+import { defaultScreenSettings, readLocalScreenSettings, SCREEN_FONT_BOOST, screenCardFontScale, screenCardHeight, screenCardWidth, screenLayout, type BoardViewport, type ScreenSettings } from '@/lib/screen-settings';
 import { TournamentScreenSettings } from './TournamentScreenSettings';
 import styles from './TournamentScreen.module.css';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
-const EVENT_LABELS: Record<string, string> = {
-  MENS_SINGLES: '男子单打', WOMENS_SINGLES: '女子单打',
-  MENS_DOUBLES: '男子双打', WOMENS_DOUBLES: '女子双打', MIXED_DOUBLES: '混合双打',
-};
 
 type Side = { players: { name: string; affiliation: string }[]; teamName: string | null };
 type Game = { gameNo: number; side1Score: number; side2Score: number; winnerSide: number | null };
 type ScreenMatch = {
-  id: string; status: 'LIVE' | 'PENDING'; round: string; matchNo: number;
-  eventType: string | null; side1: Side; side2: Side; games: Game[]; currentGame: Game | null;
+  id: string; status: 'LIVE' | 'PENDING'; gamesToWin: number;
+  side1: Side; side2: Side; games: Game[]; currentGame: Game | null;
 };
 type ScreenData = {
   tournament: { id: string; name: string };
@@ -27,19 +23,60 @@ type ScreenData = {
   settings?: ScreenSettings | null;
 };
 
-function Affiliation({ name }: { name: string }) {
+/**
+ * Unit name. It always stays on one row: as soon as the text is wider than the
+ * column the name scrolls horizontally instead of wrapping. The width is
+ * measured with the real computed font, so it keeps working when the card font
+ * size changes.
+ */
+function Affiliation({ name, fontScale }: { name: string; fontScale: number }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [scrolling, setScrolling] = useState(false);
+
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const context = document.createElement('canvas').getContext('2d');
+    let frame = 0;
+    const measure = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const current = ref.current;
+        if (!current || !context) return;
+        const style = getComputedStyle(current);
+        context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+        const needed = context.measureText(name).width;
+        setScrolling((previous) => {
+          const next = needed > current.clientWidth + 1;
+          return previous === next ? previous : next;
+        });
+      });
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    measure();
+    // Web fonts change the measured width, so re-check once they are ready.
+    document.fonts?.ready.then(measure).catch(() => {});
+    return () => { cancelAnimationFrame(frame); observer.disconnect(); };
+  }, [name, fontScale]);
+
   const length = Array.from(name).length;
-  if (length <= 8) return <span className={styles.affiliation}>{name}</span>;
 
   return (
-    <span className={`${styles.affiliation} ${styles.scrollingAffiliation}`} title={name}>
-      <span
-        className={styles.affiliationTrack}
-        style={{ '--scroll-duration': `${Math.max(10, length * 0.7)}s` } as CSSProperties}
-      >
-        <span>{name}</span>
-        <span aria-hidden="true">{name}</span>
-      </span>
+    <span
+      ref={ref}
+      className={scrolling ? `${styles.affiliation} ${styles.scrollingAffiliation}` : styles.affiliation}
+      title={name}
+    >
+      {scrolling ? (
+        <span
+          className={styles.affiliationTrack}
+          style={{ '--scroll-duration': `${Math.max(10, length * 0.7)}s` } as CSSProperties}
+        >
+          <span>{name}</span>
+          <span aria-hidden="true">{name}</span>
+        </span>
+      ) : name}
     </span>
   );
 }
@@ -70,25 +107,32 @@ function CourtCard({ id, children }: { id: string; children: ReactNode }) {
   </article>;
 }
 
-function SideRow({ side, score }: { side: Side; score: number | null }) {
+function SideRow({ side, score, gameWins, fontScale }: { side: Side; score: number | null; gameWins: number | null; fontScale: number }) {
+  const rows = Math.max(1, side.players.length);
   return (
-    <div className={styles.side}>
-      <div className={styles.players}>
-        {side.players.length ? side.players.map((player, index) => (
-          <div className={styles.player} key={index}>
-            <Affiliation name={player.affiliation || side.teamName || '—'} />
-            <strong className={styles.name}>{player.name}</strong>
-          </div>
-        )) : <strong className={styles.undecided}>选手待定</strong>}
-      </div>
-      <strong className={styles.score}>{score ?? '—'}</strong>
+    <div className={styles.side} data-players={rows}>
+      {side.players.length ? side.players.map((player, index) => (
+        <Fragment key={index}>
+          <Affiliation name={player.affiliation || side.teamName || '—'} fontScale={fontScale} />
+          <strong className={styles.name}>{player.name}</strong>
+        </Fragment>
+      )) : <strong className={styles.undecided}>选手待定</strong>}
+      <strong className={styles.matchScore} style={{ gridRow: `1 / span ${rows}` }}>{gameWins ?? '—'}</strong>
+      <strong className={styles.score} style={{ gridRow: `1 / span ${rows}` }}>{score ?? '—'}</strong>
     </div>
   );
 }
 
 export function TournamentScreen({ tournamentId }: { tournamentId: string }) {
   const { data: session } = useSession();
-  const canSaveGlobally = !session?.authError && ['ADMIN', 'ROOT'].includes(session?.user?.role ?? '');
+  // Mirrors the backend gate for screen settings: ROOT, or an admin whose
+  // permissions allow editing this tournament. A missing permission list means
+  // the role defaults apply, which include 创建和编辑赛事 for ADMIN.
+  const permissions = session?.user?.permissions;
+  const canManageTournament = session?.user?.role === 'ROOT'
+    || (session?.user?.role === 'ADMIN' && (permissions === undefined
+      || permissions.some((key) => key === 'TOURNAMENTS' || key === 'TOURNAMENT_ADMIN')));
+  const canSaveGlobally = !session?.authError && canManageTournament;
   const settingsToken = canSaveGlobally ? session?.user?.accessToken as string | undefined : undefined;
   const [data, setData] = useState<ScreenData | null>(null);
   const [error, setError] = useState('');
@@ -104,10 +148,16 @@ export function TournamentScreen({ tournamentId }: { tournamentId: string }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const count = data?.courts.length ?? 0;
   const displaySettings = draftSettings ?? localSettings ?? data?.settings;
-  const { columns, rows } = screenLayout(count, displaySettings);
+  // Measured board area. Until the first measurement the layout falls back to
+  // the configured shape, which keeps server and first client render identical.
+  const [viewport, setViewport] = useState<BoardViewport | null>(null);
+  const { columns, rows } = screenLayout(count, displaySettings, viewport);
   const requestedScale = (displaySettings?.scale ?? 100) / 100;
-  const cardWidth = displaySettings?.cardWidth ?? 560;
-  const cardHeight = displaySettings?.cardHeight ?? 360;
+  const cardWidth = screenCardWidth(count, displaySettings);
+  const cardHeight = screenCardHeight(count, displaySettings);
+  const cardFontScale = screenCardFontScale(count, displaySettings);
+  // Effective zoom applied to the complete board, surfaced in the settings panel.
+  const [fitPercent, setFitPercent] = useState<number | null>(null);
 
   useEffect(() => {
     const viewport = titleViewportRef.current;
@@ -127,14 +177,18 @@ export function TournamentScreen({ tournamentId }: { tournamentId: string }) {
   }, []);
 
   function closeSettings() { setSettingsOpen(false); setDraftSettings(null); }
+  function saveLocally(settings: ScreenSettings) {
+    try { localStorage.setItem(`tournament-screen:${tournamentId}`, JSON.stringify(settings)); }
+    catch { /* Storage unavailable: the draft still drives this screen until reload. */ }
+    setLocalSettings(settings);
+  }
   function saveSettings(settings: ScreenSettings) {
     if (settingsToken) {
       setData((current) => current && { ...current, settings });
       setLocalSettings(null);
       try { localStorage.removeItem(`tournament-screen:${tournamentId}`); } catch { /* Server save succeeded. */ }
     } else {
-      localStorage.setItem(`tournament-screen:${tournamentId}`, JSON.stringify(settings));
-      setLocalSettings(settings);
+      saveLocally(settings);
     }
   }
 
@@ -143,19 +197,52 @@ export function TournamentScreen({ tournamentId }: { tournamentId: string }) {
     const grid = gridRef.current;
     if (!viewport || !grid) return;
     let frame = 0;
+    let rafHandle = 0;
+    const measure = () => {
+      const width = viewport.clientWidth;
+      const height = viewport.clientHeight;
+      setViewport((current) => (current && current.width === width && current.height === height ? current : { width, height }));
+    };
     const fit = () => {
       // Lay out at the requested size, then fit the complete board into the
       // remaining viewport. No courts are paginated or clipped by zooming.
-      const scale = Math.min(requestedScale, viewport.clientWidth / Math.max(1, grid.offsetWidth),
-        viewport.clientHeight / Math.max(1, grid.offsetHeight));
-      grid.style.transform = `translate(-50%, -50%) scale(${Math.max(0, scale)})`;
+      const availableWidth = viewport.clientWidth;
+      const availableHeight = viewport.clientHeight;
+      // A hidden or not-yet-measured viewport must never collapse the board.
+      if (!availableWidth || !availableHeight) return;
+      // The board always holds every venue: its natural size is
+      // columns x cardWidth by rows x cardHeight, so scaling the whole board by
+      // the smallest fitting ratio is what guarantees that all courts — however
+      // many the tournament has — stay on screen at the same time.
+      const scale = Math.min(requestedScale,
+        availableWidth / Math.max(1, grid.offsetWidth),
+        availableHeight / Math.max(1, grid.offsetHeight));
+      if (!Number.isFinite(scale) || scale <= 0) return;
+      grid.style.transform = `translate(-50%, -50%) scale(${scale})`;
+      const percent = Math.round(scale * 100);
+      setFitPercent((current) => (current === percent ? current : percent));
     };
-    const schedule = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(fit); };
+    const schedule = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => { measure(); fit(); });
+    };
+    // Schedule an additional fit on next frame to ensure DOM has updated
+    const scheduleDelayed = () => {
+      cancelAnimationFrame(rafHandle);
+      rafHandle = requestAnimationFrame(() => {
+        requestAnimationFrame(() => { measure(); fit(); });
+      });
+    };
     const observer = new ResizeObserver(schedule);
     observer.observe(viewport);
     observer.observe(grid);
     schedule();
-    return () => { cancelAnimationFrame(frame); observer.disconnect(); };
+    scheduleDelayed();
+    return () => {
+      cancelAnimationFrame(frame);
+      cancelAnimationFrame(rafHandle);
+      observer.disconnect();
+    };
   }, [count, columns, rows, requestedScale, cardWidth, cardHeight]);
 
   useEffect(() => {
@@ -231,7 +318,7 @@ export function TournamentScreen({ tournamentId }: { tournamentId: string }) {
   }
 
   return (
-    <main className={styles.screen} data-settings-open={settingsOpen} style={{ '--boundary-padding': `${displaySettings?.boundaryPadding ?? 28}px` } as CSSProperties}>
+    <main className={styles.screen} data-settings-open={settingsOpen} data-crowded={count > 6} style={{ '--boundary-padding': `${displaySettings?.boundaryPadding ?? 0}px`, '--font-boost': SCREEN_FONT_BOOST } as CSSProperties}>
       <header className={styles.header}>
         <div ref={titleViewportRef} className={styles.titleViewport}>
           <h1 ref={titleRef} style={data && displaySettings ? { fontSize: displaySettings.titleFontSize } : undefined}>{data?.tournament.name ?? (error ? '赛事大屏暂不可用' : '正在加载赛事…')}</h1>
@@ -251,33 +338,23 @@ export function TournamentScreen({ tournamentId }: { tournamentId: string }) {
           className={styles.courts}
           aria-label="场地比分"
           data-requested-scale={displaySettings?.scale ?? 100}
-          style={{ '--columns': columns, '--rows': rows, '--card-width': `${cardWidth}px`, '--card-height': `${cardHeight}px`, '--card-font-scale': (displaySettings?.cardFontScale ?? 100) / 100 } as CSSProperties}
+          style={{ '--columns': columns, '--rows': rows, '--card-width': `${cardWidth}px`, '--card-height': `${cardHeight}px`, '--card-font-scale': (cardFontScale / 100) * SCREEN_FONT_BOOST } as CSSProperties}
         >
           {data.courts.map((court) => {
             const match = court.match;
             const live = match?.status === 'LIVE';
+            const showMatchScore = match?.gamesToWin === 2;
+            const side1Wins = match?.games.filter((game) => game.winnerSide === 1).length ?? 0;
+            const side2Wins = match?.games.filter((game) => game.winnerSide === 2).length ?? 0;
             return (
               <CourtCard key={court.id} id={court.id}>
                 <div className={styles.courtHeader}>
                   <h2>{court.name}</h2>
-                  <span className={live ? styles.live : styles.pending}>{live ? '进行中' : match ? '待开始' : '空闲'}</span>
                 </div>
-                {match ? <>
-                  <p className={styles.matchInfo}>
-                    {EVENT_LABELS[match.eventType ?? ''] ?? '比赛'} · {match.round} · 第 {match.matchNo} 场
-                  </p>
-                  <div className={styles.labels}><span>单位</span><span>姓名</span><span>分数</span></div>
-                  <div className={styles.sides}>
-                    <SideRow side={match.side1} score={live ? match.currentGame?.side1Score ?? 0 : 0} />
-                    <SideRow side={match.side2} score={live ? match.currentGame?.side2Score ?? 0 : 0} />
-                  </div>
-                  <div className={styles.gameInfo}>
-                    {live ? <>
-                      <span>第 {match.currentGame?.gameNo ?? 1} 局</span>
-                      <span>局分 {match.games.filter((game) => game.winnerSide === 1).length} : {match.games.filter((game) => game.winnerSide === 2).length}</span>
-                    </> : <span>下一场 · 等待开赛</span>}
-                  </div>
-                </> : <div className={styles.emptyCourt}>等待下一场比赛</div>}
+                {match && <div className={styles.sides}>
+                  <SideRow side={match.side1} score={live ? match.currentGame?.side1Score ?? 0 : 0} gameWins={showMatchScore ? side1Wins : null} fontScale={cardFontScale} />
+                  <SideRow side={match.side2} score={live ? match.currentGame?.side2Score ?? 0 : 0} gameWins={showMatchScore ? side2Wins : null} fontScale={cardFontScale} />
+                </div>}
               </CourtCard>
             );
           })}
@@ -290,13 +367,13 @@ export function TournamentScreen({ tournamentId }: { tournamentId: string }) {
             onClick={(event) => {
               event.currentTarget.blur();
               if (settingsOpen) closeSettings();
-              else { setDraftSettings(displaySettings ?? defaultScreenSettings(count)); setSettingsOpen(true); }
+              else { setDraftSettings(displaySettings ?? defaultScreenSettings(count, viewport)); setSettingsOpen(true); }
             }}
           ><SettingOutlined /> 大屏设置</button>
         </div>
         {settingsOpen && draftSettings && <TournamentScreenSettings
-          tournamentId={tournamentId} settings={draftSettings} defaults={defaultScreenSettings(count)} courtCount={count}
-          token={settingsToken} onChange={setDraftSettings} onSaved={saveSettings} onClose={closeSettings}
+          tournamentId={tournamentId} settings={draftSettings} defaults={defaultScreenSettings(count, viewport)} courtCount={count} fitPercent={fitPercent} viewport={viewport}
+          token={settingsToken} onChange={setDraftSettings} onSaved={saveSettings} onSavedLocally={saveLocally} onClose={closeSettings}
         />}
       </>}
     </main>

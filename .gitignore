@@ -6,6 +6,7 @@ node_modules/
 .env
 .env.local
 .env.*.local
+infra/livekit/.local/
 
 # logs
 *.log
@@ -32,3 +33,6 @@ build/
 
 # generated export files (rebuilt automatically)
 apps/backend/uploads/exports/
+
+# local Android build artifacts
+outputs/camera-android/*.apk

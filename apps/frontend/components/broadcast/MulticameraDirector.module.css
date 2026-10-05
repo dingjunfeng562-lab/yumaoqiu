@@ -1,0 +1,6 @@
+/* The shared overflow-x:hidden creates a non-scrolling sticky ancestor.
+   Clip this page horizontally without changing its scrolling container. */
+:global(html):has(.page),
+:global(body):has(.page) {
+  overflow-x: clip;
+}

@@ -1,11 +1,15 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { ScoringService } from '../scoring/scoring.service';
 
 const playerSelect = { name: true, affiliation: true } as const;
 
 @Injectable()
 export class TournamentScreenService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly scoring: ScoringService,
+  ) {}
 
   async getScreen(tournamentId: string) {
     const tournament = await this.prisma.tournament.findFirst({
@@ -33,7 +37,11 @@ export class TournamentScreenService {
                 id: true, status: true, round: true, roundNo: true, matchNo: true,
                 scheduledAt: true, startedAt: true, side1Id: true, side2Id: true,
                 teamCompetitionItemId: true,
-                event: { select: { type: true } },
+                event: { select: {
+                  type: true, scoringRule: true, scoringMode: true,
+                  customGamePoint: true, customGameCap: true, customGamesToWin: true,
+                  stageScoringRules: true,
+                } },
                 teamCompetitionItem: { select: { eventType: true } },
                 games: {
                   orderBy: { gameNo: 'asc' },
@@ -98,6 +106,7 @@ export class TournamentScreenService {
           match: {
             id: match.id, status: match.status, round: match.round, matchNo: match.matchNo,
             eventType: match.event?.type ?? match.teamCompetitionItem?.eventType ?? null,
+            gamesToWin: this.scoring.gamesToWinForMatch(match),
             scheduledAt: match.scheduledAt,
             side1: side(1), side2: side(2),
             games: match.games,

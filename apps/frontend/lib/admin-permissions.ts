@@ -7,6 +7,8 @@ export function hasFeature(role: string | undefined, permissions: string[] | und
 }
 export function canAccessAdminPage(role: string | undefined, pathname: string, permissions?: string[]) {
   if (role === 'ROOT') return true;
+  // 直播管理仅超级管理员，没有可分配的功能权限键。
+  if (pathname === '/admin/broadcasts') return false;
   const routes: Record<string, string[]> = {
     '/admin': ['DASHBOARD'], '/admin/tournaments': ['TOURNAMENTS', 'TOURNAMENT_ADMIN'],
     '/admin/players': ['PLAYERS'], '/admin/users': ['USERS'], '/admin/invite-codes': ['INVITES'],

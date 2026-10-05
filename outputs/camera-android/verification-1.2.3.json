@@ -1,0 +1,17 @@
+﻿{
+    "version":  "1.2.3-multicamera",
+    "versionCode":  6,
+    "sha256":  "272D19D620E9CD45C52132A5097A6C2E8BCC5F0B75421D572C169E044486AA0C",
+    "sizeBytes":  67245974,
+    "signatureVerified":  true,
+    "sameSigningCertificateAs122":  true,
+    "unitTests":  46,
+    "failures":  0,
+    "errors":  0,
+    "androidLint":  "passed (existing warnings)",
+    "frontendTypecheck":  "passed",
+    "changedFrontendLint":  "passed",
+    "qualityArbitrationTest":  "passed",
+    "liveMediaBrowser":  "passed: full 1280x720 test source in desktop and mobile PGM, PVW and viewer",
+    "androidHardware":  "not connected; real phone 60fps and optical quality remain unverified"
+}

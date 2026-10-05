@@ -15,7 +15,11 @@ export function Providers({
   initialAnnouncement?: ActiveAnnouncement | null;
 }) {
   const pathname = usePathname();
-  const isTournamentScreen = pathname.startsWith('/live-screen/');
+  // Dedicated display surfaces: the tournament screen and the OBS scoreboard.
+  // Neither may show the global announcement or bounce to /login, which would
+  // put a modal or a login form into the live broadcast.
+  const isTournamentScreen = pathname.startsWith('/live-screen/')
+    || pathname.startsWith('/broadcast/overlay/');
 
   useEffect(() => {
     const preventClipboardExport = (event: ClipboardEvent) => {

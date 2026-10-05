@@ -72,6 +72,20 @@ type SecondStageEntrant = {
   name: string | null;
 };
 
+export type MatchScoringInput = {
+  round?: string | null;
+  roundNo?: number | null;
+  matchNo?: number | null;
+  event?: {
+    scoringRule: ScoringRule;
+    scoringMode: ScoringMode;
+    customGamePoint: number | null;
+    customGameCap: number | null;
+    customGamesToWin: number | null;
+    stageScoringRules?: Prisma.JsonValue | null;
+  } | null;
+};
+
 type MatchScoringConfig = {
   scoringRule: ScoringRule;
   scoringMode: ScoringMode;
@@ -2754,24 +2768,17 @@ export class ScoringService {
     });
   }
 
+  gamesToWinForMatch(match: MatchScoringInput) {
+    const scoring = this.resolveMatchScoring(match);
+    return this.ruleConfig(scoring.scoringRule, scoring).gamesToWin;
+  }
+
   /**
    * 解析某场比赛实际生效的计分规则。
    * 生效顺序：具体阶段（半决赛/季军赛/决赛）→ 四强 → 八强/默认。
    * BEFORE_TOP4 是旧两段配置的兼容键。
    */
-  private resolveMatchScoring(match: {
-    round?: string | null;
-    roundNo?: number | null;
-    matchNo?: number | null;
-    event?: {
-      scoringRule: ScoringRule;
-      scoringMode: ScoringMode;
-      customGamePoint: number | null;
-      customGameCap: number | null;
-      customGamesToWin: number | null;
-      stageScoringRules?: Prisma.JsonValue | null;
-    } | null;
-  }): MatchScoringConfig {
+  private resolveMatchScoring(match: MatchScoringInput): MatchScoringConfig {
     const base: MatchScoringConfig = {
       scoringRule: match.event?.scoringRule ?? ScoringRule.TWENTYONE_BO3,
       scoringMode: match.event?.scoringMode ?? ScoringMode.CAPPED_30,

@@ -119,8 +119,9 @@ export class DrawAlgorithmService {
     entrants: DrawEntrantInput[],
     seedSettings: DrawSeedSettingInput[],
     groupCount: number,
+    qualifiersPerGroup: number = 2,
   ) {
-    const resolvedGroupCount = this.resolveGroupCount(entrants.length, groupCount);
+    const resolvedGroupCount = this.resolveGroupCount(entrants.length, groupCount, qualifiersPerGroup);
     const targetSizes = this.targetGroupSizes(entrants.length, resolvedGroupCount);
     const groups: BuiltDrawGroup[] = Array.from({ length: resolvedGroupCount }, (_, index) => ({
       groupCode: String.fromCharCode(65 + index),
@@ -165,15 +166,58 @@ export class DrawAlgorithmService {
     return groups;
   }
 
-  private resolveGroupCount(entrantCount: number, groupCount: number) {
+  private resolveGroupCount(entrantCount: number, groupCount: number, qualifiersPerGroup: number = 2) {
     const normalized = Number.isFinite(groupCount) ? Math.floor(groupCount) : 2;
-    return Math.min(Math.max(normalized, 2), Math.max(entrantCount, 2));
+    // 每组最多4人，计算所需的最小组数
+    const minGroupsForMaxSize = Math.ceil(entrantCount / 4);
+
+    // 第二阶段淘汰赛出线总人数必须是2的幂次方（8、16、32、64...）
+    // 总出线人数 = 组数 × 每组出线数
+    // 必须满足：组数 × 每组出线数 = 2的幂次方（≥8）
+    let finalGroupCount = Math.max(2, minGroupsForMaxSize);
+    let totalQualifiers = finalGroupCount * qualifiersPerGroup;
+
+    // 找到大于等于totalQualifiers的最小的2的幂次方（且≥8）
+    let targetQualifiers = 8; // 最小从8强开始
+    while (targetQualifiers < totalQualifiers) {
+      targetQualifiers *= 2;
+    }
+
+    // 根据目标出线人数和每组出线数，计算需要的组数
+    finalGroupCount = Math.ceil(targetQualifiers / qualifiersPerGroup);
+
+    // 确保组数不超过参赛人数，且每组不超过4人
+    const maxGroups = Math.max(entrantCount, 2);
+    finalGroupCount = Math.min(finalGroupCount, maxGroups);
+
+    // 最终验证每组人数不超过4
+    const avgGroupSize = entrantCount / finalGroupCount;
+    if (avgGroupSize > 4) {
+      finalGroupCount = Math.ceil(entrantCount / 4);
+      // 再次调整以满足2的幂次方要求
+      totalQualifiers = finalGroupCount * qualifiersPerGroup;
+      targetQualifiers = 8;
+      while (targetQualifiers < totalQualifiers) {
+        targetQualifiers *= 2;
+      }
+      finalGroupCount = Math.ceil(targetQualifiers / qualifiersPerGroup);
+    }
+
+    return Math.max(normalized, finalGroupCount);
   }
 
-  private targetGroupSizes(entrantCount: number, groupCount: number) {
+  private targetGroupSizes(entrantCount: number, groupCount: number): number[] {
     const base = Math.floor(entrantCount / groupCount);
     const remainder = entrantCount % groupCount;
-    return Array.from({ length: groupCount }, (_, index) => base + (index < remainder ? 1 : 0));
+    const sizes = Array.from({ length: groupCount }, (_, index) => base + (index < remainder ? 1 : 0));
+    // 确保每组不超过4人，如果超过则需要更多组
+    const maxSize = Math.max(...sizes);
+    if (maxSize > 4) {
+      // 递归调整，增加组数
+      const newGroupCount = Math.ceil(entrantCount / 4);
+      return this.targetGroupSizes(entrantCount, newGroupCount);
+    }
+    return sizes;
   }
 
   /**

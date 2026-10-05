@@ -29,7 +29,7 @@ export async function apiFetch<T>(
         window.location.href = '/forbidden';
       }
     }
-    throw new Error(err.message ?? '请求失败');
+    throw Object.assign(new Error(err.message ?? '请求失败'), { status: res.status });
   }
   return res.json();
 }

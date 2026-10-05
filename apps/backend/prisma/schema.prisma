@@ -318,11 +318,121 @@ model Tournament {
   emailLogs             EmailLog[]
   refereeAccessCode     RefereeTournamentAccessCode?
   refereeGrants         RefereeTournamentGrant[]
+  broadcasts            BroadcastSession[]
   createdAt             DateTime         @default(now())
   updatedAt             DateTime         @updatedAt
 
   @@index([approvalStatus, isPublished])
   @@index([submittedById])
+}
+
+enum BroadcastStatus {
+  READY
+  LIVE
+  INTERRUPTED
+  ENDED
+}
+
+// 视频直播间：一次直播可连续切换多场比赛；比分始终读取 Match/Game，不另存。
+model BroadcastSession {
+  id                String          @id @default(cuid())
+  title             String          @db.VarChar(120)
+  tournamentId      String
+  tournament        Tournament      @relation(fields: [tournamentId], references: [id], onDelete: Cascade, map: "broadcast_session_tournament_fkey")
+  venueId           String?
+  venue             Venue?          @relation(fields: [venueId], references: [id], onDelete: SetNull, map: "broadcast_session_venue_fkey")
+  currentMatchId    String?
+  currentMatch      Match?          @relation(fields: [currentMatchId], references: [id], onDelete: SetNull, map: "broadcast_session_match_fkey")
+  createdById       String?
+  enabled           Boolean         @default(true)
+  isPublic          Boolean         @default(false)
+  status            BroadcastStatus @default(READY)
+  overlayTokenHash  String          @unique @db.VarChar(64)
+  overlaySettings   Json?
+  configVersion     Int             @default(1)
+  playbackUrl       String?         @db.VarChar(1000)
+  provider          String?         @db.VarChar(40)
+  streamName        String?         @db.VarChar(120)
+  // 摄像端（安卓 App）：令牌只存哈希；推流地址含密钥，AES-GCM 加密后存放。
+  cameraTokenHash   String?         @unique @db.VarChar(64)
+  ingestUrlEnc      String?         @db.Text
+  cameraSettings    Json?
+  cameraState       Json?
+  cameraLastSeenAt  DateTime?
+  startedAt         DateTime?
+  endedAt           DateTime?
+  lastStreamEventAt DateTime?
+  // LiveKit 多机位控制状态；比分仍从 currentMatch 读取。
+  liveRoomName      String?         @unique @db.VarChar(120)
+  liveSequence      Int             @default(0)
+  activeCameraId    String?
+  previewCameraId   String?
+  audioCameraId     String?
+  previousCameraId  String?
+  transitionUntil  DateTime?
+  cameras           BroadcastCamera[]
+  liveLogs          BroadcastLiveLog[]
+  directors         BroadcastDirector[]
+  joinInvite        BroadcastJoinInvite?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  @@index([tournamentId])
+  @@index([currentMatchId])
+  @@index([venueId])
+  @@map("broadcast_session")
+}
+
+model BroadcastCamera {
+  id               String           @id @default(cuid())
+  broadcastId      String
+  broadcast        BroadcastSession @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
+  code             String           @db.VarChar(12)
+  name             String           @db.VarChar(60)
+  pairingHash      String?          @unique @db.VarChar(64)
+  pairingExpiresAt DateTime?
+  tokenHash        String?          @unique @db.VarChar(64)
+  deviceId         String?          @db.VarChar(120)
+  state            Json?
+  lastSeenAt       DateTime?
+  createdAt        DateTime         @default(now())
+  @@unique([broadcastId, code])
+  @@map("broadcast_camera")
+}
+
+model BroadcastJoinInvite {
+  id          String           @id @default(cuid())
+  broadcastId String           @unique
+  broadcast   BroadcastSession @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
+  codeHash    String           @unique @db.VarChar(64)
+  expiresAt   DateTime
+  claims      Int              @default(0)
+  @@map("broadcast_join_invite")
+}
+
+model BroadcastDirector {
+  id          String           @id @default(cuid())
+  broadcastId String
+  broadcast   BroadcastSession @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
+  userId      String
+  canAudio    Boolean          @default(false)
+  createdAt   DateTime         @default(now())
+  @@unique([broadcastId, userId])
+  @@map("broadcast_director")
+}
+
+model BroadcastLiveLog {
+  id          String           @id @default(cuid())
+  broadcastId String
+  broadcast   BroadcastSession @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
+  kind        String           @db.VarChar(30)
+  fromId      String?
+  toId        String?
+  operatorId  String?
+  sequence    Int
+  createdAt   DateTime         @default(now())
+  @@index([broadcastId, createdAt])
+  @@map("broadcast_live_log")
 }
 
 model RefereeTournamentAccessCode {
@@ -813,6 +923,7 @@ model Match {
   forfeitReason         String?              @db.VarChar(191)
   games                 Game[]
   events                MatchEvent[]
+  broadcasts            BroadcastSession[]
   createdAt             DateTime             @default(now())
   updatedAt             DateTime             @updatedAt
 
@@ -831,6 +942,7 @@ model Venue {
   sortOrder    Int        @default(0)
   isActive     Boolean    @default(true)
   matches      Match[]
+  broadcasts   BroadcastSession[]
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 

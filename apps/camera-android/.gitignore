@@ -1,0 +1,13 @@
+# Gradle and Android build output. The toolchain (JDK, Gradle, Android SDK) is
+# deliberately kept outside this repository; see README.md.
+.gradle/
+.kotlin/
+build/
+app/build/
+local.properties
+*.apk
+*.aab
+*.keystore
+captures/
+.externalNativeBuild/
+.cxx/

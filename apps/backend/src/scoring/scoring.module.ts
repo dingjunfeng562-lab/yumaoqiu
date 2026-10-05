@@ -10,5 +10,6 @@ import { TeamCompetitionsModule } from '../team-competitions/team-competitions.m
   imports: [PrismaModule, TeamCompetitionsModule, SecondStageProgressModule],
   controllers: [ScoringController],
   providers: [ScoringService, ScoringGateway],
+  exports: [ScoringService, ScoringGateway],
 })
 export class ScoringModule {}

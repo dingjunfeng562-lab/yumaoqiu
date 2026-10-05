@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="app_name">羽毛球摄像端</string>
+  <string name="notification_channel_name">推流状态</string>
+  <string name="notification_channel_desc">显示手机摄像端正在推流</string>
+  <string name="notification_title">羽毛球摄像端</string>
+  <string name="notification_idle">准备中</string>
+
+  <string name="pair_title">连接到赛事后台</string>
+  <string name="pair_hint">在后台「直播管理」里点“生成配对码”，用本机扫描弹出的二维码。</string>
+  <string name="pair_scan">扫码配对</string>
+  <string name="pair_manual">手动输入</string>
+  <string name="pair_prompt">对准后台显示的配对二维码</string>
+  <string name="pair_invalid">这不是赛事后台的配对码，请重新扫描后台弹出的二维码</string>
+
+  <string name="action_start">开始推流</string>
+  <string name="action_stop">停止推流</string>
+  <string name="action_switch">翻转镜头</string>
+  <string name="action_settings">设置</string>
+
+  <string name="permission_needed">需要摄像头和麦克风权限才能推流，请在系统设置里允许</string>
+  <string name="permission_settings">去设置</string>
+</resources>

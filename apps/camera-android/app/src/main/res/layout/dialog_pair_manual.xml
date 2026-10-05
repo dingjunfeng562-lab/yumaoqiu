@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Fallback for when scanning is not possible: paste the code instead. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+  android:layout_width="match_parent"
+  android:layout_height="wrap_content"
+  android:orientation="vertical"
+  android:padding="16dp">
+
+  <TextView
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:text="后台地址（含端口，不要带 /api）"
+    android:textSize="13sp" />
+
+  <EditText
+    android:id="@+id/baseUrl"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:inputType="textUri"
+    android:hint="http://192.168.1.10:4000" />
+
+  <TextView
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginTop="12dp"
+    android:text="配对码"
+    android:textSize="13sp" />
+
+  <EditText
+    android:id="@+id/token"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:inputType="textNoSuggestions"
+    android:hint="后台点“复制配对码”后粘贴到这里" />
+</LinearLayout>

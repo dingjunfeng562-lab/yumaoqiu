@@ -40,6 +40,7 @@ import {
   MenuOutlined,
   MailOutlined,
   MessageOutlined,
+  VideoCameraOutlined,
 } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { canAccessAdminPage, firstAdminPage } from '@/lib/admin-permissions';
@@ -68,6 +69,7 @@ const baseMenuItems: MenuItem[] = [
   { key: '/admin/scheduling', icon: <CalendarOutlined />, label: '场地排程' },
   { key: '/admin/exports', icon: <DownloadOutlined />, label: '秩序册/数据导出' },
   { key: '/admin/scoring', icon: <FieldTimeOutlined />, label: '裁判分配' },
+  { key: '/admin/broadcasts', icon: <VideoCameraOutlined />, label: '直播管理' },
   { key: '/admin/announcements', icon: <NotificationOutlined />, label: '公告管理' },
   { key: '/admin/ai-config', icon: <MessageOutlined />, label: 'AI 助手配置' },
   { key: '/admin/image-moderation', icon: <AuditOutlined />, label: '图片审核' },

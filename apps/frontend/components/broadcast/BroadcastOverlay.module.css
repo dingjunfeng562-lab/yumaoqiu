@@ -1,0 +1,226 @@
+/* OBS browser source: the page itself must stay fully transparent. */
+.root {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: transparent;
+  pointer-events: none;
+  font-family: Arial, "Microsoft YaHei", "PingFang SC", sans-serif;
+}
+
+.root :global(*) {
+  box-sizing: border-box;
+}
+
+/* Admin preview: same board inside a sized box instead of the whole viewport,
+   on a dark backdrop that mimics the camera feed. */
+.root[data-broadcast-overlay='preview'] {
+  position: relative;
+  inset: auto;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 8px;
+  background: repeating-conic-gradient(#20304d 0 25%, #16233b 0 50%) 0 0 / 32px 32px;
+}
+
+/* Website viewer page: the board is laid out in the same 1920x1080 design frame
+   OBS uses (so offsets, scale and font size mean exactly the same thing), then
+   the whole frame is scaled to fit the video box by a transform. Padding inside
+   the frame stays proportional instead of eating the picture on small screens. */
+.root[data-broadcast-overlay='viewer'] {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  width: 1920px;
+  height: 1080px;
+  transform-origin: top left;
+  transform: scale(var(--viewer-scale, 0.5));
+}
+
+.anchor {
+  position: absolute;
+  display: flex;
+}
+
+.board {
+  --unit: calc(1px * var(--font-scale, 1));
+  display: flex;
+  flex-direction: column;
+  gap: calc(6 * var(--unit));
+  transform-origin: top left;
+  transform: scale(var(--board-scale, 1));
+  color: #fff;
+  text-shadow: 0 calc(2 * var(--unit)) calc(6 * var(--unit)) rgba(0, 0, 0, 0.55);
+}
+
+.board[data-anchor-right='true'] {
+  transform-origin: top right;
+}
+
+.title {
+  display: flex;
+  align-items: center;
+  gap: calc(10 * var(--unit));
+  padding: calc(6 * var(--unit)) calc(16 * var(--unit));
+  border-radius: calc(8 * var(--unit));
+  background: linear-gradient(90deg, rgba(4, 22, 63, 0.92), rgba(4, 22, 63, 0.55));
+  font-size: calc(20 * var(--unit));
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.titleMeta {
+  font-size: calc(16 * var(--unit));
+  font-weight: 500;
+  opacity: 0.85;
+}
+
+.rows {
+  display: flex;
+  flex-direction: column;
+  border-radius: calc(10 * var(--unit));
+  overflow: hidden;
+  background: rgba(4, 22, 63, 0.86);
+  box-shadow: 0 calc(4 * var(--unit)) calc(18 * var(--unit)) rgba(0, 0, 0, 0.45);
+}
+
+/* Flex rows keep both sides aligned without relying on subgrid, which older
+   OBS browser sources do not support. Fixed minimum column widths and the
+   identical game count per row produce matching columns. */
+.row {
+  display: flex;
+  align-items: stretch;
+  border-top: calc(1 * var(--unit)) solid rgba(255, 255, 255, 0.12);
+}
+
+.row:first-child {
+  border-top: none;
+}
+
+.row[data-serving='true'] .names {
+  background: rgba(255, 196, 0, 0.16);
+}
+
+.names {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  justify-content: center;
+  gap: calc(2 * var(--unit));
+  min-width: calc(260 * var(--unit));
+  max-width: calc(520 * var(--unit));
+  padding: calc(8 * var(--unit)) calc(14 * var(--unit));
+}
+
+.playerLine {
+  display: flex;
+  align-items: baseline;
+  gap: calc(8 * var(--unit));
+}
+
+.serveDot {
+  flex: 0 0 auto;
+  width: calc(12 * var(--unit));
+  height: calc(12 * var(--unit));
+  border-radius: 50%;
+  background: #ffc400;
+  box-shadow: 0 0 calc(8 * var(--unit)) rgba(255, 196, 0, 0.9);
+}
+
+.serveDotPlaceholder {
+  flex: 0 0 auto;
+  width: calc(12 * var(--unit));
+  height: calc(12 * var(--unit));
+}
+
+.playerName {
+  font-size: calc(26 * var(--unit));
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.affiliation {
+  font-size: calc(16 * var(--unit));
+  font-weight: 500;
+  opacity: 0.78;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.games {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: calc(8 * var(--unit));
+  padding: 0 calc(12 * var(--unit));
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.gameScore {
+  min-width: calc(30 * var(--unit));
+  text-align: center;
+  font-size: calc(22 * var(--unit));
+  font-weight: 600;
+  opacity: 0.75;
+}
+
+.gameScore[data-won='true'] {
+  opacity: 1;
+  color: #ffd666;
+}
+
+.gameWins {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: calc(54 * var(--unit));
+  padding: 0 calc(8 * var(--unit));
+  background: rgba(255, 255, 255, 0.12);
+  font-size: calc(28 * var(--unit));
+  font-weight: 700;
+}
+
+.score {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: calc(86 * var(--unit));
+  padding: 0 calc(10 * var(--unit));
+  background: linear-gradient(180deg, #1668dc, #0a429b);
+  font-size: calc(44 * var(--unit));
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.row[data-winner='true'] .score {
+  background: linear-gradient(180deg, #d48806, #ad6800);
+}
+
+.statusBar {
+  display: flex;
+  align-items: center;
+  gap: calc(10 * var(--unit));
+  align-self: flex-start;
+  padding: calc(4 * var(--unit)) calc(12 * var(--unit));
+  border-radius: calc(6 * var(--unit));
+  background: rgba(4, 22, 63, 0.8);
+  font-size: calc(16 * var(--unit));
+  font-weight: 600;
+}
+
+.statusWarn {
+  color: #ffc53d;
+}
+
+.placeholder {
+  padding: calc(10 * var(--unit)) calc(18 * var(--unit));
+  border-radius: calc(8 * var(--unit));
+  background: rgba(4, 22, 63, 0.8);
+  font-size: calc(20 * var(--unit));
+  font-weight: 600;
+}

@@ -54,6 +54,8 @@ export function requiredPermissions(controller: string, action: string, kind?: s
     case 'TournamentsController':
       if (['findAll', 'findOne'].includes(action)) return tournamentRead;
       if (['create', 'uploadCover', 'update'].includes(action)) return ['TOURNAMENTS'];
+      // 大屏设置属于赛事编辑：能编辑赛事的人就能排布自己的大屏，赛事管理员同样可以调整。
+      if (['getScreenSettings', 'updateScreenSettings'].includes(action)) return ['TOURNAMENTS', 'TOURNAMENT_ADMIN'];
       return ['TOURNAMENT_ADMIN'];
     case 'PlayersController': return ['PLAYERS'];
     case 'AdminCompetitionsController':
@@ -80,6 +82,8 @@ export function requiredPermissions(controller: string, action: string, kind?: s
     case 'AdminEmailController': return ['EMAIL'];
     // AI chat usage is platform-wide, so only ROOT may see it.
     case 'UsageMetricsController': return [];
+    // 直播管理（直播间、OBS 记分牌令牌、播放地址）仅限超级管理员。
+    case 'BroadcastsController': return [];
     case 'CompetitionsController': return ['REGISTRATION'];
     default: return undefined;
   }

@@ -1,5 +1,6 @@
 .screen {
   --screen-edge: max(env(safe-area-inset-top, 0px), env(safe-area-inset-right, 0px), env(safe-area-inset-bottom, 0px), env(safe-area-inset-left, 0px), min(var(--boundary-padding, 28px), 8vw, 8dvh));
+  font-family: '宋体', SimSun, 'Songti SC', 'Noto Serif CJK SC', 'Source Han Serif SC', serif;
   position: relative;
   height: 100dvh;
   overflow: hidden;
@@ -15,32 +16,38 @@
 .titleViewport { display: flex; align-items: center; justify-content: center; max-height: min(26dvh, 240px); margin-top: 12px; overflow: hidden; }
 .titleViewport h1 { flex: none; width: 100%; transform-origin: center; }
 .header h1 { font-size: clamp(26px, 2.8vw, 58px); line-height: 1.3; font-weight: 800; overflow-wrap: anywhere; }
-.toolbar { display: flex; justify-content: center; align-items: center; gap: 18px; margin-top: 12px; font-size: 12px; }
+.toolbar { display: flex; justify-content: center; align-items: center; gap: 18px; margin-top: 12px; font-size: calc(12px * var(--font-boost, 1)); }
 .toolbar button { border: 1px solid #49617d; border-radius: 6px; background: #ffffff08; color: #c4d5e8; padding: 5px 12px; cursor: pointer; }
 .toolbar button:hover { background: #ffffff18; }
 .toolbar button:focus-visible { outline: 2px solid #82e3c4; outline-offset: 3px; }
 .sync { color: #82e3c4; }
-.warning { color: #ffcb79; font-size: 13px; }
+.warning { color: #ffcb79; font-size: calc(13px * var(--font-boost, 1)); }
+.screen[data-crowded='true'] { gap: 8px; }
+.screen[data-crowded='true'] .titleViewport { max-height: min(18dvh, 180px); margin-top: 0; }
+.screen[data-crowded='true'] .toolbar { margin-top: 4px; }
 .courtViewport { position: relative; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
-.courts { position: absolute; top: 50%; left: 50%; width: max-content; transform: translate(-50%, -50%); transform-origin: center; display: grid; grid-template-columns: repeat(var(--columns), var(--card-width)); grid-template-rows: repeat(var(--rows), var(--card-height)); gap: clamp(14px, 1.4vw, 26px); }
-.court { position: relative; width: var(--card-width); height: var(--card-height); min-width: 0; overflow: hidden; border: 1px solid #34516d; border-radius: 16px; background: linear-gradient(150deg, #142a42, #0e1e32); box-shadow: 0 12px 30px #0002; }
-.cardViewport { position: absolute; inset: clamp(12px, 1.2vw, 22px); overflow: hidden; }
+/* The board is always laid out at its full size: one fixed-size track per
+   configured column and per venue row. Nothing here may clamp, scroll or clip
+   the board — the whole board is scaled to fit in one transform, which is what
+   keeps every venue on screen when a tournament has many of them. */
+.courts { position: absolute; top: 50%; left: 50%; width: max-content; transform: translate(-50%, -50%); transform-origin: center; display: grid; grid-template-columns: repeat(var(--columns), var(--card-width, 560px)); grid-template-rows: repeat(var(--rows), var(--card-height, 360px)); grid-auto-rows: var(--card-height, 360px); gap: clamp(10px, 1.1vw, 20px); }
+.court { position: relative; width: var(--card-width, 560px); height: var(--card-height, 360px); min-width: 0; overflow: hidden; border: 1px solid #34516d; border-radius: 16px; background: linear-gradient(150deg, #142a42, #0e1e32); box-shadow: 0 12px 30px #0002; }
+.cardViewport { position: absolute; inset: clamp(8px, 0.9vw, 16px); overflow: hidden; }
 .cardContent { display: flex; flex-direction: column; min-height: 100%; transform-origin: top left; }
 .courtHeader { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.courtHeader h2 { min-width: 0; overflow-wrap: anywhere; font-size: calc(clamp(18px, 1.35vw, 30px) * var(--card-font-scale, 1)); line-height: 1.25; display: flex; align-items: baseline; gap: 12px; }
-.live, .pending { flex: none; font-size: calc(12px * var(--card-font-scale, 1)); padding: 5px 10px; border-radius: 5px; }
-.live { background: #153f39; color: #8df1c9; border: 1px solid #2b6558; }
-.pending { background: #ffffff08; color: #b9c9dc; border: 1px solid #45556a; }
-.matchInfo { font-size: calc(12px * var(--card-font-scale, 1)); color: #92aac2; margin: 8px 0 10px; overflow-wrap: anywhere; }
-.labels { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) 64px; gap: 12px; color: #7e98b2; font-size: calc(12px * var(--card-font-scale, 1)); padding-bottom: 8px; border-bottom: 1px solid #ffffff12; }
-.labels span:last-child { text-align: center; }
+/* 0.8 = 场地号相对比分字号缩小两档；padding-left: 0.5em = 距左边缘半个字符；
+   margin-top: 0.5em = 下移半个字符高。 */
+.courtHeader h2 { min-width: 0; overflow-wrap: anywhere; padding-left: 0.5em; margin-top: 0.5em; font-weight: 700; font-size: calc(clamp(38px, 3vw, 64px) * 0.8 * var(--card-font-scale, 1)); line-height: 1.25; display: flex; align-items: baseline; gap: 12px; }
 .sides { flex: 1; display: flex; flex-direction: column; }
-.side { display: grid; grid-template-columns: minmax(0, 1fr) 64px; gap: 12px; align-items: center; flex: 1; padding: 10px 0; }
+/* 单位靠左 / 姓名居中 / 大比分紧贴姓名 / 小比分靠右：第 1、4 列等宽，
+   第 2、5 列等宽，姓名因此精确落在卡片中线，单位也有足够宽度不换行。
+   双打时两名队友各占一行，行间隔固定为 0.5 个姓名字符。 */
+.side { --big-col: 56px; --name-size: calc(clamp(19px, 1.55vw, 34px) * 1.44 * var(--card-font-scale, 1)); display: grid; grid-template-columns: var(--big-col) minmax(0, 1fr) max-content var(--big-col) minmax(0, 1fr); grid-auto-rows: auto; align-content: center; row-gap: calc(0.5 * var(--name-size)); column-gap: 12px; align-items: center; flex: 1; padding: 6px 0; }
 .side + .side { border-top: 1px solid #ffffff10; }
-.players { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
-.player { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); align-items: center; gap: 12px; }
-.affiliation { font-size: calc(clamp(13px, 1.05vw, 23px) * var(--card-font-scale, 1)); line-height: 1.45; color: #a3bdd5; overflow-wrap: anywhere; }
-.scrollingAffiliation { display: block; min-width: 0; max-width: 8em; overflow: hidden; white-space: nowrap; }
+/* 双打：两个姓名 + 0.5 字符间隔必须放得进卡片高度，所以姓名字号单独收一档。 */
+.side[data-players='2'] { --name-size: calc(clamp(19px, 1.55vw, 34px) * var(--card-font-scale, 1)); }
+.affiliation { grid-column: 2; font-size: calc(clamp(13px, 1.05vw, 23px) * 1.2 * var(--card-font-scale, 1)); line-height: 1.2; color: #a3bdd5; overflow: hidden; white-space: nowrap; }
+.scrollingAffiliation { display: block; min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; }
 .affiliationTrack { display: inline-flex; width: max-content; animation: affiliationScroll var(--scroll-duration) linear infinite; }
 .affiliationTrack > span { flex: none; padding-right: 2em; }
 @keyframes affiliationScroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
@@ -49,15 +56,20 @@
   .affiliationTrack { animation: none; }
   .affiliationTrack > span[aria-hidden] { display: none; }
 }
-.name { font-size: calc(clamp(19px, 1.55vw, 34px) * var(--card-font-scale, 1)); line-height: 1.35; overflow-wrap: anywhere; }
-.undecided { color: #8da6bf; font-size: calc(22px * var(--card-font-scale, 1)); }
-.score { font-size: calc(clamp(38px, 3vw, 64px) * var(--card-font-scale, 1)); font-variant-numeric: tabular-nums; line-height: 1; text-align: center; color: #ffe196; }
-.gameInfo { display: flex; justify-content: space-between; border-top: 1px solid #ffffff12; padding-top: 10px; font-size: calc(12px * var(--card-font-scale, 1)); color: #92aac2; }
-.emptyCourt { display: grid; place-items: center; flex: 1; min-height: 180px; color: #738fa9; font-size: calc(20px * var(--card-font-scale, 1)); }
-.empty { display: grid; place-items: center; flex: 1; min-height: 50vh; color: #a3bdd5; }
+/* 1em = 一个中文字宽。letter-spacing 会在最后一个字后也加一份间距，导致
+   文本盒比字面宽 1em；用 translateX(0.5em) 把字面推回中线即可，无需 padding，
+   这样姓名列能少占一个字的宽度，把空间让给单位和比分。
+   1.44 = 姓名额外放大档位（1.2²，比默认大两档）。 */
+.name { grid-column: 3; text-align: center; letter-spacing: 1em; transform: translateX(0.5em); font-weight: 700; font-size: var(--name-size); line-height: 1; overflow-wrap: anywhere; }
+.undecided { grid-column: 3; text-align: center; color: #8da6bf; font-size: calc(22px * var(--card-font-scale, 1)); }
+/* padding-right: 2ch = 向左让出两个比分数字的宽度。 */
+.score { grid-column: 5; padding-right: 2ch; font-size: calc(clamp(38px, 3vw, 64px) * var(--card-font-scale, 1)); font-variant-numeric: tabular-nums; line-height: 1; text-align: right; color: #ffe196; }
+.matchScore { grid-column: 4; font-size: calc(clamp(26px, 2vw, 44px) * var(--card-font-scale, 1)); font-variant-numeric: tabular-nums; line-height: 1; text-align: left; color: #a9d8ff; }
+.empty { display: grid; place-items: center; flex: 1; min-height: 50vh; color: #a3bdd5; font-size: calc(16px * var(--font-boost, 1)); }
 .settingsCorner { position: fixed; right: 0; bottom: 0; width: 180px; height: 92px; z-index: 20; display: flex; justify-content: flex-end; align-items: flex-end; padding: 18px; }
 .settingsTrigger { opacity: 0; pointer-events: none; transition: opacity .18s ease; display: flex; align-items: center; gap: 8px; border: 1px solid #496b86; border-radius: 8px; background: #10263fe8; color: #d7edff; padding: 10px 14px; font-size: 14px; cursor: pointer; }
 .settingsCorner:hover .settingsTrigger, .settingsCorner:focus-within .settingsTrigger { opacity: 1; pointer-events: auto; }
+.screen[data-settings-open='true'] .settingsTrigger { opacity: 1; pointer-events: auto; }
 .settingsTrigger:focus-visible { outline: 2px solid #82e3c4; outline-offset: 3px; }
 .settingsPanel { position: fixed; right: 18px; bottom: 76px; z-index: 30; width: min(360px, calc(100vw - 36px)); max-height: calc(100dvh - 100px); overflow-y: auto; padding: 18px; border: 1px solid #496b86; border-radius: 14px; background: #0d2037f5; box-shadow: 0 15px 50px #0008; color: #e9f4ff; }
 .settingsHeader { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
@@ -65,16 +77,17 @@
 .settingsHeader button { border: 0; background: none; color: #a3bdd5; font-size: 26px; line-height: 1; padding: 4px; cursor: pointer; }
 .settingsHint { color: #99b5cf; font-size: 12px; line-height: 1.6; margin: 10px 0 14px; }
 .settingsColumns { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.settingsSuggestion { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 12px; padding: 10px 12px; border: 1px solid #4a7fa5; border-radius: 10px; background: #14314d; color: #cfe8ff; font-size: 12px; line-height: 1.5; }
 .settingsSlider { display: grid; grid-template-columns: 1fr 84px; gap: 14px; }
-@media (min-width: 1700px) { .labels, .gameInfo, .matchInfo, .live, .pending { font-size: calc(15px * var(--card-font-scale, 1)); } }
 @media (min-width: 1001px) and (max-height: 850px) {
   .screen { gap: 16px; }
   .header h1 { font-size: 30px; }
   .toolbar { margin-top: 8px; }
-  .cardViewport { inset: 14px; }
-  .name { font-size: calc(18px * var(--card-font-scale, 1)); line-height: 1.2; }
-  .side { padding: 8px 0; }
-  .players { gap: 4px; }
-  .score { font-size: calc(36px * var(--card-font-scale, 1)); }
+  .cardViewport { inset: 10px; }
+  .name { font-size: calc(20px * var(--card-font-scale, 1)); line-height: 1.2; }
+  .side { padding: 4px 0; }
+  .players { gap: 3px; }
+  .score { font-size: calc(42px * var(--card-font-scale, 1)); }
+  .matchScore { font-size: calc(28px * var(--card-font-scale, 1)); }
 }
 @media (max-width: 600px) { .screen { gap: 18px; } .toolbar { flex-wrap: wrap; } }

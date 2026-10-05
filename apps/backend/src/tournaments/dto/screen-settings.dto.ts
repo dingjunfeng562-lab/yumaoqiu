@@ -42,6 +42,6 @@ export class ScreenSettingsDto {
   @IsOptional()
   @IsInt()
   @Min(50)
-  @Max(160)
+  @Max(200)
   cardFontScale?: number;
 }

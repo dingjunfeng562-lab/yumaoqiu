@@ -433,6 +433,7 @@ export class DrawsService {
                 format === DrawFormat.group_then_playoff
                   ? 2
                   : this.configuredGroupCount(event, entrants.length),
+                event.qualifiersPerGroup ?? 2,
               );
 
         await tx.drawBracket.update({
