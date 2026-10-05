@@ -547,7 +547,8 @@ export class AuthService {
   }
 
   async createInviteCode(dto: CreateInviteCodeDto, actor: AuthActor) {
-    this.assertCreatableRole(dto.role as Role, actor);
+    this.assertInviteManager(actor);
+    this.assertCreatableRole(dto.role, actor);
     const code = await this.generateUniqueInviteCode();
     const expiresAt = dto.expiresAt ? new Date(dto.expiresAt) : null;
     if (expiresAt && Number.isNaN(expiresAt.getTime())) {
@@ -567,6 +568,7 @@ export class AuthService {
   }
 
   async listInviteCodes(actor: AuthActor) {
+    this.assertInviteManager(actor);
     return this.prisma.inviteCode.findMany({
       where: actor.role !== Role.ROOT ? { createdById: actor.id } : {},
       include: { createdBy: { select: { id: true, username: true, role: true } } },
@@ -575,11 +577,12 @@ export class AuthService {
   }
 
   async updateInviteCode(id: string, isEnabled: boolean, actor: AuthActor) {
+    this.assertInviteManager(actor);
     const inviteCode = await this.prisma.inviteCode.findUnique({ where: { id } });
     if (!inviteCode) {
       throw new NotFoundException('邀请码不存在');
     }
-    await this.requireManageableInvite(inviteCode, actor);
+    this.requireManageableInvite(inviteCode, actor);
     return this.prisma.inviteCode.update({
       where: { id },
       data: { isEnabled },
@@ -587,6 +590,7 @@ export class AuthService {
   }
 
   async deleteInviteCode(id: string, actor: AuthActor) {
+    this.assertInviteManager(actor);
     const inviteCode = await this.prisma.inviteCode.findUnique({
       where: { id },
       include: { users: { select: { id: true } } },
@@ -594,7 +598,7 @@ export class AuthService {
     if (!inviteCode) {
       throw new NotFoundException('邀请码不存在');
     }
-    await this.requireManageableInvite(inviteCode, actor);
+    this.requireManageableInvite(inviteCode, actor);
     if (inviteCode.users.length) {
       throw new BadRequestException('该邀请码已被使用，不能删除');
     }
@@ -677,6 +681,12 @@ export class AuthService {
     if (actor.role !== Role.ROOT && !MANAGED_ROLES.includes(role)) throw new ForbiddenException('无权创建此角色的账号或邀请码');
   }
 
+  private assertInviteManager(actor: AuthActor) {
+    if (actor.role !== Role.ADMIN && actor.role !== Role.ROOT) {
+      throw new ForbiddenException('只有管理员和超级管理员可以管理邀请码');
+    }
+  }
+
   private async requireManageableUser(id: string, actor: AuthActor) {
     const target = await this.prisma.user.findUnique({ where: { id } });
     if (!target) throw new NotFoundException('用户不存在');
@@ -686,7 +696,7 @@ export class AuthService {
     return target;
   }
 
-  private async requireManageableInvite(invite: { createdById: string | null; role: Role }, actor: AuthActor) {
+  private requireManageableInvite(invite: { createdById: string | null; role: Role }, actor: AuthActor) {
     if (actor.role === Role.ROOT) return;
     if (invite.createdById === actor.id && MANAGED_ROLES.includes(invite.role)) return;
     throw new ForbiddenException('无权管理此邀请码');
@@ -710,6 +720,7 @@ export class AuthService {
   }
 
   async getInviteQuota(actor: AuthActor) {
+    this.assertInviteManager(actor);
     const user = await this.prisma.user.findUniqueOrThrow({ where: { id: actor.id } });
     return {
       limit: actor.role !== Role.ROOT ? user.staffInviteLimit : null,
@@ -741,6 +752,9 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new NotFoundException('用户不存在');
     if (user.role === Role.ROOT) throw new BadRequestException('超级管理员固定拥有全部权限；如需限制，请先调整角色');
+    if (user.role !== Role.ADMIN && permissions?.includes('INVITES')) {
+      throw new BadRequestException('邀请码权限仅可分配给管理员和超级管理员');
+    }
     await this.prisma.user.update({ where: { id: userId }, data: { permissions: permissions === null ? Prisma.DbNull : permissions } });
     return this.getUserPermissions(userId);
   }

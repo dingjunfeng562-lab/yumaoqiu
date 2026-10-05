@@ -520,7 +520,7 @@ export default function AdminBroadcastsPage() {
           <Form.Item name="tournamentId" label="所属赛事" rules={[{ required: true, message: '请选择赛事' }]}>
             <Select
               showSearch optionFilterProp="label"
-              options={tournaments.map((item) => ({ value: item.id, label: `第${item.edition}届 ${item.name}` }))}
+              options={tournaments.map((item) => ({ value: item.id, label: item.name }))}
             />
           </Form.Item>
           <Form.Item name="venueId" label="绑定场地（可选）">

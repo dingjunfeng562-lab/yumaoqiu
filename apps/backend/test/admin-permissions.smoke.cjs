@@ -55,6 +55,15 @@ async function main() {
     const rootPeer = await request(root, 'POST', '/auth/users/root', credentials(), 201);
     const adminA = await request(rootPeer, 'POST', '/auth/users/admin', credentials(), 201);
     const adminB = await request(root, 'POST', '/auth/users/admin', credentials(), 201);
+    const restrictedCredentials = credentials();
+    const restrictedPlayer = await db.user.create({ data: {
+      ...restrictedCredentials, password: undefined, passwordHash: await bcrypt.hash(password, 4),
+      role: 'PLAYER', permissions: ['INVITES'],
+    } });
+    await request(restrictedPlayer, 'GET', '/auth/invite-codes', undefined, 403);
+    await request(restrictedPlayer, 'GET', '/auth/invite-quota', undefined, 403);
+    await request(restrictedPlayer, 'POST', '/auth/invite-codes', { role: 'PLAYER', maxUses: 1 }, 403);
+    await request(root, 'PATCH', `/auth/users/${restrictedPlayer.id}/permissions`, { permissions: ['INVITES'] }, 400);
     assert.equal((await request(adminA, 'GET', '/auth/invite-quota')).limit, 50);
     for (const role of ['admin', 'root']) await request(adminA, 'POST', `/auth/users/${role}`, credentials(), 403);
     await request(adminA, 'POST', '/v1/auth/users/admin', credentials(), 403);
@@ -92,7 +101,7 @@ async function main() {
     const orderbook = await request(adminA, 'GET', `/exports/tournaments/${ta.id}/orderbook`);
     assert(Buffer.isBuffer(orderbook) && orderbook.subarray(0, 2).toString() === 'PK', 'Real XLSX export must succeed');
 
-    for (const path of ['/admin/ai-config', '/admin/announcements', '/admin/image-moderation', '/admin/email/settings', '/admin/photos', '/scoring/referees', '/team-competitions', '/usage-metrics/summary']) {
+    for (const path of ['/admin/ai-config', '/admin/announcements', '/admin/image-moderation', '/admin/email/settings', '/scoring/referees', '/team-competitions', '/usage-metrics/summary']) {
       await request(adminA, 'GET', path, undefined, 403);
     }
     // Dashboard: admins see only their own tournaments' photo stats; AI usage is ROOT-only.
@@ -112,6 +121,8 @@ async function main() {
     await request(root, 'PATCH', `/auth/users/${adminA.id}/permissions`, { permissions: ['AI_CONFIG'] });
     assert.equal((await request(root, 'GET', `/auth/users/${adminA.id}/permissions`)).customized, true);
     await request(adminA, 'GET', '/admin/ai-config');
+    await request(adminA, 'GET', '/auth/invite-codes');
+    await request(adminA, 'GET', '/auth/invite-quota');
     await request(adminA, 'GET', '/tournaments', undefined, 403);
     await request(root, 'PATCH', `/auth/users/${adminA.id}/permissions`, { permissions: null });
     await request(adminA, 'GET', '/tournaments');
@@ -138,6 +149,8 @@ async function main() {
     const photoInvite = await createInvite(adminA, 'PHOTOGRAPHER');
     const playerInvite = await createInvite(adminA, 'PLAYER', 100);
     const otherInvite = await createInvite(adminB, 'REFEREE');
+    await request(restrictedPlayer, 'PATCH', `/auth/invite-codes/${refereeInvite.id}`, { isEnabled: false }, 403);
+    await request(restrictedPlayer, 'DELETE', `/auth/invite-codes/${refereeInvite.id}`, undefined, 403);
     assert.equal((await request(adminA, 'GET', '/auth/invite-quota')).used, 0, 'Unused invitations do not reserve quota');
     assert((await request(adminA, 'GET', '/auth/invite-codes')).every((i) => i.createdById === adminA.id));
     await request(adminA, 'DELETE', `/auth/invite-codes/${otherInvite.id}`, undefined, 403);

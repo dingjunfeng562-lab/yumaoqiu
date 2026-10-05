@@ -209,6 +209,8 @@ model User {
   drawRedrawRequests        DrawRedrawRequest[] @relation("drawRedrawRequestRequester")
   drawRedrawDecisions       DrawRedrawRequest[] @relation("drawRedrawRequestDecider")
   photos            Photo[]
+  createdPhotoActivities PhotoActivity[] @relation("PhotoActivityCreator")
+  approvedPhotoActivities PhotoActivity[] @relation("PhotoActivityApprover")
   photoOperationLogs PhotoOperationLog[]
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
@@ -517,8 +519,10 @@ model EmailLog {
 
 model Photo {
   id              String        @id @default(cuid())
-  tournamentId    String
-  tournament      Tournament    @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  tournamentId    String?
+  tournament      Tournament?   @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  activityId      String?
+  activity        PhotoActivity? @relation(fields: [activityId], references: [id], onDelete: Cascade)
   uploaderId      String
   uploader        User          @relation(fields: [uploaderId], references: [id], onDelete: Restrict)
   category        PhotoCategory
@@ -536,6 +540,8 @@ model Photo {
 
   @@index([tournamentId, category, deletedAt])
   @@index([tournamentId, deletedAt, uploadedAt])
+  @@index([activityId, category, deletedAt])
+  @@index([activityId, deletedAt, uploadedAt])
   @@index([uploaderId])
   @@index([deletedAt])
 }
@@ -559,10 +565,53 @@ model TournamentWatermark {
   updatedAt         DateTime  @updatedAt
 }
 
+model PhotoActivity {
+  id               String                   @id @default(cuid())
+  title            String                   @db.VarChar(120)
+  coverImageUrl    String?                  @db.VarChar(500)
+  dateMode         String                   @default("SINGLE") @db.VarChar(8)
+  startAt          DateTime
+  endAt            DateTime?
+  approvalStatus   TournamentApprovalStatus @default(PENDING)
+  submittedById    String?
+  submittedBy      User?                    @relation("PhotoActivityCreator", fields: [submittedById], references: [id], onDelete: SetNull)
+  approvedById     String?
+  approvedBy       User?                    @relation("PhotoActivityApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  approvedAt       DateTime?
+  rejectReason     String?                  @db.VarChar(500)
+  photoAccessToken String?                  @unique @db.VarChar(64)
+  photos           Photo[]
+  watermark        PhotoActivityWatermark?
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+
+  @@index([submittedById, createdAt])
+  @@index([approvalStatus, createdAt])
+}
+
+model PhotoActivityWatermark {
+  id                   String        @id @default(cuid())
+  activityId           String        @unique
+  activity             PhotoActivity @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  logos                Json
+  logoHeightPercent    Int           @default(8)
+  logoGapPercent       Int           @default(20)
+  position             String        @default("TOP_RIGHT") @db.VarChar(16)
+  portraitPosition     String?       @db.VarChar(16)
+  text                 String?       @db.VarChar(100)
+  textColor            String?       @db.VarChar(16)
+  textSizePercent      Int?
+  textFont             String?       @db.VarChar(32)
+  textPosition         String?       @db.VarChar(16)
+  textPortraitPosition String?       @db.VarChar(16)
+  updatedAt            DateTime      @updatedAt
+}
+
 model PhotoOperationLog {
   id                   String   @id @default(cuid())
   photoId              String?
-  tournamentId         String
+  tournamentId         String?
+  activityId           String?
   operatorId           String
   operator             User     @relation(fields: [operatorId], references: [id], onDelete: Restrict)
   operatorNameSnapshot String?  @db.VarChar(64)
@@ -571,6 +620,7 @@ model PhotoOperationLog {
   createdAt            DateTime @default(now())
 
   @@index([tournamentId, createdAt])
+  @@index([activityId, createdAt])
   @@index([operatorId])
 }
 

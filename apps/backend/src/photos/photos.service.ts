@@ -164,8 +164,9 @@ export class PhotosService {
         },
       ]),
     );
+    const tournamentIds = grouped.map((group) => group.tournamentId).filter((id): id is string => !!id);
     const tournaments = await this.prisma.tournament.findMany({
-      where: { id: { in: grouped.map((g) => g.tournamentId) } },
+      where: { id: { in: tournamentIds } },
       select: { id: true, name: true, edition: true, startDate: true, endDate: true },
       orderBy: [{ startDate: 'desc' }, { edition: 'desc' }],
     });
@@ -240,6 +241,37 @@ export class PhotosService {
     };
   }
 
+  private async loadActivityLogoConfig(activityId: string): Promise<Awaited<ReturnType<PhotosService['loadLogoConfig']>>> {
+    const config = await this.prisma.photoActivityWatermark.findUnique({ where: { activityId } });
+    if (!config) {
+      return {
+        buffers: [], logoHeightPercent: DEFAULT_LOGO_HEIGHT_PERCENT, logoGapPercent: DEFAULT_LOGO_GAP_PERCENT,
+        position: DEFAULT_WATERMARK_POSITION, portraitPosition: DEFAULT_WATERMARK_POSITION,
+        text: null, textColor: DEFAULT_TEXT_COLOR, textSizePercent: DEFAULT_TEXT_SIZE_PERCENT,
+        textFont: DEFAULT_TEXT_FONT, textPosition: DEFAULT_WATERMARK_POSITION,
+        textPortraitPosition: DEFAULT_WATERMARK_POSITION,
+      };
+    }
+    const buffers: Buffer[] = [];
+    for (const logo of this.parseLogos(config.logos)) {
+      const abs = this.absolute(logo.path);
+      if (existsSync(abs)) buffers.push(readFileSync(abs));
+    }
+    return {
+      buffers,
+      logoHeightPercent: this.clampLogoHeightPercent(config.logoHeightPercent),
+      logoGapPercent: this.clampLogoGapPercent(config.logoGapPercent),
+      position: this.normalizePosition(config.position),
+      portraitPosition: this.normalizePosition(config.portraitPosition ?? config.position),
+      text: this.sanitizeText(config.text),
+      textColor: this.sanitizeTextColor(config.textColor),
+      textSizePercent: this.clampTextSizePercent(config.textSizePercent),
+      textFont: this.sanitizeTextFont(config.textFont),
+      textPosition: this.normalizePosition(config.textPosition ?? config.position),
+      textPortraitPosition: this.normalizePosition(config.textPortraitPosition ?? config.portraitPosition ?? config.textPosition ?? config.position),
+    };
+  }
+
   private normalizePosition(value?: string | null): WatermarkPosition {
     return WATERMARK_POSITIONS.includes(value as WatermarkPosition)
       ? (value as WatermarkPosition)
@@ -269,6 +301,12 @@ export class PhotosService {
         SELECT id FROM \`tournament\` WHERE id = ${tournamentId} FOR UPDATE
       `;
     }
+  }
+
+  private lockActivityForPhotoSequence(tx: Prisma.TransactionClient, activityId: string) {
+    return tx.$queryRaw<Array<{ id: string }>>`
+      SELECT id FROM \`PhotoActivity\` WHERE id = ${activityId} FOR UPDATE
+    `;
   }
 
   async uploadPhotos(
@@ -424,6 +462,78 @@ export class PhotosService {
     return { uploaded, failed };
   }
 
+  async uploadActivityPhotos(activityId: string, category: PhotoCategory, files: UploadFile[], uploaderId: string) {
+    const activity = await this.prisma.photoActivity.findUnique({ where: { id: activityId }, select: { id: true } });
+    if (!activity) throw new NotFoundException('活动不存在');
+    if (!files?.length) throw new BadRequestException('请至少上传一张图片');
+    if (files.length > MAX_UPLOAD_FILES) throw new BadRequestException(`每批最多上传 ${MAX_UPLOAD_FILES} 张图片`);
+
+    const config = await this.loadActivityLogoConfig(activityId);
+    const { default: pLimit } = await import('p-limit');
+    const limit = pLimit(3);
+    const failed: Array<{ name: string; reason: string }> = [];
+    const processed: ProcessedUpload[] = [];
+
+    await Promise.all(files.map((file, idx) => limit(async () => {
+      const name = file.originalname || 'unknown';
+      const writtenPaths: string[] = [];
+      try {
+        if (!file.buffer) throw new Error('空文件');
+        if (!PHOTO_MIME_RE.test(file.mimetype ?? '')) throw new Error('仅支持图片格式');
+        if ((file.size ?? file.buffer.length) > MAX_UPLOAD_FILE_SIZE) throw new Error('单张图片不能超过 15MB');
+        await this.moderation.assertAllowed(file.buffer);
+        const uuid = randomUUID();
+        const info = await this.watermark.imageInfo(file.buffer);
+        const originalPath = `photos/${activityId}/original/${uuid}${this.originalImageExtension(info.format)}`;
+        const thumbnailPath = `photos/${activityId}/thumb/${uuid}.jpg`;
+        const watermarked = await this.watermark.applyWatermark(
+          file.buffer, config.buffers, config.logoHeightPercent, config.logoGapPercent,
+          info.height > info.width ? config.portraitPosition : config.position,
+          {
+            content: config.text, color: config.textColor, heightPercent: config.textSizePercent,
+            position: info.height > info.width ? config.textPortraitPosition : config.textPosition,
+            font: config.textFont,
+          },
+        );
+        const fullPath = `photos/${activityId}/full/${uuid}${watermarked.ext}`;
+        const thumb = await this.watermark.generateThumbnail(watermarked.buffer);
+        this.writeRelative(originalPath, file.buffer); writtenPaths.push(originalPath);
+        this.writeRelative(fullPath, watermarked.buffer); writtenPaths.push(fullPath);
+        this.writeRelative(thumbnailPath, thumb); writtenPaths.push(thumbnailPath);
+        processed.push({ idx, name, originalPath, fullPath, thumbnailPath, fileSize: file.size ?? file.buffer.length, width: info.width, height: info.height });
+      } catch (error) {
+        writtenPaths.forEach((path) => this.removeRelative(path));
+        failed.push({ name, reason: error instanceof Error ? error.message : '处理失败' });
+      }
+    })));
+
+    const ready = processed.sort((a, b) => a.idx - b.idx);
+    let uploaded = 0;
+    if (ready.length) {
+      try {
+        await this.prisma.$transaction(async (tx) => {
+          const locked = await this.lockActivityForPhotoSequence(tx, activityId);
+          if (!locked.length) throw new NotFoundException('活动不存在');
+          const seq = await tx.photo.aggregate({ where: { activityId }, _max: { seq: true } });
+          const base = seq._max.seq ?? 0;
+          for (const [order, item] of ready.entries()) {
+            await tx.photo.create({ data: {
+              activityId, uploaderId, category, seq: base + order + 1,
+              originalPath: item.originalPath, fullPath: item.fullPath, thumbnailPath: item.thumbnailPath,
+              fileSize: item.fileSize, width: item.width, height: item.height,
+            } });
+          }
+        });
+        uploaded = ready.length;
+      } catch (error) {
+        ready.forEach((item) => this.removeProcessedUploadFiles(item));
+        const reason = error instanceof Error ? error.message : '处理失败';
+        failed.push(...ready.map((item) => ({ name: item.name, reason })));
+      }
+    }
+    return { uploaded, failed };
+  }
+
   // ---------------------------------------------------------------------------
   // Public gallery
   // ---------------------------------------------------------------------------
@@ -457,20 +567,34 @@ export class PhotosService {
         location: true,
       },
     });
-    if (!tournament) throw new NotFoundException('图片访问地址不存在');
-    return tournament;
+    if (tournament) return { ...tournament, scope: 'tournament' as const };
+    const activity = await this.prisma.photoActivity.findFirst({
+      where: { photoAccessToken: validAccessToken, approvalStatus: 'APPROVED' },
+      select: { id: true, title: true, coverImageUrl: true, startAt: true, endAt: true },
+    });
+    if (!activity) throw new NotFoundException('图片访问地址不存在');
+    return {
+      id: activity.id,
+      name: activity.title,
+      subtitle: null,
+      coverImageUrl: activity.coverImageUrl,
+      startDate: activity.startAt,
+      endDate: activity.endAt ?? activity.startAt,
+      location: null,
+      scope: 'activity' as const,
+    };
   }
 
   async getPublicGallery(accessToken: string) {
-    const tournament = await this.findGalleryByAccessToken(accessToken);
+    const gallery = await this.findGalleryByAccessToken(accessToken);
     const photoCount = await this.prisma.photo.count({
-      where: { tournamentId: tournament.id, deletedAt: null },
+      where: { ...(gallery.scope === 'activity' ? { activityId: gallery.id } : { tournamentId: gallery.id }), deletedAt: null },
     });
-    return { ...tournament, photoCount };
+    return { ...gallery, photoCount };
   }
 
   async listPublicPhotos(query: PublicPhotoQueryDto) {
-    const tournament = await this.findGalleryByAccessToken(query.accessToken);
+    const gallery = await this.findGalleryByAccessToken(query.accessToken);
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 30;
     const orderBy: Prisma.PhotoOrderByWithRelationInput[] =
@@ -480,7 +604,7 @@ export class PhotosService {
           ? [{ uploadedAt: 'desc' }, { id: 'desc' }]
           : [{ viewCount: 'desc' }, { downloadCount: 'desc' }, { uploadedAt: 'desc' }, { id: 'desc' }];
     const where: Prisma.PhotoWhereInput = {
-      tournamentId: tournament.id,
+      ...(gallery.scope === 'activity' ? { activityId: gallery.id } : { tournamentId: gallery.id }),
       deletedAt: null,
       ...(query.category ? { category: query.category } : {}),
     };
@@ -544,7 +668,10 @@ export class PhotosService {
       where: {
         id: photoId,
         deletedAt: null,
-        tournament: { photoAccessToken: validAccessToken },
+        OR: [
+          { tournament: { photoAccessToken: validAccessToken } },
+          { activity: { photoAccessToken: validAccessToken, approvalStatus: 'APPROVED' } },
+        ],
       },
     });
     if (!photo || photo.deletedAt) throw new NotFoundException('图片不存在');
@@ -565,7 +692,10 @@ export class PhotosService {
       where: {
         id: photoId,
         deletedAt: null,
-        tournament: { photoAccessToken: validAccessToken },
+        OR: [
+          { tournament: { photoAccessToken: validAccessToken } },
+          { activity: { photoAccessToken: validAccessToken, approvalStatus: 'APPROVED' } },
+        ],
       },
     });
     if (!photo || photo.deletedAt) throw new NotFoundException('图片不存在');
@@ -737,16 +867,103 @@ export class PhotosService {
     return this.getWatermark(tournamentId);
   }
 
+  async getActivityWatermark(activityId: string) {
+    const config = await this.prisma.photoActivityWatermark.findUnique({ where: { activityId } });
+    const logos = this.parseLogos(config?.logos);
+    return {
+      activityId,
+      logos: logos.map((logo) => ({ ...logo, url: this.url(logo.path) })),
+      logoHeightPercent: config?.logoHeightPercent ?? DEFAULT_LOGO_HEIGHT_PERCENT,
+      logoGapPercent: config?.logoGapPercent ?? DEFAULT_LOGO_GAP_PERCENT,
+      position: this.normalizePosition(config?.position),
+      portraitPosition: this.normalizePosition(config?.portraitPosition ?? config?.position),
+      text: config?.text?.trim() ? config.text.trim() : '',
+      textColor: config?.textColor ?? DEFAULT_TEXT_COLOR,
+      textSizePercent: config?.textSizePercent ?? DEFAULT_TEXT_SIZE_PERCENT,
+      textFont: (config?.textFont as TextFontType) ?? DEFAULT_TEXT_FONT,
+      textPosition: this.normalizePosition(config?.textPosition ?? config?.position),
+      textPortraitPosition: this.normalizePosition(config?.textPortraitPosition ?? config?.portraitPosition ?? config?.textPosition ?? config?.position),
+      updatedAt: config?.updatedAt ?? null,
+    };
+  }
+
+  async updateActivityWatermark(activityId: string, dto: UpdateWatermarkDto) {
+    await this.assertActivityExists(activityId);
+    const logos = dto.logos.slice(0, 5).map((logo, index) => ({ order: index + 1, path: logo.path, filename: logo.filename }));
+    const data = {
+      logos: logos as unknown as Prisma.InputJsonValue,
+      logoHeightPercent: this.clampLogoHeightPercent(dto.logoHeightPercent),
+      logoGapPercent: this.clampLogoGapPercent(dto.logoGapPercent),
+      position: this.normalizePosition(dto.position),
+      portraitPosition: this.normalizePosition(dto.portraitPosition ?? dto.position),
+      text: this.sanitizeText(dto.text),
+      textColor: this.sanitizeTextColor(dto.textColor),
+      textSizePercent: this.clampTextSizePercent(dto.textSizePercent),
+      textFont: this.sanitizeTextFont(dto.textFont),
+      textPosition: this.normalizePosition(dto.textPosition ?? dto.position),
+      textPortraitPosition: this.normalizePosition(dto.textPortraitPosition ?? dto.portraitPosition ?? dto.textPosition ?? dto.position),
+    };
+    await this.prisma.photoActivityWatermark.upsert({
+      where: { activityId }, create: { activityId, ...data }, update: data,
+    });
+    return this.getActivityWatermark(activityId);
+  }
+
+  async addActivityWatermarkLogo(activityId: string, file: UploadFile) {
+    await this.assertActivityExists(activityId);
+    if (!file?.buffer) throw new BadRequestException('请上传有效的 PNG 文件');
+    if (!(file.mimetype || '').includes('png')) throw new BadRequestException('Logo 必须为 PNG 格式');
+    const config = await this.prisma.photoActivityWatermark.findUnique({ where: { activityId } });
+    const logos = this.parseLogos(config?.logos);
+    if (logos.length >= 5) throw new BadRequestException('最多只能添加 5 个 Logo');
+    await this.moderation.assertAllowed(file.buffer);
+    const path = `photos/${activityId}/logos/${randomUUID()}.png`;
+    this.writeRelative(path, file.buffer);
+    const next = [...logos, { order: logos.length + 1, path, filename: file.originalname }]
+      .map((logo, index) => ({ order: index + 1, path: logo.path, filename: logo.filename }));
+    try {
+      await this.prisma.photoActivityWatermark.upsert({
+        where: { activityId },
+        create: { activityId, logos: next as unknown as Prisma.InputJsonValue },
+        update: { logos: next as unknown as Prisma.InputJsonValue },
+      });
+    } catch (error) {
+      this.removeRelative(path);
+      throw error;
+    }
+    return this.getActivityWatermark(activityId);
+  }
+
+  async deleteActivityWatermarkLogo(activityId: string, path: string) {
+    const config = await this.prisma.photoActivityWatermark.findUnique({ where: { activityId } });
+    if (!config) throw new NotFoundException('水印配置不存在');
+    const logos = this.parseLogos(config.logos);
+    const target = logos.find((logo) => logo.path === path);
+    if (!target) throw new NotFoundException('Logo 不存在');
+    this.removeRelative(target.path);
+    const next = logos.filter((logo) => logo.path !== path)
+      .map((logo, index) => ({ order: index + 1, path: logo.path, filename: logo.filename }));
+    await this.prisma.photoActivityWatermark.update({ where: { activityId }, data: { logos: next as unknown as Prisma.InputJsonValue } });
+    return this.getActivityWatermark(activityId);
+  }
+
   // ---------------------------------------------------------------------------
   // Admin photo management
   // ---------------------------------------------------------------------------
 
   async adminListPhotos(query: AdminPhotoQueryDto, actor?: AuthActor) {
+    if (Boolean(query.tournamentId) === Boolean(query.activityId)) {
+      throw new BadRequestException('必须且只能指定一个赛事或活动');
+    }
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 30;
     const where: Prisma.PhotoWhereInput = {
-      tournamentId: query.tournamentId,
-      tournament: tournamentScope(actor),
+      ...(query.activityId
+        ? {
+            activityId: query.activityId,
+            activity: actor?.role === 'ROOT' ? {} : { submittedById: actor?.id },
+          }
+        : { tournamentId: query.tournamentId, tournament: tournamentScope(actor) }),
       deletedAt: null,
       ...(query.category ? { category: query.category } : {}),
       ...(query.uploaderId ? { uploaderId: query.uploaderId } : {}),
@@ -809,18 +1026,18 @@ export class PhotosService {
   ) {
     const photo = await this.prisma.photo.findUnique({
       where: { id: photoId },
-      include: { tournament: { select: { name: true } } },
+      include: { tournament: { select: { name: true } }, activity: { select: { title: true } } },
     });
     if (!photo || photo.deletedAt) throw new NotFoundException('图片不存在');
     const abs = this.absolute(photo.originalPath);
     if (!existsSync(abs)) throw new NotFoundException('原图文件丢失');
 
-    await this.log(photo.tournamentId, operator, 'VIEW_ORIGINAL', photo.id, {
+    await this.log(photo.tournamentId, photo.activityId, operator, 'VIEW_ORIGINAL', photo.id, {
       originalPath: photo.originalPath,
     });
 
     const ext = photo.originalPath.slice(photo.originalPath.lastIndexOf('.')) || '.jpg';
-    const filename = `${this.safeFileName(photo.tournament?.name ?? '赛事')}-${photo.seq}${ext}`;
+    const filename = `${this.safeFileName(photo.tournament?.name ?? photo.activity?.title ?? '活动')}-${photo.seq}${ext}`;
     return { absolutePath: abs, filename };
   }
 
@@ -835,9 +1052,12 @@ export class PhotosService {
       where: {
         id: photoId,
         deletedAt: null,
-        tournament: { photoAccessToken: validAccessToken },
+        OR: [
+          { tournament: { photoAccessToken: validAccessToken } },
+          { activity: { photoAccessToken: validAccessToken, approvalStatus: 'APPROVED' } },
+        ],
       },
-      include: { tournament: { select: { name: true } } },
+      include: { tournament: { select: { name: true } }, activity: { select: { title: true } } },
     });
     if (!photo || photo.deletedAt) throw new NotFoundException('图片不存在');
     const abs = this.absolute(photo.fullPath);
@@ -849,7 +1069,7 @@ export class PhotosService {
       data: { downloadCount: { increment: 1 } },
     });
 
-    const name = this.safeFileName(photo.tournament?.name ?? '赛事');
+    const name = this.safeFileName(photo.tournament?.name ?? photo.activity?.title ?? '活动');
     const category = PHOTO_CATEGORY_LABELS[photo.category] ?? photo.category;
     const dot = photo.fullPath.lastIndexOf('.');
     const ext = dot >= 0 ? photo.fullPath.slice(dot) : '.jpg';
@@ -868,7 +1088,7 @@ export class PhotosService {
       where: { id: photoId },
       data: { deletedAt: new Date() },
     });
-    await this.log(photo.tournamentId, operator, 'DELETE_PHOTO', photo.id, {
+    await this.log(photo.tournamentId, photo.activityId, operator, 'DELETE_PHOTO', photo.id, {
       category: photo.category,
     });
     return { success: true };
@@ -887,12 +1107,14 @@ export class PhotosService {
         where: { id: { in: photos.map((p) => p.id) } },
         data: { deletedAt: new Date() },
       });
-      const byTournament = new Map<string, number>();
-      photos.forEach((p) =>
-        byTournament.set(p.tournamentId, (byTournament.get(p.tournamentId) ?? 0) + 1),
-      );
-      for (const [tournamentId, count] of byTournament) {
-        await this.log(tournamentId, operator, 'BATCH_DELETE', null, { count });
+      const byTarget = new Map<string, { tournamentId: string | null; activityId: string | null; count: number }>();
+      photos.forEach((photo) => {
+        const key = photo.activityId ? `activity:${photo.activityId}` : `tournament:${photo.tournamentId}`;
+        const current = byTarget.get(key);
+        byTarget.set(key, { tournamentId: photo.tournamentId, activityId: photo.activityId, count: (current?.count ?? 0) + 1 });
+      });
+      for (const target of byTarget.values()) {
+        await this.log(target.tournamentId, target.activityId, operator, 'BATCH_DELETE', null, { count: target.count });
       }
     }
     return { deleted: photos.length };
@@ -922,7 +1144,7 @@ export class PhotosService {
         data: { deletedAt: new Date() },
       });
     }
-    await this.log(tournamentId, operator, 'DELETE_TOURNAMENT_PHOTOS', null, {
+    await this.log(tournamentId, null, operator, 'DELETE_TOURNAMENT_PHOTOS', null, {
       count: photos.length,
     });
     return { deleted: photos.length };
@@ -943,6 +1165,27 @@ export class PhotosService {
       detail: l.detail,
       createdAt: l.createdAt,
     }));
+  }
+
+  async deleteActivityPhotos(activityId: string, confirmName: string, operator: { id: string; username?: string | null }) {
+    const activity = await this.prisma.photoActivity.findUnique({ where: { id: activityId }, select: { title: true } });
+    if (!activity) throw new NotFoundException('活动不存在');
+    if ((confirmName ?? '').trim() !== activity.title) throw new BadRequestException('活动名称不匹配,删除已取消');
+    const photos = await this.prisma.photo.findMany({ where: { activityId, deletedAt: null } });
+    photos.forEach((photo) => this.hardRemoveFiles(photo));
+    if (photos.length) {
+      await this.prisma.photo.updateMany({ where: { id: { in: photos.map((photo) => photo.id) } }, data: { deletedAt: new Date() } });
+    }
+    await this.log(null, activityId, operator, 'DELETE_ACTIVITY_PHOTOS', null, { count: photos.length });
+    return { deleted: photos.length };
+  }
+
+  async listActivityLogs(activityId: string) {
+    const since = new Date(Date.now() - PHOTO_LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+    const logs = await this.prisma.photoOperationLog.findMany({
+      where: { activityId, createdAt: { gte: since } }, orderBy: { createdAt: 'desc' }, take: 500,
+    });
+    return logs.map((log) => ({ id: log.id, photoId: log.photoId, action: log.action, operator: log.operatorNameSnapshot, detail: log.detail, createdAt: log.createdAt }));
   }
 
   // ---------------------------------------------------------------------------
@@ -973,8 +1216,14 @@ export class PhotosService {
     if (!exists) throw new NotFoundException('赛事不存在');
   }
 
+  private async assertActivityExists(activityId: string) {
+    const exists = await this.prisma.photoActivity.findUnique({ where: { id: activityId }, select: { id: true } });
+    if (!exists) throw new NotFoundException('活动不存在');
+  }
+
   private async log(
-    tournamentId: string,
+    tournamentId: string | null,
+    activityId: string | null,
     operator: { id: string; username?: string | null },
     action: string,
     photoId: string | null,
@@ -984,6 +1233,7 @@ export class PhotosService {
       await this.prisma.photoOperationLog.create({
         data: {
           tournamentId,
+          activityId,
           photoId: photoId ?? undefined,
           operatorId: operator.id,
           operatorNameSnapshot: operator.username ?? null,

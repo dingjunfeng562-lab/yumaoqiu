@@ -248,6 +248,16 @@ export function PhotosGallery({ accessToken }: { accessToken: string }) {
                 <div className="photo-media">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
+                  className="photo-thumbnail-backdrop"
+                  src={fullUrl(item.thumbUrl)}
+                  alt=""
+                  aria-hidden="true"
+                  loading="lazy"
+                  decoding="async"
+                />
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  className="photo-thumbnail"
                   src={fullUrl(item.thumbUrl)}
                   alt={CATEGORY_FILE_LABEL[item.category]}
                   width={item.width || undefined}
@@ -256,7 +266,6 @@ export function PhotosGallery({ accessToken }: { accessToken: string }) {
                   decoding="async"
                   onLoad={() => countThumbView(item.id)}
                   onClick={() => openPreview(index)}
-                  style={{ width: '100%', height: 'auto', display: 'block', cursor: 'zoom-in' }}
                 />
                 <div className="photo-overlay">
                   <button
@@ -332,6 +341,29 @@ export function PhotosGallery({ accessToken }: { accessToken: string }) {
         .photo-media {
           position: relative;
           overflow: hidden;
+          aspect-ratio: 4 / 3;
+          background: #e8eef5;
+        }
+        .photo-thumbnail-backdrop,
+        .photo-thumbnail {
+          position: absolute;
+          inset: 0;
+          width: 100%;
+          height: 100%;
+          display: block;
+        }
+        .photo-thumbnail-backdrop {
+          object-fit: cover;
+          filter: blur(14px);
+          opacity: 0.48;
+          transform: scale(1.12);
+        }
+        .photo-thumbnail {
+          position: relative;
+          object-fit: contain;
+          object-position: center;
+          cursor: zoom-in;
+          z-index: 1;
         }
         .photo-overlay {
           position: absolute;
@@ -343,6 +375,7 @@ export function PhotosGallery({ accessToken }: { accessToken: string }) {
           background: rgba(2, 12, 42, 0.45);
           opacity: 0;
           transition: opacity 0.2s ease;
+          z-index: 2;
         }
         .photo-media:hover .photo-overlay {
           opacity: 1;

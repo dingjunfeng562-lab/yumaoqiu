@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, usePathname, useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import {
   Button,
@@ -77,6 +77,7 @@ const ACTION_LABEL: Record<string, string> = {
   DELETE_PHOTO: '删除图片',
   BATCH_DELETE: '批量删除',
   DELETE_TOURNAMENT_PHOTOS: '删除整届图片',
+  DELETE_ACTIVITY_PHOTOS: '删除活动图片',
 };
 
 function formatSize(bytes: number) {
@@ -92,11 +93,15 @@ function formatDateTime(value: string) {
 export default function AdminPhotosPage() {
   const params = useParams<{ id: string }>();
   const id = params?.id;
+  const pathname = usePathname();
+  const isActivity = pathname.startsWith('/admin/photo-activities/');
+  const parentPath = isActivity ? '/admin/photo-activities' : '/admin/competitions';
+  const targetLabel = isActivity ? '活动' : '赛事';
   const router = useRouter();
   const { data: session } = useSession();
   const token = session?.user?.accessToken as string | undefined;
 
-  const [title, setTitle] = useState('当前赛事');
+  const [title, setTitle] = useState('当前内容');
   const [photos, setPhotos] = useState<AdminPhoto[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -123,20 +128,21 @@ export default function AdminPhotosPage() {
 
   useEffect(() => {
     if (!token || !id) return;
-    apiFetch<Array<{ id: string; title: string }>>('/admin/competitions', { token })
-      .then((list) => {
-        const found = list.find((c) => c.id === id);
-        if (found) setTitle(found.title);
-      })
+    (isActivity
+      ? apiFetch<{ title: string }>(`/admin/photo-activities/${id}`, { token }).then((item) => setTitle(item.title))
+      : apiFetch<Array<{ id: string; title: string }>>('/admin/competitions', { token }).then((list) => {
+          const found = list.find((competition) => competition.id === id);
+          if (found) setTitle(found.title);
+        }))
       .catch(() => undefined);
-  }, [token, id]);
+  }, [token, id, isActivity]);
 
   const load = useCallback(async () => {
     if (!token || !id) return;
     setLoading(true);
     try {
       const params2 = new URLSearchParams({
-        tournamentId: id,
+        [isActivity ? 'activityId' : 'tournamentId']: id,
         page: String(page),
         pageSize: String(PAGE_SIZE),
       });
@@ -161,7 +167,7 @@ export default function AdminPhotosPage() {
     } finally {
       setLoading(false);
     }
-  }, [token, id, page, category, uploaderId, range.from, range.to]);
+  }, [token, id, page, category, uploaderId, range.from, range.to, isActivity]);
 
   useEffect(() => {
     void load();
@@ -228,12 +234,12 @@ export default function AdminPhotosPage() {
     if (!token || !id) return;
     setPurging(true);
     try {
-      const res = await apiFetch<{ deleted: number }>(`/admin/tournaments/${id}/photos`, {
+      const res = await apiFetch<{ deleted: number }>(isActivity ? `/admin/photo-activities/${id}/photos` : `/admin/tournaments/${id}/photos`, {
         method: 'DELETE',
         token,
         body: JSON.stringify({ confirmName: purgeInput }),
       });
-      message.success(`已删除整届图片(${res.deleted} 张)`);
+      message.success(`已删除全部图片(${res.deleted} 张)`);
       setPurgeOpen(false);
       setPurgeInput('');
       void load();
@@ -248,7 +254,7 @@ export default function AdminPhotosPage() {
     if (!token || !id) return;
     setLogsOpen(true);
     try {
-      const data = await apiFetch<OpLog[]>(`/admin/tournaments/${id}/photo-logs`, { token });
+      const data = await apiFetch<OpLog[]>(isActivity ? `/admin/photo-activities/${id}/photo-logs` : `/admin/tournaments/${id}/photo-logs`, { token });
       setLogs(data);
     } catch {
       message.error('日志加载失败');
@@ -262,7 +268,7 @@ export default function AdminPhotosPage() {
       const form = new FormData();
       form.append('category', uploadCategory);
       uploadFileList.forEach((f) => form.append('photos', f.originFileObj ?? f));
-      const res = await fetch(`${API_BASE}/admin/tournaments/${id}/photos`, {
+      const res = await fetch(`${API_BASE}${isActivity ? `/admin/photo-activities/${id}/photos` : `/admin/tournaments/${id}/photos`}`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
         body: form,
@@ -319,8 +325,8 @@ export default function AdminPhotosPage() {
   return (
     <div>
       <Space style={{ marginBottom: 16 }} wrap>
-        <Button icon={<ArrowLeftOutlined />} onClick={() => router.push('/admin/competitions')}>
-          返回赛事管理
+        <Button icon={<ArrowLeftOutlined />} onClick={() => router.push(parentPath)}>
+          返回{targetLabel}图片
         </Button>
         <Typography.Title level={4} style={{ margin: 0 }}>
           图片管理 · {title}
@@ -385,7 +391,7 @@ export default function AdminPhotosPage() {
           </Button>
         </Popconfirm>
         <Button danger type="primary" icon={<DeleteOutlined />} onClick={() => setPurgeOpen(true)}>
-          删除整届图片
+          删除全部图片
         </Button>
         <Typography.Text type="secondary">共 {total} 张</Typography.Text>
       </Space>
@@ -463,7 +469,7 @@ export default function AdminPhotosPage() {
       )}
 
       <Modal
-        title="删除整届图片"
+        title="删除全部图片"
         open={purgeOpen}
         onCancel={() => {
           setPurgeOpen(false);
@@ -475,16 +481,16 @@ export default function AdminPhotosPage() {
         cancelText="取消"
       >
         <Typography.Paragraph>
-          此操作将永久删除本届赛事的<b>全部图片</b>(原图、水印版与缩略图),不可恢复。
+          此操作将永久删除该{targetLabel}的<b>全部图片</b>(原图、水印版与缩略图),不可恢复。
         </Typography.Paragraph>
         <Typography.Paragraph>
-          请输入赛事名称 <Typography.Text code>{title}</Typography.Text> 以确认:
+          请输入{targetLabel}名称 <Typography.Text code>{title}</Typography.Text> 以确认:
         </Typography.Paragraph>
         <Input.TextArea
           autoSize
           value={purgeInput}
           onChange={(e) => setPurgeInput(e.target.value)}
-          placeholder="输入赛事名称"
+          placeholder={`输入${targetLabel}名称`}
         />
       </Modal>
 

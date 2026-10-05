@@ -199,9 +199,6 @@ export default function AdminDashboard() {
                   <Typography.Title level={4} style={{ margin: 0 }}>
                     {stat.name}
                   </Typography.Title>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    第 {stat.edition} 届
-                  </Typography.Text>
                 </div>
 
                 <div style={{ display: 'flex', justifyContent: 'space-around' }}>

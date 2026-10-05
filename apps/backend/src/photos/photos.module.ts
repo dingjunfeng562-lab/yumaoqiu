@@ -9,5 +9,6 @@ import { ImageModerationModule } from '../image-moderation/image-moderation.modu
   imports: [ImageModerationModule],
   controllers: [PhotosController, AdminPhotosController],
   providers: [PhotosService, WatermarkService],
+  exports: [PhotosService],
 })
 export class PhotosModule {}

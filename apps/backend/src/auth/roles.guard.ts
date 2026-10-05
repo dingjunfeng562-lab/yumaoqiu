@@ -60,7 +60,14 @@ export class RolesGuard implements CanActivate {
       await tournament(item?.event.tournamentId);
     };
     const photo = async (id: string) => {
-      const item = await this.prisma.photo.findUnique({ where: { id }, select: { tournamentId: true } });
+      const item = await this.prisma.photo.findUnique({ where: { id }, select: { tournamentId: true, activityId: true } });
+      if (item?.activityId) {
+        const activity = await this.prisma.photoActivity.findFirst({
+          where: { id: item.activityId, submittedById: user.id }, select: { id: true },
+        });
+        if (!activity) throw new NotFoundException('活动图片不存在或不属于你');
+        return;
+      }
       await tournament(item?.tournamentId);
     };
     const player = async (id: string) => {

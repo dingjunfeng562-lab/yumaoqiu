@@ -41,6 +41,7 @@ import {
   MailOutlined,
   MessageOutlined,
   VideoCameraOutlined,
+  PictureOutlined,
 } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { canAccessAdminPage, firstAdminPage } from '@/lib/admin-permissions';
@@ -63,6 +64,7 @@ const baseMenuItems: MenuItem[] = [
   { key: '/admin/players', icon: <UserOutlined />, label: '选手管理' },
   { key: '/admin/tournaments', icon: <TrophyOutlined />, label: '赛事配置' },
   { key: '/admin/competitions', icon: <TrophyOutlined />, label: '赛事管理' },
+  { key: '/admin/photo-activities', icon: <PictureOutlined />, label: '活动图片' },
   { key: '/admin/events', icon: <UnorderedListOutlined />, label: '单项管理' },
   { key: '/admin/team-competitions', icon: <ApartmentOutlined />, label: '团体赛管理' },
   { key: '/admin/draws', icon: <BranchesOutlined />, label: '抽签编排' },

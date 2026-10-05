@@ -115,6 +115,10 @@ export default function AdminUsersPage() {
     [users, roleFilter],
   );
   const selectedCount = selectedUserIds.length;
+  const assignablePermissionOptions = useMemo(
+    () => permissionOptions.filter((item) => item.key !== 'INVITES'),
+    [permissionOptions],
+  );
 
   async function openPermissions(user: UserItem) {
     if (!token) return;
@@ -125,7 +129,7 @@ export default function AdminUsersPage() {
       ]);
       setPermissionOptions(catalog.options);
       setPermissionDefaults(catalog.defaults);
-      setSelectedPermissions(saved.permissions);
+      setSelectedPermissions(saved.permissions.filter((key) => key !== 'INVITES'));
       setCustomPermissions(saved.customized);
       setPermissionTarget(user);
     } catch (error) { message.error(error instanceof Error ? error.message : '加载功能权限失败'); }
@@ -512,18 +516,18 @@ export default function AdminUsersPage() {
       </Card>
 
       <Modal title={permissionTarget ? `功能权限：${permissionTarget.username}` : '功能权限'} open={!!permissionTarget} onCancel={() => setPermissionTarget(null)} onOk={savePermissions} confirmLoading={permissionSaving} width={760} okText="保存权限">
-        <Typography.Paragraph type="secondary">自定义功能不会扩大赛事归属范围，也不会重置裁判和图片员的累计名额。修改角色会恢复角色默认权限。</Typography.Paragraph>
+        <Typography.Paragraph type="secondary">自定义功能不会扩大赛事归属范围，也不会重置裁判和图片员的累计名额。邀请码权限由角色固定：仅管理员和超级管理员拥有；修改角色会恢复角色默认权限。</Typography.Paragraph>
         <Space style={{ marginBottom: 16 }}>
           <Switch checked={customPermissions} onChange={(checked) => { setCustomPermissions(checked); if (!checked && permissionTarget) setSelectedPermissions(permissionDefaults[permissionTarget.role] ?? []); }} />
           <Typography.Text>{customPermissions ? '自定义功能' : '使用角色默认权限'}</Typography.Text>
-          {customPermissions && <Button onClick={() => setSelectedPermissions(permissionOptions.map((item) => item.key))}>全选</Button>}
+          {customPermissions && <Button onClick={() => setSelectedPermissions(assignablePermissionOptions.map((item) => item.key))}>全选</Button>}
           {customPermissions && <Button onClick={() => setSelectedPermissions([])}>清空</Button>}
         </Space>
         <Checkbox.Group value={selectedPermissions} disabled={!customPermissions} onChange={(keys) => setSelectedPermissions(keys as string[])} style={{ width: '100%' }}>
-          {[...new Set(permissionOptions.map((item) => item.group))].map((group) => <div key={group} style={{ width: '100%', marginBottom: 16 }}>
+          {[...new Set(assignablePermissionOptions.map((item) => item.group))].map((group) => <div key={group} style={{ width: '100%', marginBottom: 16 }}>
             <Typography.Text strong>{group}</Typography.Text>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10, marginTop: 10 }}>
-              {permissionOptions.filter((item) => item.group === group).map((item) => <Checkbox key={item.key} value={item.key}>{item.label}</Checkbox>)}
+              {assignablePermissionOptions.filter((item) => item.group === group).map((item) => <Checkbox key={item.key} value={item.key}>{item.label}</Checkbox>)}
             </div>
           </div>)}
         </Checkbox.Group>

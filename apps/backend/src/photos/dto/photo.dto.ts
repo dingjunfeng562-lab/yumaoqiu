@@ -59,8 +59,13 @@ export class PublicPhotoQueryDto {
 }
 
 export class AdminPhotoQueryDto {
+  @IsOptional()
   @IsString()
-  tournamentId: string;
+  tournamentId?: string;
+
+  @IsOptional()
+  @IsString()
+  activityId?: string;
 
   @IsOptional()
   @IsIn(CATEGORIES)

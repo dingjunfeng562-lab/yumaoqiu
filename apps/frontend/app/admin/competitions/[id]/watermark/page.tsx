@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, usePathname, useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import {
   Alert,
@@ -81,6 +81,9 @@ type WatermarkConfig = {
 export default function WatermarkSettingsPage() {
   const params = useParams<{ id: string }>();
   const id = params?.id;
+  const pathname = usePathname();
+  const isActivity = pathname.startsWith('/admin/photo-activities/');
+  const resourceBase = isActivity ? `/admin/photo-activities/${id}` : `/admin/tournaments/${id}`;
   const router = useRouter();
   const { data: session } = useSession();
   const token = session?.user?.accessToken as string | undefined;
@@ -118,7 +121,7 @@ export default function WatermarkSettingsPage() {
     if (!token || !id) return;
     setLoading(true);
     try {
-      const data = await apiFetch<WatermarkConfig>(`/admin/tournaments/${id}/watermark`, { token });
+      const data = await apiFetch<WatermarkConfig>(`${resourceBase}/watermark`, { token });
       setLogos(data.logos);
       setLogoPercent(data.logoHeightPercent ?? DEFAULT_LOGO_PERCENT);
       setLogoGap(data.logoGapPercent ?? DEFAULT_LOGO_GAP);
@@ -142,7 +145,7 @@ export default function WatermarkSettingsPage() {
     } finally {
       setLoading(false);
     }
-  }, [token, id]);
+  }, [token, id, resourceBase]);
 
   useEffect(() => {
     void load();
@@ -166,7 +169,7 @@ export default function WatermarkSettingsPage() {
     try {
       const form = new FormData();
       form.append('file', file);
-      const res = await fetch(`${API_BASE}/admin/tournaments/${id}/watermark/logos`, {
+      const res = await fetch(`${API_BASE}${resourceBase}/watermark/logos`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
         body: form,
@@ -206,7 +209,7 @@ export default function WatermarkSettingsPage() {
   async function deleteLogo(logo: Logo) {
     if (!token || !id) return;
     try {
-      const data = await apiFetch<WatermarkConfig>(`/admin/tournaments/${id}/watermark/logos`, {
+      const data = await apiFetch<WatermarkConfig>(`${resourceBase}/watermark/logos`, {
         method: 'DELETE',
         token,
         body: JSON.stringify({ path: logo.path }),
@@ -250,7 +253,7 @@ export default function WatermarkSettingsPage() {
     if (!token || !id) return;
     setSaving(true);
     try {
-      const data = await apiFetch<WatermarkConfig>(`/admin/tournaments/${id}/watermark`, {
+      const data = await apiFetch<WatermarkConfig>(`${resourceBase}/watermark`, {
         method: 'PUT',
         token,
         body: JSON.stringify({
@@ -493,8 +496,8 @@ export default function WatermarkSettingsPage() {
   return (
     <div>
       <Space style={{ marginBottom: 16 }}>
-        <Button icon={<ArrowLeftOutlined />} onClick={() => router.push('/admin/competitions')}>
-          返回赛事管理
+        <Button icon={<ArrowLeftOutlined />} onClick={() => router.push(isActivity ? '/admin/photo-activities' : '/admin/competitions')}>
+          返回{isActivity ? '活动图片' : '赛事管理'}
         </Button>
         <Typography.Title level={4} style={{ margin: 0 }}>
           水印设置
@@ -505,7 +508,7 @@ export default function WatermarkSettingsPage() {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="第 1 个为赛事主 Logo,其余为赞助商 Logo,多个 Logo 横向并排展示(间距可调)。最多 5 个,仅支持透明背景 PNG(< 5MB)。可在右侧「文字水印」额外添加一段文字(自定义颜色、大小、位置)。"
+        message={`第 1 个为${isActivity ? '活动' : '赛事'}主 Logo,其余为赞助商 Logo,多个 Logo 横向并排展示(间距可调)。最多 5 个,仅支持透明背景 PNG(< 5MB)。所有 Logo 都会经过图片 AI 审核。`}
       />
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
@@ -561,7 +564,7 @@ export default function WatermarkSettingsPage() {
                     </div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <Typography.Text strong>
-                        {index === 0 ? '赛事主 Logo' : `赞助商 Logo ${index}`}
+                        {index === 0 ? `${isActivity ? '活动' : '赛事'}主 Logo` : `赞助商 Logo ${index}`}
                       </Typography.Text>
                       <Typography.Paragraph type="secondary" ellipsis style={{ margin: 0, fontSize: 12 }}>
                         {logo.filename ?? logo.path.split('/').pop()}

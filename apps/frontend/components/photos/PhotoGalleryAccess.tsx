@@ -16,6 +16,7 @@ type GalleryInfo = {
   endDate: string;
   location?: string | null;
   photoCount: number;
+  scope?: 'tournament' | 'activity';
 };
 
 function coverUrl(value?: string | null) {
@@ -34,6 +35,11 @@ function dateRange(startDate: string, endDate: string) {
   return `${format(startDate)} — ${format(endDate)}`;
 }
 
+function activityTime(startDate: string, endDate: string) {
+  const format = (value: string) => new Date(value).toLocaleString('zh-CN', { hour12: false });
+  return startDate === endDate ? format(startDate) : `${format(startDate)} — ${format(endDate)}`;
+}
+
 export function PhotoGalleryAccess({ accessToken }: { accessToken: string }) {
   const [gallery, setGallery] = useState<GalleryInfo>();
   const [entered, setEntered] = useState(false);
@@ -44,7 +50,7 @@ export function PhotoGalleryAccess({ accessToken }: { accessToken: string }) {
     let cancelled = false;
     fetch(`${API_BASE}/photos/access/${encodeURIComponent(accessToken)}`, { cache: 'no-store' })
       .then(async (response) => {
-        if (!response.ok) throw new Error('该赛事图片地址不存在或已失效');
+        if (!response.ok) throw new Error('该图片地址不存在或已失效');
         return (await response.json()) as GalleryInfo;
       })
       .then((data) => {
@@ -52,7 +58,7 @@ export function PhotoGalleryAccess({ accessToken }: { accessToken: string }) {
       })
       .catch((reason: unknown) => {
         if (!cancelled) {
-          setError(reason instanceof Error ? reason.message : '赛事图片加载失败');
+          setError(reason instanceof Error ? reason.message : '图片加载失败');
         }
       })
       .finally(() => {
@@ -76,7 +82,7 @@ export function PhotoGalleryAccess({ accessToken }: { accessToken: string }) {
   if (error || !gallery) {
     return (
       <main className="flex min-h-dvh items-center justify-center bg-[#04163f] p-6">
-        <Alert type="error" showIcon title="无法访问赛事图片" description={error || '访问地址无效'} />
+        <Alert type="error" showIcon title="无法访问图片" description={error || '访问地址无效'} />
       </main>
     );
   }
@@ -103,7 +109,7 @@ export function PhotoGalleryAccess({ accessToken }: { accessToken: string }) {
             justifyItems: 'center',
           }}
         >
-          <span className="text-xs font-black uppercase tracking-[0.24em] text-cyan-200" style={{ alignSelf: 'end', marginBottom: 16 }}>Tournament Gallery</span>
+          <span className="text-xs font-black uppercase tracking-[0.24em] text-cyan-200" style={{ alignSelf: 'end', marginBottom: 16 }}>{gallery.scope === 'activity' ? 'Activity Gallery' : 'Tournament Gallery'}</span>
           <span className="block max-w-4xl font-black leading-tight drop-shadow-lg" style={{ fontSize: 'clamp(24px, 6vw, 48px)', overflowWrap: 'anywhere' }}>
             {gallery.name}
           </span>
@@ -112,7 +118,7 @@ export function PhotoGalleryAccess({ accessToken }: { accessToken: string }) {
               <span className="block text-base font-semibold text-blue-50/90 sm:text-xl" style={{ marginTop: 12 }}>{gallery.subtitle}</span>
             ) : null}
             <span className="flex flex-wrap justify-center gap-x-5 gap-y-2 text-sm font-semibold text-blue-100/90" style={{ marginTop: 20 }}>
-              <span>{dateRange(gallery.startDate, gallery.endDate)}</span>
+              <span>{gallery.scope === 'activity' ? activityTime(gallery.startDate, gallery.endDate) : dateRange(gallery.startDate, gallery.endDate)}</span>
               {gallery.location ? <span>{gallery.location}</span> : null}
               <span>{gallery.photoCount} 张照片</span>
             </span>
@@ -131,9 +137,9 @@ export function PhotoGalleryAccess({ accessToken }: { accessToken: string }) {
     <main className="min-h-dvh bg-[#f4f7fb] text-slate-950">
       <header className="gallery-header bg-gradient-to-r from-[#052163] via-[#0a5dd1] to-[#03205c] text-white">
         <div className="max-w-[1440px]" style={{ marginInline: 'auto' }}>
-          <p className="text-xs font-black uppercase tracking-[0.2em] text-cyan-200">Tournament Gallery</p>
+          <p className="text-xs font-black uppercase tracking-[0.2em] text-cyan-200">{gallery.scope === 'activity' ? 'Activity Gallery' : 'Tournament Gallery'}</p>
           <h1 className="gallery-title font-black" style={{ marginTop: 8 }}>{gallery.name}</h1>
-          <p className="text-sm font-semibold text-blue-100/90" style={{ marginTop: 8 }}>赛事精彩瞬间</p>
+          <p className="text-sm font-semibold text-blue-100/90" style={{ marginTop: 8 }}>{gallery.scope === 'activity' ? '活动精彩瞬间' : '赛事精彩瞬间'}</p>
         </div>
       </header>
       <section className="mx-auto max-w-[1440px]" style={{ padding: '24px 12px' }}>

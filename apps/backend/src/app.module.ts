@@ -21,6 +21,7 @@ import { AiConfigModule } from './ai-config/ai-config.module';
 import { AiChatModule } from './ai-chat/ai-chat.module';
 import { UsageMetricsModule } from './usage-metrics/usage-metrics.module';
 import { BroadcastsModule } from './broadcasts/broadcasts.module';
+import { PhotoActivitiesModule } from './photo-activities/photo-activities.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 
@@ -48,6 +49,7 @@ import { AppService } from './app.service';
     UsageMetricsModule,
     AiChatModule,
     BroadcastsModule,
+    PhotoActivitiesModule,
   ],
   controllers: [AppController],
   providers: [AppService],

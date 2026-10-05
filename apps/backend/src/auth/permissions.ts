@@ -28,15 +28,22 @@ export const PERMISSION_KEYS: string[] = PERMISSION_OPTIONS.map((item) => item.k
 export type PermissionUser = { role: Role; permissions?: Prisma.JsonValue };
 export const DEFAULT_PERMISSIONS: Record<Role, PermissionKey[]> = {
   ROOT: PERMISSION_OPTIONS.map((item) => item.key),
-  ADMIN: ['TOURNAMENTS', 'PLAYERS', 'ORDERBOOK', 'USERS', 'INVITES', 'DASHBOARD'],
+  ADMIN: ['TOURNAMENTS', 'PLAYERS', 'ORDERBOOK', 'USERS', 'INVITES', 'PHOTOS', 'DASHBOARD'],
   PLAYER: ['REGISTRATION'],
   REFEREE: ['REFEREE'],
   PHOTOGRAPHER: ['PHOTO_UPLOAD'],
 };
 export function effectivePermissions(user: PermissionUser): PermissionKey[] {
   if (user.role === Role.ROOT) return [...DEFAULT_PERMISSIONS.ROOT];
-  if (!Array.isArray(user.permissions)) return [...DEFAULT_PERMISSIONS[user.role]];
-  return user.permissions.filter((value): value is PermissionKey => typeof value === 'string' && PERMISSION_KEYS.includes(value));
+  const permissions = !Array.isArray(user.permissions)
+    ? [...DEFAULT_PERMISSIONS[user.role]]
+    : user.permissions.filter((value): value is PermissionKey => typeof value === 'string' && PERMISSION_KEYS.includes(value));
+  // Invite management is a role boundary, not a permission that can promote
+  // players, referees or photographers into account issuers.
+  if (user.role === Role.ADMIN) {
+    return permissions.includes('INVITES') ? permissions : [...permissions, 'INVITES'];
+  }
+  return permissions.filter((key) => key !== 'INVITES');
 }
 export function hasPermission(user: PermissionUser, ...keys: PermissionKey[]) {
   return user.role === Role.ROOT || keys.some((key) => effectivePermissions(user).includes(key));
@@ -48,7 +55,7 @@ export function requiredPermissions(controller: string, action: string, kind?: s
   switch (controller) {
     case 'AuthController':
       if (['createRoot', 'createAdmin', 'updateUserRole', 'updateInviteQuota', 'setUserPermissions', 'getUserPermissions', 'permissionOptions'].includes(action)) return [];
-      if (action === 'getInviteQuota') return ['USERS', 'INVITES'];
+      if (action === 'getInviteQuota') return ['INVITES'];
       if (action.toLowerCase().includes('invitecode')) return ['INVITES'];
       return ['USERS'];
     case 'TournamentsController':
@@ -75,6 +82,8 @@ export function requiredPermissions(controller: string, action: string, kind?: s
       if (['listAssignableReferees', 'getRefereeAccessCode', 'correctMatchScore', 'assignReferee'].includes(action)) return ['SCORING'];
       return ['SCORING', 'REFEREE'];
     case 'AdminPhotosController': return action === 'listTournamentStats' ? ['PHOTOS', 'DASHBOARD'] : ['PHOTOS'];
+    case 'PhotoActivitiesController':
+      return ['approve', 'reject'].includes(action) ? [] : ['PHOTOS'];
     case 'PhotosController': return ['PHOTO_UPLOAD'];
     case 'AdminAnnouncementsController': return ['ANNOUNCEMENTS'];
     case 'AiConfigController': return ['AI_CONFIG'];

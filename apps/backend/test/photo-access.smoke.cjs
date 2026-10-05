@@ -15,7 +15,7 @@ const bcrypt = require('bcryptjs');
 
 const prisma = new PrismaClient({ adapter: new PrismaMariaDb(process.env.DATABASE_URL) });
 const jwt = new JwtService({ secret: process.env.JWT_SECRET });
-const base = 'http://localhost:4000';
+const base = process.env.BACKEND_QA_URL || 'http://localhost:4000';
 const runId = randomUUID();
 const tournamentIds = [randomUUID(), randomUUID(), randomUUID()];
 const userIds = [];
@@ -45,7 +45,7 @@ async function main() {
   for (const id of tournamentIds) {
     await prisma.tournament.create({ data: {
       id, name: `图片访问测试 ${runId} ${tournamentIds.indexOf(id) + 1}`, startDate: new Date(), endDate: new Date(),
-      coverImageUrl: '/generated/competition-cover-1.png',
+      coverImageUrl: '/generated/competition-cover-1.png', submittedById: userIds[0],
     } });
   }
   const fullPath = `photos/${tournamentIds[0]}/full/fixture.jpg`;
@@ -208,6 +208,19 @@ async function main() {
         assert.ok(cardPositions[1].left > cardPositions[0].left, `${sort}: second photo must be to the right of the first`);
         assert.ok(cardPositions[2].top > cardPositions[0].top, `${sort}: third photo must continue on the next row`);
         assert.ok(Math.abs(cardPositions[2].left - cardPositions[0].left) <= 1, `${sort}: next row must restart on the left`);
+        const thumbnailLayout = await mobile.locator('.photo-media').first().evaluate((media) => {
+          const mediaRect = media.getBoundingClientRect();
+          const imageStyle = getComputedStyle(media.querySelector('.photo-thumbnail'));
+          const backdropStyle = getComputedStyle(media.querySelector('.photo-thumbnail-backdrop'));
+          return {
+            ratio: mediaRect.width / mediaRect.height,
+            objectFit: imageStyle.objectFit,
+            backdropFit: backdropStyle.objectFit,
+          };
+        });
+        assert.ok(Math.abs(thumbnailLayout.ratio - (4 / 3)) < 0.02, `${sort}: mobile thumbnails must use a consistent 4:3 frame`);
+        assert.equal(thumbnailLayout.objectFit, 'contain', `${sort}: mobile portrait thumbnails must remain fully visible`);
+        assert.equal(thumbnailLayout.backdropFit, 'cover', `${sort}: mobile thumbnail backdrops must fill the frame`);
       }
       assert.equal(await mobile.getByRole('tab').count(), 0, 'No cross-tournament tabs');
       assert.equal(await mobile.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
@@ -219,6 +232,12 @@ async function main() {
       await mobile.setViewportSize({ width: 1440, height: 1000 });
       assert.equal(await mobile.locator('h1').evaluate((heading) => getComputedStyle(heading).fontSize), '36px');
       assert.equal(await mobile.locator('h1').evaluate((heading) => getComputedStyle(heading).textAlign), 'center');
+      const desktopThumbnailRatio = await mobile.locator('.photo-media').first().evaluate((media) => {
+        const rect = media.getBoundingClientRect();
+        return rect.width / rect.height;
+      });
+      assert.ok(Math.abs(desktopThumbnailRatio - (4 / 3)) < 0.02, 'Desktop thumbnails must use a consistent 4:3 frame');
+      assert.equal(await mobile.locator('.photo-thumbnail').first().evaluate((image) => getComputedStyle(image).objectFit), 'contain', 'Desktop portrait thumbnails must remain fully visible');
       await mobile.setViewportSize({ width: 390, height: 844 });
       await mobile.reload();
       await mobile.getByRole('button', { name: /进入.*照片墙/ }).waitFor();
