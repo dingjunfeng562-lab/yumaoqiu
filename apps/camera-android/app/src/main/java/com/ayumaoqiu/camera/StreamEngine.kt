@@ -7,7 +7,6 @@ import com.pedro.common.ConnectChecker
 import com.pedro.encoder.input.sources.audio.MicrophoneSource
 import com.pedro.encoder.input.sources.video.Camera2Source
 import com.pedro.library.generic.GenericStream
-import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /** What the service shows on screen and reports to the site. */
@@ -231,6 +230,7 @@ class StreamEngine(context: Context) {
   }
 
   fun release() {
+    stopZoomEasing()
     val created = stream ?: return
     stream = null
     runCatching { created.release() }
@@ -244,6 +244,11 @@ class StreamEngine(context: Context) {
   private var cachedRange: Pair<Float, Float>? = null
   /** Last value actually sent to the camera, so identical requests are skipped. */
   private var appliedZoom = 1f
+  private var zoomMotion = ZoomRequestState(1f, 1f, 1f)
+  private var notifyZoom = true
+  private var zoomFrameScheduled = false
+  private val zoomChoreographer = android.view.Choreographer.getInstance()
+  private val zoomFrame = android.view.Choreographer.FrameCallback { frameTimeNs -> stepZoom(frameTimeNs) }
 
   fun zoomRange(): Pair<Float, Float> {
     cachedRange?.let { return it }
@@ -254,7 +259,17 @@ class StreamEngine(context: Context) {
   /** Call after the lens changes so the next zoom uses its own range. */
   private fun resetZoomCache() {
     cachedRange = null
+    stopZoomEasing()
     appliedZoom = runCatching { cameraSource.getZoom() }.getOrDefault(1f)
+    val range = zoomRange()
+    zoomMotion = ZoomRequestState(range.first, range.second, appliedZoom)
+  }
+
+  /** Cancel scheduled native requests before releasing or changing the lens. */
+  private fun stopZoomEasing() {
+    zoomChoreographer.removeFrameCallback(zoomFrame)
+    zoomMotion.request(appliedZoom)
+    zoomFrameScheduled = false
   }
 
   fun readZoom(): Float = runCatching { cameraSource.getZoom() }.getOrDefault(1f)
@@ -262,27 +277,55 @@ class StreamEngine(context: Context) {
   /**
    * Sets zoom as a multiple of the main lens; clamped to what the phone allows.
    *
-   * With [notify] false (pinching, animating) only the camera request is sent:
-   * re-rendering the whole screen on every gesture frame competes with the
-   * encoder and made zooming stutter. Call [commitZoom] when the gesture ends.
+   * Gesture input goes directly to the native camera on the next display frame.
+   * With [notify] false the gesture badge is updated by the Activity, avoiding a
+   * full screen render for every pinch event.
    */
   fun setZoom(level: Float, notify: Boolean = true) {
-    val (min, max) = zoomRange()
-    val clamped = ZoomScale(min, max).clamp(level)
-    if (abs(clamped - appliedZoom) >= MIN_ZOOM_STEP) {
-      runCatching { cameraSource.setZoom(clamped) }
-      appliedZoom = clamped
+    zoomMotion.request(level)
+    notifyZoom = notify
+    scheduleZoom()
+  }
+
+  fun animateZoomTo(level: Float) {
+    zoomMotion.animateTo(level, System.nanoTime())
+    notifyZoom = true
+    scheduleZoom()
+  }
+
+  private fun scheduleZoom() {
+    if (!zoomFrameScheduled) {
+      zoomFrameScheduled = true
+      zoomChoreographer.postFrameCallback(zoomFrame)
     }
-    if (notify) publish(status.copy(zoom = appliedZoom, zoomMin = min, zoomMax = max))
+  }
+
+  /** One display frame of zoom travel; the only place the camera is asked. */
+  private fun stepZoom(frameTimeNs: Long) {
+    zoomFrameScheduled = false
+    if (stream == null) return
+    val (min, max) = zoomRange()
+    zoomMotion.next(frameTimeNs)?.let { next ->
+      runCatching { cameraSource.setZoom(next) }.onSuccess { appliedZoom = next }
+    }
+    if (notifyZoom) publishZoom(min, max)
+    if (zoomMotion.animating) scheduleZoom()
+  }
+
+  private fun publishZoom(min: Float, max: Float) {
+    if (status.zoom != appliedZoom || status.zoomMin != min || status.zoomMax != max) {
+      publish(status.copy(zoom = appliedZoom, zoomMin = min, zoomMax = max))
+    }
   }
 
   /** Reports the settled zoom once, after a pinch or animation. */
   fun commitZoom() {
+    notifyZoom = true
     val (min, max) = zoomRange()
-    publish(status.copy(zoom = appliedZoom, zoomMin = min, zoomMax = max))
+    publishZoom(min, max)
   }
 
-  fun zoomBy(factor: Float) = setZoom(appliedZoom * factor)
+  fun zoomBy(factor: Float) = setZoom(zoomMotion.target * factor)
 
   /** Focuses (and meters exposure for) the area the operator tapped. */
   fun tapToFocus(view: android.view.View, event: android.view.MotionEvent): Boolean =
@@ -351,7 +394,5 @@ class StreamEngine(context: Context) {
     const val AUDIO_SAMPLE_RATE = 44100
     private const val MAX_RETRIES = 12
     private const val RETRY_DELAY_MS = 1500L
-    /** Smaller steps are invisible on screen but each one is a new camera request. */
-    private const val MIN_ZOOM_STEP = 0.01f
   }
 }

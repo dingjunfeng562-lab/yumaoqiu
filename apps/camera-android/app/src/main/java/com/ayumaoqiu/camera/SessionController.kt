@@ -296,6 +296,12 @@ class SessionController(
   /** Publishes the settled zoom once a pinch or animation has finished. */
   fun commitZoom() = engine.commitZoom()
 
+  /**
+   * Eases to a stop such as 1x or 2x. The engine does the easing at one camera
+   * request per frame, so the animation holds up even while encoding.
+   */
+  fun animateZoomTo(target: Float) = engine.animateZoomTo(target)
+
   fun zoomBy(factor: Float) = engine.zoomBy(factor)
 
   /** Straight to a fixed stop such as 1x or 2x. */

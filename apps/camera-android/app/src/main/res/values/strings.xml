@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-  <string name="app_name">羽毛球摄像端</string>
+  <string name="app_name">羽动云赛摄像端</string>
   <string name="notification_channel_name">推流状态</string>
   <string name="notification_channel_desc">显示手机摄像端正在推流</string>
-  <string name="notification_title">羽毛球摄像端</string>
+  <string name="notification_title">羽动云赛摄像端</string>
   <string name="notification_idle">准备中</string>
 
   <string name="pair_title">连接到赛事后台</string>
@@ -17,7 +17,8 @@
   <string name="action_stop">停止推流</string>
   <string name="action_switch">翻转镜头</string>
   <string name="action_settings">设置</string>
+  <string name="camera_program_badge">● 当前摄像头为主视角</string>
 
-  <string name="permission_needed">需要摄像头和麦克风权限才能推流，请在系统设置里允许</string>
+  <string name="permission_needed">需要摄像头权限才能扫码、预览和推流，请在系统设置里允许</string>
   <string name="permission_settings">去设置</string>
 </resources>

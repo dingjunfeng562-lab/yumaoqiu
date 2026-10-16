@@ -52,10 +52,14 @@ class LiveCameraCapturer(private val context: Context, private val owner: Lifecy
   private var width = 1280
   private var height = 720
   private var fps = 30
+  private var surfaceWidth = 1280
+  private var surfaceHeight = 720
+  private val zoomController = ZoomController({ onZoomChanged?.invoke(it) }, { onError?.invoke(it) })
   var rotation: Int = Surface.ROTATION_90
     set(value) { field = value; main.post { preview?.targetRotation = value } }
   var onError: ((String) -> Unit)? = null
   var onCapabilitiesChanged: (() -> Unit)? = null
+  var onZoomChanged: ((Float) -> Unit)? = null
   var stabilization = "防抖检测中"
     private set
 
@@ -110,6 +114,7 @@ class LiveCameraCapturer(private val context: Context, private val owner: Lifecy
   }
   private fun bind() {
     val provider = provider ?: return
+    zoomController.bind(null)
     preview?.let { provider.unbind(it) }
     val selector = if (front) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
     val info = selector.filter(provider.availableCameraInfos).firstOrNull() ?: error("没有可用镜头")
@@ -150,6 +155,7 @@ class LiveCameraCapturer(private val context: Context, private val owner: Lifecy
     useCase.setSurfaceProvider { request ->
       val textureHelper = helper
       if (textureHelper == null || !running || preview !== useCase) { request.willNotProvideSurface(); return@setSurfaceProvider }
+      surfaceWidth = request.resolution.width; surfaceHeight = request.resolution.height
       textureHelper.setTextureSize(request.resolution.width, request.resolution.height)
       request.setTransformationInfoListener(ContextCompat.getMainExecutor(context)) {
         if (running && preview === useCase) frameTransform = FrameTransform(
@@ -162,18 +168,28 @@ class LiveCameraCapturer(private val context: Context, private val owner: Lifecy
       request.provideSurface(surface, ContextCompat.getMainExecutor(context)) { surface.release() }
     }
     camera = provider.bindToLifecycle(owner, selector, useCase)
+    zoomController.bind(camera)
     observer?.onCapturerStarted(true)
     onCapabilitiesChanged?.invoke()
   }
   fun zoomRange(): Pair<Float, Float> = camera?.cameraInfo?.zoomState?.value?.let { it.minZoomRatio to it.maxZoomRatio } ?: (1f to 1f)
   fun zoom(): Float = camera?.cameraInfo?.zoomState?.value?.zoomRatio ?: 1f
-  fun setZoom(value: Float) { val range = zoomRange(); camera?.cameraControl?.setZoomRatio(value.coerceIn(range.first, range.second)) }
+  fun setZoom(value: Float) { zoomController.request(value) }
+  fun animateZoom(value: Float) { zoomController.animateTo(value) }
   fun focus(x: Float, y: Float, viewWidth: Int, viewHeight: Int, lock: Boolean = false) {
     if (viewWidth <= 0 || viewHeight <= 0) return
-    val point = SurfaceOrientedMeteringPointFactory(viewWidth.toFloat(), viewHeight.toFloat()).createPoint(x, y)
+    val transform = frameTransform ?: return
+    val useCase = preview ?: return
+    val coordinates = FocusCoordinates.surfacePoint(x, y, viewWidth, viewHeight, surfaceWidth, surfaceHeight, transform.rotation) ?: return
+    val point = SurfaceOrientedMeteringPointFactory(1f, 1f, useCase).createPoint(coordinates.first, coordinates.second)
     val action = FocusMeteringAction.Builder(point, FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE)
     if (lock) action.disableAutoCancel() else action.setAutoCancelDuration(3, TimeUnit.SECONDS)
     camera?.cameraControl?.startFocusAndMetering(action.build())
+  }
+  /** Releases a long-press AF/AE lock and returns metering to the camera. */
+  fun resetFocusAndExposure() {
+    camera?.cameraControl?.cancelFocusAndMetering()
+    exposure(0)
   }
   fun exposureRange(): IntRange = camera?.cameraInfo?.exposureState?.exposureCompensationRange?.let { it.lower..it.upper } ?: 0..0
   fun exposure(index: Int) { val range = exposureRange(); camera?.cameraControl?.setExposureCompensationIndex(index.coerceIn(range.first, range.last)) }
@@ -185,7 +201,7 @@ class LiveCameraCapturer(private val context: Context, private val owner: Lifecy
     stoppedObserver?.onCapturerStopped()
     main.post {
       stoppedPreview?.let { provider?.unbind(it) }
-      if (preview === stoppedPreview) { preview = null; camera = null }
+      if (preview === stoppedPreview) { zoomController.bind(null); preview = null; camera = null }
     }
   }
   override fun changeCaptureFormat(width: Int, height: Int, framerate: Int) { this.width = width; this.height = height; fps = framerate; if (running) main.post { bind() } }

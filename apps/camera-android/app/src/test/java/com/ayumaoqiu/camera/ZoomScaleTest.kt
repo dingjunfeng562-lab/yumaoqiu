@@ -71,4 +71,27 @@ class ZoomScaleTest {
     // Ranges come back as floats such as 9.9999995; the 10x stop must survive.
     assertTrue(ZoomScale(1f, 9.9999995f).presets().contains(10f))
   }
+
+  @Test
+  fun easingConvergesOnTheTargetWithoutOvershooting() {
+    val scale = ZoomScale(0.5f, 8f)
+    val target = 6f
+    var zoom = 1f
+    var frames = 0
+    while (zoom != target && frames < 300) {
+      val next = scale.stepTowards(zoom, target)
+      assertTrue("must not overshoot: $next > $target", next <= target)
+      assertTrue("must make progress: $zoom -> $next", next > zoom)
+      zoom = next
+      frames++
+    }
+    assertEquals(target, zoom, 0f)
+    // 8x of travel at ~0.09x a frame: smooth but not sluggish.
+    assertTrue("converged in $frames frames", frames in 1..120)
+  }
+
+  @Test
+  fun easingStepGrowsWithTheLensRange() {
+    assertTrue(ZoomScale(0.5f, 10f).stepSize() > ZoomScale(1f, 2f).stepSize())
+  }
 }

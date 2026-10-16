@@ -7,6 +7,7 @@ import android.hardware.camera2.CameraManager
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaFormat
+import android.os.Build
 
 /**
  * Reads what this phone's camera and H.264 encoder can do, so the settings
@@ -44,11 +45,16 @@ object VideoCapabilities {
     } }
   }
 
-  /** Video capabilities of the H.264 encoders, hardware ones first. */
+  fun isHardwareEncoder(info: MediaCodecInfo): Boolean = if (Build.VERSION.SDK_INT >= 29) info.isHardwareAccelerated else {
+    val name = info.name.lowercase(java.util.Locale.ROOT)
+    !name.startsWith("omx.google.") && !name.startsWith("c2.android.") && !name.contains(".sw.")
+  }
+
+  /** Only hardware H.264 encoders may make a quality selectable. */
   private fun avcEncoders(): List<MediaCodecInfo.VideoCapabilities> =
     runCatching { MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.toList() }
       .getOrDefault(emptyList())
-      .filter { info -> info.isEncoder && info.supportedTypes.any { it.equals(MediaFormat.MIMETYPE_VIDEO_AVC, true) } }
+      .filter { info -> info.isEncoder && isHardwareEncoder(info) && info.supportedTypes.any { it.equals(MediaFormat.MIMETYPE_VIDEO_AVC, true) } }
       .mapNotNull { info ->
         runCatching { info.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC).videoCapabilities }.getOrNull()
       }

@@ -1,7 +1,6 @@
 package com.ayumaoqiu.camera
 
 import android.Manifest
-import android.animation.ValueAnimator
 import android.app.AlertDialog
 import android.content.ComponentName
 import android.content.Context
@@ -16,7 +15,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import android.provider.Settings
-import android.view.Choreographer
 import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
@@ -25,7 +23,6 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
 import android.view.WindowManager
-import android.view.animation.DecelerateInterpolator
 import android.widget.ArrayAdapter
 import android.widget.CheckBox
 import android.widget.EditText
@@ -67,18 +64,17 @@ class MainActivity : AppCompatActivity() {
 
   private lateinit var prefs: Prefs
   private var controller: SessionController? = null
+  private var streamService: StreamService? = null
   private var bound = false
   private var collectJob: Job? = null
   private var surfaceReady = false
 
   /** The preset list currently drawn, so the row is only rebuilt when it changes. */
   private var drawnPresets: List<Float> = emptyList()
-  private var zoomAnimator: ValueAnimator? = null
   private var pinching = false
-  /** Latest pinch target not yet sent to the camera; NaN when none. */
-  private var pendingZoom = Float.NaN
-  private var zoomFrameScheduled = false
   private var drawnPhase: SessionPhase? = null
+  private var pendingLegacyPairing: PairingPayload? = null
+  private var pendingLegacyStart = false
   private val chipActiveBg by lazy { oval(Color.parseColor("#CC000000")) }
   private val chipIdleBg by lazy { oval(Color.parseColor("#55000000")) }
 
@@ -86,8 +82,32 @@ class MainActivity : AppCompatActivity() {
 
   private val permissionLauncher =
     registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-      if (hasCorePermissions()) startSession() else showPermissionRationale()
+      if (hasStartupPermissions()) startSession() else showPermissionRationale()
     }
+
+  private val audioPermissionLauncher =
+    registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+      if (!granted) {
+        showPermissionRationale(audioOnly = true)
+        return@registerForActivityResult
+      }
+      continuePendingLegacyAction()
+    }
+
+  private fun continuePendingLegacyAction() {
+    if (!hasAudioPermission()) return
+    val session = controller ?: return
+    streamService?.enableMicrophoneForeground()
+    pendingLegacyPairing?.let { payload ->
+      pendingLegacyPairing = null
+      session.applyPairing(payload)
+    }
+    if (pendingLegacyStart) {
+      pendingLegacyStart = false
+      session.restartPreview()
+      session.togglePublishing()
+    }
+  }
 
   private val scanLauncher = registerForActivityResult(ScanContract()) { result ->
     val payload = PairingPayload.parse(result.contents)
@@ -103,16 +123,20 @@ class MainActivity : AppCompatActivity() {
 
   private val connection = object : ServiceConnection {
     override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-      val session = (binder as? StreamService.LocalBinder)?.controller ?: return
+      val local = binder as? StreamService.LocalBinder ?: return
+      val session = local.controller
       controller = session
+      streamService = local.service
       bound = true
       if (surfaceReady) session.attachSurface(preview)
       observe(session)
+      if (hasAudioPermission()) continuePendingLegacyAction()
     }
 
     override fun onServiceDisconnected(name: ComponentName?) {
       bound = false
       controller = null
+      streamService = null
     }
   }
 
@@ -147,7 +171,18 @@ class MainActivity : AppCompatActivity() {
       }
     })
 
-    shutter.setOnClickListener { controller?.togglePublishing() }
+    shutter.setOnClickListener {
+      val session = controller ?: return@setOnClickListener
+      if (session.state.value.isPublishing) {
+        session.togglePublishing()
+      } else if (hasAudioPermission()) {
+        streamService?.enableMicrophoneForeground()
+        session.togglePublishing()
+      } else {
+        pendingLegacyStart = true
+        audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+      }
+    }
     findViewById<View>(R.id.switchButton).setOnClickListener { controller?.switchCamera() }
     findViewById<View>(R.id.settingsButton).setOnClickListener { showSettings() }
     findViewById<View>(R.id.scanButton).setOnClickListener { startScan() }
@@ -156,13 +191,11 @@ class MainActivity : AppCompatActivity() {
 
     // Android 14 refuses a camera-type foreground service started before the
     // camera permission is granted, so the service only starts once it is.
-    if (hasCorePermissions()) startSession() else requestPermissions()
+    if (hasStartupPermissions()) startSession() else requestPermissions()
   }
 
   override fun onDestroy() {
     if (!::prefs.isInitialized) { super.onDestroy(); return }
-    zoomAnimator?.cancel()
-    Choreographer.getInstance().removeFrameCallback(zoomFrame)
     collectJob?.cancel()
     if (bound) {
       unbindService(connection)
@@ -244,7 +277,7 @@ class MainActivity : AppCompatActivity() {
 
     renderShutter(state)
     renderPresets(state)
-    if (!pinching && zoomAnimator?.isRunning != true) setBadgeText(state.zoom)
+    if (!pinching) setBadgeText(state.zoom)
   }
 
   private fun renderShutter(state: SessionState) {
@@ -322,9 +355,9 @@ class MainActivity : AppCompatActivity() {
 
       override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
         val session = controller ?: return false
-        zoomAnimator?.cancel()
         pinching = true
         target = session.readZoom()
+        session.setZoom(target, notify = false)
         showZoomBadge()
         return true
       }
@@ -335,19 +368,18 @@ class MainActivity : AppCompatActivity() {
         // the gesture, so it has to be accumulated. Clamping as we go keeps
         // the zoom from "sticking" after pinching past the phone's limit.
         target = session.state.value.zoomScale.clamp(target * detector.scaleFactor)
-        // Touch events can arrive at 120-240 Hz; the camera only needs one
-        // request per displayed frame.
-        pendingZoom = target
-        if (!zoomFrameScheduled) {
-          zoomFrameScheduled = true
-          Choreographer.getInstance().postFrameCallback(zoomFrame)
-        }
+        // Touch events arrive at 120-240 Hz and the engine sends one request per
+        // displayed frame directly at this value, so the latest target
+        // is all it needs. notify = false keeps the whole screen from being
+        // re-rendered mid-gesture; the badge tracks the fingers on its own.
+        session.setZoom(target, notify = false)
+        setBadgeText(target)
         return true
       }
 
       override fun onScaleEnd(detector: ScaleGestureDetector) {
         pinching = false
-        flushPendingZoom()
+        // Publish the final native zoom after the last coalesced gesture frame.
         controller?.commitZoom()
         hideZoomBadge()
       }
@@ -388,40 +420,12 @@ class MainActivity : AppCompatActivity() {
     val session = controller ?: return
     val scale = session.state.value.zoomScale
     if (!scale.isAdjustable) return
-    zoomAnimator?.cancel()
-    val from = session.readZoom()
     val to = scale.clamp(target)
     showZoomBadge()
-    zoomAnimator = ValueAnimator.ofFloat(from, to).apply {
-      duration = ZOOM_ANIMATION_MS
-      interpolator = DecelerateInterpolator()
-      addUpdateListener {
-        val value = it.animatedValue as Float
-        session.setZoom(value, notify = false)
-        setBadgeText(value)
-      }
-      addListener(object : android.animation.AnimatorListenerAdapter() {
-        override fun onAnimationEnd(animation: android.animation.Animator) {
-          session.commitZoom()
-          hideZoomBadge()
-        }
-      })
-      start()
-    }
-  }
-
-  /** Applies the latest pinch value once per frame. */
-  private val zoomFrame = Choreographer.FrameCallback {
-    zoomFrameScheduled = false
-    flushPendingZoom()
-  }
-
-  private fun flushPendingZoom() {
-    val value = pendingZoom
-    if (value.isNaN()) return
-    pendingZoom = Float.NaN
-    controller?.setZoom(value, notify = false)
-    setBadgeText(value)
+    // The badge follows the finger or the animation's target, while the lens
+    // itself eases towards it at one step per frame.
+    setBadgeText(to)
+    session.animateZoomTo(to)
   }
 
   /** Only touches the TextView when the shown digits change, to avoid relayouts. */
@@ -466,7 +470,13 @@ class MainActivity : AppCompatActivity() {
       stopService(Intent(this, StreamService::class.java))
       startActivity(Intent(this, LiveCameraActivity::class.java).putExtra("url", payload.baseUrl).putExtra("code", payload.token))
       finish()
-    } else controller?.applyPairing(payload)
+    } else if (hasAudioPermission()) {
+      streamService?.enableMicrophoneForeground()
+      controller?.applyPairing(payload)
+    } else {
+      pendingLegacyPairing = payload
+      audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+    }
   }
 
   private fun startScan() {
@@ -606,15 +616,23 @@ class MainActivity : AppCompatActivity() {
 
   // ---------- Permissions ----------
 
-  private fun corePermissions(): Array<String> =
-    arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
+  private fun startupPermissions(): Array<String> = buildList {
+    add(Manifest.permission.CAMERA)
+    // A fresh install can scan a multi-camera code without granting audio.
+    // The retained RTMP/SRT mode always publishes sound, so an existing legacy
+    // pairing still asks for its microphone during startup.
+    if (prefs.pairingToken.isNotBlank()) add(Manifest.permission.RECORD_AUDIO)
+  }.toTypedArray()
 
-  private fun hasCorePermissions(): Boolean = corePermissions().all {
+  private fun hasStartupPermissions(): Boolean = startupPermissions().all {
     ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
   }
 
+  private fun hasAudioPermission(): Boolean =
+    ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
   private fun requestPermissions() {
-    val wanted = corePermissions().toMutableList()
+    val wanted = startupPermissions().toMutableList()
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
       // Optional: without it the "推流中" notification is hidden, nothing breaks.
       wanted += Manifest.permission.POST_NOTIFICATIONS
@@ -622,16 +640,18 @@ class MainActivity : AppCompatActivity() {
     permissionLauncher.launch(wanted.toTypedArray())
   }
 
-  private fun showPermissionRationale() {
+  private fun showPermissionRationale(audioOnly: Boolean = false) {
     AlertDialog.Builder(this)
-      .setMessage(R.string.permission_needed)
+      .setMessage(if (audioOnly) "旧版 RTMP/SRT 推流会同时发布声音，需要麦克风权限。多机位模式只有主音频手机才会申请此权限。" else getString(R.string.permission_needed))
       .setCancelable(false)
       .setPositiveButton(R.string.permission_settings) { _, _ ->
         startActivity(
           Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)),
         )
       }
-      .setNegativeButton("重试") { _, _ -> requestPermissions() }
+      .setNegativeButton("重试") { _, _ ->
+        if (audioOnly) audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO) else requestPermissions()
+      }
       .show()
   }
 
@@ -639,7 +659,8 @@ class MainActivity : AppCompatActivity() {
     super.onResume()
     if (!::prefs.isInitialized || isFinishing) return
     // Returning from system settings with the permissions now granted.
-    if (!bound && hasCorePermissions()) startSession()
+    if (!bound && hasStartupPermissions()) startSession()
+    if (hasAudioPermission()) continuePendingLegacyAction()
   }
 
   // ---------- Helpers ----------
@@ -672,7 +693,6 @@ class MainActivity : AppCompatActivity() {
   }
 
   companion object {
-    private const val ZOOM_ANIMATION_MS = 260L
     /** How close the zoom must be to a stop for that stop to light up. */
     private const val ACTIVE_TOLERANCE = 0.04f
     private val COLOR_SELECTED = Color.parseColor("#FFD54F")

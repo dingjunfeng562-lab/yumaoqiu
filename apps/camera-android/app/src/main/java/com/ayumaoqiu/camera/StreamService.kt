@@ -1,5 +1,6 @@
 package com.ayumaoqiu.camera
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -7,6 +8,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.Build
@@ -14,6 +16,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -34,11 +37,14 @@ class StreamService : Service() {
 
   inner class LocalBinder : Binder() {
     val controller: SessionController get() = this@StreamService.controller
+    val service: StreamService get() = this@StreamService
   }
 
   private val binder = LocalBinder()
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
   private var wakeLock: PowerManager.WakeLock? = null
+  private var microphoneForeground = false
+  private var currentNotificationText = ""
 
   lateinit var controller: SessionController
     private set
@@ -48,6 +54,7 @@ class StreamService : Service() {
     controller = SessionController(this, Prefs(this), scope)
     createChannel()
     // Must be in the foreground before the camera is opened.
+    microphoneForeground = hasAudioPermission()
     startForegroundCompat(getString(R.string.notification_idle))
     followSession()
     if (controller.isPaired) controller.loadConfig()
@@ -60,7 +67,8 @@ class StreamService : Service() {
         .map { it.phase to it.message }
         .distinctUntilChanged()
         .collect { (phase, message) ->
-          updateNotification(notificationText(phase, message))
+          currentNotificationText = notificationText(phase, message)
+          updateNotification(currentNotificationText)
           val publishing = phase == SessionPhase.CONNECTING ||
             phase == SessionPhase.LIVE ||
             phase == SessionPhase.RECONNECTING
@@ -133,13 +141,25 @@ class StreamService : Service() {
   }
 
   private fun startForegroundCompat(text: String) {
+    currentNotificationText = text
     val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-      ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+      ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
+        (if (microphoneForeground && hasAudioPermission()) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0)
     } else {
       0
     }
     ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(text), type)
   }
+
+  /** Promotes the already-running service immediately before legacy audio opens. */
+  fun enableMicrophoneForeground() {
+    if (!hasAudioPermission()) return
+    microphoneForeground = true
+    startForegroundCompat(currentNotificationText.ifBlank { getString(R.string.notification_idle) })
+  }
+
+  private fun hasAudioPermission(): Boolean =
+    ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
   private fun buildNotification(text: String): Notification {
     val open = PendingIntent.getActivity(

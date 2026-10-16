@@ -1,0 +1,28 @@
+{
+  "verifiedAt": "2026-10-09",
+  "apk": "Ayumaoqiu-Camera-1.3.1-debug.apk",
+  "applicationId": "com.ayumaoqiu.camera",
+  "versionCode": 8,
+  "versionName": "1.3.1-ayumaoqiu",
+  "buildType": "debug",
+  "sizeBytes": 68357690,
+  "sha256": "C968026B6C3244A98ECF9C68EC90B63D9E39A6C7C381B70EAF42AA42B1582894",
+  "certificateSha256": "94d6c72627045646f791750e6581693ab3eb63e36d68ef4727beee9da86068b0",
+  "sameSignerAs130": true,
+  "signatureVerified": true,
+  "gradleBuildPassed": true,
+  "unitTests": { "tests": 65, "failures": 0, "errors": 0 },
+  "lint": { "errors": 0, "warnings": 80 },
+  "changes": [
+    "Native camera zoom: latest gesture target each display frame, no hardware acknowledgement gating",
+    "Separate zoom UI state; 240ms preset transition interrupted immediately by gestures",
+    "Capability-checked 1080p60 auto preference restored",
+    "Persistent bottom-left PGM camera badge, hidden on camera switch or stop"
+  ],
+  "reportedDevice": "Redmi K60 Pro",
+  "reportedIssue": "Local camera preview zoom is not smooth",
+  "deviceInstalled": false,
+  "realDeviceZoomValidated": false,
+  "realDeviceProgramBadgeValidated": false,
+  "productionDeployed": false
+}

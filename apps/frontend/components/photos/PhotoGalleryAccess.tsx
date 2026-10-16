@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, Spin } from 'antd';
 import { PhotosGallery } from './PhotosGallery';
+import { galleryMessages, type GalleryLanguage } from './galleryMessages';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 const API_ORIGIN = API_BASE.replace(/\/api$/, '');
@@ -45,6 +46,7 @@ export function PhotoGalleryAccess({ accessToken }: { accessToken: string }) {
   const [entered, setEntered] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [language, setLanguage] = useState<GalleryLanguage>('zh-CN');
 
   useEffect(() => {
     let cancelled = false;
@@ -139,13 +141,14 @@ export function PhotoGalleryAccess({ accessToken }: { accessToken: string }) {
         <div className="max-w-[1440px]" style={{ marginInline: 'auto' }}>
           <p className="text-xs font-black uppercase tracking-[0.2em] text-cyan-200">{gallery.scope === 'activity' ? 'Activity Gallery' : 'Tournament Gallery'}</p>
           <h1 className="gallery-title font-black" style={{ marginTop: 8 }}>{gallery.name}</h1>
-          <p className="text-sm font-semibold text-blue-100/90" style={{ marginTop: 8 }}>{gallery.scope === 'activity' ? '活动精彩瞬间' : '赛事精彩瞬间'}</p>
+          <p className="text-sm font-semibold text-blue-100/90" style={{ marginTop: 8 }}>{galleryMessages[language].moments}</p>
         </div>
       </header>
-      <section className="mx-auto max-w-[1440px]" style={{ padding: '24px 12px' }}>
-        <PhotosGallery accessToken={accessToken} />
+      <section className="gallery-content mx-auto max-w-[1440px]">
+        <PhotosGallery accessToken={accessToken} language={language} onLanguageChange={setLanguage} />
       </section>
       <style jsx>{`
+        .gallery-content { padding: 16px 12px; }
         .gallery-header {
           padding: 32px 20px;
           text-align: center;
@@ -156,6 +159,7 @@ export function PhotoGalleryAccess({ accessToken }: { accessToken: string }) {
           overflow-wrap: anywhere;
         }
         @media (max-width: 639px) {
+          .gallery-content { padding: 0; }
           .gallery-header {
             padding: 24px 20px;
           }

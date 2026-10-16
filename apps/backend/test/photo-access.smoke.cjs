@@ -140,8 +140,13 @@ async function main() {
     assert.equal(secondPage.items[0].id, expectedIds[1]);
     const filtered = await (await request(`/api/photos?accessToken=${accessToken}&sort=${sort}&category=PLAYER`)).json();
     assert.deepEqual(filtered.items.map(item => item.id), [popularPhoto.id]);
+    const ascending = await (await request(`/api/photos?accessToken=${accessToken}&sort=${sort}&direction=asc`)).json();
+    assert.deepEqual(ascending.items.map(item => item.id), [...expectedIds].reverse());
+    const ascendingPage = await (await request(`/api/photos?accessToken=${accessToken}&sort=${sort}&direction=asc&page=1&pageSize=1`)).json();
+    assert.equal(ascendingPage.items[0].id, expectedIds.at(-1));
   }
   await request(`/api/photos?accessToken=${accessToken}&sort=INVALID`, {}, 400);
+  await request(`/api/photos?accessToken=${accessToken}&direction=INVALID`, {}, 400);
   console.log('PASS: popular/download/latest ordering, category filters, pagination, deleted-photo exclusion, invalid sort rejection.');
 
   if (process.argv.includes('--browser')) {
@@ -189,8 +194,8 @@ async function main() {
       assert.ok(galleryRequests > 0);
       for (const [label, sort, firstId] of [
         ['下载最多', 'DOWNLOADS', downloadedPhoto.id],
-        ['最新上传', 'LATEST', photo.id],
-        ['热门排行', 'POPULAR', popularPhoto.id],
+        ['照片', 'LATEST', photo.id],
+        ['热门', 'POPULAR', popularPhoto.id],
       ]) {
         const responsePromise = mobile.waitForResponse(response => {
           const url = new URL(response.url());
@@ -211,16 +216,15 @@ async function main() {
         const thumbnailLayout = await mobile.locator('.photo-media').first().evaluate((media) => {
           const mediaRect = media.getBoundingClientRect();
           const imageStyle = getComputedStyle(media.querySelector('.photo-thumbnail'));
-          const backdropStyle = getComputedStyle(media.querySelector('.photo-thumbnail-backdrop'));
+          const image = media.querySelector('.photo-thumbnail');
           return {
             ratio: mediaRect.width / mediaRect.height,
+            originalRatio: Number(image.getAttribute('width')) / Number(image.getAttribute('height')),
             objectFit: imageStyle.objectFit,
-            backdropFit: backdropStyle.objectFit,
           };
         });
-        assert.ok(Math.abs(thumbnailLayout.ratio - (4 / 3)) < 0.02, `${sort}: mobile thumbnails must use a consistent 4:3 frame`);
+        assert.ok(Math.abs(thumbnailLayout.ratio - thumbnailLayout.originalRatio) < 0.02, `${sort}: mobile thumbnails must preserve the original ratio`);
         assert.equal(thumbnailLayout.objectFit, 'contain', `${sort}: mobile portrait thumbnails must remain fully visible`);
-        assert.equal(thumbnailLayout.backdropFit, 'cover', `${sort}: mobile thumbnail backdrops must fill the frame`);
       }
       assert.equal(await mobile.getByRole('tab').count(), 0, 'No cross-tournament tabs');
       assert.equal(await mobile.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
@@ -236,7 +240,7 @@ async function main() {
         const rect = media.getBoundingClientRect();
         return rect.width / rect.height;
       });
-      assert.ok(Math.abs(desktopThumbnailRatio - (4 / 3)) < 0.02, 'Desktop thumbnails must use a consistent 4:3 frame');
+      assert.ok(Math.abs(desktopThumbnailRatio - 1) < 0.02, 'Desktop thumbnails must preserve the square fixture ratio');
       assert.equal(await mobile.locator('.photo-thumbnail').first().evaluate((image) => getComputedStyle(image).objectFit), 'contain', 'Desktop portrait thumbnails must remain fully visible');
       await mobile.setViewportSize({ width: 390, height: 844 });
       await mobile.reload();
@@ -245,7 +249,7 @@ async function main() {
       await mobile.getByRole('button', { name: /进入.*照片墙/ }).click();
       await mobile.getByText('该分类下暂无图片', { exact: true }).waitFor();
       await mobile.goto('http://localhost:3000/photos/invalid');
-      await mobile.getByText('无法访问赛事图片').waitFor();
+      await mobile.getByText('无法访问图片').waitFor();
       const oldPage = await mobile.goto('http://localhost:3000/photos');
       assert.equal(oldPage.status(), 404);
       await mobile.goto('http://localhost:3000/');

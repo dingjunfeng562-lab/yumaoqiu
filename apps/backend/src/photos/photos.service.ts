@@ -699,12 +699,13 @@ export class PhotosService {
     const gallery = await this.findGalleryByAccessToken(query.accessToken);
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 30;
+    const direction = query.direction ?? 'desc';
     const orderBy: Prisma.PhotoOrderByWithRelationInput[] =
       query.sort === PublicPhotoSort.DOWNLOADS
-        ? [{ downloadCount: 'desc' }, { viewCount: 'desc' }, { uploadedAt: 'desc' }, { id: 'desc' }]
+        ? [{ downloadCount: direction }, { viewCount: direction }, { uploadedAt: direction }, { id: direction }]
         : query.sort === PublicPhotoSort.LATEST
-          ? [{ uploadedAt: 'desc' }, { id: 'desc' }]
-          : [{ viewCount: 'desc' }, { downloadCount: 'desc' }, { uploadedAt: 'desc' }, { id: 'desc' }];
+          ? [{ uploadedAt: direction }, { id: direction }]
+          : [{ viewCount: direction }, { downloadCount: direction }, { uploadedAt: direction }, { id: direction }];
     const where: Prisma.PhotoWhereInput = {
       ...(gallery.scope === 'activity' ? { activityId: gallery.id } : { tournamentId: gallery.id }),
       deletedAt: null,

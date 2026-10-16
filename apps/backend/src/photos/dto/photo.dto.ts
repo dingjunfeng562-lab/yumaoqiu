@@ -44,6 +44,10 @@ export class PublicPhotoQueryDto {
   sort?: PublicPhotoSort;
 
   @IsOptional()
+  @IsIn(['asc', 'desc'])
+  direction?: 'asc' | 'desc';
+
+  @IsOptional()
   @IsIn(CATEGORIES)
   category?: PhotoCategory;
 

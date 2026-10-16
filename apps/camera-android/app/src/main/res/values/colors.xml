@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <!-- Sampled from the outer edge of the brand emblem's ring, so the adaptive
+       icon's masked edge continues the artwork instead of showing a seam. -->
+  <color name="ic_launcher_background">#03274F</color>
+</resources>

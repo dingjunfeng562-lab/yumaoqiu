@@ -1,0 +1,40 @@
+export type GalleryLanguage = 'zh-CN' | 'zh-TW' | 'en';
+
+export const galleryMessages = {
+  'zh-CN': {
+    photos: '照片', popular: '热门', downloads: '下载最多', all: '全部',
+    PLAYER: '选手照', MATCH: '现场照', AWARD: '颁奖照',
+    settings: '浏览设置', layout: '显示方式', immersive: '沉浸式', masonry: '瀑布流',
+    grid: '九宫格', timeline: '时间线', movie: '电影模式',
+    order: '排序方向', asc: '正序', desc: '倒序', language: '语言',
+    views: '浏览', download: '下载', preview: '查看大图', empty: '该分类下暂无图片',
+    end: '已加载全部图片', error: '图片加载失败', retry: '重新加载', more: '加载更多',
+    share: '分享相册', copied: '相册链接已复制', copy: '复制链接', shareHint: '复制此链接分享相册',
+    pause: '暂停播放', play: '自动播放', top: '回到顶部',
+    moments: '精彩瞬间', timelineHint: '按上传日期排列',
+  },
+  'zh-TW': {
+    photos: '照片', popular: '熱門', downloads: '下載最多', all: '全部',
+    PLAYER: '選手照', MATCH: '現場照', AWARD: '頒獎照',
+    settings: '瀏覽設定', layout: '顯示方式', immersive: '沉浸式', masonry: '瀑布流',
+    grid: '九宮格', timeline: '時間線', movie: '電影模式',
+    order: '排序方向', asc: '正序', desc: '倒序', language: '語言',
+    views: '瀏覽', download: '下載', preview: '查看大圖', empty: '此分類暫無圖片',
+    end: '已載入全部圖片', error: '圖片載入失敗', retry: '重新載入', more: '載入更多',
+    share: '分享相簿', copied: '相簿連結已複製', copy: '複製連結', shareHint: '複製此連結分享相簿',
+    pause: '暫停播放', play: '自動播放', top: '回到頂部',
+    moments: '精彩瞬間', timelineHint: '按上傳日期排列',
+  },
+  en: {
+    photos: 'Photos', popular: 'Popular', downloads: 'Downloads', all: 'All',
+    PLAYER: 'Players', MATCH: 'Matches', AWARD: 'Awards',
+    settings: 'View settings', layout: 'Layout', immersive: 'Immersive', masonry: 'Masonry',
+    grid: 'Grid', timeline: 'Timeline', movie: 'Movie mode',
+    order: 'Sort direction', asc: 'Ascending', desc: 'Descending', language: 'Language',
+    views: 'Views', download: 'Download', preview: 'View photo', empty: 'No photos in this category',
+    end: 'All photos loaded', error: 'Unable to load photos', retry: 'Retry', more: 'Load more',
+    share: 'Share gallery', copied: 'Gallery link copied', copy: 'Copy link', shareHint: 'Copy this link to share the gallery',
+    pause: 'Pause', play: 'Play slideshow', top: 'Back to top',
+    moments: 'Highlights', timelineHint: 'Grouped by upload date',
+  },
+};
