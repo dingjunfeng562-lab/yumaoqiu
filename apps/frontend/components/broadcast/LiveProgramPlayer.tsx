@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { RoomEvent, Track, VideoQuality, type RemoteTrackPublication } from 'livekit-client';
 import { useLiveRoom } from '@/lib/multicamera';
 
@@ -8,7 +8,6 @@ import { useLiveRoom } from '@/lib/multicamera';
 export function LiveProgramPlayer({ broadcastId }: { broadcastId: string }) {
   const { room, control, error, revision } = useLiveRoom(broadcastId, 'viewer');
   const videos = useRef<(HTMLVideoElement | null)[]>([null, null]);
-  const audio = useRef<HTMLAudioElement>(null);
   const frozen = useRef<HTMLCanvasElement>(null);
   const switching = useRef(false);
   const activeSlot = useRef(0);
@@ -83,17 +82,27 @@ export function LiveProgramPlayer({ broadcastId }: { broadcastId: string }) {
     };
   }, [room, control?.activeCameraId, revision]);
 
-  const audioPublication = control?.audioCameraId ? room?.remoteParticipants.get(`camera_${control.audioCameraId}`)?.getTrackPublication(Track.Source.Microphone) : undefined;
-  const audioTrack = audioPublication?.audioTrack;
+  // 多路音频：场边主音频机位 + 导播的电脑麦克风。每个音轨一个 <audio>，
+  // 浏览器会自然地把它们混成一路输出。
+  const audioPublications = useMemo(() => {
+    const list: RemoteTrackPublication[] = [];
+    room?.remoteParticipants.forEach((participant) => {
+      const isMainAudio = participant.identity === `camera_${control?.audioCameraId}`;
+      const isDirector = participant.identity.startsWith('director_');
+      if (!isMainAudio && !isDirector) return;
+      participant.audioTrackPublications.forEach((publication) => list.push(publication));
+    });
+    return list;
+  }, [room, control?.audioCameraId, revision]);
+
   useEffect(() => {
     if (!room) return;
-    const element = audio.current;
-    // Refuse every other audio publication, including an old master left in the room.
-    room.remoteParticipants.forEach((participant) => participant.audioTrackPublications.forEach((p) => p.setSubscribed(p === audioPublication)));
-    if (!audioPublication || !element) return;
-    if (audioTrack) { audioTrack.attach(element); if (soundEnabled) void element.play().catch(() => setSoundEnabled(false)); }
-    return () => { if (audioTrack && element) audioTrack.detach(element); };
-  }, [room, audioPublication, audioTrack, soundEnabled]);
+    const allowed = new Set(audioPublications.map((publication) => publication.trackSid));
+    // 订阅白名单：主音频 + 导播麦克风，其余（含残留的旧主音频）一律退订。
+    room.remoteParticipants.forEach((participant) => participant.audioTrackPublications.forEach((publication) => {
+      publication.setSubscribed(allowed.has(publication.trackSid));
+    }));
+  }, [room, audioPublications]);
 
   useEffect(() => {
     if (!room) return;
@@ -109,7 +118,6 @@ export function LiveProgramPlayer({ broadcastId }: { broadcastId: string }) {
 
   async function enableSound() {
     await room?.startAudio();
-    if (audio.current) { audio.current.muted = false; await audio.current.play().catch(() => undefined); }
     setSoundEnabled(true);
     videos.current.forEach((video) => { void video?.play().catch(() => undefined); });
   }
@@ -117,8 +125,26 @@ export function LiveProgramPlayer({ broadcastId }: { broadcastId: string }) {
     {[0, 1].map((slot) => <video key={slot} ref={(node) => { videos.current[slot] = node; }} autoPlay muted playsInline
       style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain', opacity: visibleSlot === slot ? 1 : 0 }} />)}
     <canvas ref={frozen} aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain', opacity: 0, pointerEvents: 'none' }} />
-    <audio ref={audio} autoPlay muted={!soundEnabled} />
+    {audioPublications.map((publication) => (
+      <AudioSink key={publication.trackSid} publication={publication} enabled={soundEnabled} onBlocked={() => setSoundEnabled(false)} />
+    ))}
     {(error || message) && <div role="status" style={{ position: 'absolute', bottom: 12, left: 12, right: 12, color: '#fff', background: '#000a', padding: 8 }}>{error || message}</div>}
     {!soundEnabled && <button onClick={() => void enableSound()} style={{ position: 'absolute', right: 12, top: 12, zIndex: 5, minHeight: 44, padding: '8px 16px', borderRadius: 8 }}>开启声音</button>}
   </div>;
+}
+
+/** 一个音轨一个 <audio>；浏览器天然把它们混成一路声音，无需服务端混音。 */
+function AudioSink({ publication, enabled, onBlocked }: { publication: RemoteTrackPublication; enabled: boolean; onBlocked: () => void }) {
+  const element = useRef<HTMLAudioElement>(null);
+  const track = publication.audioTrack;
+  useEffect(() => {
+    const node = element.current;
+    if (!node || !track) return;
+    track.attach(node);
+    if (enabled) void node.play().catch(onBlocked);
+    return () => { track.detach(node); };
+    // onBlocked 只用于播放被浏览器拦截时回退按钮，不参与依赖。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [track, enabled]);
+  return <audio ref={element} autoPlay muted={!enabled} />;
 }

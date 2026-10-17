@@ -27,6 +27,8 @@ export function MulticameraDirector({ broadcastId }: { broadcastId: string }) {
   const [overlaySaved, setOverlaySaved] = useState<OverlaySettings | null>(null);
   const [overlayPreview, setOverlayPreview] = useState<OverlaySnapshot | null>(null);
   const [overlaySaving, setOverlaySaving] = useState(false);
+  const [micOn, setMicOn] = useState(false);
+  const [micBusy, setMicBusy] = useState(false);
   const { room, error: mediaError, revision } = useLiveRoom(broadcastId, 'director', snapshot?.enabled && snapshot.status !== 'ENDED' ? token : undefined);
   const base = `/broadcasts/${encodeURIComponent(broadcastId)}/live`;
   const load = useCallback(async () => {
@@ -104,6 +106,20 @@ export function MulticameraDirector({ broadcastId }: { broadcastId: string }) {
     } catch (e) { message.error(e instanceof Error ? e.message : '保存失败'); }
     finally { setOverlaySaving(false); }
   }
+  // 导播电脑麦克风：推一路到直播间，观众端与场边主音频一起混音播放。
+  async function toggleMic() {
+    if (!room) { message.error('直播连接尚未就绪，请等画面出现后再试'); return; }
+    setMicBusy(true);
+    try {
+      const next = !micOn;
+      await room.localParticipant.setMicrophoneEnabled(next);
+      setMicOn(next);
+      message.success(next ? '电脑麦克风已开启，会与场边机位声音一起播出' : '电脑麦克风已关闭');
+    } catch {
+      setMicOn(false);
+      message.error('麦克风开启失败：请允许浏览器的麦克风权限，并确认页面是 HTTPS');
+    } finally { setMicBusy(false); }
+  }
   return <main className={styles.page} style={{ maxWidth: 1440, margin: 'auto', padding: '24px 16px', background: '#f4f6fa', minHeight: '100vh' }}>
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, width: '100%' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
@@ -129,6 +145,11 @@ export function MulticameraDirector({ broadcastId }: { broadcastId: string }) {
           <Button loading={busy} onClick={() => void command(snapshot.live || snapshot.waiting ? 'pause' : 'start')}>{snapshot.live || snapshot.waiting ? '暂停对外直播' : '开始对外直播'}</Button>
           <Button danger loading={busy} disabled={snapshot.status === 'ENDED'} onClick={() => void command('end')}>结束直播</Button>
         </Space></Card>
+        <Card size="small" title="电脑麦克风（可选）" extra={<Switch checked={micOn} loading={micBusy} checkedChildren="开" unCheckedChildren="关" onChange={() => void toggleMic()} />}>
+          <Typography.Text type="secondary">
+            开启后，观众会同时听到场边机位和这台电脑的麦克风。请戴耳机：用扬声器时麦克风会把直播声音收回去，产生回声。
+          </Typography.Text>
+        </Card>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 280px), 1fr))', gap: 12 }}>
           {snapshot.cameras.map((camera) => <Card key={camera.id} size="small" title={`${camera.code} · ${camera.name}`}
             style={{ border: `2px solid ${camera.onAir ? '#e54242' : snapshot.previewCameraId === camera.id ? '#36a269' : '#dbe1e9'}` }}

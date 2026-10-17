@@ -31,9 +31,11 @@ export class LivekitMediaService {
     const { url, key, secret } = this.config();
     const token = this.jwt.sign({
       video: {
-        room, roomJoin: true, canPublish: role === 'camera', canSubscribe: role !== 'camera',
+        room, roomJoin: true, canPublish: role === 'camera' || role === 'director', canSubscribe: role !== 'camera',
         canPublishData: false, canUpdateOwnMetadata: false,
-        ...(role === 'camera' ? { canPublishSources: audio ? ['camera', 'microphone'] : ['camera'] } : {}),
+        // 导播可以推自己的电脑麦克风；观众端把它和场边主音频一起本地混音。
+        ...(role === 'camera' ? { canPublishSources: audio ? ['camera', 'microphone'] : ['camera'] }
+          : role === 'director' ? { canPublishSources: ['microphone'] } : {}),
       },
       metadata: JSON.stringify({ role }),
     }, { secret, algorithm: 'HS256', issuer: key, subject: identity, expiresIn: '5m' });

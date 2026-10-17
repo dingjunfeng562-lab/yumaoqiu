@@ -21,13 +21,16 @@ describe('LiveKit credentials', () => {
     expect(claims('camera', true).video.canPublishSources).toEqual(['camera', 'microphone']);
     expect(claims('camera').video.canSubscribe).toBe(false);
   });
-  it('viewers and directors cannot publish media or control data', () => {
-    for (const role of ['viewer', 'director'] as const) {
-      const token = claims(role);
-      expect(token.video.canPublish).toBe(false);
-      expect(token.video.canPublishData).toBe(false);
-      expect(token.video.roomAdmin).toBeUndefined();
-    }
+  it('viewers cannot publish, directors may publish only their microphone', () => {
+    const viewer = claims('viewer');
+    expect(viewer.video.canPublish).toBe(false);
+    expect(viewer.video.canPublishData).toBe(false);
+    expect(viewer.video.roomAdmin).toBeUndefined();
+    const director = claims('director');
+    expect(director.video.canPublish).toBe(true);
+    expect(director.video.canPublishSources).toEqual(['microphone']);
+    expect(director.video.canPublishData).toBe(false);
+    expect(director.video.roomAdmin).toBeUndefined();
   });
   it('refuses an insecure production media endpoint', () => {
     process.env.NODE_ENV = 'production';
