@@ -1,5 +1,27 @@
 # 手机摄像端 Android App（camera-android）
 
+## 1.3.2：安装包从 65MB 降到 18MB
+
+现场装机一直发的是 debug 包，65.2MB，每次分发都要传一整个包。1.3.2 改成 release 构建，业务代码一行没动：
+
+| 项 | 改前 | 改后 |
+| --- | --- | --- |
+| 安装包 | 65.2 MB | **18.4 MB** |
+| dex | 28.1 MB | 7.8 MB（R8 裁掉没被引用的类） |
+| 原生库 | 51.0 MB（5 种 ABI） | 13.2 MB（只留 arm64-v8a） |
+
+改动只在 `app/build.gradle` 和 `app/proguard-rules.pro`：
+
+- `abiFilters 'arm64-v8a'`：x86 / x86_64 / mips 只服务模拟器，占了这个包 37MB
+- `minifyEnabled true` + `shrinkResources true`：LiveKit / WebRTC / RootEncoder / ZXing 因使用反射和 JNI 整包保留，只裁 AndroidX、OkHttp 里没用到的类
+- `resourceConfigurations += ['zh']`：去掉其它语言的资源
+
+包仍用调试签名，**可以直接覆盖安装现有的 1.3.x**（签名 SHA-256 一致，不需要卸载、不丢配对凭据）。正式对外分发前应换成自己的 keystore。
+
+只支持 **64 位 ARM**：近几年的手机都是。如果现场还有 32 位老机器，在 `abiFilters` 里加回 `'armeabi-v7a'` 重新构建（约 +8MB）。
+
+安装包：`outputs/camera-android/Ayumaoqiu-Camera-1.3.2-release.apk`（仓库根目录）。
+
 ## 多机位版本 1.3.1：原生跟手变焦
 
 针对红米 K60 Pro 本机取景缩放卡顿反馈，取消 1.3.0 的「小步追赶倍率 + 等相机 Future 完成再继续」策略。手势与滑条现在每个显示帧只提交最新目标，直接调用原生 CameraX/Camera2 变焦；没有手势结束后的追赶动画，不缩放预览 View，不重建采集或推流。相机替换旧请求导致的取消按正常情况处理。倍率状态独立更新，避免每个变焦帧重绘整套状态控件。
@@ -106,10 +128,15 @@ $env:JAVA_HOME        = "D:\AyumaoqiuTools\jdk17-medium"
 $env:GRADLE_USER_HOME = "D:\AyumaoqiuTools\gradle-home"
 $env:ANDROID_HOME     = "D:\AyumaoqiuTools\sdk"
 cd D:\Ayumaoqiu\apps\camera-android
+# 发布包（R8 收缩 + 只打 arm64，约 18MB，可直接覆盖安装）
+& "D:\AyumaoqiuTools\gradle\gradle-8.13\bin\gradle.bat" assembleRelease --no-daemon
+# 调试包（不收缩，约 65MB，仅本地联调用）
 & "D:\AyumaoqiuTools\gradle\gradle-8.13\bin\gradle.bat" assembleDebug --no-daemon
 ```
 
-产物：`app/build/outputs/apk/debug/app-debug.apk`
+产物：
+- release：`app/build/outputs/apk/release/app-release.apk`
+- debug：`app/build/outputs/apk/debug/app-debug.apk`
 
 安装到手机：
 
