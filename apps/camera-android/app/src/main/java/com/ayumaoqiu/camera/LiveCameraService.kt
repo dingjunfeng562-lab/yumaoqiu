@@ -122,6 +122,10 @@ class LiveCameraService : LifecycleService() {
   private var rtt = 0
   private var loss = 0.0
   private var measuredFps = 0
+  /** 零帧看门狗：连续几次统计都没出帧就自动重建采集。 */
+  private var zeroFpsTicks = 0
+  private var lastRecoveryAt = 0L
+  private var stalledWarning = false
   private var actualWidth = 1280
   private var actualHeight = 720
   private var selectedQuality = LocalQuality("1080p", 30)
@@ -607,6 +611,28 @@ class LiveCameraService : LifecycleService() {
     actualWidth = width; actualHeight = height
     videoDiagnostics = diagnostics.joinToString(" | ")
     Log.d("LiveCameraStats", "target=${selectedQuality.label} zoom=${capturer.zoom()} sent=${actualWidth}x${actualHeight}/$measuredFps bitrate=$bitrate rtt=$rtt loss=$loss $videoDiagnostics")
+    // 零帧看门狗：还在推流却一帧都不出（摄像头被系统收走、采集卡死），自动重建采集。
+    // 60 秒内只重建一次，避免反复重启；恢复出帧后自动清掉告警。
+    if (wanted && measuredFps == 0) {
+      zeroFpsTicks++
+      if (zeroFpsTicks >= 3 && !stalledWarning) {
+        stalledWarning = true
+        mutableState.value = mutableState.value.copy(warning = "画面无帧：摄像头可能被系统占用，正在自动重启采集")
+        notifyState("${mutableState.value.cameraCode} · 画面无帧，正在自动重启采集")
+      }
+      if (zeroFpsTicks >= 3 && SystemClock.elapsedRealtime() - lastRecoveryAt > 60_000) {
+        lastRecoveryAt = SystemClock.elapsedRealtime()
+        zeroFpsTicks = 0
+        restartCapture()
+      }
+    } else if (measuredFps > 0) {
+      zeroFpsTicks = 0
+      lastRecoveryAt = 0
+      if (stalledWarning) {
+        stalledWarning = false
+        mutableState.value = mutableState.value.copy(warning = "")
+      }
+    }
   }
   fun stopPublishing(keepPreview: Boolean = true) {
     wanted = false; loop?.cancel(); loop = null; disconnect()
