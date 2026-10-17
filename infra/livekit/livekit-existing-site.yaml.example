@@ -11,6 +11,11 @@ turn:
   domain: ydysyumao.cn
   tls_port: 5349
   udp_port: 3478
+  # 中继端口必须落在防火墙已放行的 UDP 区间内（生产只放行 50000-50100）。
+  # 修改这里时必须同步修改服务器 UFW 规则，否则严格 NAT / 移动网络下的机位
+  # 会走 TURN 中继失败，表现为连不上或连上无画面。
+  relay_range_start: 50000
+  relay_range_end: 50100
   external_tls: false
   cert_file: /certs/fullchain.pem
   key_file: /certs/privkey.pem
