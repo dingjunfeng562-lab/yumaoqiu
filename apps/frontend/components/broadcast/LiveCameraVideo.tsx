@@ -15,7 +15,13 @@ export function LiveCameraVideo({ room, cameraId, revision, quality = 'low' }: {
     const releaseQuality = retainVideoQuality(publication, quality);
     const track = publication.videoTrack;
     const video = element.current;
-    if (track && video) { track.attach(video); void video.play().catch(() => undefined); }
+    if (track && video) {
+      // 机位重连/切换镜头后会换成新轨道，先清空 srcObject 再挂，
+      // 否则个别浏览器会继续显示上一帧，看起来像"卡死"。
+      video.srcObject = null;
+      track.attach(video);
+      void video.play().catch(() => undefined);
+    }
     return () => { releaseQuality(); if (track && video) track.detach(video); };
   }, [room, cameraId, revision, quality]);
   return <video ref={element} data-camera-quality={quality} autoPlay muted playsInline style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#080e17' }} />;

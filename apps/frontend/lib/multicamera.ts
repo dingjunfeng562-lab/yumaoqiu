@@ -26,7 +26,7 @@ export function parseControl(metadata?: string): LiveControl | null {
   } catch { return null; }
 }
 
-export function useLiveRoom(broadcastId: string, role: 'director' | 'viewer', token?: string) {
+export function useLiveRoom(broadcastId: string, role: 'director' | 'viewer', token?: string, reseed = 0) {
   const [room, setRoom] = useState<Room | null>(null);
   const [control, setControl] = useState<LiveControl | null>(null);
   const [error, setError] = useState('');
@@ -90,6 +90,6 @@ export function useLiveRoom(broadcastId: string, role: 'director' | 'viewer', to
     };
     void connect();
     return () => { disposed = true; if (retry) clearTimeout(retry); current?.removeAllListeners(); void current?.disconnect(); setRoom(null); };
-  }, [broadcastId, role, token]);
+  }, [broadcastId, role, token, reseed]);
   return { room, control, error, revision, connected: room?.state === ConnectionState.Connected };
 }

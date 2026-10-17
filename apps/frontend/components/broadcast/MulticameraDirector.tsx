@@ -30,7 +30,9 @@ export function MulticameraDirector({ broadcastId }: { broadcastId: string }) {
   const [overlaySaving, setOverlaySaving] = useState(false);
   const [micOn, setMicOn] = useState(false);
   const [micBusy, setMicBusy] = useState(false);
-  const { room, error: mediaError, revision } = useLiveRoom(broadcastId, 'director', snapshot?.enabled && snapshot.status !== 'ENDED' ? token : undefined);
+  // 手动重建一次媒体连接：机位重连后浏览器偶尔会停在最后一帧，点一下即可恢复。
+  const [reseed, setReseed] = useState(0);
+  const { room, error: mediaError, revision } = useLiveRoom(broadcastId, 'director', snapshot?.enabled && snapshot.status !== 'ENDED' ? token : undefined, reseed);
   const base = `/broadcasts/${encodeURIComponent(broadcastId)}/live`;
   const load = useCallback(async () => {
     if (!token) return;
@@ -130,7 +132,8 @@ export function MulticameraDirector({ broadcastId }: { broadcastId: string }) {
           <Button icon={<ArrowLeftOutlined />} style={{ minHeight: 40 }} href="/nicaiyixiahh/broadcasts">返回上级</Button>
           <Tag color={snapshot?.live ? 'red' : 'default'}>{snapshot?.live ? 'ON AIR' : snapshot?.status === 'ENDED' ? '已结束' : snapshot?.waiting ? '待开始' : 'STANDBY'}</Tag>
           <Button href={`/live/${encodeURIComponent(broadcastId)}`} target="_blank">观众页面</Button>
-          <Button onClick={() => void load()}>刷新状态</Button></Space>
+          <Button onClick={() => void load()}>刷新状态</Button>
+          <Button onClick={() => setReseed((n) => n + 1)}>重连视频</Button></Space>
       </div>
       {status === 'unauthenticated' && <Alert type="warning" title="请先登录具有导播权限的账号" action={<Button href={`/login?redirect=${encodeURIComponent(`/director/${broadcastId}`)}`}>登录</Button>} />}
       {(error || mediaError) && <Alert showIcon type="warning" title={error || mediaError} />}
