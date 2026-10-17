@@ -13,7 +13,7 @@ const features = [
     title: '对阵生成',
     description: '抽签编排、淘汰赛树与小组赛对阵。',
     icon: '/generated/icon-bracket.svg',
-    href: '/admin/draws',
+    href: '/nicaiyixiahh/draws',
     gradient: 'from-indigo-500 to-blue-500',
   },
   {
@@ -27,7 +27,7 @@ const features = [
     title: '后台管理',
     description: '赛事、选手、裁判、抽签与记分统一管理。',
     icon: '/generated/icon-user.svg',
-    href: '/admin',
+    href: '/nicaiyixiahh',
     gradient: 'from-sky-500 to-blue-700',
   },
 ];

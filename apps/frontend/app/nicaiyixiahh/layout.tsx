@@ -57,25 +57,25 @@ type MenuItem = {
 };
 
 const baseMenuItems: MenuItem[] = [
-  { key: '/admin', icon: <DashboardOutlined />, label: '仪表板' },
-  { key: '/admin/users', icon: <TeamOutlined />, label: '用户管理' },
-  { key: '/admin/invite-codes', icon: <KeyOutlined />, label: '邀请码管理' },
-  { key: '/admin/approvals', icon: <AuditOutlined />, label: '赛事审核' },
-  { key: '/admin/players', icon: <UserOutlined />, label: '选手管理' },
-  { key: '/admin/tournaments', icon: <TrophyOutlined />, label: '赛事配置' },
-  { key: '/admin/competitions', icon: <TrophyOutlined />, label: '赛事管理' },
-  { key: '/admin/photo-activities', icon: <PictureOutlined />, label: '活动图片' },
-  { key: '/admin/events', icon: <UnorderedListOutlined />, label: '单项管理' },
-  { key: '/admin/team-competitions', icon: <ApartmentOutlined />, label: '团体赛管理' },
-  { key: '/admin/draws', icon: <BranchesOutlined />, label: '抽签编排' },
-  { key: '/admin/scheduling', icon: <CalendarOutlined />, label: '场地排程' },
-  { key: '/admin/exports', icon: <DownloadOutlined />, label: '秩序册/数据导出' },
-  { key: '/admin/scoring', icon: <FieldTimeOutlined />, label: '裁判分配' },
-  { key: '/admin/broadcasts', icon: <VideoCameraOutlined />, label: '直播管理' },
-  { key: '/admin/announcements', icon: <NotificationOutlined />, label: '公告管理' },
-  { key: '/admin/ai-config', icon: <MessageOutlined />, label: 'AI 助手配置' },
-  { key: '/admin/image-moderation', icon: <AuditOutlined />, label: '图片审核' },
-  { key: '/admin/email', icon: <MailOutlined />, label: '邮件通知设置' },
+  { key: '/nicaiyixiahh', icon: <DashboardOutlined />, label: '仪表板' },
+  { key: '/nicaiyixiahh/users', icon: <TeamOutlined />, label: '用户管理' },
+  { key: '/nicaiyixiahh/invite-codes', icon: <KeyOutlined />, label: '邀请码管理' },
+  { key: '/nicaiyixiahh/approvals', icon: <AuditOutlined />, label: '赛事审核' },
+  { key: '/nicaiyixiahh/players', icon: <UserOutlined />, label: '选手管理' },
+  { key: '/nicaiyixiahh/tournaments', icon: <TrophyOutlined />, label: '赛事配置' },
+  { key: '/nicaiyixiahh/competitions', icon: <TrophyOutlined />, label: '赛事管理' },
+  { key: '/nicaiyixiahh/photo-activities', icon: <PictureOutlined />, label: '活动图片' },
+  { key: '/nicaiyixiahh/events', icon: <UnorderedListOutlined />, label: '单项管理' },
+  { key: '/nicaiyixiahh/team-competitions', icon: <ApartmentOutlined />, label: '团体赛管理' },
+  { key: '/nicaiyixiahh/draws', icon: <BranchesOutlined />, label: '抽签编排' },
+  { key: '/nicaiyixiahh/scheduling', icon: <CalendarOutlined />, label: '场地排程' },
+  { key: '/nicaiyixiahh/exports', icon: <DownloadOutlined />, label: '秩序册/数据导出' },
+  { key: '/nicaiyixiahh/scoring', icon: <FieldTimeOutlined />, label: '裁判分配' },
+  { key: '/nicaiyixiahh/broadcasts', icon: <VideoCameraOutlined />, label: '直播管理' },
+  { key: '/nicaiyixiahh/announcements', icon: <NotificationOutlined />, label: '公告管理' },
+  { key: '/nicaiyixiahh/ai-config', icon: <MessageOutlined />, label: 'AI 助手配置' },
+  { key: '/nicaiyixiahh/image-moderation', icon: <AuditOutlined />, label: '图片审核' },
+  { key: '/nicaiyixiahh/email', icon: <MailOutlined />, label: '邮件通知设置' },
 ];
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
@@ -110,7 +110,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const isSuperOrRoot = access.can('TOURNAMENT_ADMIN');
   useEffect(() => {
     if (access.ready && !canAccessAdminPage(role, pathname, access.permissions)) {
-      router.replace(pathname === '/admin' ? firstAdminPage(role, access.permissions) ?? '/forbidden' : '/forbidden');
+      router.replace(pathname === '/nicaiyixiahh' ? firstAdminPage(role, access.permissions) ?? '/forbidden' : '/forbidden');
     }
   }, [access.ready, access.permissions, role, pathname, router]);
 
@@ -142,7 +142,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   );
 
   const menuItems = visibleMenuItems.map((item) => {
-    if (item.key !== '/admin/approvals') {
+    if (item.key !== '/nicaiyixiahh/approvals') {
       return {
         key: item.key,
         icon: item.icon,
@@ -170,10 +170,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     };
   });
 
-  const selectedKey = baseMenuItems.find((m) => pathname.startsWith(m.key) && m.key !== '/admin')
-    ? baseMenuItems.find((m) => pathname.startsWith(m.key) && m.key !== '/admin')!.key
-    : pathname === '/admin'
-      ? '/admin'
+  const selectedKey = baseMenuItems.find((m) => pathname.startsWith(m.key) && m.key !== '/nicaiyixiahh')
+    ? baseMenuItems.find((m) => pathname.startsWith(m.key) && m.key !== '/nicaiyixiahh')!.key
+    : pathname === '/nicaiyixiahh'
+      ? '/nicaiyixiahh'
       : '';
   const displayedSelectedKey =
     menuNavigation?.fromPathname === pathname ? menuNavigation.key : selectedKey;

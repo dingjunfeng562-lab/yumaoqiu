@@ -49,7 +49,7 @@ export default async function proxy(req: NextRequest) {
   const session = await auth();
   const hasInvalidSession = session?.authError === 'RefreshAccessTokenError';
   const isLoggedIn = !!session && !hasInvalidSession;
-  const isAdminRoute = req.nextUrl.pathname.startsWith('/admin');
+  const isAdminRoute = req.nextUrl.pathname.startsWith('/nicaiyixiahh');
   const isRefereeRoute = req.nextUrl.pathname.startsWith('/referee');
   const isMyRegistrationsRoute = req.nextUrl.pathname.startsWith('/my-registrations');
   const isRegisterRoute = /\/competitions\/[^/]+\/register$/.test(req.nextUrl.pathname);
@@ -69,7 +69,7 @@ export default async function proxy(req: NextRequest) {
 
 export const config = {
   matcher: [
-    '/admin/:path*',
+    '/nicaiyixiahh/:path*',
     '/referee/:path*',
     '/my-registrations/:path*',
     '/competitions/:path*/register',

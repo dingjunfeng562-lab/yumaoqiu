@@ -589,7 +589,7 @@ export class CompetitionsService {
       competitionId: id,
       title: competition.name,
       accessToken: competition.photoAccessToken,
-      path: `/photos/${competition.photoAccessToken}`,
+      path: `/tupiannicai/${competition.photoAccessToken}`,
     };
   }
 

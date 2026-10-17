@@ -515,7 +515,7 @@ export default function AdminSchedulingPage() {
         </div>
         <Space wrap>
           <Button icon={<ReloadOutlined />} onClick={() => loadSchedule()} loading={loading}>刷新</Button>
-          <Button href="/admin/tournaments">编辑赛程设置</Button>
+          <Button href="/nicaiyixiahh/tournaments">编辑赛程设置</Button>
           <Dropdown
             disabled={!canExportStageOrder}
             menu={{

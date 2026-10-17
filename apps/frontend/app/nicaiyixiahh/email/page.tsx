@@ -339,7 +339,7 @@ function TemplatesTab({ token }: { token: string }) {
   async function showPreview(template: TemplateItem) {
     try {
       const data = await apiFetch<{ name: string; subject: string; html: string }>(
-        `/admin/email/templates/${template.key}/preview`,
+        `/nicaiyixiahh/email/templates/${template.key}/preview`,
         { token },
       );
       setPreview(data);
@@ -972,7 +972,7 @@ export default function AdminEmailPage() {
         title="无权访问"
         subTitle="邮件通知设置仅超级管理员可见。"
         extra={
-          <Button type="primary" onClick={() => router.push('/admin')}>
+          <Button type="primary" onClick={() => router.push('/nicaiyixiahh')}>
             返回仪表板
           </Button>
         }

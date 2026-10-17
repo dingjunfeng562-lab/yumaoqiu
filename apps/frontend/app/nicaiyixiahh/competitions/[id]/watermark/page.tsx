@@ -82,8 +82,8 @@ export default function WatermarkSettingsPage() {
   const params = useParams<{ id: string }>();
   const id = params?.id;
   const pathname = usePathname();
-  const isActivity = pathname.startsWith('/admin/photo-activities/');
-  const resourceBase = isActivity ? `/admin/photo-activities/${id}` : `/admin/tournaments/${id}`;
+  const isActivity = pathname.startsWith('/nicaiyixiahh/photo-activities/');
+  const resourceBase = isActivity ? `/nicaiyixiahh/photo-activities/${id}` : `/nicaiyixiahh/tournaments/${id}`;
   const router = useRouter();
   const { data: session } = useSession();
   const token = session?.user?.accessToken as string | undefined;
@@ -496,7 +496,7 @@ export default function WatermarkSettingsPage() {
   return (
     <div>
       <Space style={{ marginBottom: 16 }}>
-        <Button icon={<ArrowLeftOutlined />} onClick={() => router.push(isActivity ? '/admin/photo-activities' : '/admin/competitions')}>
+        <Button icon={<ArrowLeftOutlined />} onClick={() => router.push(isActivity ? '/nicaiyixiahh/photo-activities' : '/nicaiyixiahh/competitions')}>
           返回{isActivity ? '活动图片' : '赛事管理'}
         </Button>
         <Typography.Title level={4} style={{ margin: 0 }}>

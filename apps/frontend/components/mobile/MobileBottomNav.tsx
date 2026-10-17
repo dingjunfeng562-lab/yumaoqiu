@@ -106,7 +106,7 @@ export function MobileBottomNav({ activeHref }: { activeHref?: string } = {}) {
       label: '后台',
       href: adminHref,
       icon: ConsoleIcon,
-      match: (p) => p.startsWith('/admin'),
+      match: (p) => p.startsWith('/nicaiyixiahh'),
     },
   ];
 

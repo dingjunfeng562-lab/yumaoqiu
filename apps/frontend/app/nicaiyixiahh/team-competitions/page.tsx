@@ -170,7 +170,7 @@ export default function TeamCompetitionsPage() {
             title: '操作',
             width: 120,
             render: (_, row: TeamCompetition) => (
-              <Button icon={<EyeOutlined />} onClick={() => router.push(`/admin/team-competitions/${row.id}`)}>
+              <Button icon={<EyeOutlined />} onClick={() => router.push(`/nicaiyixiahh/team-competitions/${row.id}`)}>
                 进入详情
               </Button>
             ),

@@ -266,11 +266,11 @@ export default function AdminCompetitionRegistrationsPage() {
           <Tag color="orange">当前列表待审核：{pendingCount}</Tag>
           <Button
             icon={<TeamOutlined />}
-            onClick={() => id && router.push(`/admin/competitions/${encodeURIComponent(id)}/players`)}
+            onClick={() => id && router.push(`/nicaiyixiahh/competitions/${encodeURIComponent(id)}/players`)}
           >
             参赛选手
           </Button>
-          <Button onClick={() => router.push('/admin/competitions')}>返回赛事管理</Button>
+          <Button onClick={() => router.push('/nicaiyixiahh/competitions')}>返回赛事管理</Button>
         </Space>
       </div>
       <Table

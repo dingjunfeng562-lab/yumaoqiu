@@ -49,7 +49,7 @@ export function Providers({
       {!isTournamentScreen && <SessionExpiryHandler />}
       <AntdRegistry>
         {children}
-        {!pathname.startsWith('/photos/') && !isTournamentScreen && (
+        {!pathname.startsWith('/tupiannicai/') && !isTournamentScreen && (
           <GlobalAnnouncementModal initialAnnouncement={initialAnnouncement} />
         )}
       </AntdRegistry>

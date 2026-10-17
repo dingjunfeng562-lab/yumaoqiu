@@ -225,7 +225,7 @@ export default function AdminAiConfigPage() {
     setFetchingModels(true);
     try {
       const result = await apiFetch<{ success: boolean; message: string; models: string[] }>(
-        '/admin/ai-config/models',
+        '/nicaiyixiahh/ai-config/models',
         {
           method: 'POST',
           token,
@@ -265,7 +265,7 @@ export default function AdminAiConfigPage() {
         title="请先登录"
         subTitle="登录管理员账号后才能配置 AI 助手。"
         extra={
-          <Button type="primary" onClick={() => router.push('/login?redirect=/admin/ai-config')}>
+          <Button type="primary" onClick={() => router.push('/login?redirect=/nicaiyixiahh/ai-config')}>
             去登录
           </Button>
         }
@@ -280,7 +280,7 @@ export default function AdminAiConfigPage() {
         title="无权访问"
         subTitle="当前账号未开通 AI 配置功能。"
         extra={
-          <Button type="primary" onClick={() => router.push('/admin')}>
+          <Button type="primary" onClick={() => router.push('/nicaiyixiahh')}>
             返回仪表板
           </Button>
         }

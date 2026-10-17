@@ -149,7 +149,7 @@ export class PhotoActivitiesService {
     if (!activity.photoAccessToken) {
       await this.prisma.photoActivity.update({ where: { id }, data: { photoAccessToken } });
     }
-    return { accessToken: photoAccessToken, path: `/photos/${photoAccessToken}` };
+    return { accessToken: photoAccessToken, path: `/tupiannicai/${photoAccessToken}` };
   }
 
   async requireManageable(id: string, actor: AuthActor) {

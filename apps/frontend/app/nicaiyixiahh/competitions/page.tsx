@@ -63,7 +63,7 @@ function formatDate(value: string) {
 }
 
 function competitionPath(record: Competition, suffix: string) {
-  return `/admin/competitions/${encodeURIComponent(record.id)}/${suffix}`;
+  return `/nicaiyixiahh/competitions/${encodeURIComponent(record.id)}/${suffix}`;
 }
 
 export default function AdminCompetitionsPage() {
@@ -231,7 +231,7 @@ export default function AdminCompetitionsPage() {
       width: 520,
       render: (_: unknown, record: Competition) => (
         <Space wrap>
-          <Button icon={<EditOutlined />} onClick={() => router.push('/admin/tournaments')}>
+          <Button icon={<EditOutlined />} onClick={() => router.push('/nicaiyixiahh/tournaments')}>
             编辑赛事
           </Button>
           {canOperate && (record.isArchived ? (
@@ -310,7 +310,7 @@ export default function AdminCompetitionsPage() {
           {role === 'ROOT' && (
             <Button
               icon={<VideoCameraOutlined />}
-              onClick={() => router.push(`/admin/broadcasts?tournamentId=${encodeURIComponent(record.id)}`)}
+              onClick={() => router.push(`/nicaiyixiahh/broadcasts?tournamentId=${encodeURIComponent(record.id)}`)}
             >
               赛事直播
             </Button>
@@ -332,7 +332,7 @@ export default function AdminCompetitionsPage() {
           </Typography.Text>
         </div>
         <Space>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/admin/tournaments?create=1')}>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => router.push('/nicaiyixiahh/tournaments?create=1')}>
             新建赛事
           </Button>
           <Button icon={<EyeOutlined />} onClick={() => router.push('/competitions')}>

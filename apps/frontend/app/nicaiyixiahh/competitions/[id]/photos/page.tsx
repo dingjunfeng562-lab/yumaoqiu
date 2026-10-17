@@ -97,8 +97,8 @@ export default function AdminPhotosPage() {
   const params = useParams<{ id: string }>();
   const id = params?.id;
   const pathname = usePathname();
-  const isActivity = pathname.startsWith('/admin/photo-activities/');
-  const parentPath = isActivity ? '/admin/photo-activities' : '/admin/competitions';
+  const isActivity = pathname.startsWith('/nicaiyixiahh/photo-activities/');
+  const parentPath = isActivity ? '/nicaiyixiahh/photo-activities' : '/nicaiyixiahh/competitions';
   const targetLabel = isActivity ? '活动' : '赛事';
   const router = useRouter();
   const { data: session } = useSession();

@@ -175,7 +175,7 @@ export default function CompetitionEmailSettingsCard({
           <Button
             size="small"
             icon={<FileSearchOutlined />}
-            onClick={() => router.push(`/admin/email?tab=logs&eventId=${competitionId}`)}
+            onClick={() => router.push(`/nicaiyixiahh/email?tab=logs&eventId=${competitionId}`)}
           >
             查看该赛事邮件日志
           </Button>

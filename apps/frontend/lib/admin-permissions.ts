@@ -9,21 +9,21 @@ export function hasFeature(role: string | undefined, permissions: string[] | und
 export function canAccessAdminPage(role: string | undefined, pathname: string, permissions?: string[]) {
   if (role === 'ROOT') return true;
   // 直播管理仅超级管理员，没有可分配的功能权限键。
-  if (pathname === '/admin/broadcasts') return false;
+  if (pathname === '/nicaiyixiahh/broadcasts') return false;
   const routes: Record<string, string[]> = {
-    '/admin': ['DASHBOARD'], '/admin/tournaments': ['TOURNAMENTS', 'TOURNAMENT_ADMIN'],
-    '/admin/players': ['PLAYERS'], '/admin/users': ['USERS'], '/admin/invite-codes': ['INVITES'], '/admin/photo-activities': ['PHOTOS'],
-    '/admin/exports': ['ORDERBOOK', 'DATA_EXPORT'], '/admin/competitions': ['TOURNAMENTS', 'TOURNAMENT_ADMIN', 'PLAYERS', 'PHOTOS'],
-    '/admin/events': ['EVENTS'], '/admin/team-competitions': ['TEAMS'], '/admin/draws': ['DRAWS'],
-    '/admin/scheduling': ['SCHEDULING'], '/admin/scoring': ['SCORING'], '/admin/approvals': ['TOURNAMENT_ADMIN'],
-    '/admin/announcements': ['ANNOUNCEMENTS'], '/admin/ai-config': ['AI_CONFIG'],
-    '/admin/image-moderation': ['IMAGE_MODERATION'], '/admin/email': ['EMAIL'],
+    '/nicaiyixiahh': ['DASHBOARD'], '/nicaiyixiahh/tournaments': ['TOURNAMENTS', 'TOURNAMENT_ADMIN'],
+    '/nicaiyixiahh/players': ['PLAYERS'], '/nicaiyixiahh/users': ['USERS'], '/nicaiyixiahh/invite-codes': ['INVITES'], '/nicaiyixiahh/photo-activities': ['PHOTOS'],
+    '/nicaiyixiahh/exports': ['ORDERBOOK', 'DATA_EXPORT'], '/nicaiyixiahh/competitions': ['TOURNAMENTS', 'TOURNAMENT_ADMIN', 'PLAYERS', 'PHOTOS'],
+    '/nicaiyixiahh/events': ['EVENTS'], '/nicaiyixiahh/team-competitions': ['TEAMS'], '/nicaiyixiahh/draws': ['DRAWS'],
+    '/nicaiyixiahh/scheduling': ['SCHEDULING'], '/nicaiyixiahh/scoring': ['SCORING'], '/nicaiyixiahh/approvals': ['TOURNAMENT_ADMIN'],
+    '/nicaiyixiahh/announcements': ['ANNOUNCEMENTS'], '/nicaiyixiahh/ai-config': ['AI_CONFIG'],
+    '/nicaiyixiahh/image-moderation': ['IMAGE_MODERATION'], '/nicaiyixiahh/email': ['EMAIL'],
   };
-  const child = /^\/admin\/competitions\/[^/]+\/(players|registrations|watermark|photos)$/.exec(pathname);
-  const activityChild = /^\/admin\/photo-activities\/[^/]+\/(watermark|photos)$/.test(pathname);
+  const child = /^\/nicaiyixiahh\/competitions\/[^/]+\/(players|registrations|watermark|photos)$/.exec(pathname);
+  const activityChild = /^\/nicaiyixiahh\/photo-activities\/[^/]+\/(watermark|photos)$/.test(pathname);
   const keys = activityChild ? ['PHOTOS'] : child ? (['players', 'registrations'].includes(child[1]) ? ['PLAYERS'] : ['PHOTOS']) : routes[pathname];
   return !!keys?.some((key) => hasFeature(role, permissions, key));
 }
 export function firstAdminPage(role: string | undefined, permissions?: string[]) {
-  return ['/admin', '/admin/tournaments', '/admin/competitions', '/admin/photo-activities', '/admin/players', '/admin/exports', '/admin/users', '/admin/invite-codes', '/admin/events', '/admin/team-competitions', '/admin/draws', '/admin/scheduling', '/admin/scoring', '/admin/approvals', '/admin/announcements', '/admin/ai-config', '/admin/image-moderation', '/admin/email'].find((path) => canAccessAdminPage(role, path, permissions));
+  return ['/nicaiyixiahh', '/nicaiyixiahh/tournaments', '/nicaiyixiahh/competitions', '/nicaiyixiahh/photo-activities', '/nicaiyixiahh/players', '/nicaiyixiahh/exports', '/nicaiyixiahh/users', '/nicaiyixiahh/invite-codes', '/nicaiyixiahh/events', '/nicaiyixiahh/team-competitions', '/nicaiyixiahh/draws', '/nicaiyixiahh/scheduling', '/nicaiyixiahh/scoring', '/nicaiyixiahh/approvals', '/nicaiyixiahh/announcements', '/nicaiyixiahh/ai-config', '/nicaiyixiahh/image-moderation', '/nicaiyixiahh/email'].find((path) => canAccessAdminPage(role, path, permissions));
 }

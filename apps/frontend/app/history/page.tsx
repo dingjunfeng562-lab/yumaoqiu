@@ -91,7 +91,7 @@ export default async function HistoryPage() {
             <Link href="/" className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-black text-slate-700">
               数据大屏
             </Link>
-            <Link href="/admin/exports" className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-black text-white">
+            <Link href="/nicaiyixiahh/exports" className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-black text-white">
               导出数据
             </Link>
           </div>

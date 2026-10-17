@@ -924,10 +924,10 @@ export default function AdminCompetitionPlayersPage() {
           <Button icon={<DownloadOutlined />} onClick={() => message.info('导出按钮已预留，可在后续接入 Excel 导出。')}>
             导出
           </Button>
-          <Button icon={<AuditOutlined />} onClick={() => router.push(`/admin/competitions/${id}/registrations`)}>
+          <Button icon={<AuditOutlined />} onClick={() => router.push(`/nicaiyixiahh/competitions/${id}/registrations`)}>
             报名审核
           </Button>
-          <Button icon={<RollbackOutlined />} onClick={() => router.push('/admin/competitions')}>
+          <Button icon={<RollbackOutlined />} onClick={() => router.push('/nicaiyixiahh/competitions')}>
             返回
           </Button>
         </Space>
@@ -1022,7 +1022,7 @@ export default function AdminCompetitionPlayersPage() {
           ) : null}
         </Form>
         {!libraryLoading && libraryPlayers.length === 0 ? (
-          <Button type="link" style={{ paddingInline: 0 }} onClick={() => router.push('/admin/players')}>
+          <Button type="link" style={{ paddingInline: 0 }} onClick={() => router.push('/nicaiyixiahh/players')}>
             选手库为空，前往选手管理添加
           </Button>
         ) : null}

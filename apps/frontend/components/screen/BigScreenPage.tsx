@@ -179,7 +179,7 @@ export function BigScreenPage({ initialData }: { initialData: ScreenData }) {
           <Image src="/logo.png" alt="羽动云赛" width={1536} height={1024} className="mx-auto h-20 w-28 object-contain" />
           <h1 className="mt-5 text-3xl font-black">羽动云赛</h1>
           <p className="mt-3 text-sm font-semibold text-white/60">暂无公开赛事，请在后台创建并发布首页展示赛事。</p>
-          <Link href="/admin" className="mt-6 inline-flex h-11 items-center rounded-lg bg-amber-300 px-5 text-sm font-black text-slate-950">
+          <Link href="/nicaiyixiahh" className="mt-6 inline-flex h-11 items-center rounded-lg bg-amber-300 px-5 text-sm font-black text-slate-950">
             管理后台
           </Link>
         </div>
@@ -216,7 +216,7 @@ export function BigScreenPage({ initialData }: { initialData: ScreenData }) {
             <Link href="/history" className="rounded-lg border border-white/16 px-4 py-2 text-sm font-black text-white/86 transition hover:bg-white/10">
               历届数据
             </Link>
-            <Link href="/admin" className="rounded-lg bg-amber-300 px-4 py-2 text-sm font-black text-slate-950 transition hover:bg-amber-200">
+            <Link href="/nicaiyixiahh" className="rounded-lg bg-amber-300 px-4 py-2 text-sm font-black text-slate-950 transition hover:bg-amber-200">
               管理后台
             </Link>
           </nav>

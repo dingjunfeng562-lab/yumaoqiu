@@ -137,7 +137,7 @@ export default function AdminDashboard() {
       </Card>}
 
       <Card title="图片统计总览" style={{ marginBottom: 24 }} extra={isRoot ? (
-        <Link href="/admin/image-moderation"><Button icon={<PictureOutlined />}>图片审核设置</Button></Link>
+        <Link href="/nicaiyixiahh/image-moderation"><Button icon={<PictureOutlined />}>图片审核设置</Button></Link>
       ) : undefined}>
         <div style={{ display: 'flex', gap: 48, flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
@@ -212,7 +212,7 @@ export default function AdminDashboard() {
         <Card
           title="活动图片统计"
           style={{ marginBottom: 24 }}
-          extra={<Link href="/admin/photo-activities"><Button icon={<CalendarOutlined />}>管理活动图片</Button></Link>}
+          extra={<Link href="/nicaiyixiahh/photo-activities"><Button icon={<CalendarOutlined />}>管理活动图片</Button></Link>}
         >
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 20 }}>
             {[
@@ -237,7 +237,7 @@ export default function AdminDashboard() {
               {activityStats.map((activity) => {
                 const status = activityStatus[activity.approvalStatus];
                 return (
-                  <Link key={activity.id} href="/admin/photo-activities" style={{ color: 'inherit' }}>
+                  <Link key={activity.id} href="/nicaiyixiahh/photo-activities" style={{ color: 'inherit' }}>
                     <div style={{ padding: 16, border: '1px solid #f0f0f0', borderRadius: 8, background: '#fff', height: '100%' }}>
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
                         <Typography.Title level={5} ellipsis style={{ margin: 0 }}>{activity.title}</Typography.Title>

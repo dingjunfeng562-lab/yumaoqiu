@@ -189,8 +189,8 @@ export default function PhotoActivitiesPage() {
     { title: '图片', dataIndex: 'photoCount', width: 80, render: (value: number) => `${value} 张` },
     { title: '操作', key: 'actions', width: 430, render: (_: unknown, item: Activity) => <Space wrap>
       <Button icon={<EditOutlined />} onClick={() => openEdit(item)}>编辑</Button>
-      <Button icon={<SafetyCertificateOutlined />} onClick={() => router.push(`/admin/photo-activities/${item.id}/watermark`)}>Logo 设置</Button>
-      <Button type="primary" icon={<PictureOutlined />} onClick={() => router.push(`/admin/photo-activities/${item.id}/photos`)}>图片管理</Button>
+      <Button icon={<SafetyCertificateOutlined />} onClick={() => router.push(`/nicaiyixiahh/photo-activities/${item.id}/watermark`)}>Logo 设置</Button>
+      <Button type="primary" icon={<PictureOutlined />} onClick={() => router.push(`/nicaiyixiahh/photo-activities/${item.id}/photos`)}>图片管理</Button>
       <Button icon={<QrcodeOutlined />} loading={qrLoading === item.id} disabled={item.approvalStatus !== 'APPROVED'} title={item.approvalStatus !== 'APPROVED' ? '审核通过后才能生成二维码' : undefined} onClick={() => void showQr(item)}>{item.photoAccessEnabled ? '查看二维码' : '生成二维码'}</Button>
       {role === 'ROOT' && item.approvalStatus !== 'APPROVED' ? <Button icon={<CheckOutlined />} onClick={() => void approve(item)}>通过</Button> : null}
       {role === 'ROOT' && item.approvalStatus !== 'REJECTED' ? <Button danger icon={<StopOutlined />} onClick={() => setRejecting(item)}>驳回</Button> : null}

@@ -45,7 +45,7 @@ export default async function BracketListPage() {
                 </div>
               </div>
               <Link
-                href="/admin/draws"
+                href="/nicaiyixiahh/draws"
                 className="inline-flex h-10 shrink-0 items-center justify-center rounded-lg bg-[#0a5dd1] px-5 text-sm font-black text-white shadow-sm transition hover:bg-[#0a4fb0]"
               >
                 进入抽签后台 →
