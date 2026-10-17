@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import { VideoQuality } from 'livekit-client';
 import { Alert, Button, Card, Input, Popconfirm, Select, Space, Switch, Tag, Typography, message } from 'antd';
+import { ArrowLeftOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { type LiveSnapshot, useLiveRoom } from '@/lib/multicamera';
 import { LiveCameraVideo } from './LiveCameraVideo';
@@ -125,7 +126,9 @@ export function MulticameraDirector({ broadcastId }: { broadcastId: string }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
         <div><Typography.Title level={3} style={{ margin: 0 }}>{snapshot?.title ?? '赛事直播'} · 直播导播</Typography.Title>
           <Typography.Text type="secondary">选择预监机位，再按 TAKE 切换正式画面。主音频独立保持。</Typography.Text></div>
-        <Space wrap><Tag color={snapshot?.live ? 'red' : 'default'}>{snapshot?.live ? 'ON AIR' : snapshot?.status === 'ENDED' ? '已结束' : snapshot?.waiting ? '待开始' : 'STANDBY'}</Tag>
+        <Space wrap>
+          <Button icon={<ArrowLeftOutlined />} style={{ minHeight: 40 }} href="/nicaiyixiahh/broadcasts">返回上级</Button>
+          <Tag color={snapshot?.live ? 'red' : 'default'}>{snapshot?.live ? 'ON AIR' : snapshot?.status === 'ENDED' ? '已结束' : snapshot?.waiting ? '待开始' : 'STANDBY'}</Tag>
           <Button href={`/live/${encodeURIComponent(broadcastId)}`} target="_blank">观众页面</Button>
           <Button onClick={() => void load()}>刷新状态</Button></Space>
       </div>
