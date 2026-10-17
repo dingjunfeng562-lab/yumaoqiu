@@ -10,6 +10,9 @@ import { apiFetch } from '@/lib/api';
 import { type LiveSnapshot, useLiveRoom } from '@/lib/multicamera';
 import { LiveCameraVideo } from './LiveCameraVideo';
 import { CameraPairingPanel } from './CameraPairingPanel';
+import { BroadcastSettings } from './BroadcastSettings';
+import { BroadcastOverlay } from './BroadcastOverlay';
+import type { OverlaySettings, OverlaySnapshot } from '@/lib/broadcast-types';
 
 export function MulticameraDirector({ broadcastId }: { broadcastId: string }) {
   const { data: session, status } = useSession();
@@ -20,6 +23,10 @@ export function MulticameraDirector({ broadcastId }: { broadcastId: string }) {
   const [busy, setBusy] = useState(false);
   const [directorId, setDirectorId] = useState('');
   const [canAudio, setCanAudio] = useState(false);
+  const [overlayDraft, setOverlayDraft] = useState<OverlaySettings | null>(null);
+  const [overlaySaved, setOverlaySaved] = useState<OverlaySettings | null>(null);
+  const [overlayPreview, setOverlayPreview] = useState<OverlaySnapshot | null>(null);
+  const [overlaySaving, setOverlaySaving] = useState(false);
   const { room, error: mediaError, revision } = useLiveRoom(broadcastId, 'director', snapshot?.enabled && snapshot.status !== 'ENDED' ? token : undefined);
   const base = `/broadcasts/${encodeURIComponent(broadcastId)}/live`;
   const load = useCallback(async () => {
@@ -30,6 +37,26 @@ export function MulticameraDirector({ broadcastId }: { broadcastId: string }) {
     } catch (e) { setError(e instanceof Error ? e.message : '导播状态加载失败'); }
   }, [base, token]);
   useEffect(() => { const first = setTimeout(() => void load(), 0); const timer = setInterval(() => void load(), 2000); return () => { clearTimeout(first); clearInterval(timer); }; }, [load]);
+  // 记分牌设置与预览：导播在切换画面的同时就能调整比分板，不必回后台。
+  useEffect(() => {
+    if (!token || !root) return;
+    let disposed = false;
+    const pull = async () => {
+      try {
+        const [detail, preview] = await Promise.all([
+          apiFetch<{ overlaySettings: OverlaySettings }>(`/broadcasts/${encodeURIComponent(broadcastId)}`, { token, redirectOnForbidden: false }),
+          apiFetch<OverlaySnapshot>(`/broadcasts/${encodeURIComponent(broadcastId)}/preview`, { token, redirectOnForbidden: false }).catch(() => null),
+        ]);
+        if (disposed) return;
+        setOverlaySaved(detail.overlaySettings);
+        setOverlayDraft((current) => current ?? detail.overlaySettings);
+        if (preview) setOverlayPreview(preview);
+      } catch { /* 权限不足或网络抖动时保留上一次结果 */ }
+    };
+    void pull();
+    const timer = setInterval(() => void pull(), 5000);
+    return () => { disposed = true; clearInterval(timer); };
+  }, [broadcastId, root, token]);
   useEffect(() => {
     room?.remoteParticipants.forEach((participant) => participant.videoTrackPublications.forEach((track) => {
       const id = participant.identity.replace(/^camera_/, '');
@@ -63,6 +90,20 @@ export function MulticameraDirector({ broadcastId }: { broadcastId: string }) {
     } catch (e) { message.error(e instanceof Error ? e.message : '授权失败'); }
   }
   const cameraName = (id: string | null) => snapshot?.cameras.find((c) => c.id === id)?.code ?? '未选择';
+  const overlayDirty = Boolean(overlayDraft && overlaySaved && JSON.stringify(overlayDraft) !== JSON.stringify(overlaySaved));
+  async function saveOverlay() {
+    if (!token || !overlayDraft) return;
+    setOverlaySaving(true);
+    try {
+      await apiFetch(`/broadcasts/${encodeURIComponent(broadcastId)}`, {
+        method: 'PATCH', token, redirectOnForbidden: false,
+        body: JSON.stringify({ overlaySettings: overlayDraft }),
+      });
+      setOverlaySaved(overlayDraft);
+      message.success('记分牌设置已保存，观众页与 OBS 记分牌同步更新');
+    } catch (e) { message.error(e instanceof Error ? e.message : '保存失败'); }
+    finally { setOverlaySaving(false); }
+  }
   return <main className={styles.page} style={{ maxWidth: 1440, margin: 'auto', padding: '24px 16px', background: '#f4f6fa', minHeight: '100vh' }}>
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, width: '100%' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
@@ -117,6 +158,15 @@ export function MulticameraDirector({ broadcastId }: { broadcastId: string }) {
           <Card size="small" title={`PVW · ${cameraName(snapshot.previewCameraId)}`}><div style={{ aspectRatio: '16 / 9' }}><LiveCameraVideo room={room} cameraId={snapshot.previewCameraId} revision={revision} quality="high" /></div></Card>
           <Card size="small" title={`PGM · ${cameraName(snapshot.activeCameraId)}`}><div style={{ aspectRatio: '16 / 9' }}><LiveCameraVideo room={room} cameraId={snapshot.activeCameraId} revision={revision} quality="high" /></div></Card>
         </div>
+        {root && overlayDraft && <>
+          <BroadcastSettings value={overlayDraft} onChange={setOverlayDraft} disabled={overlaySaving} />
+          <Card size="small" title="记分牌预览（1920×1080 画面比例）" extra={<Space>
+            <Button type="primary" loading={overlaySaving} disabled={!overlayDirty} onClick={() => void saveOverlay()}>保存比分设置</Button>
+            <Button disabled={!overlayDirty} onClick={() => setOverlayDraft(overlaySaved)}>放弃改动</Button>
+          </Space>}>
+            <BroadcastOverlay preview={overlayPreview ? { ...overlayPreview, settings: overlayDraft } : null} />
+          </Card>
+        </>}
         {root && <Card size="small" title="导播授权"><Space wrap>
           <Input aria-label="导播用户 ID" placeholder="导播账号的用户 ID" value={directorId} onChange={(e) => setDirectorId(e.target.value)} />
           <Switch checked={canAudio} onChange={setCanAudio} checkedChildren="允许切音频" unCheckedChildren="仅切视频" />
