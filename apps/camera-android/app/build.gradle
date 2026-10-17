@@ -11,8 +11,8 @@ android {
     applicationId 'com.ayumaoqiu.camera'
     minSdk 24
     targetSdk 35
-    versionCode 9
-    versionName '1.3.2-ayumaoqiu'
+    versionCode 10
+    versionName '1.3.3-ayumaoqiu'
 
     // 现场用的都是 64 位 ARM 手机。x86 / x86_64 / mips 只服务模拟器，
     // 却在这个包里占 37MB 左右，全部剔掉。确实要兼容老机型时再加 'armeabi-v7a'。

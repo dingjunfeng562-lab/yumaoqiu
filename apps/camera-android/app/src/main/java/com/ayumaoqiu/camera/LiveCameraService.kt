@@ -52,6 +52,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -124,9 +125,13 @@ class LiveCameraService : LifecycleService() {
   private var actualWidth = 1280
   private var actualHeight = 720
   private var selectedQuality = LocalQuality("1080p", 30)
+  /** 本机被指定为主音频后仍没有 USB 麦克风时，用这个计时器做自动兜底。 */
+  private var autoFallbackJob: Job? = null
   val requestedQuality: LocalQuality? get() = LocalQuality.of(api.prefs.getString("qualityResolution", null), api.prefs.getInt("qualityFps", 0))
   val bitrateMbps: Int get() = api.prefs.getInt("liveBitrateMbps", LiveEncodingPolicy.DEFAULT_MBPS).coerceIn(2, LiveEncodingPolicy.MAX_MBPS)
   val allowInternalFallback: Boolean get() = api.prefs.getBoolean("allowInternalFallback", false)
+  /** 操作员在「音频设置」里明确选过之后，自动兜底不再覆盖他的选择。 */
+  private val internalFallbackExplicit: Boolean get() = api.prefs.getBoolean("internalFallbackExplicit", false)
   val simulcastEnabled: Boolean get() = api.prefs.getBoolean("simulcastEnabled", true)
   fun setSimulcast(enabled: Boolean) {
     api.prefs.edit().putBoolean("simulcastEnabled", enabled).apply()
@@ -141,7 +146,8 @@ class LiveCameraService : LifecycleService() {
     restartCapture()
   }
   fun setInternalFallback(allow: Boolean) {
-    api.prefs.edit().putBoolean("allowInternalFallback", allow).apply()
+    api.prefs.edit().putBoolean("allowInternalFallback", allow).putBoolean("internalFallbackExplicit", true).apply()
+    cancelAutoInternalFallback()
     scope.launch { applyControl(control) }
   }
   fun qualityOptions(): List<LocalQuality> = VideoCapabilities.options(this, capturer.currentCameraId())
@@ -173,6 +179,7 @@ class LiveCameraService : LifecycleService() {
     override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
       if (addedDevices.any { isUsb(it) }) {
         externalAudioLost = false
+        cancelAutoInternalFallback()
         mutableState.value = mutableState.value.copy(audioWarning = "")
       }
       preferUsb()
@@ -395,6 +402,30 @@ class LiveCameraService : LifecycleService() {
     }
   }
 
+  /**
+   * 本机被指定为主音频、但现场没插 USB 麦克风时，等 10 秒自动启用内置麦克风，
+   * 省掉"去音频设置里手动允许"这一步。插上 USB 后仍会自动切回 USB。
+   * 10 秒是留给 USB 设备枚举的时间，避免刚插上就被内置麦抢先占用。
+   */
+  private fun armAutoInternalFallback() {
+    if (internalFallbackExplicit || allowInternalFallback || autoFallbackJob?.isActive == true) return
+    autoFallbackJob = scope.launch {
+      delay(10_000L)
+      if (!wanted || !isMainAudio() || allowInternalFallback || usbInput() != null) return@launch
+      api.prefs.edit().putBoolean("allowInternalFallback", true).apply()
+      mutableState.value = mutableState.value.copy(
+        audioWarning = "未检测到 USB 麦克风，已自动启用手机内置麦克风；插入 USB 后会自动切回",
+      )
+      notifyState("${mutableState.value.cameraCode} · 未检测到 USB 麦克风，已自动启用内置麦克风")
+      applyControl(control)
+    }
+  }
+
+  private fun cancelAutoInternalFallback() {
+    autoFallbackJob?.cancel()
+    autoFallbackJob = null
+  }
+
   private suspend fun applyControl(next: JSONObject) {
     if (next.optInt("sequence", -1) < control.optInt("sequence", -1)) return
     control = next
@@ -407,6 +438,7 @@ class LiveCameraService : LifecycleService() {
       val enabled = isMainAudio()
       if (!enabled && audio != null) { audio?.let { created.localParticipant.unpublishTrack(it); it.dispose() }; audio = null }
       if (!enabled) {
+        cancelAutoInternalFallback()
         mutableState.value = mutableState.value.copy(
           requiresAudioPermission = false,
           audio = "AUDIO OFF",
@@ -431,8 +463,10 @@ class LiveCameraService : LifecycleService() {
           warning = mutableState.value.warning.takeUnless { it == AUDIO_PERMISSION_WARNING }.orEmpty())
         updateAudioWarning()
         notifyState("${mutableState.value.cameraCode} · 等待 USB 麦克风")
+        armAutoInternalFallback()
         return@withLock
       }
+      cancelAutoInternalFallback()
       if (enabled && audio == null && created.state == Room.State.CONNECTED) {
         if (!uiVisible) {
           mutableState.value = mutableState.value.copy(audioWarning = "后台已选择本机主音频；请返回 App 启用麦克风")

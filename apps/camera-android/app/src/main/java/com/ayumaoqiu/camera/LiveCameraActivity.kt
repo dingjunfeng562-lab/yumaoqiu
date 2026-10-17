@@ -333,6 +333,7 @@ class LiveCameraActivity : AppCompatActivity() {
     val connected = service ?: return
     var allow = connected.allowInternalFallback
     AlertDialog.Builder(this).setTitle("主音频输入")
+      .setMessage("默认：主音频被指定到本机后，若 10 秒内仍没有 USB 麦克风，会自动启用内置麦克风并在界面提示；插入 USB 麦克风后自动切回。")
       .setSingleChoiceItems(arrayOf("只允许 USB 麦克风（拔出暂停声音）", "USB 优先，明确允许内置麦克风备用"), if (allow) 1 else 0) { _, index -> allow = index == 1 }
       .setPositiveButton("保存") { _, _ -> connected.setInternalFallback(allow) }
       .setNegativeButton("取消", null).show()
