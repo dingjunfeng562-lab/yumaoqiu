@@ -6,7 +6,7 @@ import { useSession } from 'next-auth/react';
 import { Alert, Button, Card, Form, Input, Modal, Select, Space, Table, Tag, Typography, message } from 'antd';
 import { PlusOutlined, ReloadOutlined, SettingOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
-import TeamCompetitionFields, { TEAM_SCORING_OPTIONS, teamDefaults } from '@/components/TeamCompetitionFields';
+import TeamCompetitionFields, { TEAM_SCORING_OPTIONS, teamDefaults, teamAppearanceLabel } from '@/components/TeamCompetitionFields';
 import TeamRosterImportModal from '@/components/TeamRosterImport';
 
 type Player = { id: string; name: string; gender: 'MALE' | 'FEMALE'; affiliation: string };
@@ -15,7 +15,7 @@ type Item = { id: string; eventType: string; eventTypeLabel: string; sortOrder: 
 type Lineup = { teamId: string; teamCompetitionItemId: string; player1: Player; player2?: Player | null; name: string };
 type ChildMatch = { id: string; teamCompetitionItemId: string; matchNo: number; status: string; lineupLocked: boolean; eventTypeLabel: string; referee?: { username: string }; venue?: { name: string }; games: Array<{ side1Score: number; side2Score: number }> };
 type Encounter = { id: string; round: string; matchNo: number; status: string; team1?: { id: string; name: string }; team2?: { id: string; name: string }; team1Wins: number; team2Wins: number; winnerTeamName?: string; matches: ChildMatch[]; lineups: Lineup[] };
-type Competition = { id: string; name: string; description?: string; winThreshold: number; malePlayerCount: number | null; femalePlayerCount: number | null; scoringRule: string; scoringMode: string; customGamePoint: number | null; customGameCap: number | null; customGamesToWin: number | null; isPublished: boolean; items: Item[]; teams: Team[]; teamMatches: Encounter[] };
+type Competition = { id: string; name: string; description?: string; winThreshold: number; maxPlayerAppearances: number; playAllMatches: boolean; scoringRule: string; scoringMode: string; customGamePoint: number | null; customGameCap: number | null; customGamesToWin: number | null; isPublished: boolean; items: Item[]; teams: Team[]; teamMatches: Encounter[] };
 type Selection = { teamId: string; teamCompetitionItemId: string; player1Id: string; player2Id?: string };
 const statusLabel: Record<string, string> = { PENDING: '未开始', LIVE: '进行中', COMPLETED: '已结束', CANCELLED: '无需比赛' };
 const doubles = (type: string) => type.endsWith('DOUBLES');
@@ -69,14 +69,15 @@ export default function TeamCompetitionDetailPage() {
     } finally { setBusy(false); }
   }
   function openSettings() {
-    settingsForm.setFieldsValue({ ...teamDefaults, ...competition, malePlayerCount: competition?.malePlayerCount ?? 5, femalePlayerCount: competition?.femalePlayerCount ?? 5 });
+    settingsForm.setFieldsValue({ ...teamDefaults, ...competition });
     setSettingsOpen(true);
   }
   async function saveSettings() {
     const values = await settingsForm.validateFields();
     await apiFetch(`/team-competitions/${id}`, { method: 'PATCH', token, body: JSON.stringify({
-      name: values.name, description: values.description, malePlayerCount: values.malePlayerCount, femalePlayerCount: values.femalePlayerCount,
+      name: values.name, description: values.description, maxPlayerAppearances: values.maxPlayerAppearances,
       winThreshold: values.winThreshold, isPublished: values.isPublished, scoringRule: values.scoringRule, scoringMode: values.scoringMode,
+      playAllMatches: values.playAllMatches,
       customGamePoint: values.customGamePoint ?? null, customGameCap: values.customGameCap ?? null, customGamesToWin: values.customGamesToWin ?? null,
       items: values.items.map((item: Item, index: number) => ({ eventType: item.eventType, sortOrder: index + 1 })),
     }) });
@@ -131,9 +132,8 @@ export default function TeamCompetitionDetailPage() {
     setActive(null); message.success(lock ? '本项双方名单已锁定' : '本项名单已保存，开赛前请锁定'); await loadData();
   }
   if (!competition) return <Card loading={loading}><Button onClick={loadData}>重新加载</Button></Card>;
-  const rosterReady = competition.malePlayerCount != null && competition.femalePlayerCount != null;
   const hasDraw = competition.teamMatches.length > 0;
-  const rosterText = rosterReady ? `每队 ${competition.malePlayerCount! + competition.femalePlayerCount!} 人（${competition.malePlayerCount} 男 ${competition.femalePlayerCount} 女）` : '尚未设置每队人数';
+  const rosterText = `每队人数不限 · ${teamAppearanceLabel(competition.maxPlayerAppearances)}`;
   const activeFinal = Boolean(active && (['COMPLETED', 'CANCELLED'].includes(active.match.status) || ['COMPLETED', 'CANCELLED'].includes(active.encounter.status)));
   const activeReadonly = activeFinal || Boolean(active && !lineupOverride && (active.match.lineupLocked || active.match.status !== 'PENDING'));
   const taken = new Set(competition.teams.filter(team => team.id !== editingTeam?.id).flatMap(team => team.members.map(p => p.id)));
@@ -149,14 +149,13 @@ export default function TeamCompetitionDetailPage() {
       <Space wrap>
         <Button icon={<ReloadOutlined />} onClick={loadData} loading={loading}>刷新</Button>
         <Button icon={<SettingOutlined />} onClick={openSettings}>团体赛设置</Button>
-        <Button type="primary" disabled={hasDraw || !rosterReady} loading={busy} onClick={() => submit(() => draw(false))}>生成对阵</Button>
+        <Button type="primary" disabled={hasDraw} loading={busy} onClick={() => submit(() => draw(false))}>生成对阵</Button>
         {hasDraw && <Button danger onClick={() => Modal.confirm({ title: '重新生成对阵？', content: '将清除已有对阵和赛前名单。已有子项开赛时不能重新生成。', okText: '重新生成', cancelText: '取消', onOk: () => submit(() => draw(true)) })}>重新生成</Button>}
       </Space>
     </Space>
-    <Alert type="info" showIcon title="各子项赛前独立填报名单并锁定，按顺序开赛；达到团体胜场数后其余子项无需比赛。下一轮可重新安排选手。" />
-    {!rosterReady && <Alert type="warning" showIcon title="请先在团体赛设置中填写每队男、女人数。" />}
+    <Alert type="info" showIcon title={`各子项赛前独立填报名单并锁定，在同一场地按顺序开赛；${competition.playAllMatches ? '胜负确定后继续打完剩余子项，再推进下一轮' : '达到团体胜场数后其余子项无需比赛'}。下一轮可重新安排选手。`} />
     <Card title="项目出场顺序"><Space wrap>{competition.items.map(item => <Tag key={item.id} color="blue">{item.sortOrder}. {item.eventTypeLabel}</Tag>)}</Space></Card>
-    <Card title={<div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingBlock: 12 }}><span>队伍与队员</span><Space wrap><Button icon={<PlusOutlined />} disabled={hasDraw || !rosterReady} onClick={() => openTeam()}>从选手库建队</Button><Button disabled={hasDraw || !rosterReady} onClick={() => setBatchOpen(true)}>批量导入团体队员</Button></Space></div>}>
+    <Card title={<div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingBlock: 12 }}><span>队伍与队员</span><Space wrap><Button icon={<PlusOutlined />} disabled={hasDraw} onClick={() => openTeam()}>从选手库建队</Button><Button disabled={hasDraw} onClick={() => setBatchOpen(true)}>批量导入团体队员</Button></Space></div>}>
       <Table rowKey="id" dataSource={competition.teams} pagination={false} scroll={{ x: 650 }} columns={[
         { title: '队伍', dataIndex: 'name' }, { title: '单位', dataIndex: 'affiliation' },
         { title: '队员人数', render: (_, team: Team) => `${team.memberCount} 人（${team.members.filter(p => p.gender === 'MALE').length} 男 ${team.members.filter(p => p.gender === 'FEMALE').length} 女）` },
@@ -183,10 +182,10 @@ export default function TeamCompetitionDetailPage() {
     </Card>
     <TeamRosterImportModal competition={competition} open={batchOpen} onClose={() => setBatchOpen(false)} onImported={loadData} token={token} />
     <Modal title="团体赛设置" open={settingsOpen} onCancel={() => setSettingsOpen(false)} onOk={() => submit(saveSettings)} okText="保存" cancelText="取消" confirmLoading={busy} width={760}>
-      {hasDraw && <Alert type="info" title="对阵已生成，人数、项目顺序和计分规则不可修改；名称、说明和公开状态仍可编辑。" style={{ marginBottom: 16 }} />}
+      {hasDraw && <Alert type="info" title="对阵已生成，兼项、胜场、项目顺序和计分规则不可修改；名称、说明和公开状态仍可编辑。" style={{ marginBottom: 16 }} />}
       <Form form={settingsForm} layout="vertical"><TeamCompetitionFields /></Form>
     </Modal>
-    <Modal title={editingTeam ? '例外调整队员' : '从选手库建队'} open={teamOpen} onCancel={() => setTeamOpen(false)} onOk={() => editingTeam ? Modal.confirm({ title: '确认例外调整本队名单？', content: '原则上队员名单不能更改。本次确认将按当前选择调整人员，允许人数偏离原配置；已结束子项保留原记录。', okText: '确认调整', cancelText: '取消', onOk: () => submit(saveTeam) }) : submit(saveTeam)} okText="保存" cancelText="取消" confirmLoading={busy} width={700}>
+    <Modal title={editingTeam ? '例外调整队员' : '从选手库建队'} open={teamOpen} onCancel={() => setTeamOpen(false)} onOk={() => editingTeam ? Modal.confirm({ title: '确认例外调整本队名单？', content: '原则上队员名单不能更改。本次确认将按当前选择调整人员；已结束子项保留原记录。', okText: '确认调整', cancelText: '取消', onOk: () => submit(saveTeam) }) : submit(saveTeam)} okText="保存" cancelText="取消" confirmLoading={busy} width={700}>
       <Alert type="info" title={rosterText} style={{ marginBottom: 16 }} />
       <Form form={teamForm} layout="vertical">
         <Form.Item name="name" label="队伍名称" rules={[{ required: true }]}><Input /></Form.Item>
@@ -205,7 +204,7 @@ export default function TeamCompetitionDetailPage() {
       </Form>
     </Modal>
     <Modal title={active ? `第 ${active.match.matchNo} 项 · ${active.item.eventTypeLabel}出场名单` : '出场名单'} open={Boolean(active)} onCancel={() => setActive(null)} width={740} footer={activeReadonly ? <Space>{!activeFinal && <Button danger onClick={() => Modal.confirm({ title: '确认例外换人？', content: '原则上名单锁定后或比赛中不能换人。确认后可从本队名单重新选择，当前比分和比赛进度保留。', okText: '确认例外换人', cancelText: '取消', onOk: () => setLineupOverride(true) })}>例外换人</Button>}<Button onClick={() => setActive(null)}>关闭</Button></Space> : <Space wrap><Button onClick={() => setActive(null)}>取消</Button>{!lineupOverride && <Button loading={busy} onClick={() => submit(() => saveLineup(false))}>保存待确认</Button>}<Button type="primary" loading={busy} onClick={() => submit(() => saveLineup(true))}>{lineupOverride ? '保存例外换人' : '保存并锁定本项名单'}</Button></Space>}>
-      <Alert type={activeReadonly ? 'info' : 'warning'} showIcon title={activeReadonly ? '本项名单已锁定或比赛已结束。' : lineupOverride ? '本次为已确认的例外换人，比分和进度保留。选手必须来自本队名单。' : '请确认双方选手后锁定本项名单。每位队员在本轮最多兼任两项。'} style={{ marginBottom: 16 }} />
+      <Alert type={activeReadonly ? 'info' : 'warning'} showIcon title={activeReadonly ? '本项名单已锁定或比赛已结束。' : lineupOverride ? '本次为已确认的例外换人，比分和进度保留。选手必须来自本队名单。' : '请确认双方选手后锁定本项名单。'} description={`本场团体对阵：${teamAppearanceLabel(competition.maxPlayerAppearances)}，下一轮重新计算。`} style={{ marginBottom: 16 }} />
       <Form form={lineupForm} layout="vertical" disabled={activeReadonly}>
         <Form.List name="selections">{fields => <Space orientation="vertical" style={{ width: '100%' }}>{fields.map(field => {
           const current = selections[field.name];

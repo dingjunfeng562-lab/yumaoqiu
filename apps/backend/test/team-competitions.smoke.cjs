@@ -26,7 +26,7 @@ const teamPayload = label => ({ teamName: label, affiliation: '团体赛验证',
 ] });
 async function makeCompetition(n, overrides = {}) {
   const created = await api('/team-competitions', 'POST', {
-    tournamentId, name: `团体赛验证-${n}队`, malePlayerCount: 3, femalePlayerCount: 2,
+    tournamentId, name: `团体赛验证-${n}队`,
     winThreshold: 2, scoringRule: 'FIFTEEN_ONE', scoringMode: 'STANDARD_GOLDEN',
     items: ['MENS_SINGLES', 'WOMENS_SINGLES', 'MIXED_DOUBLES'].map((eventType, i) => ({ eventType, sortOrder: i + 1 })),
     ...overrides,
@@ -44,6 +44,7 @@ function selection(competition, encounter, index, maleIndex = 0) {
     return { teamId: team.id, teamCompetitionItemId: item.id,
       player1Id: item.eventType === 'WOMENS_SINGLES' ? females[0].id : males[maleIndex].id,
       ...(item.eventType === 'MIXED_DOUBLES' ? { player2Id: females[1].id } : {}),
+      ...(item.eventType === 'MENS_DOUBLES' ? { player2Id: males[maleIndex + 1].id } : {}),
     };
   });
 }
@@ -56,11 +57,11 @@ async function main() {
   token = new JwtService({ secret: process.env.JWT_SECRET }).sign({ sub: actorId }, { expiresIn: '1h' });
   let competition = await makeCompetition(3);
   const c = competition.id;
-  await api(`/team-competitions/${c}/teams/import`, 'POST', { ...teamPayload('人数错误'), players: teamPayload('人数错误').players.slice(1) }, 400);
+  await api(`/team-competitions/${c}/teams/import`, 'POST', { ...teamPayload('空名单'), players: [] }, 400);
   await api(`/team-competitions/${c}`, 'PATCH', { winThreshold: 9 }, 400);
   await api(`/team-competitions/${c}`, 'PATCH', { winThreshold: 3 }, 400);
   await api(`/team-competitions/${c}`, 'PATCH', { customGameCap: 1 }, 400);
-  await api(`/team-competitions/${c}`, 'PATCH', { malePlayerCount: 0, femalePlayerCount: 0 }, 400);
+  for (const invalid of [-1, 3, null, '2']) await api(`/team-competitions/${c}`, 'PATCH', { maxPlayerAppearances: invalid }, 400);
   const available = await api(`/team-competitions/${c}/available-players`);
   assert.equal(available.length, 15);
   await api('/players', 'GET', undefined, 403);
@@ -170,9 +171,9 @@ async function main() {
   await db.tournament.update({ where: { id: tournamentId }, data: { isPublished: true } });
   const batch = await makeCompetition(0);
   const batchRows = ['批量甲队', '批量乙队'].flatMap(teamName => teamPayload(teamName).players.map(player => ({ ...player, teamName })));
-  const invalid = batchRows.slice(0, -1).map((row, i) => ({ ...row, lineNumber: i + 2 }));
+  const invalid = batchRows.map((row, i) => ({ ...row, name: i === 5 ? ' ' : row.name, lineNumber: i + 2 }));
   const invalidResult = await api(`/team-competitions/${batch.id}/teams/batch-import`, 'POST', { players: invalid }, 400);
-  assert(invalidResult.message.includes('批量乙队')); assert(invalidResult.message.includes('第 7'));
+  assert(invalidResult.message.includes('第 7'));
   assert.equal((await detail(batch.id)).teams.length, 0);
   assert.equal(await db.player.count({ where: { ownerId: actorId, name: { startsWith: '批量' } } }), 0);
   const imported = await api(`/team-competitions/${batch.id}/teams/batch-import`, 'POST', { players: batchRows }, 201);
@@ -181,13 +182,14 @@ async function main() {
   await api(`/team-competitions/${batch.id}/teams/batch-import`, 'POST', { players: batchRows }, 409);
   assert.equal(await db.player.count({ where: { ownerId: actorId, name: { startsWith: '批量' } } }), 10);
   const beforeBrowser = await makeCompetition(0, { name: '浏览器批量导入验证' });
+  await require('./team-rules.smoke.cjs').run({ db, actorId, api, makeCompetition, teamPayload, selection, lineup, detail });
   if (process.env.TEAM_QA_BROWSER === '1') {
     user = await db.user.update({ where: { id: actorId }, data: { permissions: [...user.permissions, 'PLAYERS'] } });
     await require('./team-competitions.browser.cjs').run({ base, token, user, competition: custom, batchCompetition: beforeBrowser, tournamentId, api });
   }
   await api(`/team-competitions/${batch.id}/draw`, 'POST', {}, 201);
   await api(`/team-competitions/${batch.id}/teams/batch-import`, 'POST', { players: batchRows }, 409);
-  console.log(JSON.stringify({ ok: true, httpChecks: checks, fixtures: competitionIds.length, roster: '3 male + 2 female', perItemLock: true, overrideKeepsScore: true, clinchCancelsPendingAndLive: true, nextRoundLineupsIndependent: true, customScoring: true }));
+  console.log(JSON.stringify({ ok: true, httpChecks: checks, fixtures: competitionIds.length, roster: 'variable', perItemLock: true, overrideKeepsScore: true, clinchCancelsPendingAndLive: true, nextRoundLineupsIndependent: true, customScoring: true }));
 }
 main().finally(async () => {
   await db.teamMatch.deleteMany({ where: { teamCompetitionId: { in: competitionIds } } });

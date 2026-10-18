@@ -341,7 +341,7 @@ export default function AdminCompetitionPlayersPage() {
   );
   const batchErrorCount = parsedBatchRows.filter((row) => row.error).length;
   const batchTeam = teamCompetitions.find(team => team.id === batchEventId);
-  const parsedTeamBatch = parseTeamRoster(batchText, batchTeam);
+  const parsedTeamBatch = parseTeamRoster(batchText);
 
   const loadData = useCallback(async () => {
     if (!token || !id) return;

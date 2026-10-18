@@ -12,11 +12,20 @@ import {
   Max,
   Min,
   MinLength,
+  ValidateIf,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { EventType, TournamentStatus, ScoringRule, ScoringMode } from '@prisma/client';
 
 export class CreateTournamentDto {
+  @ValidateIf((_, value) => value !== undefined)
+  @IsBoolean()
+  teamPlayAllMatches?: boolean;
+
+  @ValidateIf((_, value) => value !== undefined)
+  @IsIn([0, 1, 2])
+  teamMaxPlayerAppearances?: 0 | 1 | 2;
+
   @IsString()
   @MinLength(1)
   name: string;
@@ -156,6 +165,14 @@ export class CreateTournamentDto {
 }
 
 export class UpdateTournamentDto {
+  @ValidateIf((_, value) => value !== undefined)
+  @IsBoolean()
+  teamPlayAllMatches?: boolean;
+
+  @ValidateIf((_, value) => value !== undefined)
+  @IsIn([0, 1, 2])
+  teamMaxPlayerAppearances?: 0 | 1 | 2;
+
   @IsOptional()
   @IsString()
   @MinLength(1)

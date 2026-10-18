@@ -18,7 +18,7 @@ import {
 import { PlusOutlined, EyeOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 
-import TeamCompetitionFields, { TEAM_EVENT_OPTIONS, teamDefaults } from '@/components/TeamCompetitionFields';
+import TeamCompetitionFields, { TEAM_EVENT_OPTIONS, teamDefaults, teamAppearanceLabel } from '@/components/TeamCompetitionFields';
 
 type Tournament = {
   id: string;
@@ -32,8 +32,7 @@ type TeamCompetition = {
   name: string;
   description?: string | null;
   winThreshold: number;
-  malePlayerCount: number | null;
-  femalePlayerCount: number | null;
+  maxPlayerAppearances: number;
   isPublished: boolean;
   items: Array<{ id: string; eventType: string; eventTypeLabel: string; sortOrder: number }>;
   tournament: Tournament;
@@ -151,7 +150,8 @@ export default function TeamCompetitionsPage() {
             render: (_, row: TeamCompetition) => row.items.map((item) => TEAM_EVENT_OPTIONS.find(option => option.value === item.eventType)?.label ?? item.eventType).join(' → '),
           },
           { title: '抢几胜', dataIndex: 'winThreshold', width: 100 },
-          { title: '每队人数', render: (_, row: TeamCompetition) => row.malePlayerCount == null ? '待设置' : `${row.malePlayerCount} 男 ${row.femalePlayerCount} 女` },
+          { title: '每队人数', render: () => '人数不限' },
+          { title: '兼项规则', render: (_, row: TeamCompetition) => teamAppearanceLabel(row.maxPlayerAppearances) },
           { title: '队伍数', render: (_, row: TeamCompetition) => row._count?.teams ?? 0, width: 90 },
           { title: '对阵数', render: (_, row: TeamCompetition) => row._count?.teamMatches ?? 0, width: 90 },
           {

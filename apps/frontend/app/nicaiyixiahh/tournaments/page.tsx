@@ -1,6 +1,6 @@
 'use client';
 
-import { TEAM_SCORING_OPTIONS } from '@/components/TeamCompetitionFields';
+import { TEAM_SCORING_OPTIONS, TEAM_APPEARANCE_OPTIONS } from '@/components/TeamCompetitionFields';
 import { useCurrentAccess } from '@/lib/use-current-role';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -108,8 +108,8 @@ interface Tournament {
   teamCompetitions: Array<{
     id: string;
     winThreshold: number;
-    malePlayerCount: number | null;
-    femalePlayerCount: number | null;
+    maxPlayerAppearances: number;
+    playAllMatches: boolean;
     scoringRule: string;
     scoringMode: string;
     items: Array<{ eventType: EventType; sortOrder: number }>;
@@ -132,8 +132,8 @@ type TournamentFormValues = {
   includeTeamCompetition: boolean;
   teamWinThreshold: 2 | 3;
   teamEventTypes: EventType[];
-  teamMalePlayerCount: number;
-  teamFemalePlayerCount: number;
+  teamMaxPlayerAppearances: number;
+  teamPlayAllMatches: boolean;
   teamScoringRule: string;
   teamScoringMode: string;
   maxRegistrationEvents: number;
@@ -301,8 +301,8 @@ export default function TournamentsPage() {
       includeTeamCompetition: false,
       teamWinThreshold: 2,
       teamEventTypes: [],
-      teamMalePlayerCount: 5,
-      teamFemalePlayerCount: 5,
+      teamMaxPlayerAppearances: 2,
+      teamPlayAllMatches: false,
       teamScoringRule: 'TWENTYONE_BO3',
       teamScoringMode: 'CAPPED_30',
       maxRegistrationEvents: 2,
@@ -354,8 +354,8 @@ export default function TournamentsPage() {
       includeTeamCompetition: Boolean(teamCompetition),
       teamWinThreshold: (teamCompetition?.winThreshold as 2 | 3 | undefined) ?? 2,
       teamEventTypes: [...(teamCompetition?.items ?? [])].sort((a, b) => a.sortOrder - b.sortOrder).map(item => item.eventType),
-      teamMalePlayerCount: teamCompetition?.malePlayerCount ?? 5,
-      teamFemalePlayerCount: teamCompetition?.femalePlayerCount ?? 5,
+      teamMaxPlayerAppearances: teamCompetition?.maxPlayerAppearances ?? 2,
+      teamPlayAllMatches: teamCompetition?.playAllMatches ?? false,
       teamScoringRule: teamCompetition?.scoringRule ?? 'TWENTYONE_BO3',
       teamScoringMode: teamCompetition?.scoringMode ?? 'CAPPED_30',
       maxRegistrationEvents: tournament.allowCrossEventRegistration ? tournament.maxRegistrationEvents : 1,
@@ -439,8 +439,8 @@ export default function TournamentsPage() {
       includeTeamCompetition: Boolean(values.includeTeamCompetition),
       teamWinThreshold: values.includeTeamCompetition ? values.teamWinThreshold : undefined,
       teamEventTypes: values.includeTeamCompetition ? values.teamEventTypes : [],
-      teamMalePlayerCount: values.includeTeamCompetition ? values.teamMalePlayerCount : undefined,
-      teamFemalePlayerCount: values.includeTeamCompetition ? values.teamFemalePlayerCount : undefined,
+      teamMaxPlayerAppearances: values.includeTeamCompetition ? values.teamMaxPlayerAppearances : undefined,
+      teamPlayAllMatches: values.includeTeamCompetition ? values.teamPlayAllMatches : undefined,
       teamScoringRule: values.includeTeamCompetition ? values.teamScoringRule : undefined,
       teamScoringMode: values.includeTeamCompetition ? values.teamScoringMode : undefined,
       maxRegistrationEvents: values.allowCrossEventRegistration ? Number(values.maxRegistrationEvents) : 1,
@@ -847,11 +847,13 @@ export default function TournamentsPage() {
             </Form.Item>
             {includeTeamCompetition && (
               <>
-                <Space align="start" wrap>
-                  <Form.Item name="teamMalePlayerCount" label="每队男队员人数" rules={[{ required: true }]}><InputNumber min={0} precision={0} /></Form.Item>
-                  <Form.Item name="teamFemalePlayerCount" label="每队女队员人数" rules={[{ required: true }]}><InputNumber min={0} precision={0} /></Form.Item>
-                </Space>
+                <Form.Item name="teamMaxPlayerAppearances" label="团体赛兼项规则" rules={[{ required: true }]} extra="按同一场团体对阵计算，下一轮重新计算。每队人数不限，不限制男女人数。">
+                  <Select options={TEAM_APPEARANCE_OPTIONS} />
+                </Form.Item>
                 <Form.Item name="teamScoringRule" label="团体子项计分规则" rules={[{ required: true }]} extra="自定义分数和局数可在团体赛设置中调整。"><Select options={TEAM_SCORING_OPTIONS} /></Form.Item>
+                <Form.Item name="teamPlayAllMatches" label="胜负确定后继续比赛" valuePropName="checked" extra="开启后继续打完剩余子项并记录完整比分，再推进下一轮；关闭时达到胜场数即结束。">
+                  <Switch checkedChildren="继续比赛" unCheckedChildren="结束对阵" />
+                </Form.Item>
                 <Form.Item name="teamScoringMode" label="团体子项平分规则" rules={[{ required: true }]}><Select options={[{ value: 'CAPPED_30', label: '领先 2 分，封顶决胜' }, { value: 'STANDARD_GOLDEN', label: '目标分直接获胜（金球）' }]} /></Form.Item>
                 <Form.Item
                   name="teamWinThreshold"

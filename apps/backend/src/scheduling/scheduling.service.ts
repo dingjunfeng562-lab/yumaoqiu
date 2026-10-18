@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -34,6 +35,8 @@ type RegistrationView = {
 type ScheduleMatch = {
   id: string;
   teamMatchId?: string | null;
+  team1Name?: string | null;
+  team2Name?: string | null;
   eventId: string | null;
   eventType: string;
   eventTypeLabel: string;
@@ -297,6 +300,13 @@ export class SchedulingService {
     const eventTypeRank = new Map((dto.eventTypeOrder ?? []).map((type, index) => [type, index]));
     const scheduledEndByKey = new Map<string, number>();
     const teamRelease = new Map<string, number>();
+    const teamVenue = new Map<string, string>();
+    const targetTeamMatchIds = new Set(targetMatches.map(match => match.teamMatchId).filter(Boolean));
+    for (const fixed of allScheduled.filter(match => match.teamMatchId && targetTeamMatchIds.has(match.teamMatchId) && match.venueId && (match.status === MatchStatus.LIVE || match.status === MatchStatus.COMPLETED))) {
+      const currentVenue = teamVenue.get(fixed.teamMatchId!);
+      if (currentVenue && currentVenue !== fixed.venueId) throw new ConflictException('同一团体对阵的已开赛子项使用了不同场地，请先核对原排程');
+      teamVenue.set(fixed.teamMatchId!, fixed.venueId!);
+    }
     for (const anchor of anchors) {
       if (anchor.teamMatchId && anchor.scheduledAt) teamRelease.set(anchor.teamMatchId, Math.max(teamRelease.get(anchor.teamMatchId) ?? 0, this.addMinutes(anchor.scheduledAt, anchor.durationMinutes + breakMinutes).getTime()));
       if (!anchor.eventId || !anchor.scheduledAt) continue;
@@ -315,7 +325,8 @@ export class SchedulingService {
           : 0;
         const aRank = eventTypeRank.get(a.event?.type ?? '') ?? Number.MAX_SAFE_INTEGER;
         const bRank = eventTypeRank.get(b.event?.type ?? '') ?? Number.MAX_SAFE_INTEGER;
-        return stagePriority || aRank - bRank || a.roundNo - b.roundNo || a.matchNo - b.matchNo;
+        return stagePriority || aRank - bRank || a.roundNo - b.roundNo
+          || (a.teamMatchId ?? '').localeCompare(b.teamMatchId ?? '') || a.matchNo - b.matchNo;
       });
 
     const updates: Array<{ matchId: string; venueId: string; scheduledAt: Date; minutes: number }> = [];
@@ -327,10 +338,15 @@ export class SchedulingService {
       const perMatchMinutes = matchMinutes;
       const dependencyReleaseTime = this.dependencyReleaseTime(match, matchMap, scheduledEndByKey);
       const earliestMatchStart = Math.max(earliestScheduleStart, dependencyReleaseTime, match.teamMatchId ? teamRelease.get(match.teamMatchId) ?? 0 : 0);
+      const fixedVenue = match.teamMatchId ? teamVenue.get(match.teamMatchId) : undefined;
+      if (fixedVenue && ![...venues, ...borrowVenues].some(venue => venue.id === fixedVenue)) {
+        throw new ConflictException('团体对阵已有子项开赛，请将该对阵使用的场地纳入本次排程');
+      }
       const candidates = [
         ...venues.map((venue) => ({ venue, isBorrow: false })),
         ...borrowVenues.map((venue) => ({ venue, isBorrow: true })),
       ]
+        .filter(({ venue }) => !fixedVenue || venue.id === fixedVenue)
         .map(({ venue, isBorrow }) => ({
           venue,
           isBorrow,
@@ -367,7 +383,10 @@ export class SchedulingService {
       const winner = candidates[0];
       const scheduledAt = new Date(winner.startTime);
       const matchEndAt = this.addMinutes(scheduledAt, perMatchMinutes).getTime();
-      if (match.teamMatchId) teamRelease.set(match.teamMatchId, this.addMinutes(scheduledAt, perMatchMinutes + breakMinutes).getTime());
+      if (match.teamMatchId) {
+        teamRelease.set(match.teamMatchId, this.addMinutes(scheduledAt, perMatchMinutes + breakMinutes).getTime());
+        teamVenue.set(match.teamMatchId, winner.venue.id);
+      }
 
       updates.push({ matchId: match.id, venueId: winner.venue.id, scheduledAt, minutes: perMatchMinutes });
       if (match.eventId) {
@@ -465,7 +484,9 @@ export class SchedulingService {
         ? this.parseNullableScheduleDate(dto.scheduledAt, dto.scheduledAtLocal, '比赛时间无效')
         : undefined;
 
-    await this.prisma.match.update({
+    if (match.teamMatchId) {
+      await this.updateTeamEncounterSchedule(match.teamMatchId, matchId, tournamentId, dto, scheduledAt);
+    } else await this.prisma.match.update({
       where: { id: matchId },
       data: {
         ...(dto.venueId !== undefined ? { venueId: dto.venueId } : {}),
@@ -478,12 +499,47 @@ export class SchedulingService {
     return this.getSchedule(fallbackTournamentId, match.eventId ?? undefined);
   }
 
+  private async updateTeamEncounterSchedule(teamMatchId: string, matchId: string, tournamentId: string, dto: UpdateMatchScheduleDto, scheduledAt: Date | null | undefined) {
+    await this.prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM TeamMatch WHERE id = ${teamMatchId} FOR UPDATE`;
+      const matches = await tx.match.findMany({ where: { teamMatchId }, orderBy: { matchNo: 'asc' } });
+      const selected = matches.find(match => match.id === matchId);
+      if (!selected || selected.status !== MatchStatus.PENDING) throw new ConflictException('只能调整尚未开始的团体子项排程');
+      const pending = matches.filter(match => match.status === MatchStatus.PENDING);
+      const fixed = matches.filter(match => match.status === MatchStatus.LIVE || match.status === MatchStatus.COMPLETED);
+      const fixedVenues = new Set(fixed.map(match => match.venueId).filter(Boolean));
+      if (fixedVenues.size > 1) throw new ConflictException('已开赛子项使用了不同场地，请先核对原排程');
+      const fixedVenue = [...fixedVenues][0];
+      if (fixedVenue && dto.venueId !== undefined && dto.venueId !== fixedVenue) {
+        throw new ConflictException('团体对阵已有子项开赛，后续子项须继续使用同一场地');
+      }
+      const venueId = dto.venueId !== undefined ? dto.venueId : fixedVenue ?? pending.find(match => match.venueId)?.venueId;
+      const tournament = await tx.tournament.findUniqueOrThrow({ where: { id: tournamentId }, select: { breakMinutes: true } });
+      let cursor = scheduledAt !== undefined ? scheduledAt : pending[0]?.scheduledAt;
+      const fixedEnd = Math.max(0, ...fixed.filter(match => match.scheduledAt).map(match => this.addMinutes(match.scheduledAt!, match.durationMinutes + tournament.breakMinutes).getTime()));
+      if (cursor && cursor.getTime() < fixedEnd) {
+        if (scheduledAt) throw new ConflictException('后续子项的开始时间不能早于已开赛子项的预估结束时间');
+        cursor = new Date(fixedEnd);
+      }
+      for (const item of pending) {
+        const durationMinutes = item.id === matchId ? dto.durationMinutes ?? item.durationMinutes : item.durationMinutes;
+        await tx.match.update({ where: { id: item.id }, data: {
+          ...(venueId !== undefined ? { venueId } : {}),
+          ...(cursor !== undefined ? { scheduledAt: cursor } : {}),
+          durationMinutes,
+        } });
+        if (cursor) cursor = this.addMinutes(cursor, durationMinutes + tournament.breakMinutes);
+      }
+    });
+  }
+
   private async loadScheduleMatches(tournamentId: string, eventId?: string) {
     const matches = await this.prisma.match.findMany({
       where: this.tournamentMatches(tournamentId, eventId),
       include: {
         event: true,
         teamCompetitionItem: true,
+        teamMatch: { include: { team1: true, team2: true } },
         venue: true,
       },
       orderBy: [
@@ -528,6 +584,8 @@ export class SchedulingService {
       return {
         id: match.id,
         teamMatchId: match.teamMatchId,
+        team1Name: match.teamMatch?.team1?.name,
+        team2Name: match.teamMatch?.team2?.name,
         eventId: match.eventId,
         eventType: match.event?.type ?? 'TEAM_COMPETITION',
         eventTypeLabel: match.event ? (EVENT_TYPE_LABELS[match.event.type] ?? match.event.type) : `团体赛 · ${EVENT_TYPE_LABELS[match.teamCompetitionItem?.eventType ?? ''] ?? ''}`,

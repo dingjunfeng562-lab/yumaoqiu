@@ -97,6 +97,9 @@ interface ConflictItem {
 
 interface ScheduleMatch {
   id: string;
+  teamMatchId?: string | null;
+  team1Name?: string | null;
+  team2Name?: string | null;
   eventId: string | null;
   eventType: string;
   eventTypeLabel: string;
@@ -422,12 +425,15 @@ export default function AdminSchedulingPage() {
 
   function openEdit(match: ScheduleMatch) {
     setEditingMatch(match);
+    const first = match.teamMatchId
+      ? [...schedule.matches].filter(row => row.teamMatchId === match.teamMatchId && row.status === 'PENDING').sort((a, b) => a.matchNo - b.matchNo)[0] ?? match
+      : match;
     editForm.setFieldsValue({
       venueId: match.venueId,
-      scheduledAt: match.scheduledAtLocal
-        ? parseScheduleLocalTime(match.scheduledAtLocal)
-        : match.scheduledAt
-          ? dayjs(match.scheduledAt)
+      scheduledAt: first.scheduledAtLocal
+        ? parseScheduleLocalTime(first.scheduledAtLocal)
+        : first.scheduledAt
+          ? dayjs(first.scheduledAt)
           : null,
       durationMinutes: match.durationMinutes,
     });
@@ -511,7 +517,7 @@ export default function AdminSchedulingPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
         <div>
           <Typography.Title level={3} style={{ margin: 0 }}>场地自动排程</Typography.Title>
-          <Typography.Text type="secondary">按依赖、场地和选手占用自动生成赛程，并标记需要处理的冲突。</Typography.Text>
+          <Typography.Text type="secondary">按依赖、场地和选手占用自动生成赛程；每场团体对阵的全部子项在同一场地按顺序进行。</Typography.Text>
         </div>
         <Space wrap>
           <Button icon={<ReloadOutlined />} onClick={() => loadSchedule()} loading={loading}>刷新</Button>
@@ -642,7 +648,9 @@ export default function AdminSchedulingPage() {
               title: '对阵',
               width: 190,
               ellipsis: true,
-              render: (_, row: ScheduleMatch) => `${sideName(row.side1)} VS ${sideName(row.side2)}`,
+              render: (_, row: ScheduleMatch) => row.teamMatchId
+                ? `${row.team1Name ?? '待定'} VS ${row.team2Name ?? '待定'}`
+                : `${sideName(row.side1)} VS ${sideName(row.side2)}`,
             },
             {
               title: '状态',
@@ -669,6 +677,7 @@ export default function AdminSchedulingPage() {
                       key={`${row.id}-${value}`}
                       size="small"
                       min={1}
+                      disabled={Boolean(row.teamMatchId && row.status !== 'PENDING')}
                       defaultValue={value}
                       onBlur={(e) => {
                         const next = Number((e.target as HTMLInputElement).value);
@@ -692,7 +701,7 @@ export default function AdminSchedulingPage() {
               title: '操作',
               width: 58,
               render: (_, row: ScheduleMatch) => (
-                <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(row)} aria-label="调整" />
+                <Button size="small" icon={<EditOutlined />} disabled={Boolean(row.teamMatchId && row.status !== 'PENDING')} onClick={() => openEdit(row)} aria-label="调整" />
               ),
             },
           ]}
@@ -844,7 +853,9 @@ export default function AdminSchedulingPage() {
       <Modal title="手动调整排程" open={Boolean(editingMatch)} onCancel={() => setEditingMatch(null)} onOk={() => editForm.submit()} destroyOnHidden>
         <Form form={editForm} layout="vertical" onFinish={updateMatchSchedule}>
           <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-            场地与时间留空表示不变更；预估时长可独立修改而不影响其他字段。
+            {editingMatch?.teamMatchId
+              ? '场地统一应用于本场团体对阵全部未开始子项。时间为第一个未开始子项的开始时间，后续子项顺延；预估时长仅修改当前子项。已开赛后保持原场地。'
+              : '场地与时间留空表示不变更；预估时长可独立修改而不影响其他字段。'}
           </Typography.Text>
           <Form.Item name="venueId" label="场地">
             <Select allowClear options={activeVenues.map((venue) => ({ value: venue.id, label: venue.name }))} />

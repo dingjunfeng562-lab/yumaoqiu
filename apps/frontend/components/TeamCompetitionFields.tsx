@@ -12,24 +12,26 @@ export const TEAM_SCORING_OPTIONS = [
   { value: 'FIFTEEN_ONE', label: '15 分 1 局' }, { value: 'FIFTEEN_BO3', label: '15 分 3 局 2 胜' },
   { value: 'TWENTYONE_BO3', label: '21 分 3 局 2 胜' }, { value: 'THIRTYONE_BO3', label: '31 分 3 局 2 胜' },
 ];
+export const TEAM_APPEARANCE_OPTIONS = [
+  { value: 1, label: '不允许兼项' },
+  { value: 2, label: '最多兼两项' },
+  { value: 0, label: '兼项不限' },
+];
+export const teamAppearanceLabel = (limit: number) => TEAM_APPEARANCE_OPTIONS.find(option => option.value === limit)?.label ?? '最多兼两项';
 export const teamDefaults = {
-  malePlayerCount: 5, femalePlayerCount: 5, winThreshold: 3, isPublished: false,
+  maxPlayerAppearances: 2, playAllMatches: false, winThreshold: 3, isPublished: false,
   scoringRule: 'TWENTYONE_BO3', scoringMode: 'CAPPED_30',
   items: TEAM_EVENT_OPTIONS.map(item => ({ eventType: item.value })),
 };
 
 export default function TeamCompetitionFields() {
   const form = Form.useFormInstance();
-  const male = Form.useWatch('malePlayerCount', form) ?? 0;
-  const female = Form.useWatch('femalePlayerCount', form) ?? 0;
   const items = Form.useWatch('items', form) ?? [];
   return <>
     <Form.Item name="name" label="团体赛名称" rules={[{ required: true }]}><Input /></Form.Item>
-    <Space align="start" wrap>
-      <Form.Item name="malePlayerCount" label="每队男队员人数" rules={[{ required: true }]}><InputNumber min={0} precision={0} /></Form.Item>
-      <Form.Item name="femalePlayerCount" label="每队女队员人数" rules={[{ required: true }]}><InputNumber min={0} precision={0} /></Form.Item>
-      <Typography.Text style={{ display: 'block', marginTop: 32 }}>每队共 {male + female} 人</Typography.Text>
-    </Space>
+    <Form.Item name="maxPlayerAppearances" label="兼项规则" rules={[{ required: true }]} extra="按同一场团体对阵计算，下一轮重新计算。每队人数不限，不限制男女人数；出场选手仍须符合各项目的性别要求。">
+      <Select options={TEAM_APPEARANCE_OPTIONS} />
+    </Form.Item>
     <Form.Item label="项目出场顺序" required extra="用上下箭头调整顺序；各子项的出场选手在对阵确定后手动填报。">
       <Form.List name="items" rules={[{ validator: async (_, value) => { if (!value?.length) throw new Error('至少选择一个项目'); } }]}>
         {(fields, { add, remove, move }, { errors }) => <Space orientation="vertical" style={{ width: '100%' }}>
@@ -47,8 +49,11 @@ export default function TeamCompetitionFields() {
         </Space>}
       </Form.List>
     </Form.Item>
-    <Form.Item name="winThreshold" label="团体对阵先赢几项获胜" rules={[{ required: true }]} extra="任一队达到此胜场数，整场团体对阵结束，其余子项取消。">
+    <Form.Item name="winThreshold" label="团体对阵先赢几项获胜" rules={[{ required: true }]} extra="先达到此胜场数的队伍获胜。">
       <InputNumber min={1} max={Math.ceil(items.length / 2) || 1} precision={0} />
+    </Form.Item>
+    <Form.Item name="playAllMatches" label="胜负确定后继续比赛" valuePropName="checked" extra="开启后继续打完剩余子项并记录完整比分，再推进下一轮；关闭时达到胜场数即结束，其余子项取消。">
+      <Switch checkedChildren="继续比赛" unCheckedChildren="结束对阵" />
     </Form.Item>
     <Form.Item name="scoringRule" label="子项计分规则" rules={[{ required: true }]}><Select options={TEAM_SCORING_OPTIONS} /></Form.Item>
     <Form.Item name="scoringMode" label="平分规则" rules={[{ required: true }]}>

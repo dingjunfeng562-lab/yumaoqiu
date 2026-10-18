@@ -863,6 +863,9 @@ model TeamCompetition {
   winThreshold Int                   @default(3)
   malePlayerCount Int?
   femalePlayerCount Int?
+  // 0: unlimited; 1: no overlap; 2: at most two events per encounter.
+  maxPlayerAppearances Int @default(2)
+  playAllMatches Boolean @default(false)
   scoringRule ScoringRule @default(TWENTYONE_BO3)
   scoringMode ScoringMode @default(CAPPED_30)
   customGamePoint Int?

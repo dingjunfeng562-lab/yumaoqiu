@@ -12,11 +12,16 @@ import {
   Max,
   MaxLength,
   ValidateNested,
+  ValidateIf,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { EventType, Gender, ScoringMode, ScoringRule } from '@prisma/client';
 
 export class TeamScoringDto {
+  @ValidateIf((_, value) => value !== undefined)
+  @IsBoolean()
+  playAllMatches?: boolean;
+
   @IsOptional()
   @IsEnum(ScoringRule)
   scoringRule?: ScoringRule;
@@ -55,15 +60,22 @@ export class TeamCompetitionItemDto {
 }
 
 export class CreateTeamCompetitionDto extends TeamScoringDto {
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  malePlayerCount: number;
+  @ValidateIf((_, value) => value !== undefined)
+  @IsIn([0, 1, 2])
+  maxPlayerAppearances?: 0 | 1 | 2;
 
+  // Accepted for older clients; roster sizes are no longer enforced.
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(0)
-  femalePlayerCount: number;
+  malePlayerCount?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  femalePlayerCount?: number;
 
   @IsString()
   @MinLength(1)
@@ -94,6 +106,10 @@ export class CreateTeamCompetitionDto extends TeamScoringDto {
 }
 
 export class UpdateTeamCompetitionDto extends TeamScoringDto {
+  @ValidateIf((_, value) => value !== undefined)
+  @IsIn([0, 1, 2])
+  maxPlayerAppearances?: 0 | 1 | 2;
+
   @IsOptional()
   @Type(() => Number)
   @IsInt()

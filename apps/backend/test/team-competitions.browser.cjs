@@ -8,8 +8,8 @@ exports.run = async ({ base, token, user, competition, batchCompetition, tournam
   const env = require('dotenv').parse(fs.readFileSync(path.join(frontend, '.env.local')));
   const { encode } = await import(pathToFileURL(require.resolve('next-auth/jwt', { paths: [frontend] })).href);
   const { chromium } = require(process.env.PLAYWRIGHT_MODULE || '../../../.codex-work/photo-access-qa/node_modules/playwright');
-  const origin = 'http://localhost:3011';
-  const output = path.resolve(__dirname, '../../../outputs/team-audit-20261018');
+  const origin = process.env.TEAM_QA_FRONTEND || 'http://localhost:3000';
+  const output = path.resolve(__dirname, '../../../outputs/team-rules-20261018');
   fs.mkdirSync(output, { recursive: true });
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
   const errors = [];
@@ -32,7 +32,7 @@ exports.run = async ({ base, token, user, competition, batchCompetition, tournam
     page.on('pageerror', error => errors.push(error.message));
     await page.goto(`${origin}/nicaiyixiahh/team-competitions/${competition.id}`);
     await page.getByRole('heading', { name: competition.name, exact: true }).waitFor();
-    await page.getByText('每队 5 人（3 男 2 女）', { exact: false }).first().waitFor();
+    await page.getByText('每队人数不限 · 最多兼两项', { exact: false }).first().waitFor();
     await page.getByRole('button', { name: '填报名单', exact: true }).first().click();
     let dialog = page.getByRole('dialog').filter({ hasText: '出场名单' });
     const encounter = competition.teamMatches[0];
@@ -84,18 +84,32 @@ exports.run = async ({ base, token, user, competition, batchCompetition, tournam
     assert(overflow.documentWidth <= overflow.width + 1, `mobile overflow ${JSON.stringify(overflow)}`);
     await page.setViewportSize({ width: 1440, height: 1050 });
     await page.goto(`${origin}/nicaiyixiahh/team-competitions/${batchCompetition.id}`);
+    await page.getByRole('button', { name: '团体赛设置', exact: true }).click();
+    const settings = page.getByRole('dialog').filter({ hasText: '团体赛设置' });
+    assert.equal(await settings.getByText('每队男队员人数', { exact: true }).count(), 0);
+    await settings.getByLabel('兼项规则', { exact: true }).click();
+    const menu = page.locator('.ant-select-dropdown:visible');
+    for (const label of ['不允许兼项', '最多兼两项', '兼项不限']) await menu.getByText(label, { exact: true }).waitFor();
+    await menu.getByText('兼项不限', { exact: true }).click();
+    await settings.getByRole('switch', { name: '胜负确定后继续比赛' }).click();
+    await settings.locator('.ant-modal-footer .ant-btn-primary').click();
+    await settings.waitFor({ state: 'hidden' });
+    const savedSettings = await api(`/team-competitions/${batchCompetition.id}`);
+    assert.equal(savedSettings.maxPlayerAppearances, 0); assert.equal(savedSettings.playAllMatches, true);
+    await page.getByText('每队人数不限 · 兼项不限', { exact: false }).first().waitFor();
+    await page.getByText(/胜负确定后继续打完剩余子项/).waitFor();
     await page.getByRole('button', { name: '批量导入团体队员', exact: true }).click();
     const batchDialog = page.getByRole('dialog').filter({ hasText: '批量导入团体队员' });
     const header = '团体名称\t姓名\t性别\t单位\t联系方式';
     const rows = ['浏览器甲队', '浏览器乙队'].flatMap(teamName => [1, 2, 3, 4, 5].map(i => `${teamName}\t队员${i}\t${i <= 3 ? '男' : '女'}\t\t13800000000`));
-    await batchDialog.getByRole('textbox', { name: '团体队员数据' }).fill([header, ...rows.slice(0, -1)].join('\n'));
+    await batchDialog.getByRole('textbox', { name: '团体队员数据' }).fill([header, ...rows.slice(0, -1), '浏览器乙队\t无性别队员\t未知'].join('\n'));
     assert.equal(await batchDialog.getByRole('button', { name: /导入 2 个团体/ }).isDisabled(), true);
-    await batchDialog.getByRole('textbox', { name: '团体队员数据' }).fill([header, ...rows].join('\n'));
-    await batchDialog.getByRole('button', { name: '导入 2 个团体、10 人', exact: true }).click();
+    await batchDialog.getByRole('textbox', { name: '团体队员数据' }).fill([header, ...rows.slice(0, -1)].join('\n'));
+    await batchDialog.getByRole('button', { name: '导入 2 个团体、9 人', exact: true }).click();
     await batchDialog.waitFor({ state: 'hidden' });
     const batchDetail = await api(`/team-competitions/${batchCompetition.id}`);
     assert.equal(batchDetail.teams.length, 2);
-    assert(batchDetail.teams.every(team => team.memberCount === 5));
+    assert.deepEqual(batchDetail.teams.map(team => team.memberCount).sort(), [4, 5]);
     await page.screenshot({ path: path.join(output, 'team-batch-import.png'), fullPage: true });
     await page.goto(`${origin}/nicaiyixiahh/competitions/${tournamentId}/players`);
     await page.getByRole('button', { name: /批量新增/ }).click();
@@ -107,7 +121,7 @@ exports.run = async ({ base, token, user, competition, batchCompetition, tournam
     await originalBatch.waitFor({ state: 'hidden' });
     assert.equal((await api(`/team-competitions/${batchCompetition.id}`)).teams.length, 4);
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({ browser: 'passed', tested: ['manual lineup', 'per-item lock', 'override confirm and cancel', 'roster confirm and cancel', 'both batch import entry points', 'invalid roster preview', 'desktop', 'mobile'], errors }));
+    console.log(JSON.stringify({ browser: 'passed', tested: ['appearance selector', 'continue after victory switch', 'variable roster import', 'manual lineup', 'per-item lock', 'override confirm and cancel', 'roster confirm and cancel', 'both batch import entry points', 'invalid row preview', 'desktop', 'mobile'], errors }));
   } catch (error) {
     if (page) {
       await page.screenshot({ path: path.join(output, 'browser-failure.png'), fullPage: true }).catch(() => {});

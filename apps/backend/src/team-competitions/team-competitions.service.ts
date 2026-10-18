@@ -1,5 +1,5 @@
 import { AuthActor, playerScope, tournamentScope } from '../auth/admin-scope';
-import { validateTeamRoster, validateTeamRosterRules } from './team-roster';
+import { validateTeamRoster } from './team-roster';
 import {
   BadRequestException,
   ConflictException,
@@ -128,7 +128,6 @@ export class TeamCompetitionsService {
     await this.ensureTournament(dto.tournamentId);
     const items = this.normalizeItems(dto.items);
     this.ensureWinThreshold(dto.winThreshold, items.length);
-    validateTeamRosterRules(dto);
     this.validateScoring(dto);
 
     return this.prisma.teamCompetition.create({
@@ -137,8 +136,8 @@ export class TeamCompetitionsService {
         name: dto.name,
         description: dto.description,
         winThreshold: dto.winThreshold,
-        malePlayerCount: dto.malePlayerCount,
-        femalePlayerCount: dto.femalePlayerCount,
+        maxPlayerAppearances: dto.maxPlayerAppearances ?? 2,
+        playAllMatches: dto.playAllMatches ?? false,
         ...this.scoringData(dto),
         isPublished: dto.isPublished ?? false,
         items: {
@@ -173,18 +172,15 @@ export class TeamCompetitionsService {
     const current = await this.ensureCompetition(id);
     const nextItems = dto.items ? this.normalizeItems(dto.items) : null;
     this.ensureWinThreshold(dto.winThreshold ?? current.winThreshold, nextItems?.length ?? current.items.length);
-    if (dto.malePlayerCount !== undefined || dto.femalePlayerCount !== undefined) {
-      validateTeamRosterRules({ ...current, ...dto });
-    }
     this.validateScoring({ ...current, ...dto });
 
     const rulesChanged = (dto.winThreshold !== undefined && dto.winThreshold !== current.winThreshold)
-      || (dto.malePlayerCount !== undefined && dto.malePlayerCount !== current.malePlayerCount)
-      || (dto.femalePlayerCount !== undefined && dto.femalePlayerCount !== current.femalePlayerCount)
+      || (dto.maxPlayerAppearances !== undefined && dto.maxPlayerAppearances !== current.maxPlayerAppearances)
+      || (dto.playAllMatches !== undefined && dto.playAllMatches !== current.playAllMatches)
       || Object.entries(this.scoringData(dto)).some(([key, value]) => value !== undefined && value !== current[key as keyof typeof current]);
     const itemsChanged = nextItems && JSON.stringify(nextItems.map(i => [i.eventType, i.sortOrder])) !== JSON.stringify(current.items.map(i => [i.eventType, i.sortOrder]));
     if ((rulesChanged || itemsChanged) && await this.prisma.teamMatch.count({ where: { teamCompetitionId: id } })) {
-      throw new ConflictException('已生成对阵后不能修改人数、胜场规则或项目顺序');
+      throw new ConflictException('已生成对阵后不能修改兼项、胜场、计分规则或项目顺序');
     }
 
     await this.prisma.$transaction(async (tx) => {
@@ -194,8 +190,8 @@ export class TeamCompetitionsService {
           ...(dto.name !== undefined ? { name: dto.name } : {}),
           ...(dto.description !== undefined ? { description: dto.description } : {}),
           ...(dto.winThreshold !== undefined ? { winThreshold: dto.winThreshold } : {}),
-          ...(dto.malePlayerCount !== undefined ? { malePlayerCount: dto.malePlayerCount } : {}),
-          ...(dto.femalePlayerCount !== undefined ? { femalePlayerCount: dto.femalePlayerCount } : {}),
+          ...(dto.maxPlayerAppearances !== undefined ? { maxPlayerAppearances: dto.maxPlayerAppearances } : {}),
+          ...(dto.playAllMatches !== undefined ? { playAllMatches: dto.playAllMatches } : {}),
           ...this.scoringData(dto),
           ...(dto.isPublished !== undefined ? { isPublished: dto.isPublished } : {}),
         },
@@ -226,10 +222,10 @@ export class TeamCompetitionsService {
   }
 
   async createTeam(teamCompetitionId: string, dto: CreateTeamDto, actor?: AuthActor) {
-    const competition = await this.ensureCompetition(teamCompetitionId);
+    await this.ensureCompetition(teamCompetitionId);
     const playerIds = this.uniquePlayerIds(dto.playerIds);
     const players = await this.loadPlayers(playerIds, actor);
-    validateTeamRoster(competition, players);
+    validateTeamRoster(players);
     await this.ensureRosterEditable(teamCompetitionId);
     this.ensureSingleCompetitionMembership(players, teamCompetitionId);
 
@@ -335,8 +331,8 @@ export class TeamCompetitionsService {
   }
 
   async importTeamPlayers(teamCompetitionId: string, dto: ImportTeamPlayersDto, actor?: AuthActor) {
-    const competition = await this.ensureCompetition(teamCompetitionId);
-    validateTeamRoster(competition, dto.players);
+    await this.ensureCompetition(teamCompetitionId);
+    validateTeamRoster(dto.players);
     await this.ensureRosterEditable(teamCompetitionId);
 
     return this.prisma.$transaction(async (tx) => {
@@ -395,7 +391,7 @@ export class TeamCompetitionsService {
       for (const [name, rows] of groups) {
         if (existingNames.has(name.toLocaleLowerCase())) throw new ConflictException(`团体“${name}”已存在，请使用该队的例外调整入口`);
         existingNames.add(name.toLocaleLowerCase());
-        try { validateTeamRoster(competition, rows); }
+        try { validateTeamRoster(rows); }
         catch (error) { throw new BadRequestException(`团体“${name}”（第 ${rows.map(row => row.lineNumber).join('、')} 行）：${(error as Error).message}`); }
       }
       for (const [name, rows] of groups) {
@@ -442,7 +438,7 @@ export class TeamCompetitionsService {
         where: { teamCompetitionId }, include: { members: { include: { player: true } } }, orderBy: { createdAt: 'asc' },
       });
       if (teams.length < 2) throw new BadRequestException('至少需要 2 支队伍才能生成团体对阵');
-      for (const team of teams) if (!team.rosterOverrideConfirmed) validateTeamRoster(competition, team.members.map(m => m.player));
+      for (const team of teams) validateTeamRoster(team.members.map(m => m.player));
       const existing = await tx.teamMatch.count({ where: { teamCompetitionId } });
       if (existing && !dto.force) throw new ConflictException('团体对阵已存在，请使用重新生成');
       const played = await tx.match.count({ where: { teamMatch: { teamCompetitionId }, OR: [
@@ -570,7 +566,12 @@ export class TeamCompetitionsService {
       for (const row of merged.values()) {
         for (const id of [row.player1Id, row.player2Id].filter(Boolean) as string[]) usage.set(id, (usage.get(id) ?? 0) + 1);
       }
-      if ([...usage.values()].some(count => count > 2)) throw new ConflictException('每位队员在同一场团体对阵中最多兼任 2 个项目');
+      const limit = encounter.teamCompetition.maxPlayerAppearances;
+      if (limit > 0 && [...usage.values()].some(count => count > limit)) {
+        throw new ConflictException(limit === 1
+          ? '本团体赛不允许兼项，每位队员在同一场团体对阵中只能参加 1 个项目'
+          : '每位队员在同一场团体对阵中最多兼任 2 个项目');
+      }
       for (const selection of dto.selections) {
         await tx.teamLineup.upsert({
           where: { teamMatchId_teamCompetitionItemId_teamId: { teamMatchId, teamCompetitionItemId: selection.teamCompetitionItemId, teamId: selection.teamId } },
@@ -710,11 +711,19 @@ export class TeamCompetitionsService {
 
     let winnerTeamId: string | null = null;
     let nextStatus: MatchStatus = MatchStatus.PENDING;
-    if (team1Wins >= teamMatch.teamCompetition.winThreshold && teamMatch.team1Id) {
-      winnerTeamId = teamMatch.team1Id;
-      nextStatus = MatchStatus.COMPLETED;
-    } else if (team2Wins >= teamMatch.teamCompetition.winThreshold && teamMatch.team2Id) {
-      winnerTeamId = teamMatch.team2Id;
+    // The first team to reach the target wins, even when later sub-event
+    // results bring both teams above a configured target below the majority.
+    const runningWins = [0, 0];
+    for (const item of finished) {
+      const side = item.winnerSide! - 1;
+      runningWins[side] += 1;
+      if (runningWins[side] >= teamMatch.teamCompetition.winThreshold) {
+        winnerTeamId = side === 0 ? teamMatch.team1Id : teamMatch.team2Id;
+        break;
+      }
+    }
+    const allFinished = teamMatch.matches.every(item => item.status === MatchStatus.COMPLETED || item.status === MatchStatus.CANCELLED);
+    if (winnerTeamId && (!teamMatch.teamCompetition.playAllMatches || allFinished)) {
       nextStatus = MatchStatus.COMPLETED;
     } else if (finished.length > 0 || teamMatch.matches.some(item => item.status === MatchStatus.LIVE)) {
       nextStatus = MatchStatus.LIVE;
@@ -729,7 +738,7 @@ export class TeamCompetitionsService {
       },
     });
 
-    if (winnerTeamId) {
+    if (winnerTeamId && nextStatus === MatchStatus.COMPLETED) {
       await this.advanceTeamWinner(tx, teamMatch, winnerTeamId, teamMatch.teamCompetition.items);
       const remainingMatchIds = teamMatch.matches
         .filter((item) => item.status === MatchStatus.PENDING || item.status === MatchStatus.LIVE)
@@ -1072,6 +1081,8 @@ export class TeamCompetitionsService {
       name: competition.name,
       description: competition.description,
       winThreshold: competition.winThreshold,
+      maxPlayerAppearances: competition.maxPlayerAppearances,
+      playAllMatches: competition.playAllMatches,
       malePlayerCount: competition.malePlayerCount,
       femalePlayerCount: competition.femalePlayerCount,
       scoringRule: competition.scoringRule,
@@ -1186,6 +1197,8 @@ export class TeamCompetitionsService {
       name: competition.name,
       description: competition.description,
       winThreshold: competition.winThreshold,
+      maxPlayerAppearances: competition.maxPlayerAppearances,
+      playAllMatches: competition.playAllMatches,
       malePlayerCount: competition.malePlayerCount,
       femalePlayerCount: competition.femalePlayerCount,
       scoringRule: competition.scoringRule,

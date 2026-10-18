@@ -4,10 +4,10 @@ import { useState } from 'react';
 import { Alert, Input, Modal, Space, Table, Typography, message } from 'antd';
 import { apiFetch } from '@/lib/api';
 
-export type TeamImportCompetition = { id: string; name: string; malePlayerCount: number | null; femalePlayerCount: number | null };
+export type TeamImportCompetition = { id: string; name: string };
 type Row = { lineNumber: number; teamName: string; name: string; gender?: 'MALE' | 'FEMALE'; affiliation: string; contact: string; error?: string };
 
-export function parseTeamRoster(text: string, competition?: TeamImportCompetition | null) {
+export function parseTeamRoster(text: string) {
   const rows: Row[] = [];
   for (const [index, line] of text.split(/\r?\n/).entries()) {
     if (!line.trim()) continue;
@@ -23,31 +23,27 @@ export function parseTeamRoster(text: string, competition?: TeamImportCompetitio
   }
   const grouped = new Map<string, Row[]>();
   rows.forEach(row => grouped.set(row.teamName, [...(grouped.get(row.teamName) ?? []), row]));
-  const ready = competition?.malePlayerCount != null && competition?.femalePlayerCount != null;
   const groups = [...grouped].map(([teamName, members]) => {
     const male = members.filter(row => row.gender === 'MALE').length;
     const female = members.filter(row => row.gender === 'FEMALE').length;
-    const error = members.some(row => row.error) ? '请修正下方行数据'
-      : !ready ? '请先设置团体男、女人数'
-      : male !== competition!.malePlayerCount || female !== competition!.femalePlayerCount
-        ? `需要 ${competition!.malePlayerCount} 男 ${competition!.femalePlayerCount} 女` : undefined;
+    const error = members.some(row => row.error) ? '请修正下方行数据' : undefined;
     return { teamName, count: members.length, male, female, lines: members.map(row => row.lineNumber).join('、'), error };
   });
   return { rows, groups, valid: rows.length > 0 && groups.every(group => !group.error) };
 }
 
 export async function importTeamRoster(competition: TeamImportCompetition, text: string, token?: string) {
-  const parsed = parseTeamRoster(text, competition);
-  if (!parsed.valid) throw new Error('请先修正导入预览中的人数或行数据问题');
+  const parsed = parseTeamRoster(text);
+  if (!parsed.valid) throw new Error('请先修正导入预览中的行数据问题');
   return apiFetch<{ teamCount: number; playerCount: number }>(`/team-competitions/${competition.id}/teams/batch-import`, {
     method: 'POST', token, body: JSON.stringify({ players: parsed.rows.map(row => ({ teamName: row.teamName, name: row.name, gender: row.gender, affiliation: row.affiliation, contact: row.contact, lineNumber: row.lineNumber })) }),
   });
 }
 
-export function TeamRosterImportInput({ competition, text, onChange }: { competition: TeamImportCompetition; text: string; onChange: (text: string) => void }) {
-  const { rows, groups } = parseTeamRoster(text, competition);
+export function TeamRosterImportInput({ text, onChange }: { competition: TeamImportCompetition; text: string; onChange: (text: string) => void }) {
+  const { rows, groups } = parseTeamRoster(text);
   return <Space orientation="vertical" size={12} style={{ width: '100%' }}>
-    <Alert type="info" showIcon title="团体名称、姓名、性别、单位、联系方式" description={`每行一名队员，同名团体自动归为一队。前三列必填；单位和联系方式可留空。支持从 Excel 粘贴，可带表头，也可用逗号或顿号分隔。每队需 ${competition.malePlayerCount ?? '待设置'} 男 ${competition.femalePlayerCount ?? '待设置'} 女，出场项目赛前另行填报。`} />
+    <Alert type="info" showIcon title="团体名称、姓名、性别、单位、联系方式" description="每行一名队员，同名团体自动归为一队。前三列必填；单位和联系方式可留空。支持从 Excel 粘贴，可带表头，也可用逗号或顿号分隔。每队人数不限，不限制男女人数，出场项目赛前另行填报。" />
     <Input.TextArea aria-label="团体队员数据" rows={8} value={text} onChange={event => onChange(event.target.value)} placeholder={'团体名称\t姓名\t性别\t单位\t联系方式\n飞羽队\t张三\t男\t第一学校\t13800000000\n飞羽队\t李四\t女\t第一学校\t13900000000'} />
     <Table size="small" rowKey="teamName" dataSource={groups} pagination={false} scroll={{ x: 560 }} columns={[
       { title: '团体名称', dataIndex: 'teamName' }, { title: '人数', render: (_, row) => `${row.count} 人（${row.male} 男 ${row.female} 女）` },
@@ -67,7 +63,7 @@ export default function TeamRosterImportModal({ competition, open, onClose, onIm
 }) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
-  const parsed = parseTeamRoster(text, competition);
+  const parsed = parseTeamRoster(text);
   async function save() {
     setBusy(true);
     try {
