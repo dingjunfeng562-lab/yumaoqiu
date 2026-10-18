@@ -84,6 +84,10 @@ export type MatchScoringInput = {
     customGamesToWin: number | null;
     stageScoringRules?: Prisma.JsonValue | null;
   } | null;
+  teamMatch?: { teamCompetition: {
+    scoringRule: ScoringRule; scoringMode: ScoringMode;
+    customGamePoint: number | null; customGameCap: number | null; customGamesToWin: number | null;
+  } } | null;
 };
 
 type MatchScoringConfig = {
@@ -471,6 +475,7 @@ export class ScoringService {
     );
 
     await this.prisma.$transaction(async (tx) => {
+      await this.teamCompetitionsService.prepareScoring(tx, matchId, { starting: true });
       await tx.game.upsert({
         where: { matchId_gameNo: { matchId, gameNo: 1 } },
         update: { server: options.servingSide },
@@ -493,7 +498,8 @@ export class ScoringService {
           finishedAt: null,
         },
       });
-    });
+      await this.teamCompetitionsService.updateTeamMatchAggregate(tx, matchId);
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
 
     return this.getMatchState(matchId, user);
   }
@@ -518,6 +524,7 @@ export class ScoringService {
     }
 
     await this.prisma.$transaction(async (tx) => {
+      await this.teamCompetitionsService.prepareScoring(tx, matchId);
       const currentGame = await this.ensureCurrentGame(tx, matchId);
       const [gamesBeforePoint, servingEventsBeforePoint, pauseEventsBeforePoint, courtEventsBeforePoint] = await Promise.all([
         tx.game.findMany({ where: { matchId }, orderBy: { gameNo: 'asc' } }),
@@ -705,7 +712,7 @@ export class ScoringService {
           },
         });
       }
-    });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
 
     return this.getMatchState(matchId, user);
   }
@@ -758,6 +765,7 @@ export class ScoringService {
     }
 
     await this.prisma.$transaction(async (tx) => {
+      await this.teamCompetitionsService.prepareScoring(tx, matchId);
       const games = await tx.game.findMany({ where: { matchId }, orderBy: { gameNo: 'asc' } });
       const servingEvents = await tx.matchEvent.findMany({
         where: {
@@ -831,7 +839,7 @@ export class ScoringService {
           },
         });
       }
-    });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
 
     return this.getMatchState(matchId, user);
   }
@@ -847,6 +855,7 @@ export class ScoringService {
     }
 
     await this.prisma.$transaction(async (tx) => {
+      await this.teamCompetitionsService.prepareScoring(tx, matchId);
       const lastPoint = await tx.matchEvent.findFirst({
         where: { matchId, type: MatchEventType.POINT, undoneAt: null },
         orderBy: { createdAt: 'desc' },
@@ -925,7 +934,7 @@ export class ScoringService {
           side2Score: updatedGame.side2Score,
         },
       });
-    });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
 
     return this.getMatchState(matchId, user);
   }
@@ -949,6 +958,7 @@ export class ScoringService {
     }
 
     await this.prisma.$transaction(async (tx) => {
+      await this.teamCompetitionsService.prepareScoring(tx, matchId);
       await tx.match.update({
         where: { id: matchId },
         data: {
@@ -964,7 +974,7 @@ export class ScoringService {
         await this.fillGroupKnockoutIfReady(tx, match.eventId);
       }
       await this.teamCompetitionsService.updateTeamMatchAggregate(tx, matchId);
-    });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
 
     this.gateway.emitBracketUpdate({
       tournamentId: match.event?.tournamentId ?? null,
@@ -1095,6 +1105,7 @@ export class ScoringService {
     const winnerSide: 1 | 2 = forfeitedSide === 1 ? 2 : 1;
 
     await this.prisma.$transaction(async (tx) => {
+      await this.teamCompetitionsService.prepareScoring(tx, matchId);
       const existingGames = await tx.game.findMany({
         where: { matchId },
         orderBy: { gameNo: 'asc' },
@@ -1154,7 +1165,7 @@ export class ScoringService {
         await this.fillGroupKnockoutIfReady(tx, match.eventId);
       }
       await this.teamCompetitionsService.updateTeamMatchAggregate(tx, matchId);
-    });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
 
     this.gateway.emitBracketUpdate({
       tournamentId: match.event?.tournamentId ?? null,
@@ -1178,6 +1189,7 @@ export class ScoringService {
     }
 
     await this.prisma.$transaction(async (tx) => {
+      await this.teamCompetitionsService.prepareScoring(tx, matchId);
       // Mark this match as cancelled. forfeitedSide = 0 sentinel = "both sides forfeited"
       await tx.match.update({
         where: { id: matchId },
@@ -1209,7 +1221,7 @@ export class ScoringService {
       }
 
       await this.teamCompetitionsService.updateTeamMatchAggregate(tx, matchId);
-    });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
 
     this.gateway.emitBracketUpdate({
       tournamentId: match.event?.tournamentId ?? null,
@@ -1310,6 +1322,7 @@ export class ScoringService {
         : MatchStatus.PENDING;
 
     await this.prisma.$transaction(async (tx) => {
+      await this.teamCompetitionsService.prepareScoring(tx, matchId, { correcting: true });
       for (const game of correctedGames) {
         await tx.game.upsert({
           where: { matchId_gameNo: { matchId, gameNo: game.gameNo } },
@@ -1356,7 +1369,7 @@ export class ScoringService {
         await this.fillGroupKnockoutIfReady(tx, match.eventId);
       }
       await this.teamCompetitionsService.updateTeamMatchAggregate(tx, matchId);
-    });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
 
     this.gateway.emitBracketUpdate({
       tournamentId: match.event?.tournamentId ?? null,
@@ -1441,6 +1454,7 @@ export class ScoringService {
               stageScoringRules: true,
             },
           },
+          teamMatch: { include: { teamCompetition: true } },
         },
       }),
       this.prisma.matchEvent.findMany({
@@ -1581,6 +1595,7 @@ export class ScoringService {
               stageScoringRules: true,
             },
           },
+          teamMatch: { include: { teamCompetition: true } },
         },
       }),
       this.prisma.matchEvent.findMany({
@@ -1702,7 +1717,7 @@ export class ScoringService {
   private async ensurePlayableMatch(matchId: string) {
     const match = await this.prisma.match.findUnique({
       where: { id: matchId },
-      include: { event: true, teamCompetitionItem: true },
+      include: { event: true, teamCompetitionItem: true, teamMatch: { include: { teamCompetition: true } } },
     });
     if (!match) throw new NotFoundException('场次不存在');
     if (!match.side1Id || !match.side2Id) throw new BadRequestException('轮空场次不需要记分');
@@ -2779,12 +2794,13 @@ export class ScoringService {
    * BEFORE_TOP4 是旧两段配置的兼容键。
    */
   private resolveMatchScoring(match: MatchScoringInput): MatchScoringConfig {
+    const rulesSource = match.event ?? match.teamMatch?.teamCompetition;
     const base: MatchScoringConfig = {
-      scoringRule: match.event?.scoringRule ?? ScoringRule.TWENTYONE_BO3,
-      scoringMode: match.event?.scoringMode ?? ScoringMode.CAPPED_30,
-      customGamePoint: match.event?.customGamePoint ?? null,
-      customGameCap: match.event?.customGameCap ?? null,
-      customGamesToWin: match.event?.customGamesToWin ?? null,
+      scoringRule: rulesSource?.scoringRule ?? ScoringRule.TWENTYONE_BO3,
+      scoringMode: rulesSource?.scoringMode ?? ScoringMode.CAPPED_30,
+      customGamePoint: rulesSource?.customGamePoint ?? null,
+      customGameCap: rulesSource?.customGameCap ?? null,
+      customGamesToWin: rulesSource?.customGamesToWin ?? null,
       appliedStage: null as string | null,
     };
 

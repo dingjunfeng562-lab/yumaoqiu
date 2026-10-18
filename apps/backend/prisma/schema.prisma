@@ -861,6 +861,13 @@ model TeamCompetition {
   name         String
   description  String?               @db.Text
   winThreshold Int                   @default(3)
+  malePlayerCount Int?
+  femalePlayerCount Int?
+  scoringRule ScoringRule @default(TWENTYONE_BO3)
+  scoringMode ScoringMode @default(CAPPED_30)
+  customGamePoint Int?
+  customGameCap Int?
+  customGamesToWin Int?
   rankingLimit Int?
   isPublished  Boolean               @default(false)
   items        TeamCompetitionItem[]
@@ -896,6 +903,7 @@ model Team {
   affiliation       String
   notes             String?
   finalRank         Int?
+  rosterOverrideConfirmed Boolean @default(false)
   members           TeamMember[]
   lineups           TeamLineup[]
   team1Matches      TeamMatch[]  @relation("team1Matches")
@@ -988,6 +996,7 @@ model Match {
   scheduledAt           DateTime?
   durationMinutes       Int                  @default(45)
   status                MatchStatus          @default(PENDING)
+  lineupLocked          Boolean              @default(false)
   startedAt             DateTime?
   finishedAt            DateTime?
   winnerSide            Int?

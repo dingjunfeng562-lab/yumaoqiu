@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { Format, MatchStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { TeamCompetitionsService } from '../team-competitions/team-competitions.service';
 import { AutoScheduleDto, ClearScheduleDto, CreateVenueDto, UpdateMatchScheduleDto, UpdateVenueDto } from './dto/scheduling.dto';
 import {
   SECOND_STAGE_FORMAL_ROUND_NO_BASE,
@@ -32,6 +33,7 @@ type RegistrationView = {
 
 type ScheduleMatch = {
   id: string;
+  teamMatchId?: string | null;
   eventId: string | null;
   eventType: string;
   eventTypeLabel: string;
@@ -208,12 +210,7 @@ export class SchedulingService {
     }
 
     const scopeMatches = await this.prisma.match.findMany({
-      where: {
-        event: {
-          tournamentId: dto.tournamentId,
-          ...(dto.eventId ? { id: dto.eventId } : {}),
-        },
-      },
+      where: this.tournamentMatches(dto.tournamentId, dto.eventId),
       include: { event: true },
       orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }],
     });
@@ -299,7 +296,9 @@ export class SchedulingService {
     );
     const eventTypeRank = new Map((dto.eventTypeOrder ?? []).map((type, index) => [type, index]));
     const scheduledEndByKey = new Map<string, number>();
+    const teamRelease = new Map<string, number>();
     for (const anchor of anchors) {
+      if (anchor.teamMatchId && anchor.scheduledAt) teamRelease.set(anchor.teamMatchId, Math.max(teamRelease.get(anchor.teamMatchId) ?? 0, this.addMinutes(anchor.scheduledAt, anchor.durationMinutes + breakMinutes).getTime()));
       if (!anchor.eventId || !anchor.scheduledAt) continue;
       scheduledEndByKey.set(
         this.matchKey(anchor.eventId, anchor.roundNo, anchor.matchNo),
@@ -327,7 +326,7 @@ export class SchedulingService {
       ];
       const perMatchMinutes = matchMinutes;
       const dependencyReleaseTime = this.dependencyReleaseTime(match, matchMap, scheduledEndByKey);
-      const earliestMatchStart = Math.max(earliestScheduleStart, dependencyReleaseTime);
+      const earliestMatchStart = Math.max(earliestScheduleStart, dependencyReleaseTime, match.teamMatchId ? teamRelease.get(match.teamMatchId) ?? 0 : 0);
       const candidates = [
         ...venues.map((venue) => ({ venue, isBorrow: false })),
         ...borrowVenues.map((venue) => ({ venue, isBorrow: true })),
@@ -368,6 +367,7 @@ export class SchedulingService {
       const winner = candidates[0];
       const scheduledAt = new Date(winner.startTime);
       const matchEndAt = this.addMinutes(scheduledAt, perMatchMinutes).getTime();
+      if (match.teamMatchId) teamRelease.set(match.teamMatchId, this.addMinutes(scheduledAt, perMatchMinutes + breakMinutes).getTime());
 
       updates.push({ matchId: match.id, venueId: winner.venue.id, scheduledAt, minutes: perMatchMinutes });
       if (match.eventId) {
@@ -431,10 +431,7 @@ export class SchedulingService {
     const matches = await this.prisma.match.findMany({
       where: {
         status: MatchStatus.PENDING,
-        event: {
-          tournamentId: dto.tournamentId,
-          ...(dto.eventId ? { id: dto.eventId } : {}),
-        },
+        ...this.tournamentMatches(dto.tournamentId, dto.eventId),
       },
       select: { id: true },
     });
@@ -454,10 +451,11 @@ export class SchedulingService {
       include: { event: true },
     });
     if (!match) throw new NotFoundException('场次不存在');
+    const tournamentId = match.event?.tournamentId ?? await this.resolveTeamMatchTournamentId(match.teamMatchId);
 
     if (dto.venueId) {
       const venue = await this.prisma.venue.findUnique({ where: { id: dto.venueId } });
-      if (!venue || !venue.isActive || (match.eventId && match.event && venue.tournamentId !== match.event.tournamentId)) {
+      if (!venue || !venue.isActive || venue.tournamentId !== tournamentId) {
         throw new BadRequestException('请选择当前赛事下已启用的场地');
       }
     }
@@ -482,14 +480,10 @@ export class SchedulingService {
 
   private async loadScheduleMatches(tournamentId: string, eventId?: string) {
     const matches = await this.prisma.match.findMany({
-      where: {
-        event: {
-          tournamentId,
-          ...(eventId ? { id: eventId } : {}),
-        },
-      },
+      where: this.tournamentMatches(tournamentId, eventId),
       include: {
         event: true,
+        teamCompetitionItem: true,
         venue: true,
       },
       orderBy: [
@@ -533,9 +527,10 @@ export class SchedulingService {
       }
       return {
         id: match.id,
+        teamMatchId: match.teamMatchId,
         eventId: match.eventId,
         eventType: match.event?.type ?? 'TEAM_COMPETITION',
-        eventTypeLabel: match.event ? (EVENT_TYPE_LABELS[match.event.type] ?? match.event.type) : '团体赛',
+        eventTypeLabel: match.event ? (EVENT_TYPE_LABELS[match.event.type] ?? match.event.type) : `团体赛 · ${EVENT_TYPE_LABELS[match.teamCompetitionItem?.eventType ?? ''] ?? ''}`,
         round: match.round,
         roundNo: match.roundNo,
         matchNo: match.matchNo,
@@ -990,6 +985,7 @@ export class SchedulingService {
 
   private playerIds(registration: any) {
     if (!registration) return [];
+    if (registration.playerIds) return registration.playerIds as string[];
     return [registration.player1Id, registration.player2Id].filter(Boolean) as string[];
   }
 
@@ -997,14 +993,18 @@ export class SchedulingService {
     const compactIds = [...new Set(ids.filter(Boolean) as string[])];
     if (!compactIds.length) return new Map<string, any>();
     const registrations = await this.prisma.registration.findMany({
-      where: { id: { in: compactIds } },
+      where: { id: { in: compactIds.filter(id => !id.startsWith('lineup:')) } },
       include: { player1: true, player2: true },
     });
-    return new Map(registrations.map((registration) => [registration.id, registration]));
+    const map = new Map<string, any>(registrations.map((registration) => [registration.id, registration]));
+    const lineups = await new TeamCompetitionsService(this.prisma).buildLineupRegistrationMap(compactIds);
+    for (const [key, value] of lineups) map.set(key, value);
+    return map;
   }
 
   private registrationView(registration: any): RegistrationView | null {
     if (!registration) return null;
+    if (registration.playerIds) return { id: registration.id, name: registration.name, affiliation: registration.affiliation, playerIds: registration.playerIds };
     return {
       id: registration.id,
       name: registration.player2
@@ -1025,6 +1025,11 @@ export class SchedulingService {
     });
     if (!teamMatch) throw new NotFoundException('团体赛对阵不存在');
     return teamMatch.teamCompetition.tournamentId;
+  }
+
+  private tournamentMatches(tournamentId: string, eventId?: string): Prisma.MatchWhereInput {
+    if (eventId) return { event: { tournamentId, id: eventId } };
+    return { OR: [{ event: { tournamentId } }, { teamMatch: { teamCompetition: { tournamentId } } }] };
   }
 
   private async ensureTournament(id: string) {

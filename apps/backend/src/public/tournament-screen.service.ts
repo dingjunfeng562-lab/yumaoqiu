@@ -50,6 +50,7 @@ export class TournamentScreenService {
                 teamMatch: {
                   select: {
                     team1Id: true, team2Id: true,
+                    teamCompetition: { select: { scoringRule: true, scoringMode: true, customGamePoint: true, customGameCap: true, customGamesToWin: true } },
                     lineups: {
                       select: {
                         teamId: true, teamCompetitionItemId: true,

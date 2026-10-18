@@ -1,4 +1,5 @@
-import { AuthActor, tournamentScope } from '../auth/admin-scope';
+import { AuthActor, playerScope, tournamentScope } from '../auth/admin-scope';
+import { validateTeamRoster, validateTeamRosterRules } from './team-roster';
 import {
   BadRequestException,
   ConflictException,
@@ -21,6 +22,8 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
+  AddTeamPlayersDto,
+  BatchImportTeamsDto,
   AssignTeamMatchRefereeDto,
   CreateTeamCompetitionDto,
   CreateTeamDto,
@@ -125,6 +128,8 @@ export class TeamCompetitionsService {
     await this.ensureTournament(dto.tournamentId);
     const items = this.normalizeItems(dto.items);
     this.ensureWinThreshold(dto.winThreshold, items.length);
+    validateTeamRosterRules(dto);
+    this.validateScoring(dto);
 
     return this.prisma.teamCompetition.create({
       data: {
@@ -132,6 +137,9 @@ export class TeamCompetitionsService {
         name: dto.name,
         description: dto.description,
         winThreshold: dto.winThreshold,
+        malePlayerCount: dto.malePlayerCount,
+        femalePlayerCount: dto.femalePlayerCount,
+        ...this.scoringData(dto),
         isPublished: dto.isPublished ?? false,
         items: {
           create: items.map((item) => ({ eventType: item.eventType, sortOrder: item.sortOrder })),
@@ -164,7 +172,20 @@ export class TeamCompetitionsService {
   async update(id: string, dto: UpdateTeamCompetitionDto) {
     const current = await this.ensureCompetition(id);
     const nextItems = dto.items ? this.normalizeItems(dto.items) : null;
-    this.ensureWinThreshold(dto.winThreshold ?? current.winThreshold, nextItems?.length ?? undefined);
+    this.ensureWinThreshold(dto.winThreshold ?? current.winThreshold, nextItems?.length ?? current.items.length);
+    if (dto.malePlayerCount !== undefined || dto.femalePlayerCount !== undefined) {
+      validateTeamRosterRules({ ...current, ...dto });
+    }
+    this.validateScoring({ ...current, ...dto });
+
+    const rulesChanged = (dto.winThreshold !== undefined && dto.winThreshold !== current.winThreshold)
+      || (dto.malePlayerCount !== undefined && dto.malePlayerCount !== current.malePlayerCount)
+      || (dto.femalePlayerCount !== undefined && dto.femalePlayerCount !== current.femalePlayerCount)
+      || Object.entries(this.scoringData(dto)).some(([key, value]) => value !== undefined && value !== current[key as keyof typeof current]);
+    const itemsChanged = nextItems && JSON.stringify(nextItems.map(i => [i.eventType, i.sortOrder])) !== JSON.stringify(current.items.map(i => [i.eventType, i.sortOrder]));
+    if ((rulesChanged || itemsChanged) && await this.prisma.teamMatch.count({ where: { teamCompetitionId: id } })) {
+      throw new ConflictException('已生成对阵后不能修改人数、胜场规则或项目顺序');
+    }
 
     await this.prisma.$transaction(async (tx) => {
       await tx.teamCompetition.update({
@@ -173,11 +194,14 @@ export class TeamCompetitionsService {
           ...(dto.name !== undefined ? { name: dto.name } : {}),
           ...(dto.description !== undefined ? { description: dto.description } : {}),
           ...(dto.winThreshold !== undefined ? { winThreshold: dto.winThreshold } : {}),
+          ...(dto.malePlayerCount !== undefined ? { malePlayerCount: dto.malePlayerCount } : {}),
+          ...(dto.femalePlayerCount !== undefined ? { femalePlayerCount: dto.femalePlayerCount } : {}),
+          ...this.scoringData(dto),
           ...(dto.isPublished !== undefined ? { isPublished: dto.isPublished } : {}),
         },
       });
 
-      if (nextItems) {
+      if (nextItems && itemsChanged) {
         const teamMatchCount = await tx.teamMatch.count({ where: { teamCompetitionId: id } });
         if (teamMatchCount > 0) {
           throw new ConflictException('已生成团体赛对阵后不能直接修改项目集合');
@@ -191,7 +215,7 @@ export class TeamCompetitionsService {
           })),
         });
       }
-    });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
 
     return this.findOne(id);
   }
@@ -201,11 +225,12 @@ export class TeamCompetitionsService {
     return this.prisma.teamCompetition.delete({ where: { id } });
   }
 
-  async createTeam(teamCompetitionId: string, dto: CreateTeamDto) {
+  async createTeam(teamCompetitionId: string, dto: CreateTeamDto, actor?: AuthActor) {
     const competition = await this.ensureCompetition(teamCompetitionId);
     const playerIds = this.uniquePlayerIds(dto.playerIds);
-    await this.ensureMinimumTeamSize(playerIds.length);
-    const players = await this.loadPlayers(playerIds);
+    const players = await this.loadPlayers(playerIds, actor);
+    validateTeamRoster(competition, players);
+    await this.ensureRosterEditable(teamCompetitionId);
     this.ensureSingleCompetitionMembership(players, teamCompetitionId);
 
     return this.prisma.team.create({
@@ -237,6 +262,15 @@ export class TeamCompetitionsService {
     return teams.map((team) => this.toTeamView(team));
   }
 
+  async availablePlayers(teamCompetitionId: string, actor: AuthActor) {
+    await this.ensureCompetition(teamCompetitionId);
+    return this.prisma.player.findMany({
+      where: { ...playerScope(actor), isTemporary: false },
+      select: { id: true, name: true, gender: true, affiliation: true },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
   async updateTeam(teamId: string, dto: UpdateTeamDto) {
     await this.ensureTeam(teamId);
     return this.prisma.team.update({
@@ -248,19 +282,30 @@ export class TeamCompetitionsService {
     });
   }
 
-  async replaceTeamMembers(teamId: string, dto: ReplaceTeamMembersDto) {
+  async replaceTeamMembers(teamId: string, dto: ReplaceTeamMembersDto, actor?: AuthActor) {
+    if (!dto.overrideConfirmed) throw new ConflictException('队员名单原则上不能更改，请确认例外调整后再提交');
     const team = await this.ensureTeam(teamId);
     const playerIds = this.uniquePlayerIds(dto.playerIds);
-    await this.ensureMinimumTeamSize(playerIds.length);
-    const players = await this.loadPlayers(playerIds);
+    const players = await this.loadPlayers(playerIds, actor);
     this.ensureSingleCompetitionMembership(players, team.teamCompetitionId, team.id);
 
     await this.prisma.$transaction(async (tx) => {
+      const removed = team.members.filter(member => !playerIds.includes(member.playerId)).map(member => member.playerId);
+      const referenced = removed.length ? await tx.teamLineup.findMany({ where: {
+        teamId, OR: [{ player1Id: { in: removed } }, { player2Id: { in: removed } }],
+        teamMatch: { status: { in: [MatchStatus.PENDING, MatchStatus.LIVE] } },
+      }, include: { teamMatch: { select: { matches: {
+        where: { status: { in: [MatchStatus.PENDING, MatchStatus.LIVE] } }, select: { teamCompetitionItemId: true },
+      } } } } }) : [];
+      if (referenced.some(lineup => lineup.teamMatch.matches.some(match => match.teamCompetitionItemId === lineup.teamCompetitionItemId))) {
+        throw new ConflictException('移除的队员仍在未结束的子项名单中，请先调整对应子项名单');
+      }
       await tx.teamMember.deleteMany({ where: { teamId } });
       await tx.teamMember.createMany({
         data: playerIds.map((playerId) => ({ teamId, playerId })),
       });
-    });
+      await tx.team.update({ where: { id: teamId }, data: { rosterOverrideConfirmed: true } });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
 
     return this.prisma.team.findUniqueOrThrow({
       where: { id: teamId },
@@ -270,16 +315,29 @@ export class TeamCompetitionsService {
     });
   }
 
-  async removeTeam(teamId: string) {
+  async addTeamPlayers(teamId: string, dto: AddTeamPlayersDto, actor: AuthActor) {
+    if (!dto.overrideConfirmed) throw new ConflictException('临时补充队员须先确认例外调整');
     await this.ensureTeam(teamId);
+    await this.prisma.$transaction(async tx => {
+      for (const player of dto.players) {
+        const created = await tx.player.create({ data: { ...player, ownerId: actor.id } });
+        await tx.teamMember.create({ data: { teamId, playerId: created.id } });
+      }
+      await tx.team.update({ where: { id: teamId }, data: { rosterOverrideConfirmed: true } });
+    });
+    return this.ensureTeam(teamId);
+  }
+
+  async removeTeam(teamId: string) {
+    const team = await this.ensureTeam(teamId);
+    await this.ensureRosterEditable(team.teamCompetitionId);
     return this.prisma.team.delete({ where: { id: teamId } });
   }
 
-  async importTeamPlayers(teamCompetitionId: string, dto: ImportTeamPlayersDto) {
-    await this.ensureCompetition(teamCompetitionId);
-    if (dto.players.length < 10) {
-      throw new BadRequestException('每队至少 10 人');
-    }
+  async importTeamPlayers(teamCompetitionId: string, dto: ImportTeamPlayersDto, actor?: AuthActor) {
+    const competition = await this.ensureCompetition(teamCompetitionId);
+    validateTeamRoster(competition, dto.players);
+    await this.ensureRosterEditable(teamCompetitionId);
 
     return this.prisma.$transaction(async (tx) => {
       const createdPlayers = [] as Array<{ id: string }>;
@@ -287,6 +345,7 @@ export class TeamCompetitionsService {
         const created = await tx.player.create({
           data: {
             name: player.name,
+            ownerId: actor?.id,
             gender: player.gender,
             affiliation: player.affiliation,
             contact: player.contact,
@@ -311,7 +370,43 @@ export class TeamCompetitionsService {
           members: { include: { player: true }, orderBy: { createdAt: 'asc' } },
         },
       });
-    });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+  }
+
+  async batchImportTeams(teamCompetitionId: string, dto: BatchImportTeamsDto, actor: AuthActor) {
+    // Share the competition lock with draw generation; validate the entire batch before writing.
+    return this.prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM TeamCompetition WHERE id = ${teamCompetitionId} FOR UPDATE`;
+      const competition = await tx.teamCompetition.findUnique({ where: { id: teamCompetitionId } });
+      if (!competition) throw new NotFoundException('团体赛不存在');
+      if (await tx.teamMatch.count({ where: { teamCompetitionId } })) {
+        throw new ConflictException('已生成对阵，不能批量新增队伍；临时补充人员请使用队伍的例外调整按钮');
+      }
+      const groups = new Map<string, BatchImportTeamsDto['players']>();
+      for (const [index, input] of dto.players.entries()) {
+        const row = { ...input, teamName: input.teamName.trim(), name: input.name.trim(), lineNumber: input.lineNumber ?? index + 1 };
+        if (!row.teamName || !row.name) throw new BadRequestException(`第 ${row.lineNumber} 行团体名称和姓名不能为空`);
+        const rows = groups.get(row.teamName) ?? [];
+        rows.push(row);
+        groups.set(row.teamName, rows);
+      }
+      const existing = await tx.team.findMany({ where: { teamCompetitionId }, select: { name: true } });
+      const existingNames = new Set(existing.map(team => team.name.trim().toLocaleLowerCase()));
+      for (const [name, rows] of groups) {
+        if (existingNames.has(name.toLocaleLowerCase())) throw new ConflictException(`团体“${name}”已存在，请使用该队的例外调整入口`);
+        existingNames.add(name.toLocaleLowerCase());
+        try { validateTeamRoster(competition, rows); }
+        catch (error) { throw new BadRequestException(`团体“${name}”（第 ${rows.map(row => row.lineNumber).join('、')} 行）：${(error as Error).message}`); }
+      }
+      for (const [name, rows] of groups) {
+        const team = await tx.team.create({ data: { teamCompetitionId, name, affiliation: rows.find(row => row.affiliation?.trim())?.affiliation?.trim() || name } });
+        for (const row of rows) {
+          const player = await tx.player.create({ data: { name: row.name, gender: row.gender, affiliation: row.affiliation?.trim() || team.affiliation, contact: row.contact?.trim() || null, ownerId: actor.id } });
+          await tx.teamMember.create({ data: { teamId: team.id, playerId: player.id } });
+        }
+      }
+      return { teamCount: groups.size, playerCount: dto.players.length };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, timeout: 30000 });
   }
 
   async previewQuickTeam(prompt: string, itemEventTypes: EventType[]) {
@@ -334,153 +429,75 @@ export class TeamCompetitionsService {
     };
   }
 
-  async createTeamFromQuickInput(teamCompetitionId: string, dto: ParseQuickTeamDto) {
-    const competition = await this.ensureCompetition(teamCompetitionId);
-    const preview = await this.previewQuickTeam(
-      dto.prompt,
-      competition.items.map((item) => item.eventType),
-    );
-    if (preview.uniquePlayerNames.length < 10) {
-      throw new BadRequestException('快速录入至少需要解析出 10 名队员');
-    }
-
-    return this.prisma.$transaction(async (tx) => {
-      const createdPlayers = [] as Array<{ id: string; name: string }>;
-      for (const name of preview.uniquePlayerNames) {
-        const created = await tx.player.create({
-          data: {
-            name,
-            gender: this.guessGenderFromName(name),
-            affiliation: dto.affiliation,
-            notes: '由团体赛快速录入创建',
-          },
-          select: { id: true, name: true },
-        });
-        createdPlayers.push(created);
-      }
-
-      const team = await tx.team.create({
-        data: {
-          teamCompetitionId,
-          name: dto.teamName,
-          affiliation: dto.affiliation,
-          notes: dto.notes,
-          members: {
-            create: createdPlayers.map((player) => ({ playerId: player.id })),
-          },
-        },
-        include: {
-          members: { include: { player: true }, orderBy: { createdAt: 'asc' } },
-        },
-      });
-
-      return {
-        team: this.toTeamView(team),
-        preview,
-      };
-    });
+  async createTeamFromQuickInput(_teamCompetitionId: string, _dto: ParseQuickTeamDto, _actor?: AuthActor) {
+    throw new BadRequestException('请使用队员导入并明确性别，出场项目在赛前手动填报');
   }
 
   async generateDraw(teamCompetitionId: string, dto: GenerateTeamDrawDto) {
-    const competition = await this.ensureCompetition(teamCompetitionId);
-    const teams = await this.prisma.team.findMany({
-      where: { teamCompetitionId },
-      include: { members: true },
-      orderBy: [{ createdAt: 'asc' }],
-    });
-    if (teams.length < 2) throw new BadRequestException('至少需要 2 支队伍才能生成团体赛对阵');
-
-    const existing = await this.prisma.teamMatch.count({ where: { teamCompetitionId } });
-    if (existing > 0 && !dto.force) {
-      throw new ConflictException('团体赛对阵已存在，如需覆盖请使用重新生成');
-    }
-
-    const shuffled = this.shuffle(teams);
-    const bracketSize = this.nextPowerOfTwo(shuffled.length);
-    const slots = [...shuffled, ...Array.from({ length: bracketSize - shuffled.length }, () => null)];
-    const teamMatches = [] as Array<{
-      round: string;
-      roundNo: number;
-      matchNo: number;
-      team1Id: string | null;
-      team2Id: string | null;
-      status: MatchStatus;
-      winnerTeamId: string | null;
-    }>;
-
-    let currentSlots = slots;
-    let roundNo = 1;
-    while (currentSlots.length >= 2) {
-      const roundLabel = this.roundLabel(currentSlots.length);
-      const nextSlots: Array<(typeof teams)[number] | null> = [];
-      for (let i = 0; i < currentSlots.length; i += 2) {
-        const team1 = currentSlots[i];
-        const team2 = currentSlots[i + 1];
-        const hasBye = Boolean(team1) !== Boolean(team2);
-        const winnerTeam = hasBye ? (team1 ?? team2) : null;
-        teamMatches.push({
-          round: roundLabel,
-          roundNo,
-          matchNo: i / 2 + 1,
-          team1Id: team1?.id ?? null,
-          team2Id: team2?.id ?? null,
-          status: hasBye ? MatchStatus.COMPLETED : MatchStatus.PENDING,
-          winnerTeamId: winnerTeam?.id ?? null,
-        });
-        nextSlots.push(winnerTeam);
-      }
-      currentSlots = nextSlots;
-      roundNo += 1;
-    }
-
     await this.prisma.$transaction(async (tx) => {
-      await tx.match.deleteMany({
-        where: {
-          teamMatch: {
-            teamCompetitionId,
-          },
-        },
+      await tx.$queryRaw`SELECT id FROM TeamCompetition WHERE id = ${teamCompetitionId} FOR UPDATE`;
+      const competition = await tx.teamCompetition.findUnique({ where: { id: teamCompetitionId }, include: { items: { orderBy: { sortOrder: 'asc' } } } });
+      if (!competition) throw new NotFoundException('团体赛不存在');
+      const teams = await tx.team.findMany({
+        where: { teamCompetitionId }, include: { members: { include: { player: true } } }, orderBy: { createdAt: 'asc' },
       });
-      await tx.teamLineup.deleteMany({ where: { teamMatch: { teamCompetitionId } } });
+      if (teams.length < 2) throw new BadRequestException('至少需要 2 支队伍才能生成团体对阵');
+      for (const team of teams) if (!team.rosterOverrideConfirmed) validateTeamRoster(competition, team.members.map(m => m.player));
+      const existing = await tx.teamMatch.count({ where: { teamCompetitionId } });
+      if (existing && !dto.force) throw new ConflictException('团体对阵已存在，请使用重新生成');
+      const played = await tx.match.count({ where: { teamMatch: { teamCompetitionId }, OR: [
+        { status: { not: MatchStatus.PENDING } }, { startedAt: { not: null } }, { games: { some: {} } },
+      ] } });
+      if (played) throw new ConflictException('已有子项开赛或成绩，不能重新生成对阵');
       await tx.teamMatch.deleteMany({ where: { teamCompetitionId } });
-
-      for (const item of teamMatches) {
-        const created = await tx.teamMatch.create({
-          data: {
-            teamCompetitionId,
-            round: item.round,
-            roundNo: item.roundNo,
-            matchNo: item.matchNo,
-            team1Id: item.team1Id,
-            team2Id: item.team2Id,
-            status: item.status,
-            winnerTeamId: item.winnerTeamId,
-          },
-        });
-
-        if (item.team1Id && item.team2Id) {
-          const competitionItems = await tx.teamCompetitionItem.findMany({
-            where: { teamCompetitionId },
-            orderBy: { sortOrder: 'asc' },
-          });
-          await tx.match.createMany({
-            data: competitionItems.map((competitionItem, index) => ({
-              teamMatchId: created.id,
-              teamCompetitionItemId: competitionItem.id,
-              round: item.round,
-              roundNo: item.roundNo,
-              matchNo: index + 1,
-              side1Id: null,
-              side2Id: null,
-              status: MatchStatus.PENDING,
-              durationMinutes: 45,
-            })),
-          });
-        }
+      const shuffled = this.shuffle(teams);
+      const size = this.nextPowerOfTwo(shuffled.length);
+      const byes = size - shuffled.length;
+      let cursor = 0;
+      let slots: Array<{ id: string | null; resolved: boolean }> = [];
+      for (let pair = 0; pair < size / 2; pair++) {
+        slots.push({ id: shuffled[cursor++].id, resolved: true });
+        slots.push({ id: pair < byes ? null : shuffled[cursor++].id, resolved: true });
       }
-    });
-
+      let roundNo = 1;
+      while (slots.length >= 2) {
+        const next: typeof slots = [];
+        for (let i = 0; i < slots.length; i += 2) {
+          const a = slots[i], b = slots[i + 1];
+          const bye = a.resolved && b.resolved && Boolean(a.id) !== Boolean(b.id);
+          const winner = bye ? a.id ?? b.id : null;
+          const encounter = await tx.teamMatch.create({ data: {
+            teamCompetitionId, round: this.roundLabel(slots.length), roundNo, matchNo: i / 2 + 1,
+            team1Id: a.id, team2Id: b.id, winnerTeamId: winner,
+            status: bye ? MatchStatus.COMPLETED : MatchStatus.PENDING,
+          } });
+          if (a.id && b.id) await this.createEncounterMatches(tx, encounter, competition.items);
+          next.push({ id: winner, resolved: bye });
+        }
+        slots = next;
+        roundNo++;
+      }
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
     return this.findOne(teamCompetitionId);
+  }
+
+  private async createEncounterMatches(tx: Prisma.TransactionClient, encounter: TeamMatch, items: TeamCompetitionItem[]) {
+    if (await tx.match.count({ where: { teamMatchId: encounter.id } })) return;
+    await tx.match.createMany({ data: items.map((item, index) => ({
+      teamMatchId: encounter.id, teamCompetitionItemId: item.id, round: encounter.round,
+      roundNo: encounter.roundNo, matchNo: index + 1, status: MatchStatus.PENDING, durationMinutes: 45,
+    })) });
+  }
+
+  private async advanceTeamWinner(tx: Prisma.TransactionClient, encounter: TeamMatch, winnerTeamId: string, items: TeamCompetitionItem[]) {
+    const next = await tx.teamMatch.findUnique({ where: { teamCompetitionId_roundNo_matchNo: {
+      teamCompetitionId: encounter.teamCompetitionId, roundNo: encounter.roundNo + 1, matchNo: Math.ceil(encounter.matchNo / 2),
+    } } });
+    if (!next) return;
+    await this.lockEncounter(tx, next.id);
+    const key = encounter.matchNo % 2 === 1 ? 'team1Id' : 'team2Id';
+    const updated = await tx.teamMatch.update({ where: { id: next.id }, data: { [key]: winnerTeamId } });
+    if (updated.team1Id && updated.team2Id) await this.createEncounterMatches(tx, updated, items);
   }
 
   async getTeamMatchLineups(teamMatchId: string) {
@@ -503,102 +520,101 @@ export class TeamCompetitionsService {
   }
 
   async setTeamLineups(teamMatchId: string, dto: SetTeamLineupsDto) {
-    const teamMatch = await this.ensureTeamMatch(teamMatchId);
-    if (teamMatch.lineupLocked) {
-      throw new ConflictException('该团体赛出场名单已锁定');
-    }
-    if (!teamMatch.team1Id || !teamMatch.team2Id) {
-      throw new BadRequestException('轮空团体赛无需设置出场名单');
-    }
-
-    const teamCompetition = await this.ensureCompetition(teamMatch.teamCompetitionId);
-    const competitionItemIds = new Set(teamCompetition.items.map((item) => item.id));
-    const teamIds = new Set([teamMatch.team1Id, teamMatch.team2Id]);
-    const teamMemberMap = await this.teamMemberMap([teamMatch.team1Id, teamMatch.team2Id]);
-    const existingItems = teamCompetition.items;
-
-    if (dto.selections.length !== existingItems.length * 2) {
-      throw new BadRequestException('每个项目必须为双方各设置 1 组出场名单');
-    }
-
-    const seenKeys = new Set<string>();
-    const usageCounter = new Map<string, number>();
-    for (const selection of dto.selections) {
-      if (!teamIds.has(selection.teamId)) {
-        throw new BadRequestException('出场名单中的队伍不属于该团体赛');
-      }
-      if (!competitionItemIds.has(selection.teamCompetitionItemId)) {
-        throw new BadRequestException('出场项目不属于该团体赛');
-      }
-      const key = `${selection.teamId}:${selection.teamCompetitionItemId}`;
-      if (seenKeys.has(key)) {
-        throw new BadRequestException('同一队伍在同一项目下只能设置一条出场名单');
-      }
-      seenKeys.add(key);
-
-      const item = existingItems.find((entry) => entry.id === selection.teamCompetitionItemId)!;
-      this.validateLineupPlayers(item.eventType, selection.player1Id, selection.player2Id);
-      const playerIds = [selection.player1Id, selection.player2Id].filter(Boolean) as string[];
-      for (const playerId of playerIds) {
-        if (!teamMemberMap.get(selection.teamId)?.has(playerId)) {
-          throw new BadRequestException('出场名单中的选手必须属于对应队伍');
-        }
-        usageCounter.set(playerId, (usageCounter.get(playerId) ?? 0) + 1);
-      }
-    }
-
-    for (const [playerId, count] of usageCounter.entries()) {
-      if (count > 2) {
-        throw new ConflictException(`队员 ${playerId} 在同一场团体赛中最多身兼 2 项`);
-      }
-    }
-
     await this.prisma.$transaction(async (tx) => {
-      await tx.teamLineup.deleteMany({ where: { teamMatchId } });
-      await tx.teamLineup.createMany({
-        data: dto.selections.map((selection) => ({
-          teamMatchId,
-          teamCompetitionItemId: selection.teamCompetitionItemId,
-          teamId: selection.teamId,
-          player1Id: selection.player1Id,
-          player2Id: selection.player2Id ?? null,
-        })),
+      await this.lockEncounter(tx, teamMatchId);
+      const encounter = await tx.teamMatch.findUnique({
+        where: { id: teamMatchId },
+        include: { matches: { include: { teamCompetitionItem: true, games: true } }, lineups: true, teamCompetition: { include: { items: true } } },
       });
-
-      const matchItems = await tx.match.findMany({
-        where: { teamMatchId },
-        include: { teamCompetitionItem: true },
-        orderBy: { matchNo: 'asc' },
+      if (!encounter) throw new NotFoundException('团体对阵不存在');
+      if (encounter.status === MatchStatus.COMPLETED || encounter.status === MatchStatus.CANCELLED) {
+      throw new ConflictException('团体对阵已结束，不能修改名单或继续比赛');
+      }
+      if (!encounter.team1Id || !encounter.team2Id) throw new BadRequestException('请等待双方队伍确定后填报名单');
+      const members = await tx.teamMember.findMany({
+        where: { teamId: { in: [encounter.team1Id, encounter.team2Id] } }, include: { player: true },
       });
-      for (const match of matchItems) {
-        const side1 = dto.selections.find(
-          (selection) =>
-            selection.teamCompetitionItemId === match.teamCompetitionItemId && selection.teamId === teamMatch.team1Id,
-        );
-        const side2 = dto.selections.find(
-          (selection) =>
-            selection.teamCompetitionItemId === match.teamCompetitionItemId && selection.teamId === teamMatch.team2Id,
-        );
-        await tx.match.update({
-          where: { id: match.id },
-          data: {
-            side1Id: side1 ? this.lineupSlotId(side1.teamId, side1.teamCompetitionItemId) : null,
-            side2Id: side2 ? this.lineupSlotId(side2.teamId, side2.teamCompetitionItemId) : null,
-            status: MatchStatus.PENDING,
-            winnerSide: null,
-          },
+      const seen = new Set<string>();
+      const merged = new Map(encounter.lineups.map(l => [`${l.teamId}:${l.teamCompetitionItemId}`, {
+        teamId: l.teamId, teamCompetitionItemId: l.teamCompetitionItemId, player1Id: l.player1Id, player2Id: l.player2Id,
+      }]));
+      const affected = new Set<string>();
+      for (const selection of dto.selections) {
+        const key = `${selection.teamId}:${selection.teamCompetitionItemId}`;
+        if (seen.has(key)) throw new BadRequestException('同一队伍同一项目只能填报一次');
+        seen.add(key);
+        if (![encounter.team1Id, encounter.team2Id].includes(selection.teamId)) throw new BadRequestException('队伍不属于该对阵');
+        const match = encounter.matches.find(m => m.teamCompetitionItemId === selection.teamCompetitionItemId);
+        if (!match?.teamCompetitionItem) throw new BadRequestException('出场项目不属于该对阵');
+        if (match.status === MatchStatus.COMPLETED || match.status === MatchStatus.CANCELLED) throw new ConflictException('已结束子项保留原出场记录，不能换人');
+        if (!dto.overrideConfirmed && (match.status !== MatchStatus.PENDING || match.startedAt || match.lineupLocked || match.games.length)) {
+          throw new ConflictException('本项名单已锁定或比赛已开始，须确认例外换人');
+        }
+        this.validateLineupPlayers(match.teamCompetitionItem.eventType, selection.player1Id, selection.player2Id);
+        const players = [selection.player1Id, selection.player2Id].filter(Boolean).map(id => {
+          const member = members.find(m => m.teamId === selection.teamId && m.playerId === id);
+          if (!member) throw new BadRequestException('出场选手必须属于对应队伍');
+          return member.player;
+        });
+        const genders = players.map(p => p.gender);
+        const type = match.teamCompetitionItem.eventType;
+        if ((type.startsWith('MENS_') && genders.some(g => g !== Gender.MALE))
+          || (type.startsWith('WOMENS_') && genders.some(g => g !== Gender.FEMALE))
+          || (type === EventType.MIXED_DOUBLES && new Set(genders).size !== 2)) {
+          throw new BadRequestException(`${EVENT_TYPE_LABELS[type]}的选手性别不符合项目要求`);
+        }
+        merged.set(key, { ...selection, player2Id: selection.player2Id ?? null });
+        affected.add(match.id);
+      }
+      const usage = new Map<string, number>();
+      for (const row of merged.values()) {
+        for (const id of [row.player1Id, row.player2Id].filter(Boolean) as string[]) usage.set(id, (usage.get(id) ?? 0) + 1);
+      }
+      if ([...usage.values()].some(count => count > 2)) throw new ConflictException('每位队员在同一场团体对阵中最多兼任 2 个项目');
+      for (const selection of dto.selections) {
+        await tx.teamLineup.upsert({
+          where: { teamMatchId_teamCompetitionItemId_teamId: { teamMatchId, teamCompetitionItemId: selection.teamCompetitionItemId, teamId: selection.teamId } },
+          create: { teamMatchId, ...selection, player2Id: selection.player2Id ?? null },
+          update: { player1Id: selection.player1Id, player2Id: selection.player2Id ?? null },
         });
       }
-
-      if (dto.lock) {
-        await tx.teamMatch.update({
-          where: { id: teamMatchId },
-          data: { lineupLocked: true },
-        });
+      for (const match of encounter.matches.filter(m => affected.has(m.id))) {
+        const a = merged.get(`${encounter.team1Id}:${match.teamCompetitionItemId}`);
+        const b = merged.get(`${encounter.team2Id}:${match.teamCompetitionItemId}`);
+        if (dto.lock && (!a || !b)) throw new BadRequestException('锁定前须填齐本项双方出场名单');
+        await tx.match.update({ where: { id: match.id }, data: {
+          side1Id: a ? this.lineupSlotId(a.teamId, a.teamCompetitionItemId, teamMatchId) : null,
+          side2Id: b ? this.lineupSlotId(b.teamId, b.teamCompetitionItemId, teamMatchId) : null,
+          ...(dto.lock ? { lineupLocked: true } : {}),
+        } });
+        if (dto.overrideConfirmed) await tx.matchEvent.create({ data: { matchId: match.id, type: 'WARNING', note: `确认例外换人：${dto.selections.filter(s => s.teamCompetitionItemId === match.teamCompetitionItemId).map(s => [s.player1Id, s.player2Id].filter(Boolean).join('/')).join(' VS ')}` } });
       }
-    });
-
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
     return this.getTeamMatchLineups(teamMatchId);
+  }
+
+  private async lockEncounter(tx: Prisma.TransactionClient, teamMatchId: string) {
+    await tx.$queryRaw`SELECT id FROM TeamMatch WHERE id = ${teamMatchId} FOR UPDATE`;
+  }
+
+  async prepareScoring(tx: Prisma.TransactionClient, matchId: string, options: { starting?: boolean; correcting?: boolean } = {}) {
+    const ref = await tx.match.findUnique({ where: { id: matchId }, select: { teamMatchId: true } });
+    if (!ref?.teamMatchId) return;
+    await this.lockEncounter(tx, ref.teamMatchId);
+    const match = await tx.match.findUniqueOrThrow({ where: { id: matchId }, include: { teamMatch: { include: { matches: true } } } });
+    const encounter = match.teamMatch!;
+    if (!options.correcting && (encounter.status === MatchStatus.COMPLETED || encounter.status === MatchStatus.CANCELLED)) {
+      throw new ConflictException('团体对阵已结束，不能修改名单或继续比赛');
+    }
+    if (match.status === MatchStatus.CANCELLED) throw new ConflictException('本项已取消，无需比赛');
+    if (!options.correcting && match.status === MatchStatus.COMPLETED) throw new ConflictException('本项已结束');
+    if (!match.lineupLocked || !match.side1Id || !match.side2Id) throw new ConflictException('请先填齐并锁定本项双方名单');
+    if (options.starting) {
+      if (match.status !== MatchStatus.PENDING) throw new ConflictException('本项已开始或结束');
+      if (encounter.matches.some(m => m.matchNo < match.matchNo && m.status !== MatchStatus.COMPLETED && m.status !== MatchStatus.CANCELLED)) {
+        throw new ConflictException('请按项目顺序比赛，先完成前面的子项');
+      }
+    }
   }
 
   async assignTeamMatchReferee(matchId: string, dto: AssignTeamMatchRefereeDto) {
@@ -626,6 +642,7 @@ export class TeamCompetitionsService {
     const competitions = await this.prisma.teamCompetition.findMany({
       where: {
         isPublished: true,
+        tournament: { isPublished: true, approvalStatus: 'APPROVED', isArchived: false },
         ...(tournamentId ? { tournamentId } : {}),
       },
       include: {
@@ -699,7 +716,7 @@ export class TeamCompetitionsService {
     } else if (team2Wins >= teamMatch.teamCompetition.winThreshold && teamMatch.team2Id) {
       winnerTeamId = teamMatch.team2Id;
       nextStatus = MatchStatus.COMPLETED;
-    } else if (finished.length > 0) {
+    } else if (finished.length > 0 || teamMatch.matches.some(item => item.status === MatchStatus.LIVE)) {
       nextStatus = MatchStatus.LIVE;
     }
 
@@ -713,13 +730,14 @@ export class TeamCompetitionsService {
     });
 
     if (winnerTeamId) {
+      await this.advanceTeamWinner(tx, teamMatch, winnerTeamId, teamMatch.teamCompetition.items);
       const remainingMatchIds = teamMatch.matches
         .filter((item) => item.status === MatchStatus.PENDING || item.status === MatchStatus.LIVE)
         .map((item) => item.id);
       if (remainingMatchIds.length) {
         await tx.match.updateMany({
           where: { id: { in: remainingMatchIds } },
-          data: { status: MatchStatus.CANCELLED, winnerSide: null },
+          data: { status: MatchStatus.CANCELLED, winnerSide: null, finishedAt: new Date() },
         });
       }
     }
@@ -735,8 +753,7 @@ export class TeamCompetitionsService {
     const itemIds = [...new Set(pairs.map((pair) => pair.teamCompetitionItemId))];
     const lineups = await this.prisma.teamLineup.findMany({
       where: {
-        teamId: { in: teamIds },
-        teamCompetitionItemId: { in: itemIds },
+        OR: pairs.map(pair => ({ teamId: pair.teamId, teamCompetitionItemId: pair.teamCompetitionItemId, ...(pair.teamMatchId ? { teamMatchId: pair.teamMatchId } : {}) })),
       },
       include: {
         player1: true,
@@ -748,8 +765,8 @@ export class TeamCompetitionsService {
 
     const map = new Map<string, any>();
     for (const lineup of lineups) {
-      map.set(this.lineupSlotId(lineup.teamId, lineup.teamCompetitionItemId), {
-        id: this.lineupSlotId(lineup.teamId, lineup.teamCompetitionItemId),
+      map.set(this.lineupSlotId(lineup.teamId, lineup.teamCompetitionItemId, lineup.teamMatchId), {
+        id: this.lineupSlotId(lineup.teamId, lineup.teamCompetitionItemId, lineup.teamMatchId),
         teamId: lineup.teamId,
         name: lineup.player2
           ? `${lineup.player1.name} / ${lineup.player2.name}`
@@ -768,6 +785,10 @@ export class TeamCompetitionsService {
         eventType: lineup.teamCompetitionItem.eventType,
       });
     }
+    for (const pair of pairs.filter(p => !p.teamMatchId)) {
+      const candidates = lineups.filter(l => l.teamId === pair.teamId && l.teamCompetitionItemId === pair.teamCompetitionItemId);
+      if (candidates.length === 1) map.set(this.lineupSlotId(pair.teamId, pair.teamCompetitionItemId), map.get(this.lineupSlotId(pair.teamId, pair.teamCompetitionItemId, candidates[0].teamMatchId)));
+    }
     return map;
   }
 
@@ -778,7 +799,7 @@ export class TeamCompetitionsService {
     });
     const map = new Map<string, string[]>();
     for (const lineup of lineups) {
-      map.set(this.lineupSlotId(lineup.teamId, lineup.teamCompetitionItemId), [
+      map.set(this.lineupSlotId(lineup.teamId, lineup.teamCompetitionItemId, lineup.teamMatchId), [
         lineup.player1Id,
         lineup.player2Id,
       ].filter(Boolean) as string[]);
@@ -891,8 +912,19 @@ export class TeamCompetitionsService {
   }
 
   private ensureWinThreshold(winThreshold: number, itemCount?: number) {
-    if (itemCount !== undefined && winThreshold > itemCount) {
-      throw new BadRequestException('胜场阈值不能大于项目数');
+    if (!Number.isInteger(winThreshold) || winThreshold < 1 || (itemCount !== undefined && 2 * winThreshold - 1 > itemCount)) {
+      throw new BadRequestException('项目数不足以保证分出胜负：先赢 N 项至少需要安排 2N-1 个项目');
+    }
+  }
+
+  private scoringData(dto: UpdateTeamCompetitionDto) {
+    return { scoringRule: dto.scoringRule, scoringMode: dto.scoringMode, customGamePoint: dto.customGamePoint, customGameCap: dto.customGameCap, customGamesToWin: dto.customGamesToWin };
+  }
+
+  private validateScoring(dto: { scoringRule?: ScoringRule; customGamePoint?: number | null; customGameCap?: number | null }) {
+    const point = dto.customGamePoint ?? ({ FIFTEEN_ONE: 15, FIFTEEN_BO3: 15, TWENTYONE_BO3: 21, THIRTYONE_BO3: 31 }[dto.scoringRule ?? ScoringRule.TWENTYONE_BO3]);
+    if (dto.customGameCap && dto.customGameCap < point) {
+      throw new BadRequestException('封顶分不能小于目标分');
     }
   }
 
@@ -904,15 +936,15 @@ export class TeamCompetitionsService {
     return uniqueIds;
   }
 
-  private async ensureMinimumTeamSize(count: number) {
-    if (count < 10) {
-      throw new BadRequestException('每队至少 10 人');
+  private async ensureRosterEditable(teamCompetitionId: string) {
+    if (await this.prisma.teamMatch.count({ where: { teamCompetitionId } })) {
+      throw new ConflictException('已生成对阵后不能增删队伍或变更队员库，可在各子项开赛前调整出场选手');
     }
   }
 
-  private async loadPlayers(playerIds: string[]) {
+  private async loadPlayers(playerIds: string[], actor?: AuthActor) {
     const players = await this.prisma.player.findMany({
-      where: { id: { in: playerIds } },
+      where: { id: { in: playerIds }, ...playerScope(actor) },
       include: { teamMembers: { include: { team: true } } },
     });
     if (players.length !== playerIds.length) {
@@ -1020,16 +1052,16 @@ export class TeamCompetitionsService {
     return ['MENS_DOUBLES', 'WOMENS_DOUBLES', 'MIXED_DOUBLES'].includes(eventType);
   }
 
-  private lineupSlotId(teamId: string, teamCompetitionItemId: string) {
-    return `lineup:${teamId}:${teamCompetitionItemId}`;
+  private lineupSlotId(teamId: string, teamCompetitionItemId: string, teamMatchId?: string) {
+    return teamMatchId ? `lineup:${teamMatchId}:${teamId}:${teamCompetitionItemId}` : `lineup:${teamId}:${teamCompetitionItemId}`;
   }
 
   private parseLineupSlotId(value: string) {
-    const match = /^lineup:([^:]+):([^:]+)$/.exec(value);
+    const match = /^lineup:(?:([^:]+):)?([^:]+):([^:]+)$/.exec(value);
     if (!match) {
       throw new BadRequestException(`无效的团体赛出场槽位：${value}`);
     }
-    return { teamId: match[1], teamCompetitionItemId: match[2] };
+    return { teamMatchId: match[1], teamId: match[2], teamCompetitionItemId: match[3] };
   }
 
   private toCompetitionView(competition: TeamCompetitionDetail) {
@@ -1040,6 +1072,13 @@ export class TeamCompetitionsService {
       name: competition.name,
       description: competition.description,
       winThreshold: competition.winThreshold,
+      malePlayerCount: competition.malePlayerCount,
+      femalePlayerCount: competition.femalePlayerCount,
+      scoringRule: competition.scoringRule,
+      scoringMode: competition.scoringMode,
+      customGamePoint: competition.customGamePoint,
+      customGameCap: competition.customGameCap,
+      customGamesToWin: competition.customGamesToWin,
       isPublished: competition.isPublished,
       items: competition.items.map((item) => ({
         id: item.id,
@@ -1068,6 +1107,8 @@ export class TeamCompetitionsService {
           roundNo: match.roundNo,
           matchNo: match.matchNo,
           status: match.status,
+          lineupLocked: match.lineupLocked,
+          teamCompetitionItemId: match.teamCompetitionItemId,
           winnerSide: match.winnerSide,
           side1Id: match.side1Id,
           side2Id: match.side2Id,
@@ -1095,6 +1136,7 @@ export class TeamCompetitionsService {
       affiliation: team.affiliation,
       notes: team.notes,
       memberCount: team.members.length,
+      rosterOverrideConfirmed: team.rosterOverrideConfirmed,
       members: team.members.map((member) => ({
         id: member.player.id,
         name: member.player.name,
@@ -1123,7 +1165,7 @@ export class TeamCompetitionsService {
       teamCompetitionItemId: lineup.teamCompetitionItemId,
       eventType: lineup.teamCompetitionItem.eventType,
       eventTypeLabel: EVENT_TYPE_LABELS[lineup.teamCompetitionItem.eventType],
-      slotId: this.lineupSlotId(lineup.teamId, lineup.teamCompetitionItemId),
+      slotId: this.lineupSlotId(lineup.teamId, lineup.teamCompetitionItemId, lineup.teamMatchId),
       player1: lineup.player1,
       player2: lineup.player2,
       name: lineup.player2
@@ -1144,6 +1186,13 @@ export class TeamCompetitionsService {
       name: competition.name,
       description: competition.description,
       winThreshold: competition.winThreshold,
+      malePlayerCount: competition.malePlayerCount,
+      femalePlayerCount: competition.femalePlayerCount,
+      scoringRule: competition.scoringRule,
+      scoringMode: competition.scoringMode,
+      customGamePoint: competition.customGamePoint,
+      customGameCap: competition.customGameCap,
+      customGamesToWin: competition.customGamesToWin,
       items: competition.items.map((item: TeamCompetitionItem) => ({
         id: item.id,
         eventType: item.eventType,
@@ -1171,6 +1220,8 @@ export class TeamCompetitionsService {
         matches: teamMatch.matches.map((match: any) => ({
           id: match.id,
           status: match.status,
+          lineupLocked: match.lineupLocked,
+          teamCompetitionItemId: match.teamCompetitionItemId,
           round: match.round,
           roundNo: match.roundNo,
           matchNo: match.matchNo,

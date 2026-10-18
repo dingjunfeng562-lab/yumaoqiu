@@ -1,3 +1,4 @@
+import { validateTeamRosterRules } from '../team-competitions/team-roster';
 import { hasPermission } from '../auth/permissions';
 import {
   BadRequestException,
@@ -215,7 +216,7 @@ export class TournamentsService {
       if (dto.venueNames) {
         await this.syncVenues(tx, id, dto.venueNames);
       }
-      if (dto.includeTeamCompetition !== undefined || dto.teamEventTypes || dto.teamWinThreshold) {
+      if (dto.includeTeamCompetition !== undefined || dto.teamEventTypes || dto.teamWinThreshold || dto.teamMalePlayerCount !== undefined || dto.teamFemalePlayerCount !== undefined || dto.teamScoringRule || dto.teamScoringMode) {
         await this.syncTeamCompetition(tx, id, dto);
       }
 
@@ -257,6 +258,10 @@ export class TournamentsService {
     delete data.includeTeamCompetition;
     delete data.teamWinThreshold;
     delete data.teamEventTypes;
+    delete data.teamMalePlayerCount;
+    delete data.teamFemalePlayerCount;
+    delete data.teamScoringRule;
+    delete data.teamScoringMode;
     delete data.venueNames;
 
     if (dto.startDate) data.startDate = new Date(dto.startDate);
@@ -410,7 +415,7 @@ export class TournamentsService {
   private async syncTeamCompetition(
     tx: Prisma.TransactionClient,
     tournamentId: string,
-    dto: Pick<UpdateTournamentDto, 'includeTeamCompetition' | 'teamWinThreshold' | 'teamEventTypes' | 'name' | 'description'>,
+    dto: Pick<UpdateTournamentDto, 'includeTeamCompetition' | 'teamWinThreshold' | 'teamEventTypes' | 'teamMalePlayerCount' | 'teamFemalePlayerCount' | 'teamScoringRule' | 'teamScoringMode' | 'name' | 'description'>,
   ) {
     const current = await tx.teamCompetition.findFirst({
       where: { tournamentId },
@@ -432,8 +437,16 @@ export class TournamentsService {
       current?.items.sort((a, b) => a.sortOrder - b.sortOrder).map((item) => item.eventType) ??
       [];
     const winThreshold = dto.teamWinThreshold ?? current?.winThreshold ?? 2;
+    const roster = {
+      malePlayerCount: dto.teamMalePlayerCount ?? current?.malePlayerCount ?? 5,
+      femalePlayerCount: dto.teamFemalePlayerCount ?? current?.femalePlayerCount ?? 5,
+    };
+    validateTeamRosterRules(roster);
     const data = {
-      name: `${dto.name ?? '团体赛'} 团体赛`,
+      ...roster,
+      scoringRule: dto.teamScoringRule ?? current?.scoringRule ?? 'TWENTYONE_BO3' as const,
+      scoringMode: dto.teamScoringMode ?? current?.scoringMode ?? 'CAPPED_30' as const,
+      name: dto.name ? `${dto.name} 团体赛` : current?.name ?? '团体赛',
       description: dto.description,
       winThreshold,
       isPublished: false,
@@ -452,12 +465,18 @@ export class TournamentsService {
       return;
     }
 
+    if (current._count.teamMatches > 0 && (data.winThreshold !== current.winThreshold || data.malePlayerCount !== current.malePlayerCount || data.femalePlayerCount !== current.femalePlayerCount || data.scoringRule !== current.scoringRule || data.scoringMode !== current.scoringMode)) {
+      throw new ConflictException('已生成团体对阵，不能修改人数、胜场或计分规则');
+    }
     await tx.teamCompetition.update({
       where: { id: current.id },
       data: {
         name: data.name,
         description: data.description,
         winThreshold: data.winThreshold,
+        ...roster,
+        scoringRule: data.scoringRule,
+        scoringMode: data.scoringMode,
       },
     });
 

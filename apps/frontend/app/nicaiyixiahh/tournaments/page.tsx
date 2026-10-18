@@ -1,4 +1,6 @@
 'use client';
+
+import { TEAM_SCORING_OPTIONS } from '@/components/TeamCompetitionFields';
 import { useCurrentAccess } from '@/lib/use-current-role';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -106,6 +108,10 @@ interface Tournament {
   teamCompetitions: Array<{
     id: string;
     winThreshold: number;
+    malePlayerCount: number | null;
+    femalePlayerCount: number | null;
+    scoringRule: string;
+    scoringMode: string;
     items: Array<{ eventType: EventType; sortOrder: number }>;
   }>;
   _count?: { events: number };
@@ -126,6 +132,10 @@ type TournamentFormValues = {
   includeTeamCompetition: boolean;
   teamWinThreshold: 2 | 3;
   teamEventTypes: EventType[];
+  teamMalePlayerCount: number;
+  teamFemalePlayerCount: number;
+  teamScoringRule: string;
+  teamScoringMode: string;
   maxRegistrationEvents: number;
   allowCrossEventRegistration: boolean;
   registrationStartDate: Dayjs;
@@ -264,7 +274,7 @@ export default function TournamentsPage() {
   }, [allowCrossEventRegistration, form]);
 
   useEffect(() => {
-    const selected = sortEventTypes(teamEventTypes.filter((type) => eventTypes.includes(type)));
+    const selected = teamEventTypes.filter((type) => eventTypes.includes(type));
     if (selected.length !== teamEventTypes.length) {
       form.setFieldValue('teamEventTypes', selected);
     }
@@ -291,6 +301,10 @@ export default function TournamentsPage() {
       includeTeamCompetition: false,
       teamWinThreshold: 2,
       teamEventTypes: [],
+      teamMalePlayerCount: 5,
+      teamFemalePlayerCount: 5,
+      teamScoringRule: 'TWENTYONE_BO3',
+      teamScoringMode: 'CAPPED_30',
       maxRegistrationEvents: 2,
       allowCrossEventRegistration: true,
       needsRegistrationReview: true,
@@ -339,7 +353,11 @@ export default function TournamentsPage() {
       eventTypes: sortEventTypes(tournament.events.map((event) => event.type)),
       includeTeamCompetition: Boolean(teamCompetition),
       teamWinThreshold: (teamCompetition?.winThreshold as 2 | 3 | undefined) ?? 2,
-      teamEventTypes: sortEventTypes(teamCompetition?.items.map((item) => item.eventType) ?? []),
+      teamEventTypes: [...(teamCompetition?.items ?? [])].sort((a, b) => a.sortOrder - b.sortOrder).map(item => item.eventType),
+      teamMalePlayerCount: teamCompetition?.malePlayerCount ?? 5,
+      teamFemalePlayerCount: teamCompetition?.femalePlayerCount ?? 5,
+      teamScoringRule: teamCompetition?.scoringRule ?? 'TWENTYONE_BO3',
+      teamScoringMode: teamCompetition?.scoringMode ?? 'CAPPED_30',
       maxRegistrationEvents: tournament.allowCrossEventRegistration ? tournament.maxRegistrationEvents : 1,
       allowCrossEventRegistration: tournament.allowCrossEventRegistration,
       registrationStartDate: tournament.registrationStartDate ? dayjs(tournament.registrationStartDate) : undefined,
@@ -421,6 +439,10 @@ export default function TournamentsPage() {
       includeTeamCompetition: Boolean(values.includeTeamCompetition),
       teamWinThreshold: values.includeTeamCompetition ? values.teamWinThreshold : undefined,
       teamEventTypes: values.includeTeamCompetition ? values.teamEventTypes : [],
+      teamMalePlayerCount: values.includeTeamCompetition ? values.teamMalePlayerCount : undefined,
+      teamFemalePlayerCount: values.includeTeamCompetition ? values.teamFemalePlayerCount : undefined,
+      teamScoringRule: values.includeTeamCompetition ? values.teamScoringRule : undefined,
+      teamScoringMode: values.includeTeamCompetition ? values.teamScoringMode : undefined,
       maxRegistrationEvents: values.allowCrossEventRegistration ? Number(values.maxRegistrationEvents) : 1,
       allowCrossEventRegistration: Boolean(values.allowCrossEventRegistration),
       registrationStartDate: values.registrationStartDate.toISOString(),
@@ -825,6 +847,12 @@ export default function TournamentsPage() {
             </Form.Item>
             {includeTeamCompetition && (
               <>
+                <Space align="start" wrap>
+                  <Form.Item name="teamMalePlayerCount" label="每队男队员人数" rules={[{ required: true }]}><InputNumber min={0} precision={0} /></Form.Item>
+                  <Form.Item name="teamFemalePlayerCount" label="每队女队员人数" rules={[{ required: true }]}><InputNumber min={0} precision={0} /></Form.Item>
+                </Space>
+                <Form.Item name="teamScoringRule" label="团体子项计分规则" rules={[{ required: true }]} extra="自定义分数和局数可在团体赛设置中调整。"><Select options={TEAM_SCORING_OPTIONS} /></Form.Item>
+                <Form.Item name="teamScoringMode" label="团体子项平分规则" rules={[{ required: true }]}><Select options={[{ value: 'CAPPED_30', label: '领先 2 分，封顶决胜' }, { value: 'STANDARD_GOLDEN', label: '目标分直接获胜（金球）' }]} /></Form.Item>
                 <Form.Item
                   name="teamWinThreshold"
                   label="团体赛胜场规则"

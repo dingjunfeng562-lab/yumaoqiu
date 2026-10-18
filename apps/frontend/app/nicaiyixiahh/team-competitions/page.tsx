@@ -1,18 +1,15 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import {
   Button,
   Card,
   Form,
-  Input,
-  InputNumber,
   Modal,
   Select,
   Space,
-  Switch,
   Table,
   Tag,
   Typography,
@@ -21,13 +18,7 @@ import {
 import { PlusOutlined, EyeOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 
-const EVENT_TYPE_OPTIONS = [
-  { value: 'MENS_SINGLES', label: '男单' },
-  { value: 'WOMENS_SINGLES', label: '女单' },
-  { value: 'MENS_DOUBLES', label: '男双' },
-  { value: 'WOMENS_DOUBLES', label: '女双' },
-  { value: 'MIXED_DOUBLES', label: '混双' },
-];
+import TeamCompetitionFields, { TEAM_EVENT_OPTIONS, teamDefaults } from '@/components/TeamCompetitionFields';
 
 type Tournament = {
   id: string;
@@ -41,6 +32,8 @@ type TeamCompetition = {
   name: string;
   description?: string | null;
   winThreshold: number;
+  malePlayerCount: number | null;
+  femalePlayerCount: number | null;
   isPublished: boolean;
   items: Array<{ id: string; eventType: string; eventTypeLabel: string; sortOrder: number }>;
   tournament: Tournament;
@@ -64,7 +57,7 @@ export default function TeamCompetitionsPage() {
     [competitions, selectedTournamentId],
   );
 
-  async function loadBase() {
+  const loadBase = useCallback(async () => {
     if (!token) return;
     setLoading(true);
     try {
@@ -80,19 +73,18 @@ export default function TeamCompetitionsPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [token]);
 
   useEffect(() => {
-    loadBase();
-  }, [token]);
+    const timer = window.setTimeout(() => { void loadBase(); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadBase]);
 
   function openCreate() {
     form.resetFields();
     form.setFieldsValue({
       tournamentId: selectedTournamentId || tournaments[0]?.id,
-      winThreshold: 3,
-      isPublished: true,
-      items: EVENT_TYPE_OPTIONS.map((item, index) => ({ eventType: item.value, sortOrder: index + 1 })),
+      ...teamDefaults,
     });
     setOpen(true);
   }
@@ -104,7 +96,7 @@ export default function TeamCompetitionsPage() {
       await apiFetch('/team-competitions', {
         method: 'POST',
         token,
-        body: JSON.stringify(values),
+        body: JSON.stringify({ ...values, items: values.items.map((item: { eventType: string }, index: number) => ({ eventType: item.eventType, sortOrder: index + 1 })) }),
       });
       message.success('团体赛已创建');
       setOpen(false);
@@ -156,9 +148,10 @@ export default function TeamCompetitionsPage() {
           },
           {
             title: '项目顺序',
-            render: (_, row: TeamCompetition) => row.items.map((item) => item.eventTypeLabel).join(' → '),
+            render: (_, row: TeamCompetition) => row.items.map((item) => TEAM_EVENT_OPTIONS.find(option => option.value === item.eventType)?.label ?? item.eventType).join(' → '),
           },
           { title: '抢几胜', dataIndex: 'winThreshold', width: 100 },
+          { title: '每队人数', render: (_, row: TeamCompetition) => row.malePlayerCount == null ? '待设置' : `${row.malePlayerCount} 男 ${row.femalePlayerCount} 女` },
           { title: '队伍数', render: (_, row: TeamCompetition) => row._count?.teams ?? 0, width: 90 },
           { title: '对阵数', render: (_, row: TeamCompetition) => row._count?.teamMatches ?? 0, width: 90 },
           {
@@ -190,44 +183,7 @@ export default function TeamCompetitionsPage() {
           <Form.Item name="tournamentId" label="所属赛事" rules={[{ required: true, message: '请选择赛事' }]}>
             <Select options={tournaments.map((item) => ({ value: item.id, label: item.name }))} />
           </Form.Item>
-          <Form.Item name="name" label="团体赛名称" rules={[{ required: true, message: '请输入名称' }]}>
-            <Input placeholder="例如：学院团体赛" />
-          </Form.Item>
-          <Form.Item name="description" label="说明">
-            <Input.TextArea rows={3} placeholder="可填写赛制说明或备注" />
-          </Form.Item>
-          <Form.Item name="winThreshold" label="胜场阈值" rules={[{ required: true, message: '请输入胜场阈值' }]}>
-            <InputNumber min={1} style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item name="isPublished" label="公开展示" valuePropName="checked">
-            <Switch />
-          </Form.Item>
-          <Form.List name="items">
-            {(fields) => (
-              <Space direction="vertical" style={{ width: '100%' }}>
-                {fields.map((field) => (
-                  <Space key={field.key} style={{ display: 'flex' }} align="start">
-                    <Form.Item
-                      {...field}
-                      name={[field.name, 'eventType']}
-                      label={field.name === 0 ? '项目' : ''}
-                      rules={[{ required: true, message: '请选择项目' }]}
-                    >
-                      <Select style={{ width: 240 }} options={EVENT_TYPE_OPTIONS} />
-                    </Form.Item>
-                    <Form.Item
-                      {...field}
-                      name={[field.name, 'sortOrder']}
-                      label={field.name === 0 ? '顺序' : ''}
-                      rules={[{ required: true, message: '请输入顺序' }]}
-                    >
-                      <InputNumber min={1} style={{ width: 120 }} />
-                    </Form.Item>
-                  </Space>
-                ))}
-              </Space>
-            )}
-          </Form.List>
+          <TeamCompetitionFields />
         </Form>
       </Modal>
     </Space>

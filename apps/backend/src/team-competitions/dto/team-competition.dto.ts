@@ -9,10 +9,40 @@ import {
   IsString,
   Min,
   MinLength,
+  Max,
+  MaxLength,
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { EventType, Gender } from '@prisma/client';
+import { EventType, Gender, ScoringMode, ScoringRule } from '@prisma/client';
+
+export class TeamScoringDto {
+  @IsOptional()
+  @IsEnum(ScoringRule)
+  scoringRule?: ScoringRule;
+
+  @IsOptional()
+  @IsEnum(ScoringMode)
+  scoringMode?: ScoringMode;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(999)
+  customGamePoint?: number | null;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(999)
+  customGameCap?: number | null;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(9)
+  customGamesToWin?: number | null;
+}
 
 export class TeamCompetitionItemDto {
   @IsEnum(EventType)
@@ -24,7 +54,17 @@ export class TeamCompetitionItemDto {
   sortOrder: number;
 }
 
-export class CreateTeamCompetitionDto {
+export class CreateTeamCompetitionDto extends TeamScoringDto {
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  malePlayerCount: number;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  femalePlayerCount: number;
+
   @IsString()
   @MinLength(1)
   tournamentId: string;
@@ -53,7 +93,19 @@ export class CreateTeamCompetitionDto {
   items: TeamCompetitionItemDto[];
 }
 
-export class UpdateTeamCompetitionDto {
+export class UpdateTeamCompetitionDto extends TeamScoringDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  malePlayerCount?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  femalePlayerCount?: number;
+
   @IsOptional()
   @IsString()
   @MinLength(1)
@@ -116,7 +168,7 @@ export class CreateTeamDto {
   notes?: string;
 
   @IsArray()
-  @ArrayMinSize(10)
+  @ArrayMinSize(1)
   @IsString({ each: true })
   playerIds: string[];
 }
@@ -138,10 +190,25 @@ export class UpdateTeamDto {
 }
 
 export class ReplaceTeamMembersDto {
+  @IsOptional()
+  @IsBoolean()
+  overrideConfirmed?: boolean;
+
   @IsArray()
-  @ArrayMinSize(10)
+  @ArrayMinSize(1)
   @IsString({ each: true })
   playerIds: string[];
+}
+
+export class AddTeamPlayersDto {
+  @IsBoolean()
+  overrideConfirmed: boolean;
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => TeamPlayerInputDto)
+  players: TeamPlayerInputDto[];
 }
 
 export class ImportTeamPlayersDto {
@@ -158,10 +225,48 @@ export class ImportTeamPlayersDto {
   notes?: string;
 
   @IsArray()
-  @ArrayMinSize(10)
+  @ArrayMinSize(1)
   @ValidateNested({ each: true })
   @Type(() => TeamPlayerInputDto)
   players: TeamPlayerInputDto[];
+}
+
+export class BatchTeamPlayerDto {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(120)
+  teamName: string;
+
+  @IsString()
+  @MinLength(1)
+  @MaxLength(120)
+  name: string;
+
+  @IsEnum(Gender)
+  gender: Gender;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(191)
+  affiliation?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(191)
+  contact?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  lineNumber?: number;
+}
+
+export class BatchImportTeamsDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => BatchTeamPlayerDto)
+  players: BatchTeamPlayerDto[];
 }
 
 export class ParseQuickTeamDto {
@@ -204,8 +309,12 @@ export class TeamLineupSelectionDto {
 }
 
 export class SetTeamLineupsDto {
+  @IsOptional()
+  @IsBoolean()
+  overrideConfirmed?: boolean;
+
   @IsArray()
-  @ArrayMinSize(2)
+  @ArrayMinSize(1)
   @ValidateNested({ each: true })
   @Type(() => TeamLineupSelectionDto)
   selections: TeamLineupSelectionDto[];

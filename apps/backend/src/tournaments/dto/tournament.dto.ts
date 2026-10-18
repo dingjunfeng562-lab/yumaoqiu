@@ -14,7 +14,7 @@ import {
   MinLength,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { EventType, TournamentStatus } from '@prisma/client';
+import { EventType, TournamentStatus, ScoringRule, ScoringMode } from '@prisma/client';
 
 export class CreateTournamentDto {
   @IsString()
@@ -52,6 +52,26 @@ export class CreateTournamentDto {
   @IsArray()
   @IsEnum(EventType, { each: true })
   teamEventTypes?: EventType[];
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  teamMalePlayerCount?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  teamFemalePlayerCount?: number;
+
+  @IsOptional()
+  @IsEnum(ScoringRule)
+  teamScoringRule?: ScoringRule;
+
+  @IsOptional()
+  @IsEnum(ScoringMode)
+  teamScoringMode?: ScoringMode;
 
   @Type(() => Number)
   @IsInt()
@@ -177,6 +197,26 @@ export class UpdateTournamentDto {
   @IsArray()
   @IsEnum(EventType, { each: true })
   teamEventTypes?: EventType[];
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  teamMalePlayerCount?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  teamFemalePlayerCount?: number;
+
+  @IsOptional()
+  @IsEnum(ScoringRule)
+  teamScoringRule?: ScoringRule;
+
+  @IsOptional()
+  @IsEnum(ScoringMode)
+  teamScoringMode?: ScoringMode;
 
   @IsOptional()
   @Type(() => Number)

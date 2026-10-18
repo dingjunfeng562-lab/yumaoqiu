@@ -17,6 +17,8 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import {
+  AddTeamPlayersDto,
+  BatchImportTeamsDto,
   AssignTeamMatchRefereeDto,
   CreateTeamCompetitionDto,
   CreateTeamDto,
@@ -66,14 +68,24 @@ export class TeamCompetitionsController {
     return this.teamCompetitionsService.listTeams(id);
   }
 
+  @Get(':id/available-players')
+  availablePlayers(@Param('id') id: string, @Req() req: { user: AuthActor }) {
+    return this.teamCompetitionsService.availablePlayers(id, req.user);
+  }
+
   @Post(':id/teams')
-  createTeam(@Param('id') id: string, @Body() dto: CreateTeamDto) {
-    return this.teamCompetitionsService.createTeam(id, dto);
+  createTeam(@Param('id') id: string, @Body() dto: CreateTeamDto, @Req() req: { user: AuthActor }) {
+    return this.teamCompetitionsService.createTeam(id, dto, req.user);
   }
 
   @Post(':id/teams/import')
-  importTeam(@Param('id') id: string, @Body() dto: ImportTeamPlayersDto) {
-    return this.teamCompetitionsService.importTeamPlayers(id, dto);
+  importTeam(@Param('id') id: string, @Body() dto: ImportTeamPlayersDto, @Req() req: { user: AuthActor }) {
+    return this.teamCompetitionsService.importTeamPlayers(id, dto, req.user);
+  }
+
+  @Post(':id/teams/batch-import')
+  batchImportTeams(@Param('id') id: string, @Body() dto: BatchImportTeamsDto, @Req() req: { user: AuthActor }) {
+    return this.teamCompetitionsService.batchImportTeams(id, dto, req.user);
   }
 
   @Post(':id/teams/quick-preview')
@@ -86,8 +98,8 @@ export class TeamCompetitionsController {
   }
 
   @Post(':id/teams/quick-create')
-  createTeamFromQuickInput(@Param('id') id: string, @Body() dto: ParseQuickTeamDto) {
-    return this.teamCompetitionsService.createTeamFromQuickInput(id, dto);
+  createTeamFromQuickInput(@Param('id') id: string, @Body() dto: ParseQuickTeamDto, @Req() req: { user: AuthActor }) {
+    return this.teamCompetitionsService.createTeamFromQuickInput(id, dto, req.user);
   }
 
   @Patch('teams/:teamId')
@@ -96,13 +108,18 @@ export class TeamCompetitionsController {
   }
 
   @Put('teams/:teamId/members')
-  replaceTeamMembers(@Param('teamId') teamId: string, @Body() dto: ReplaceTeamMembersDto) {
-    return this.teamCompetitionsService.replaceTeamMembers(teamId, dto);
+  replaceTeamMembers(@Param('teamId') teamId: string, @Body() dto: ReplaceTeamMembersDto, @Req() req: { user: AuthActor }) {
+    return this.teamCompetitionsService.replaceTeamMembers(teamId, dto, req.user);
   }
 
   @Delete('teams/:teamId')
   removeTeam(@Param('teamId') teamId: string) {
     return this.teamCompetitionsService.removeTeam(teamId);
+  }
+
+  @Post('teams/:teamId/players')
+  addTeamPlayers(@Param('teamId') teamId: string, @Body() dto: AddTeamPlayersDto, @Req() req: { user: AuthActor }) {
+    return this.teamCompetitionsService.addTeamPlayers(teamId, dto, req.user);
   }
 
   @Post(':id/draw')

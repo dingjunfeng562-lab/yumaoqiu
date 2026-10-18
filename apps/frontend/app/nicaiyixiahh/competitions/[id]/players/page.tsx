@@ -8,6 +8,7 @@ import { useSession } from 'next-auth/react';
 import { Alert, Button, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography, message } from 'antd';
 import { AuditOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, PlusOutlined, RollbackOutlined, StopOutlined, UserAddOutlined, UsergroupAddOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
+import { importTeamRoster, parseTeamRoster, TeamRosterImportInput, type TeamImportCompetition } from '@/components/TeamRosterImport';
 
 type CompetitionEventOption = {
   id: string;
@@ -249,6 +250,8 @@ export default function AdminCompetitionPlayersPage() {
   const role = liveRole ?? sessionRole;
   // 参赛选手写操作由实时的选手管理权限控制。
   const canManage = access.can('PLAYERS');
+  const canManageTeams = access.can('TEAMS');
+  const [teamCompetitions, setTeamCompetitions] = useState<TeamImportCompetition[]>([]);
   const [competition, setCompetition] = useState<Competition | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
   const [eventName, setEventName] = useState('all');
@@ -337,23 +340,27 @@ export default function AdminCompetitionPlayersPage() {
     [batchText, selectedBatchEvent?.isDouble],
   );
   const batchErrorCount = parsedBatchRows.filter((row) => row.error).length;
+  const batchTeam = teamCompetitions.find(team => team.id === batchEventId);
+  const parsedTeamBatch = parseTeamRoster(batchText, batchTeam);
 
   const loadData = useCallback(async () => {
     if (!token || !id) return;
     setLoading(true);
     try {
-      const [competitionList, playerData] = await Promise.all([
+      const [competitionList, playerData, teamData] = await Promise.all([
         apiFetch<Competition[]>('/admin/competitions', { token }),
         apiFetch<Player[]>(`/admin/competitions/${id}/players${query}`, { token }),
+        canManageTeams ? apiFetch<TeamImportCompetition[]>(`/team-competitions?tournamentId=${id}`, { token }) : Promise.resolve([]),
       ]);
       setCompetition(competitionList.find((item) => item.id === id) ?? null);
       setPlayers(playerData);
+      setTeamCompetitions(teamData);
     } catch (error) {
       message.error(error instanceof Error ? error.message : '参赛选手列表加载失败');
     } finally {
       setLoading(false);
     }
-  }, [token, id, query]);
+  }, [token, id, query, canManageTeams]);
 
   useEffect(() => {
     loadData();
@@ -421,7 +428,8 @@ export default function AdminCompetitionPlayersPage() {
     const defaultEvent =
       competition?.eventOptions?.find((event) => event.label === eventName) ??
       competition?.eventOptions?.[0];
-    setBatchEventId(defaultEvent?.id);
+    setBatchEventId(defaultEvent?.id ?? teamCompetitions[0]?.id);
+    setBatchText('');
     setBatchModalOpen(true);
   }
 
@@ -474,6 +482,16 @@ export default function AdminCompetitionPlayersPage() {
 
   async function submitBatchPlayers() {
     if (!token || !id) return;
+    if (batchTeam) {
+      setBatchSubmitting(true);
+      try {
+        const result = await importTeamRoster(batchTeam, batchText, token);
+        message.success(`已导入 ${result.teamCount} 个团体、${result.playerCount} 名队员，请在团体赛管理中查看名单`);
+        setBatchModalOpen(false); setBatchText(''); await loadData();
+      } catch (error) { message.error(error instanceof Error ? error.message : '团体导入失败'); }
+      finally { setBatchSubmitting(false); }
+      return;
+    }
     if (!batchEventId) {
       message.warning('请选择参赛项目');
       return;
@@ -897,7 +915,7 @@ export default function AdminCompetitionPlayersPage() {
               <Button
                 icon={<UsergroupAddOutlined />}
                 onClick={openBatchModal}
-                disabled={!competition?.eventOptions?.length}
+                disabled={!competition?.eventOptions?.length && !teamCompetitions.length}
               >
                 批量新增
               </Button>
@@ -1032,8 +1050,8 @@ export default function AdminCompetitionPlayersPage() {
         open={batchModalOpen}
         onCancel={() => setBatchModalOpen(false)}
         onOk={submitBatchPlayers}
-        okText={`新增 ${parsedBatchRows.length - batchErrorCount} 条`}
-        okButtonProps={{ disabled: !parsedBatchRows.length || batchErrorCount > 0 }}
+        okText={batchTeam ? `导入 ${parsedTeamBatch.groups.length} 个团体、${parsedTeamBatch.rows.length} 人` : `新增 ${parsedBatchRows.length - batchErrorCount} 条`}
+        okButtonProps={{ disabled: batchTeam ? !parsedTeamBatch.valid : !parsedBatchRows.length || batchErrorCount > 0 }}
         confirmLoading={batchSubmitting}
         width={1100}
       >
@@ -1044,10 +1062,11 @@ export default function AdminCompetitionPlayersPage() {
               setBatchEventId(value);
               setBatchText('');
             }}
-            options={eventOptions}
+            options={[...eventOptions, ...teamCompetitions.map(team => ({ value: team.id, label: `团体赛 · ${team.name}` }))]}
             placeholder="选择参赛项目"
-            style={{ width: 220 }}
+            style={{ width: '100%', maxWidth: 480 }}
           />
+          {batchTeam ? <TeamRosterImportInput competition={batchTeam} text={batchText} onChange={setBatchText} /> : <>
           <Alert
             type={batchErrorCount ? 'error' : 'info'}
             showIcon
@@ -1072,6 +1091,7 @@ export default function AdminCompetitionPlayersPage() {
             pagination={false}
             scroll={{ x: 980, y: 260 }}
           />
+          </>}
         </Space>
       </Modal>
       <Modal

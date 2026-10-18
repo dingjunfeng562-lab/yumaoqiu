@@ -10,6 +10,9 @@ export function canAccessAdminPage(role: string | undefined, pathname: string, p
   if (role === 'ROOT') return true;
   // 直播管理仅超级管理员，没有可分配的功能权限键。
   if (pathname === '/nicaiyixiahh/broadcasts') return false;
+  if (/^\/nicaiyixiahh\/team-competitions\/[^/]+$/.test(pathname)) {
+    return hasFeature(role, permissions, 'TEAMS');
+  }
   const routes: Record<string, string[]> = {
     '/nicaiyixiahh': ['DASHBOARD'], '/nicaiyixiahh/tournaments': ['TOURNAMENTS', 'TOURNAMENT_ADMIN'],
     '/nicaiyixiahh/players': ['PLAYERS'], '/nicaiyixiahh/users': ['USERS'], '/nicaiyixiahh/invite-codes': ['INVITES'], '/nicaiyixiahh/photo-activities': ['PHOTOS'],
