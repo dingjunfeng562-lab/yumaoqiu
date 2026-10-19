@@ -105,6 +105,19 @@ type ExportMatch = {
     side1Score: number;
     side2Score: number;
   }>;
+  // 团体赛由子项场次映射而来：项目列/轮次列与双方文字由映射时给定，
+  // 使出片与单项秩序册共用同一套版式。
+  label?: string;
+  roundText?: string;
+  // 秩序表用：单位 + 出场名单（未锁定时为占位）。
+  side1Text?: { unit: string; name: string };
+  side2Text?: { unit: string; name: string };
+  // 其它工作表用：对阵显示的参赛方名称（团体赛为队名）。
+  side1Name?: string;
+  side2Name?: string;
+  // 团体赛：场次号文字与团体总比分（子项胜负场）。
+  matchNoText?: string;
+  scoreText?: string;
 };
 
 type ExportSecondStageSlot = {
@@ -148,6 +161,10 @@ type ExportEvent = {
   registrations: ExportRegistration[];
   matches: ExportMatch[];
   secondStage?: ExportSecondStage | null;
+  // 团体赛映射出的伪项目：名称与场次号前缀由映射时给定。
+  label?: string;
+  codePrefix?: string;
+  codeStart?: number;
 };
 
 type ExportVenue = {
@@ -156,17 +173,58 @@ type ExportVenue = {
   sortOrder: number;
 };
 
+type ExportTeamItem = { id: string; eventType: string; sortOrder: number };
+
+type ExportTeamMatchChild = {
+  id: string;
+  status: string;
+  winnerSide: number | null;
+  scheduledAt: Date | null;
+  scheduledAtLocal?: string | null;
+  lineupLocked: boolean;
+  teamCompetitionItemId: string | null;
+  teamCompetitionItem: { eventType: string; sortOrder: number } | null;
+  venue: { id: string; name: string; sortOrder: number } | null;
+  games?: Array<{ gameNo: number; side1Score: number; side2Score: number }>;
+};
+
+type ExportTeamLineup = {
+  teamId: string;
+  teamCompetitionItemId: string;
+  player1: { name: string };
+  player2: { name: string } | null;
+};
+
+type ExportTeamMatch = {
+  id: string;
+  round: string;
+  roundNo: number;
+  matchNo: number;
+  stage?: string | null;
+  groupId?: string | null;
+  status: string;
+  team1Id: string | null;
+  team2Id: string | null;
+  winnerTeamId: string | null;
+  team1Wins: number;
+  team2Wins: number;
+  lineups?: ExportTeamLineup[];
+  matches?: ExportTeamMatchChild[];
+};
+
+type ExportTeamCompetition = {
+  name: string;
+  format?: string | null;
+  groupCount?: number | null;
+  advancePerGroup?: number | null;
+  groups?: Array<{ id: string; groupNo: number; groupName: string; teams?: Array<{ teamId: string }> }>;
+  items?: ExportTeamItem[];
+  teams: Array<{ id: string; name: string; affiliation: string; finalRank?: number | null }>;
+  teamMatches: ExportTeamMatch[];
+};
+
 type ExportTournament = {
-  teamCompetitions?: Array<Parameters<typeof teamStandings>[0] & {
-    name: string;
-    groups?: Array<{ id: string; groupName: string }>;
-    teamMatches: Array<Parameters<typeof teamStandings>[0]['teamMatches'][number] & {
-      id: string; groupId?: string | null; matchNo: number;
-      lineups?: Array<{ teamId: string; teamCompetitionItemId: string; player1: { name: string }; player2: { name: string } | null }>;
-      matches?: Array<{ lineupLocked: boolean; scheduledAt: Date | null; venue: { name: string } | null; teamCompetitionItemId: string | null;
-        teamCompetitionItem: { eventType: string; sortOrder: number } | null }>;
-    }>;
-  }>;
+  teamCompetitions?: ExportTeamCompetition[];
   name: string;
   startDate: Date;
   endDate: Date;
@@ -519,12 +577,21 @@ export class ExportsService {
       select: {
         ...baseSelect,
         teamCompetitions: { include: {
-          teams: true, groups: { orderBy: { groupNo: 'asc' } },
+          teams: true,
+          items: { orderBy: { sortOrder: 'asc' } },
+          groups: { orderBy: { groupNo: 'asc' }, include: { teams: { select: { teamId: true } } } },
           teamMatches: { orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }], include: {
             lineups: { include: { player1: true, player2: true } },
-            matches: { orderBy: { matchNo: 'asc' }, include: { teamCompetitionItem: true, venue: true } },
+            matches: {
+              orderBy: { matchNo: 'asc' },
+              include: {
+                teamCompetitionItem: true,
+                venue: { select: { id: true, name: true, sortOrder: true } },
+                games: { orderBy: { gameNo: 'asc' } },
+              },
+            },
           } },
-        } },  
+        } },
         venues: {
           orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
           select: { id: true, name: true, sortOrder: true },

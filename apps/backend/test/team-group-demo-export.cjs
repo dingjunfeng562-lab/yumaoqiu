@@ -60,6 +60,25 @@ async function main() {
   }
   await svc.generateKnockoutFromGroups(competitionId, {});
 
+  // 排场：让日程表/秩序表有真实内容
+  const venue1 = await db.venue.create({ data: { tournamentId, name: '1号场', sortOrder: 1 } });
+  const venue2 = await db.venue.create({ data: { tournamentId, name: '2号场', sortOrder: 2 } });
+  const schedule = async (encounterId, venueId, startHour) => {
+    const children = await db.match.findMany({ where: { teamMatchId: encounterId }, orderBy: { matchNo: 'asc' } });
+    for (const [i, child] of children.entries()) {
+      await db.match.update({
+        where: { id: child.id },
+        data: { venueId, scheduledAt: new Date(`2026-10-19T${String(startHour + i).padStart(2, '0')}:00:00+08:00`) },
+      });
+    }
+  };
+  const groupEncounters = await db.teamMatch.findMany({ where: { teamCompetitionId: competitionId, stage: 'GROUP' }, orderBy: [{ groupId: 'asc' }, { matchNo: 'asc' }] });
+  for (const [i, encounter] of groupEncounters.entries()) {
+    await schedule(encounter.id, i % 2 === 0 ? venue1.id : venue2.id, 9 + Math.floor(i / 2) * 2);
+  }
+  const finalEncounter = await db.teamMatch.findFirst({ where: { teamCompetitionId: competitionId, stage: 'KNOCKOUT' }, orderBy: { roundNo: 'desc' } });
+  if (finalEncounter) await schedule(finalEncounter.id, venue1.id, 15);
+
   // 只给决赛锁定名单（小组赛均已结束），其余场次保持待提交
   const first = await db.teamMatch.findFirst({ where: { teamCompetitionId: competitionId, stage: 'KNOCKOUT', team1Id: { not: null }, team2Id: { not: null } } });
   const firstFull = await db.teamMatch.findUnique({ where: { id: first.id } });

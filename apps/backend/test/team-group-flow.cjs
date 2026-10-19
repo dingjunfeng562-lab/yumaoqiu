@@ -15,6 +15,7 @@ const tag = randomUUID().slice(0, 8);
 const actorId = randomUUID();
 const tournamentId = randomUUID();
 const competitionId = randomUUID();
+const competitionName = `6队两组小组赛+淘汰-${tag}`;
 const outDir = path.join(__dirname, '..', '..', '..', 'outputs', 'team-group-verification');
 let checks = 0;
 const ok = (cond, label, extra) => { assert.ok(cond, `${label} ${extra ? JSON.stringify(extra) : ''}`); checks++; console.log(`  ✓ ${label}`); };
@@ -32,7 +33,7 @@ async function fixtures() {
     endDate: new Date('2026-10-20T00:00:00Z'), submittedById: actorId, isPublished: false, approvalStatus: 'APPROVED',
   } });
   await db.teamCompetition.create({ data: {
-    id: competitionId, tournamentId, name: `6队两组小组赛+淘汰-${tag}`,
+    id: competitionId, tournamentId, name: competitionName,
     format: 'GROUP_PLUS_KNOCKOUT', groupCount: 2, advancePerGroup: 2,
     winThreshold: 2, maxPlayerAppearances: 2, playAllMatches: false,
     scoringRule: 'FIFTEEN_ONE', scoringMode: 'STANDARD_GOLDEN', isPublished: false,
@@ -162,7 +163,22 @@ async function main() {
   ok(shown.lineups.length === 2, '双方出场名单均已记录并可同时查看', shown.lineups.map(l => l.name));
   ok(shown.lineups.every(l => l.name && l.name !== '待填报'), '名单显示具体选手姓名');
 
-  console.log('\n[7] 秩序册导出（团体对阵 + 出场顺序）');
+  console.log('\n[7] 秩序册导出（并入单项各页）');
+  // 给已锁定名单的半决赛排场，秩序表才有内容；其余场次保持未排程。
+  const venue = await db.venue.create({ data: { tournamentId, name: '1号场', sortOrder: 1 } });
+  for (const [index, sub] of lineupSubs.entries()) {
+    await db.match.update({
+      where: { id: sub.id },
+      data: { venueId: venue.id, scheduledAt: new Date(`2026-10-20T${String(9 + index).padStart(2, '0')}:00:00+08:00`) },
+    });
+  }
+  const finalSubs = await db.match.findMany({ where: { teamMatchId: finalEncounter.id }, orderBy: { matchNo: 'asc' } });
+  for (const [index, sub] of finalSubs.entries()) {
+    await db.match.update({
+      where: { id: sub.id },
+      data: { venueId: venue.id, scheduledAt: new Date(`2026-10-20T${String(15 + index).padStart(2, '0')}:00:00+08:00`) },
+    });
+  }
   fs.mkdirSync(outDir, { recursive: true });
   const exported = await exportsSvc.exportTournament(tournamentId, 'orderbook');
   const filePath = path.join(outDir, `团体赛秩序册-${tag}.xlsx`);
@@ -171,18 +187,42 @@ async function main() {
   const ExcelJS = require('exceljs');
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.readFile(filePath);
-  const sheet = wb.getWorksheet('团体对阵');
-  ok(Boolean(sheet), '包含「团体对阵」页', wb.worksheets.map(w => w.name));
-  const rows = [];
-  sheet.eachRow((row, n) => rows.push({ n, values: row.values.slice(1) }));
-  ok(rows.length > 1, '团体对阵页有数据行', rows.length - 1);
-  const lineupSheet = wb.getWorksheet('团体出场顺序');
-  ok(Boolean(lineupSheet), '包含「团体出场顺序」页');
-  const lineupText = [];
-  lineupSheet.eachRow(row => lineupText.push(row.values.slice(1).join('|')));
-  const lockedRows = lineupText.filter(text => text.includes('队') && !text.includes('待提交出场名单'));
-  ok(lockedRows.some(text => text.includes('队1男1') || text.includes('男1')), '已锁定名单显示具体选手', lockedRows.slice(0, 2));
-  ok(lineupText.some(text => text.includes('待提交出场名单')), '未提交名单的场次仅显示占位，不泄露选手');
+  const sheetNames = wb.worksheets.map(w => w.name);
+  // 团体赛与单项共用同一套页，不再另开专用页
+  ok(['秩序表', '小组赛', '分组表', '日程表', '名次汇总', '流程表'].every(name => sheetNames.includes(name)), '团体赛并入单项秩序册各页', sheetNames);
+  ok(!sheetNames.includes('团体对阵') && !sheetNames.includes('团体出场顺序'), '不再输出团体赛专用页');
+
+  const textOf = (name) => {
+    const ws = wb.getWorksheet(name);
+    const lines = [];
+    if (ws) ws.eachRow({ includeEmpty: false }, row => {
+      const text = row.values.slice(1).map(v => (v == null ? '' : String(v))).join('|');
+      if (text.replace(/\|/g, '').trim()) lines.push(text);
+    });
+    return lines;
+  };
+
+  const orderLines = textOf('秩序表');
+  ok(orderLines.some(line => line.includes(competitionName)), '秩序表含团体赛项目名', orderLines.slice(0, 3));
+  ok(orderLines.some(line => /团体\d+/.test(line)), '秩序表按单项口径编团体场次号');
+  ok(orderLines.some(line => line.includes('决赛')), '秩序表含决赛轮次');
+
+  const groupLines = textOf('小组赛').filter(line => line.includes(competitionName));
+  ok(groupLines.length === 6, '小组赛页每场对阵一行（6 场）', groupLines.length);
+  ok(groupLines.every(line => !line.includes('待提交名单')), '小组赛页对阵列显示队名而非名单');
+
+  const standingLines = textOf('分组表');
+  ok(standingLines.some(line => line.includes(`${competitionName}分组表`)), '分组表页含团体赛分组表');
+  const rankLines = textOf('名次汇总');
+  ok(rankLines.some(line => line.includes(competitionName)), '名次汇总页含团体赛');
+
+  const flowLines = textOf('流程表');
+  ok(flowLines.some(line => line.includes(`${competitionName}第一阶段`)), '流程表含团体赛第一阶段');
+  ok(flowLines.some(line => line.includes(`${competitionName}第二阶段`)), '流程表含团体赛第二阶段');
+
+  const lockedOrder = orderLines.filter(line => line.includes('队') && /男\d|女\d/.test(line));
+  ok(lockedOrder.length > 0, '已锁定名单的团体场次显示具体选手', lockedOrder.slice(0, 2));
+  ok(orderLines.some(line => line.includes('待提交名单')), '未提交名单的团体场次只显示占位，不泄露选手');
   console.log(`  文件：${filePath}`);
 }
 

@@ -1,5 +1,4 @@
 import * as ExcelJS from 'exceljs';
-import { teamStandings } from '../common/final-rankings';
 import { buildKnockoutSkeleton } from '../common/knockout-skeleton';
 import type {
   ExportEvent,
@@ -135,7 +134,7 @@ function scheduleSortValueForMatch(match: ExportMatch) {
 }
 
 function eventLabel(event: ExportEvent) {
-  return EVENT_TYPE_LABELS[event.type] ?? event.type;
+  return event.label ?? EVENT_TYPE_LABELS[event.type] ?? event.type;
 }
 
 function orderVenueLabel(name: string) {
@@ -196,6 +195,8 @@ function orderSideText(
   regMap: Map<string, ExportRegistration>,
 ) {
   const id = side === 1 ? match.side1Id : match.side2Id;
+  const override = side === 1 ? match.side1Text : match.side2Text;
+  if (override) return { unit: override.unit, name: override.name };
   const registration = id ? regMap.get(id) ?? null : null;
   if (registration) {
     return {
@@ -389,7 +390,7 @@ function venues(tournament: ExportTournament): ExportVenue[] {
 function matchCodeMap(tournament: ExportTournament) {
   const map = new Map<string, string>();
   for (const event of tournament.events) {
-    const abbr = EVENT_TYPE_ABBR[event.type] ?? '场';
+    const abbr = event.codePrefix ?? EVENT_TYPE_ABBR[event.type] ?? '场';
     const ordered = event.matches
       .filter((m) => m.scheduledAt && m.venueId)
       .sort(
@@ -399,7 +400,7 @@ function matchCodeMap(tournament: ExportTournament) {
           (a.matchNo ?? 0) - (b.matchNo ?? 0) ||
           a.id.localeCompare(b.id),
       );
-    ordered.forEach((m, i) => map.set(m.id, `${abbr}${i + 1}`));
+    ordered.forEach((m, i) => map.set(m.id, `${abbr}${(event.codeStart ?? 0) + i + 1}`));
   }
   return map;
 }
@@ -435,6 +436,20 @@ function pairKey(a: string, b: string) {
   return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
 
+// 团体赛一场对外对阵包含多个子项场次；流程表/对阵表按“场”呈现，
+// 因此同一轮次、同一对阵只保留一条。
+function dedupeFixtures(matches: ExportMatch[]) {
+  const seen = new Set<string>();
+  const kept: ExportMatch[] = [];
+  for (const match of matches) {
+    const key = `${match.roundNo ?? 0}|${String(match.round)}|${match.side1Id}|${match.side2Id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    kept.push(match);
+  }
+  return kept;
+}
+
 // 一场比赛中某一方赢下的局数。
 function gamesWonBy(match: ExportMatch, side: 1 | 2) {
   let won = 0;
@@ -446,8 +461,117 @@ function gamesWonBy(match: ExportMatch, side: 1 | 2) {
 
 // ===== 工作表 1：日程表 =====
 
-function buildScheduleSheet(wb: ExcelJS.Workbook, tournament: ExportTournament) {
-  const ws = wb.addWorksheet('日程表', { views: [{ state: 'frozen', ySplit: 2 }] });
+// ===== 团体赛 → 伪项目（共用单项秩序的版式与分页）=====
+
+const TEAM_ITEM_ABBR: Record<string, string> = {
+  MENS_SINGLES: '男单', WOMENS_SINGLES: '女单',
+  MENS_DOUBLES: '男双', WOMENS_DOUBLES: '女双', MIXED_DOUBLES: '混双',
+};
+
+function teamCompetitionEvents(tournament: ExportTournament): ExportEvent[] {
+  const events: ExportEvent[] = [];
+  let codeOffset = 0;
+  for (const competition of tournament.teamCompetitions ?? []) {
+    if (!competition.teamMatches.length) continue;
+    const groups = competition.groups ?? [];
+    const groupCodeById = new Map(groups.map((group) => [group.id, group.groupName.replace(/组$/, '')]));
+    const groupCodeByTeam = new Map<string, string>();
+    for (const group of groups) {
+      for (const member of group.teams ?? []) groupCodeByTeam.set(member.teamId, group.groupName.replace(/组$/, ''));
+    }
+    const teamById = new Map(competition.teams.map((team) => [team.id, team]));
+
+    const registrations: ExportRegistration[] = competition.teams.map((team) => ({
+      id: team.id,
+      eventId: competition.name,
+      studentId: null,
+      createdAt: tournament.startDate,
+      className: null,
+      groupName: groupCodeByTeam.get(team.id) ?? null,
+      teamName: team.affiliation,
+      isSeed: false,
+      seedRank: null,
+      player1: { name: team.name, gender: '', affiliation: team.affiliation, contact: null },
+      player2: null,
+      competitionRegistration: null,
+      finalRank: team.finalRank ?? null,
+    }));
+
+    const knockoutRoundNos = [...new Set(
+      competition.teamMatches.filter((m) => m.stage !== 'GROUP').map((m) => m.roundNo),
+    )].sort((a, b) => a - b);
+
+    const matches: ExportMatch[] = [];
+    for (const encounter of competition.teamMatches) {
+      const isGroup = encounter.stage === 'GROUP';
+      const groupCode = encounter.groupId ? groupCodeById.get(encounter.groupId) ?? '' : '';
+      const roundNo = isGroup ? 0 : knockoutRoundNos.indexOf(encounter.roundNo) + 1;
+      const round = isGroup ? groupCode || encounter.round : encounter.round;
+      // 出场名单只有在锁定后才写入秩序册；未提交的场次保持占位，不提前泄露选手。
+      const playerText = (teamId: string | null, itemId: string | null, locked: boolean) => {
+        if (!teamId) return '待定';
+        if (!locked || !itemId) return '待提交名单';
+        const lineup = (encounter.lineups ?? []).find(
+          (row) => row.teamId === teamId && row.teamCompetitionItemId === itemId,
+        );
+        if (!lineup) return '待提交名单';
+        return [lineup.player1?.name, lineup.player2?.name].filter(Boolean).join('/') || '待提交名单';
+      };
+      const unitOf = (teamId: string | null) => (teamId ? teamById.get(teamId)?.affiliation ?? '' : '');
+
+      (encounter.matches ?? []).forEach((child, index) => {
+        const item = child.teamCompetitionItem;
+        matches.push({
+          id: child.id,
+          round,
+          roundNo,
+          matchNo: item?.sortOrder ?? index + 1,
+          venueId: child.venue?.id ?? null,
+          scheduledAt: child.scheduledAt,
+          scheduledAtLocal: child.scheduledAtLocal ?? null,
+          status: child.status,
+          durationMinutes: 45,
+          side1Id: encounter.team1Id,
+          side2Id: encounter.team2Id,
+          winnerSide: child.winnerSide,
+          updatedAt: child.scheduledAt ?? tournament.startDate,
+          venue: child.venue ? { name: child.venue.name, sortOrder: child.venue.sortOrder } : null,
+          referee: null,
+          games: child.games ?? [],
+          label: item ? `${competition.name}·${TEAM_ITEM_ABBR[item.eventType] ?? item.eventType}` : competition.name,
+          side1Text: { unit: unitOf(encounter.team1Id), name: playerText(encounter.team1Id, child.teamCompetitionItemId, child.lineupLocked) },
+          side2Text: { unit: unitOf(encounter.team2Id), name: playerText(encounter.team2Id, child.teamCompetitionItemId, child.lineupLocked) },
+          side1Name: encounter.team1Id ? teamById.get(encounter.team1Id)?.name ?? '' : '',
+          side2Name: encounter.team2Id ? teamById.get(encounter.team2Id)?.name ?? '' : '',
+          matchNoText: `第${encounter.matchNo}场`,
+          scoreText: encounter.status === 'COMPLETED' ? `${encounter.team1Wins}:${encounter.team2Wins}` : '',
+        });
+      });
+    }
+
+    events.push({
+      type: 'TEAM_COMPETITION',
+      label: competition.name,
+      codePrefix: '团体',
+      codeStart: codeOffset,
+      format: groups.length ? GROUP_KNOCKOUT_STD : 'SINGLE_ELIMINATION',
+      registrations,
+      matches,
+      secondStage: null,
+    });
+    codeOffset += matches.filter((match) => match.scheduledAt && match.venueId).length;
+  }
+  return events;
+}
+
+// 团体赛与单项共用同一套分页：并入 events 后，日程表/秩序表/流程表/小组赛/
+// 分组表/名次汇总都会按单项的口径一起输出。
+function withTeamEvents(tournament: ExportTournament): ExportTournament {
+  const teamEvents = teamCompetitionEvents(tournament);
+  return teamEvents.length ? { ...tournament, events: [...tournament.events, ...teamEvents] } : tournament;
+}
+
+function buildScheduleSheet(wb: ExcelJS.Workbook, tournament: ExportTournament) {  const ws = wb.addWorksheet('日程表', { views: [{ state: 'frozen', ySplit: 2 }] });
   ws.columns = [{ width: 16 }, { width: 18 }, { width: 64 }];
 
   ws.mergeCells(1, 1, 1, 3);
@@ -596,9 +720,9 @@ function buildOrderSheet(wb: ExcelJS.Workbook, tournament: ExportTournament) {
           const { event, match } = found;
           const side1 = orderSideText(event, match, 1, regMap);
           const side2 = orderSideText(event, match, 2, regMap);
-          ws.getCell(top, col).value = eventLabel(event);
+          ws.getCell(top, col).value = match.label ?? eventLabel(event);
           ws.getCell(top, col + 1).value = codeMap.get(match.id) ?? '';
-          ws.getCell(top + 1, col).value = roundLabel(match);
+          ws.getCell(top + 1, col).value = match.roundText ?? roundLabel(match);
           ws.getCell(top + 1, col + 1).value = pairLabel(match, posMap);
           ws.getCell(top + 2, col).value = side1.unit;
           ws.getCell(top + 2, col + 1).value = side2.unit;
@@ -649,7 +773,9 @@ function buildFlowSheet(
   const codeMap = matchCodeMap(tournament);
 
   let row = 1;
-  for (const event of tournament.events) {
+  for (const item of tournament.events) {
+    // 团体赛按“场”呈现：多子项场次折叠为一条，避免签位被重复画多次。
+    const event: ExportEvent = { ...item, matches: dedupeFixtures(item.matches) };
     const label = eventLabel(event);
     // 第一阶段：仅「小组循环+淘汰(标准2023)」输出小组循环成绩网格。按阶段导出时，
     // 第二阶段不画第一阶段；第一阶段不画第二阶段（全量导出 stage 为空时两段都画）。
@@ -794,6 +920,8 @@ function crossCellText(
 ) {
   const match = groupMatchByPair.get(pairKey(selfId, oppId));
   if (!match) return '';
+  // 团体赛直接显示这场对阵的团体比分。
+  if (match.scoreText) return match.scoreText;
   // 已赛完：从本方视角显示比局数（赢局:输局）。
   if (match.winnerSide && match.games.length) {
     const self1 = match.side1Id === selfId;
@@ -1050,6 +1178,7 @@ const MATCH_STATUS_LABELS: Record<string, string> = {
 };
 
 function matchScoreText(match: ExportMatch) {
+  if (match.scoreText) return match.scoreText;
   return match.games.length ? match.games.map((game) => `${game.side1Score}:${game.side2Score}`).join('  ') : '';
 }
 
@@ -1133,6 +1262,10 @@ function displayMatchSide(
   regMap: Map<string, ExportRegistration>,
 ) {
   const id = side === 1 ? match.side1Id : match.side2Id;
+  const named = side === 1 ? match.side1Name : match.side2Name;
+  if (named) return named;
+  const override = side === 1 ? match.side1Text : match.side2Text;
+  if (override) return override.name;
   const registration = id ? regMap.get(id) ?? null : null;
   if (registration) {
     const team = registration.teamName?.trim();
@@ -1184,10 +1317,18 @@ function buildGroupMatchDetailSheet(wb: ExcelJS.Workbook, tournament: ExportTour
   });
 
   const venueMatchNo = new Map<string, number>();
+  const seenGroupFixtures = new Set<string>();
   const rows = tournament.events
     .flatMap((event) => event.matches
       .filter((match) => (match.roundNo ?? 0) === 0)
       .map((match) => ({ event, match })))
+    .filter(({ match }) => {
+      // 团体赛一场对外对阵含多个子项场次，此处每场对阵只列一行。
+      const key = `${match.roundNo ?? 0}|${String(match.round)}|${match.side1Id}|${match.side2Id}`;
+      if (seenGroupFixtures.has(key)) return false;
+      seenGroupFixtures.add(key);
+      return true;
+    })
     .sort((a, b) => scheduleSortValueForMatch(a.match) - scheduleSortValueForMatch(b.match)
       || (a.match.venue?.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.match.venue?.sortOrder ?? Number.MAX_SAFE_INTEGER)
       || (a.match.matchNo ?? 0) - (b.match.matchNo ?? 0));
@@ -1384,18 +1525,6 @@ function buildRankingSummarySheet(wb: ExcelJS.Workbook, tournament: ExportTourna
       row += 1;
     }
   }
-  for (const competition of tournament.teamCompetitions ?? []) {
-    if (!competition.teams.some((team) => team.finalRank != null)) continue;
-    for (const standing of teamStandings(competition)) {
-      ws.getCell(row, 1).value = `团体赛 · ${competition.name}`;
-      ws.getCell(row, 2).value = standing.rank == null ? '未设置' : `第${standing.rank}名`;
-      ws.getCell(row, 3).value = standing.name;
-      ws.getCell(row, 4).value = '手动设置';
-      ws.getCell(row, 5).value = standing.rank == null ? '待定' : '已确定';
-      styleBodyRange(ws, row, row, 1, 5);
-      row++;
-    }
-  }
   if (row === 3) ws.getCell(row, 1).value = '暂无名次数据';
   ws.views = [{ state: 'frozen', ySplit: 2 }];
 }
@@ -1426,13 +1555,20 @@ function buildKnockoutDetailSheet(wb: ExcelJS.Workbook, tournament: ExportTourna
   const regMap = registrationMap(tournament);
   let row = 3;
   for (const event of tournament.events) {
+    const seenFixtures = new Set<string>();
     const matches = event.matches
       .filter((match) => (match.roundNo ?? 0) >= 1)
+      .filter((match) => {
+        const key = `${match.roundNo ?? 0}|${String(match.round)}|${match.side1Id}|${match.side2Id}`;
+        if (seenFixtures.has(key)) return false;
+        seenFixtures.add(key);
+        return true;
+      })
       .sort((a, b) => (a.roundNo ?? 0) - (b.roundNo ?? 0) || (a.matchNo ?? 0) - (b.matchNo ?? 0));
     for (const match of matches) {
       const values = [
         eventLabel(event),
-        match.matchNo != null ? `第${match.matchNo}场` : '',
+        match.matchNoText ?? (match.matchNo != null ? `第${match.matchNo}场` : ''),
         roundLabel(match),
         match.venue?.name ?? '未分配',
         fmtMatchScheduleDateTime(match) || '未排程',
@@ -1639,58 +1775,6 @@ function placementSide(
  * options.stage 留空 = 全量（数据导出页用）；'first'/'second' = 只导出对应阶段的流程表段
  *（场地排程页「按阶段导出秩序册」用，格式与全量秩序册保持一致）。
  */
-function buildTeamOrderbookSheets(wb: ExcelJS.Workbook, tournament: ExportTournament) {
-  if (!tournament.teamCompetitions?.length) return;
-  const ws = wb.addWorksheet('团体对阵');
-  ws.columns = [ { width: 22 }, { width: 17 }, { width: 10 }, { width: 24 }, { width: 12 }, { width: 24 }, { width: 18 }, { width: 22 } ];
-  ws.mergeCells('A1:H1');
-  ws.getCell('A1').value = `${tournament.name} · 团体赛秩序册`;
-  ws.getRow(1).height = 32;
-  ws.getCell('A1').font = { name: 'Microsoft YaHei', size: 16, bold: true };
-  ws.addRow(['团体赛', '阶段 / 轮次', '场次', '主队', '比分', '客队', '状态', '分组']);
-  const names = (c: NonNullable<ExportTournament['teamCompetitions']>[number], id: string | null) => c.teams.find(t => t.id === id)?.name ?? '待定';
-  const lineupSheet = wb.addWorksheet('团体出场顺序');
-  lineupSheet.columns = [{ width: 22 }, { width: 28 }, { width: 10 }, { width: 18 }, { width: 28 }, { width: 28 }, { width: 22 }, { width: 18 }];
-  lineupSheet.mergeCells('A1:H1');
-  lineupSheet.getCell('A1').value = `${tournament.name} · 团体出场顺序`;
-  lineupSheet.getCell('A1').font = { name: 'Microsoft YaHei', size: 16, bold: true };
-  lineupSheet.getRow(1).height = 32;
-  lineupSheet.addRow(['团体赛', '对阵', '顺序', '项目', '主队出场名单', '客队出场名单', '时间', '场地']);
-  for (const c of tournament.teamCompetitions) {
-    for (const m of c.teamMatches) {
-      const bye = m.status === 'COMPLETED' && Boolean(m.team1Id) !== Boolean(m.team2Id);
-      ws.addRow([c.name, m.round ?? '', m.matchNo, names(c, m.team1Id), bye ? '轮空晋级' : `${m.team1Wins} : ${m.team2Wins}`,
-        bye && !m.team2Id ? '轮空' : names(c, m.team2Id),
-        ({ PENDING: '待赛', LIVE: '进行中', COMPLETED: '已结束', CANCELLED: '已取消' } as Record<string, string>)[m.status] ?? m.status,
-        c.groups?.find(g => g.id === m.groupId)?.groupName ?? (m.stage === 'KNOCKOUT' ? '淘汰赛' : '')]);
-      for (const sub of m.matches ?? []) {
-        const playerNames = (teamId: string | null) => {
-          if (!sub.lineupLocked) return '待提交出场名单';
-          const l = m.lineups?.find(l => l.teamId === teamId && l.teamCompetitionItemId === sub.teamCompetitionItemId);
-          return l ? [l.player1.name, l.player2?.name].filter(Boolean).join(' / ') : '待提交出场名单';
-        };
-        lineupSheet.addRow([c.name, `${names(c, m.team1Id)} VS ${names(c, m.team2Id)}`, sub.teamCompetitionItem?.sortOrder ?? '',
-          EVENT_TYPE_LABELS[sub.teamCompetitionItem?.eventType ?? ''] ?? '', playerNames(m.team1Id), playerNames(m.team2Id),
-          sub.scheduledAt ? sub.scheduledAt.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '待排时间', sub.venue?.name ?? '待排场地']);
-      }
-    }
-  }
-  for (const sheet of [ws, lineupSheet]) {
-    sheet.views = [{ state: 'frozen', ySplit: 2 }];
-    sheet.eachRow((row, n) => {
-      row.height = n === 1 ? 32 : 30;
-      row.eachCell(cell => {
-        cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
-        if (n > 1) {
-          cell.font = { name: 'Microsoft YaHei', size: 11, bold: n === 2, color: { argb: n === 2 ? 'FFFFFFFF' : 'FF1F2937' } };
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: n === 2 ? 'FF245A81' : n % 2 ? 'FFF1F6FA' : 'FFFFFFFF' } };
-          cell.border = { bottom: { style: 'thin', color: { argb: 'FFDCE5ED' } } };
-        }
-      });
-    });
-  }
-}
-
 export async function buildOrderbookWorkbook(
   tournament: ExportTournament,
   options?: { stage?: 'first' | 'second' },
@@ -1698,6 +1782,8 @@ export async function buildOrderbookWorkbook(
   const wb = new ExcelJS.Workbook();
   wb.creator = '羽毛球赛事系统';
   wb.created = new Date();
+  // 团体赛并入 events 后，与单项共用同一套页面与排版。
+  tournament = withTeamEvents(tournament);
   // 参考文件的前两个标签页就是“秩序表”和“分组表”；其它明细页放在后面，
   // 不影响后台现有的日程、流程与结果导出能力。
   buildOrderSheet(wb, tournament);
@@ -1709,7 +1795,7 @@ export async function buildOrderbookWorkbook(
   buildRankingSummarySheet(wb, tournament);
   buildKnockoutDetailSheet(wb, tournament);
   buildFlowSheet(wb, tournament, options?.stage);
-  buildTeamOrderbookSheets(wb, tournament);
+
   const buffer = await wb.xlsx.writeBuffer();
   return Buffer.from(buffer as ArrayBuffer);
 }
