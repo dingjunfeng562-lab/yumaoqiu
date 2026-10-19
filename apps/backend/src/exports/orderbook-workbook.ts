@@ -1639,6 +1639,58 @@ function placementSide(
  * options.stage 留空 = 全量（数据导出页用）；'first'/'second' = 只导出对应阶段的流程表段
  *（场地排程页「按阶段导出秩序册」用，格式与全量秩序册保持一致）。
  */
+function buildTeamOrderbookSheets(wb: ExcelJS.Workbook, tournament: ExportTournament) {
+  if (!tournament.teamCompetitions?.length) return;
+  const ws = wb.addWorksheet('团体对阵');
+  ws.columns = [ { width: 22 }, { width: 17 }, { width: 10 }, { width: 24 }, { width: 12 }, { width: 24 }, { width: 18 }, { width: 22 } ];
+  ws.mergeCells('A1:H1');
+  ws.getCell('A1').value = `${tournament.name} · 团体赛秩序册`;
+  ws.getRow(1).height = 32;
+  ws.getCell('A1').font = { name: 'Microsoft YaHei', size: 16, bold: true };
+  ws.addRow(['团体赛', '阶段 / 轮次', '场次', '主队', '比分', '客队', '状态', '分组']);
+  const names = (c: NonNullable<ExportTournament['teamCompetitions']>[number], id: string | null) => c.teams.find(t => t.id === id)?.name ?? '待定';
+  const lineupSheet = wb.addWorksheet('团体出场顺序');
+  lineupSheet.columns = [{ width: 22 }, { width: 28 }, { width: 10 }, { width: 18 }, { width: 28 }, { width: 28 }, { width: 22 }, { width: 18 }];
+  lineupSheet.mergeCells('A1:H1');
+  lineupSheet.getCell('A1').value = `${tournament.name} · 团体出场顺序`;
+  lineupSheet.getCell('A1').font = { name: 'Microsoft YaHei', size: 16, bold: true };
+  lineupSheet.getRow(1).height = 32;
+  lineupSheet.addRow(['团体赛', '对阵', '顺序', '项目', '主队出场名单', '客队出场名单', '时间', '场地']);
+  for (const c of tournament.teamCompetitions) {
+    for (const m of c.teamMatches) {
+      const bye = m.status === 'COMPLETED' && Boolean(m.team1Id) !== Boolean(m.team2Id);
+      ws.addRow([c.name, m.round ?? '', m.matchNo, names(c, m.team1Id), bye ? '轮空晋级' : `${m.team1Wins} : ${m.team2Wins}`,
+        bye && !m.team2Id ? '轮空' : names(c, m.team2Id),
+        ({ PENDING: '待赛', LIVE: '进行中', COMPLETED: '已结束', CANCELLED: '已取消' } as Record<string, string>)[m.status] ?? m.status,
+        c.groups?.find(g => g.id === m.groupId)?.groupName ?? (m.stage === 'KNOCKOUT' ? '淘汰赛' : '')]);
+      for (const sub of m.matches ?? []) {
+        const playerNames = (teamId: string | null) => {
+          if (!sub.lineupLocked) return '待提交出场名单';
+          const l = m.lineups?.find(l => l.teamId === teamId && l.teamCompetitionItemId === sub.teamCompetitionItemId);
+          return l ? [l.player1.name, l.player2?.name].filter(Boolean).join(' / ') : '待提交出场名单';
+        };
+        lineupSheet.addRow([c.name, `${names(c, m.team1Id)} VS ${names(c, m.team2Id)}`, sub.teamCompetitionItem?.sortOrder ?? '',
+          EVENT_TYPE_LABELS[sub.teamCompetitionItem?.eventType ?? ''] ?? '', playerNames(m.team1Id), playerNames(m.team2Id),
+          sub.scheduledAt ? sub.scheduledAt.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '待排时间', sub.venue?.name ?? '待排场地']);
+      }
+    }
+  }
+  for (const sheet of [ws, lineupSheet]) {
+    sheet.views = [{ state: 'frozen', ySplit: 2 }];
+    sheet.eachRow((row, n) => {
+      row.height = n === 1 ? 32 : 30;
+      row.eachCell(cell => {
+        cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+        if (n > 1) {
+          cell.font = { name: 'Microsoft YaHei', size: 11, bold: n === 2, color: { argb: n === 2 ? 'FFFFFFFF' : 'FF1F2937' } };
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: n === 2 ? 'FF245A81' : n % 2 ? 'FFF1F6FA' : 'FFFFFFFF' } };
+          cell.border = { bottom: { style: 'thin', color: { argb: 'FFDCE5ED' } } };
+        }
+      });
+    });
+  }
+}
+
 export async function buildOrderbookWorkbook(
   tournament: ExportTournament,
   options?: { stage?: 'first' | 'second' },
@@ -1657,6 +1709,7 @@ export async function buildOrderbookWorkbook(
   buildRankingSummarySheet(wb, tournament);
   buildKnockoutDetailSheet(wb, tournament);
   buildFlowSheet(wb, tournament, options?.stage);
+  buildTeamOrderbookSheets(wb, tournament);
   const buffer = await wb.xlsx.writeBuffer();
   return Buffer.from(buffer as ArrayBuffer);
 }

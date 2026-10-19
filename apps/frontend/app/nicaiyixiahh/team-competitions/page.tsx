@@ -18,7 +18,7 @@ import {
 import { PlusOutlined, EyeOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 
-import TeamCompetitionFields, { TEAM_EVENT_OPTIONS, teamDefaults, teamAppearanceLabel } from '@/components/TeamCompetitionFields';
+import TeamCompetitionFields, { TEAM_EVENT_OPTIONS, teamDefaults, teamAppearanceLabel, teamFormatLabel, teamFormatPayload } from '@/components/TeamCompetitionFields';
 
 type Tournament = {
   id: string;
@@ -31,6 +31,9 @@ type TeamCompetition = {
   tournamentId: string;
   name: string;
   description?: string | null;
+  format?: string;
+  groupCount?: number | null;
+  advancePerGroup?: number | null;
   winThreshold: number;
   maxPlayerAppearances: number;
   isPublished: boolean;
@@ -95,7 +98,7 @@ export default function TeamCompetitionsPage() {
       await apiFetch('/team-competitions', {
         method: 'POST',
         token,
-        body: JSON.stringify({ ...values, items: values.items.map((item: { eventType: string }, index: number) => ({ eventType: item.eventType, sortOrder: index + 1 })) }),
+        body: JSON.stringify({ ...values, ...teamFormatPayload(values), items: values.items.map((item: { eventType: string }, index: number) => ({ eventType: item.eventType, sortOrder: index + 1 })) }),
       });
       message.success('团体赛已创建');
       setOpen(false);
@@ -149,6 +152,7 @@ export default function TeamCompetitionsPage() {
             title: '项目顺序',
             render: (_, row: TeamCompetition) => row.items.map((item) => TEAM_EVENT_OPTIONS.find(option => option.value === item.eventType)?.label ?? item.eventType).join(' → '),
           },
+          { title: '赛制', render: (_, row: TeamCompetition) => `${teamFormatLabel(row.format)}${row.groupCount ? ` · ${row.groupCount} 组` : ''}${row.format === 'GROUP_PLUS_KNOCKOUT' ? ` · 每组晋级 ${row.advancePerGroup ?? 2} 队` : ''}` },
           { title: '抢几胜', dataIndex: 'winThreshold', width: 100 },
           { title: '每队人数', render: () => '人数不限' },
           { title: '兼项规则', render: (_, row: TeamCompetition) => teamAppearanceLabel(row.maxPlayerAppearances) },

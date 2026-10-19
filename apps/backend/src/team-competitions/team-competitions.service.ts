@@ -35,9 +35,25 @@ import {
   ReplaceTeamMembersDto,
   SetTeamLineupsDto,
   TeamCompetitionItemDto,
+  TeamCompetitionFormat,
   UpdateTeamCompetitionDto,
   UpdateTeamDto,
+  GenerateGroupDrawDto,
+  AdjustGroupsDto,
+  GenerateKnockoutFromGroupsDto,
 } from './dto/team-competition.dto';
+import {
+  generateRoundRobin,
+  distributeTeamsToGroups,
+  validateRoundRobin,
+  TeamSlot,
+} from './group-round-robin';
+import {
+  calculateGroupStandings,
+  markAdvancedTeams,
+  updateTeamStanding,
+  TeamStanding,
+} from './group-standings';
 
 type TeamWithMembers = Prisma.TeamGetPayload<{
   include: {
@@ -138,6 +154,7 @@ export class TeamCompetitionsService {
         winThreshold: dto.winThreshold,
         maxPlayerAppearances: dto.maxPlayerAppearances ?? 2,
         playAllMatches: dto.playAllMatches ?? false,
+        ...this.formatData(dto),
         ...this.scoringData(dto),
         isPublished: dto.isPublished ?? false,
         items: {
@@ -177,10 +194,11 @@ export class TeamCompetitionsService {
     const rulesChanged = (dto.winThreshold !== undefined && dto.winThreshold !== current.winThreshold)
       || (dto.maxPlayerAppearances !== undefined && dto.maxPlayerAppearances !== current.maxPlayerAppearances)
       || (dto.playAllMatches !== undefined && dto.playAllMatches !== current.playAllMatches)
+      || Object.entries(this.formatData(dto)).some(([key, value]) => value !== current[key as keyof typeof current])
       || Object.entries(this.scoringData(dto)).some(([key, value]) => value !== undefined && value !== current[key as keyof typeof current]);
     const itemsChanged = nextItems && JSON.stringify(nextItems.map(i => [i.eventType, i.sortOrder])) !== JSON.stringify(current.items.map(i => [i.eventType, i.sortOrder]));
     if ((rulesChanged || itemsChanged) && await this.prisma.teamMatch.count({ where: { teamCompetitionId: id } })) {
-      throw new ConflictException('已生成对阵后不能修改兼项、胜场、计分规则或项目顺序');
+      throw new ConflictException('已生成对阵后不能修改赛制、兼项、胜场、计分规则或项目顺序');
     }
 
     await this.prisma.$transaction(async (tx) => {
@@ -192,6 +210,7 @@ export class TeamCompetitionsService {
           ...(dto.winThreshold !== undefined ? { winThreshold: dto.winThreshold } : {}),
           ...(dto.maxPlayerAppearances !== undefined ? { maxPlayerAppearances: dto.maxPlayerAppearances } : {}),
           ...(dto.playAllMatches !== undefined ? { playAllMatches: dto.playAllMatches } : {}),
+          ...this.formatData(dto),
           ...this.scoringData(dto),
           ...(dto.isPublished !== undefined ? { isPublished: dto.isPublished } : {}),
         },
@@ -430,6 +449,11 @@ export class TeamCompetitionsService {
   }
 
   async generateDraw(teamCompetitionId: string, dto: GenerateTeamDrawDto) {
+    // 小组赛制统一走小组抽签
+    const current = await this.prisma.teamCompetition.findUnique({ where: { id: teamCompetitionId }, select: { format: true } });
+    if (current && current.format !== TeamCompetitionFormat.SINGLE_ELIMINATION) {
+      return this.generateGroupDraw(teamCompetitionId, { force: dto.force });
+    }
     await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM TeamCompetition WHERE id = ${teamCompetitionId} FOR UPDATE`;
       const competition = await tx.teamCompetition.findUnique({ where: { id: teamCompetitionId }, include: { items: { orderBy: { sortOrder: 'asc' } } } });
@@ -446,15 +470,11 @@ export class TeamCompetitionsService {
       ] } });
       if (played) throw new ConflictException('已有子项开赛或成绩，不能重新生成对阵');
       await tx.teamMatch.deleteMany({ where: { teamCompetitionId } });
+      await tx.teamGroup.deleteMany({ where: { teamCompetitionId } });
       const shuffled = this.shuffle(teams);
       const size = this.nextPowerOfTwo(shuffled.length);
       const byes = size - shuffled.length;
-      let cursor = 0;
-      let slots: Array<{ id: string | null; resolved: boolean }> = [];
-      for (let pair = 0; pair < size / 2; pair++) {
-        slots.push({ id: shuffled[cursor++].id, resolved: true });
-        slots.push({ id: pair < byes ? null : shuffled[cursor++].id, resolved: true });
-      }
+      let slots = this.byeSlots(shuffled.map(team => team.id), size, byes);
       let roundNo = 1;
       while (slots.length >= 2) {
         const next: typeof slots = [];
@@ -464,7 +484,7 @@ export class TeamCompetitionsService {
           const winner = bye ? a.id ?? b.id : null;
           const encounter = await tx.teamMatch.create({ data: {
             teamCompetitionId, round: this.roundLabel(slots.length), roundNo, matchNo: i / 2 + 1,
-            team1Id: a.id, team2Id: b.id, winnerTeamId: winner,
+            team1Id: a.id, team2Id: b.id, winnerTeamId: winner, stage: 'KNOCKOUT',
             status: bye ? MatchStatus.COMPLETED : MatchStatus.PENDING,
           } });
           if (a.id && b.id) await this.createEncounterMatches(tx, encounter, competition.items);
@@ -486,6 +506,8 @@ export class TeamCompetitionsService {
   }
 
   private async advanceTeamWinner(tx: Prisma.TransactionClient, encounter: TeamMatch, winnerTeamId: string, items: TeamCompetitionItem[]) {
+    // 小组赛只计积分，不向下一轮推进
+    if (encounter.stage === 'GROUP') return;
     const next = await tx.teamMatch.findUnique({ where: { teamCompetitionId_roundNo_matchNo: {
       teamCompetitionId: encounter.teamCompetitionId, roundNo: encounter.roundNo + 1, matchNo: Math.ceil(encounter.matchNo / 2),
     } } });
@@ -737,6 +759,9 @@ export class TeamCompetitionsService {
         status: nextStatus,
       },
     });
+
+    // 小组赛：结果任何变化都重算积分（含改分后从已完成退回进行中）
+    if (teamMatch.groupId) await this.updateGroupStandings(tx, teamMatch.id);
 
     if (winnerTeamId && nextStatus === MatchStatus.COMPLETED) {
       await this.advanceTeamWinner(tx, teamMatch, winnerTeamId, teamMatch.teamCompetition.items);
@@ -1020,6 +1045,42 @@ export class TeamCompetitionsService {
     return copy;
   }
 
+  /**
+   * 首轮槽位：每个轮空只与一支队伍配对（不会出现轮空对轮空），
+   * 并把有轮空的场次均匀分散到整个签表中。
+   */
+  private byeSlots(teamIds: string[], size: number, byes: number) {
+    const pairs = size / 2;
+    const byePairs = new Set<number>();
+    for (let i = 0; i < byes; i++) byePairs.add(Math.floor((i * pairs) / byes));
+    const slots: Array<{ id: string | null; resolved: boolean }> = [];
+    let cursor = 0;
+    for (let pair = 0; pair < pairs; pair++) {
+      slots.push({ id: teamIds[cursor++], resolved: true });
+      slots.push({ id: byePairs.has(pair) ? null : teamIds[cursor++], resolved: true });
+    }
+    return slots;
+  }
+
+  /** 只返回请求中明确给出的赛制字段 */
+  private formatData(dto: { format?: TeamCompetitionFormat; groupCount?: number | null; advancePerGroup?: number | null }) {
+    return {
+      ...(dto.format !== undefined ? { format: dto.format } : {}),
+      ...(dto.groupCount !== undefined ? { groupCount: dto.groupCount } : {}),
+      ...(dto.advancePerGroup !== undefined ? { advancePerGroup: dto.advancePerGroup } : {}),
+    };
+  }
+
+  /** 标准种子位：size=4 → [1,4,2,3]，size=8 → [1,8,4,5,2,7,3,6] */
+  private seedPositions(size: number) {
+    let order = [1];
+    while (order.length < size) {
+      const total = order.length * 2 + 1;
+      order = order.flatMap(seed => [seed, total - seed]);
+    }
+    return order;
+  }
+
   private nextPowerOfTwo(value: number) {
     let size = 1;
     while (size < value) size *= 2;
@@ -1083,6 +1144,9 @@ export class TeamCompetitionsService {
       winThreshold: competition.winThreshold,
       maxPlayerAppearances: competition.maxPlayerAppearances,
       playAllMatches: competition.playAllMatches,
+      format: competition.format,
+      groupCount: competition.groupCount,
+      advancePerGroup: competition.advancePerGroup,
       malePlayerCount: competition.malePlayerCount,
       femalePlayerCount: competition.femalePlayerCount,
       scoringRule: competition.scoringRule,
@@ -1101,6 +1165,8 @@ export class TeamCompetitionsService {
       teamMatches: competition.teamMatches.map((teamMatch) => ({
         id: teamMatch.id,
         round: teamMatch.round,
+        stage: teamMatch.stage,
+        groupId: teamMatch.groupId,
         roundNo: teamMatch.roundNo,
         matchNo: teamMatch.matchNo,
         status: teamMatch.status,
@@ -1199,6 +1265,9 @@ export class TeamCompetitionsService {
       winThreshold: competition.winThreshold,
       maxPlayerAppearances: competition.maxPlayerAppearances,
       playAllMatches: competition.playAllMatches,
+      format: competition.format,
+      groupCount: competition.groupCount,
+      advancePerGroup: competition.advancePerGroup,
       malePlayerCount: competition.malePlayerCount,
       femalePlayerCount: competition.femalePlayerCount,
       scoringRule: competition.scoringRule,
@@ -1221,6 +1290,8 @@ export class TeamCompetitionsService {
       teamMatches: competition.teamMatches.map((teamMatch: any) => ({
         id: teamMatch.id,
         round: teamMatch.round,
+        stage: teamMatch.stage,
+        groupId: teamMatch.groupId,
         roundNo: teamMatch.roundNo,
         matchNo: teamMatch.matchNo,
         status: teamMatch.status,
@@ -1255,4 +1326,505 @@ export class TeamCompetitionsService {
       })),
     };
   }
+
+  // ==================== 小组赛功能 ====================
+
+  /**
+   * 生成小组赛对阵
+   */
+  async generateGroupDraw(teamCompetitionId: string, dto: GenerateGroupDrawDto) {
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM TeamCompetition WHERE id = ${teamCompetitionId} FOR UPDATE`;
+      
+      const competition = await tx.teamCompetition.findUnique({
+        where: { id: teamCompetitionId },
+        include: { items: { orderBy: { sortOrder: 'asc' } } },
+      });
+      
+      if (!competition) {
+        throw new NotFoundException('团体赛不存在');
+      }
+
+      const teams = await tx.team.findMany({
+        where: { teamCompetitionId },
+        include: { members: { include: { player: true } } },
+        orderBy: { createdAt: 'asc' },
+      });
+
+      if (teams.length < 2) {
+        throw new BadRequestException('至少需要 2 支队伍才能生成小组赛');
+      }
+
+      // 验证队伍名单
+      for (const team of teams) {
+        validateTeamRoster(team.members.map(m => m.player));
+      }
+
+      // 检查是否已有对阵
+      const existing = await tx.teamMatch.count({ where: { teamCompetitionId } });
+      if (existing && !dto.force) {
+        throw new ConflictException('对阵已存在，请使用重新生成');
+      }
+
+      // 检查是否有比赛已开始
+      const played = await tx.match.count({
+        where: {
+          teamMatch: { teamCompetitionId },
+          OR: [
+            { status: { not: MatchStatus.PENDING } },
+            { startedAt: { not: null } },
+            { games: { some: {} } },
+          ],
+        },
+      });
+      
+      if (played) {
+        throw new ConflictException('已有子项开赛或成绩，不能重新生成对阵');
+      }
+
+      // 删除现有对阵和小组
+      await tx.teamMatch.deleteMany({ where: { teamCompetitionId } });
+      await tx.teamGroup.deleteMany({ where: { teamCompetitionId } });
+
+      const format = dto.format || competition.format;
+      if (format === TeamCompetitionFormat.SINGLE_ELIMINATION) {
+        throw new BadRequestException('单淘汰赛请使用淘汰赛抽签');
+      }
+      const groupCount = format === TeamCompetitionFormat.ROUND_ROBIN ? 1 : (dto.groupCount ?? competition.groupCount ?? 2);
+      if (groupCount < 1 || teams.length < groupCount * 2) {
+        throw new BadRequestException(`${teams.length} 支队伍不能分成 ${groupCount} 组（每组至少 2 队）`);
+      }
+      const advancePerGroup = dto.advancePerGroup ?? competition.advancePerGroup ?? null;
+      if (format === TeamCompetitionFormat.GROUP_PLUS_KNOCKOUT) {
+        const minGroupSize = Math.floor(teams.length / groupCount);
+        if (!advancePerGroup || advancePerGroup < 1 || advancePerGroup > minGroupSize) {
+          throw new BadRequestException(`每组出线数须在 1 到 ${minGroupSize} 之间`);
+        }
+        if (advancePerGroup * groupCount < 2) {
+          throw new BadRequestException('出线队伍总数至少为 2 才能进行淘汰赛');
+        }
+      }
+
+      const slots: TeamSlot[] = this.shuffle(teams).map(t => ({ id: t.id, name: t.name }));
+      const distribution = groupCount === 1
+        ? [{ groupNo: 1, groupName: '循环赛', teams: slots }]
+        : distributeTeamsToGroups(slots, groupCount);
+      await this.createGroupsWithFixtures(tx, competition.id, competition.items, distribution);
+
+      await tx.teamCompetition.update({
+        where: { id: teamCompetitionId },
+        data: { format, groupCount, advancePerGroup },
+      });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+
+    return this.findOne(teamCompetitionId);
+  }
+
+  /**
+   * 创建小组、组员及组内单循环对阵。
+   * 同一轮次的对阵跨组连续编号，保证 (teamCompetitionId, roundNo, matchNo) 唯一。
+   */
+  private async createGroupsWithFixtures(
+    tx: Prisma.TransactionClient,
+    teamCompetitionId: string,
+    items: TeamCompetitionItem[],
+    distribution: Array<{ groupNo: number; groupName: string; teams: TeamSlot[] }>,
+  ) {
+    const nextMatchNo = new Map<number, number>();
+    for (const groupDist of distribution) {
+      const group = await tx.teamGroup.create({
+        data: { teamCompetitionId, groupNo: groupDist.groupNo, groupName: groupDist.groupName },
+      });
+      await tx.teamGroupMember.createMany({
+        data: groupDist.teams.map((team, index) => ({ groupId: group.id, teamId: team.id!, seedOrder: index + 1 })),
+      });
+
+      const rounds = generateRoundRobin(groupDist.teams);
+      const validation = validateRoundRobin(groupDist.teams, rounds);
+      if (!validation.valid) {
+        throw new BadRequestException(`循环赛对阵生成失败：${validation.errors.join('；')}`);
+      }
+
+      for (const round of rounds) {
+        for (const match of round.matches) {
+          const matchNo = (nextMatchNo.get(round.roundNo) ?? 0) + 1;
+          nextMatchNo.set(round.roundNo, matchNo);
+          const encounter = await tx.teamMatch.create({
+            data: {
+              teamCompetitionId,
+              groupId: group.id,
+              stage: 'GROUP',
+              round: distribution.length === 1 ? `第${round.roundNo}轮` : `${groupDist.groupName}第${round.roundNo}轮`,
+              roundNo: round.roundNo,
+              matchNo,
+              team1Id: match.team1Id,
+              team2Id: match.team2Id,
+              status: MatchStatus.PENDING,
+            },
+          });
+          await this.createEncounterMatches(tx, encounter, items);
+        }
+      }
+    }
+  }
+
+  /**
+   * 获取小组信息
+   */
+  async getGroups(teamCompetitionId: string) {
+    const competition = await this.ensureCompetition(teamCompetitionId);
+    
+    const groups = await this.prisma.teamGroup.findMany({
+      where: { teamCompetitionId },
+      include: {
+        teams: {
+          include: {
+            team: {
+              include: {
+                members: { include: { player: true } },
+              },
+            },
+          },
+          orderBy: [{ groupRank: 'asc' }, { wins: 'desc' }],
+        },
+        matches: {
+          include: {
+            team1: true,
+            team2: true,
+            matches: {
+              include: {
+                teamCompetitionItem: true,
+                games: true,
+              },
+            },
+          },
+          orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }],
+        },
+      },
+      orderBy: { groupNo: 'asc' },
+    });
+
+    return {
+      competition: {
+        id: competition.id,
+        name: competition.name,
+        format: competition.format,
+        groupCount: competition.groupCount,
+        advancePerGroup: competition.advancePerGroup,
+      },
+      groups: groups.map(group => ({
+        id: group.id,
+        groupNo: group.groupNo,
+        groupName: group.groupName,
+        standings: group.teams.map(member => ({
+          teamId: member.teamId,
+          teamName: member.team.name,
+          wins: member.wins,
+          losses: member.losses,
+          matchesWon: member.matchesWon,
+          matchesLost: member.matchesLost,
+          netMatches: member.netMatches,
+          groupRank: member.groupRank,
+          advanced: member.advanced,
+        })),
+        matches: group.matches.map(match => ({
+          id: match.id,
+          round: match.round,
+          roundNo: match.roundNo,
+          matchNo: match.matchNo,
+          team1: match.team1,
+          team2: match.team2,
+          team1Wins: match.team1Wins,
+          team2Wins: match.team2Wins,
+          status: match.status,
+          winnerTeamId: match.winnerTeamId,
+        })),
+      })),
+    };
+  }
+
+  /**
+   * 获取小组积分榜
+   */
+  async getGroupStandings(teamCompetitionId: string, groupId: string) {
+    await this.ensureCompetition(teamCompetitionId);
+    
+    const group = await this.prisma.teamGroup.findUnique({
+      where: { id: groupId },
+      include: {
+        teams: {
+          include: {
+            team: true,
+          },
+          orderBy: [{ groupRank: 'asc' }, { wins: 'desc' }],
+        },
+      },
+    });
+
+    if (!group || group.teamCompetitionId !== teamCompetitionId) {
+      throw new NotFoundException('小组不存在');
+    }
+
+    return {
+      groupId: group.id,
+      groupNo: group.groupNo,
+      groupName: group.groupName,
+      standings: group.teams.map(member => ({
+        teamId: member.teamId,
+        teamName: member.team.name,
+        teamAffiliation: member.team.affiliation,
+        wins: member.wins,
+        losses: member.losses,
+        matchesWon: member.matchesWon,
+        matchesLost: member.matchesLost,
+        netMatches: member.netMatches,
+        groupRank: member.groupRank,
+        advanced: member.advanced,
+      })),
+    };
+  }
+
+  /**
+   * 重新计算小组积分（对阵结果变化后调用）。
+   * 每次都从该组所有已完成对阵重新汇总，改分或重赛不会重复累计。
+   */
+  async updateGroupStandings(tx: Prisma.TransactionClient, teamMatchId: string) {
+    const teamMatch = await tx.teamMatch.findUnique({ where: { id: teamMatchId }, select: { groupId: true } });
+    if (!teamMatch?.groupId) return;
+    await this.recalculateGroupRankings(tx, teamMatch.groupId);
+  }
+
+  private async recalculateGroupRankings(tx: Prisma.TransactionClient, groupId: string) {
+    const members = await tx.teamGroupMember.findMany({ where: { groupId }, include: { team: true } });
+    const encounters = await tx.teamMatch.findMany({
+      where: { groupId, status: MatchStatus.COMPLETED, winnerTeamId: { not: null } },
+    });
+
+    const stats = new Map(members.map(m => [m.teamId, {
+      teamId: m.teamId, teamName: m.team.name, wins: 0, losses: 0, matchesWon: 0, matchesLost: 0, netMatches: 0,
+    }]));
+    const h2h = new Map<string, { teamId: string; opponentId: string; wins: number; losses: number; matchesWon: number; matchesLost: number }>();
+    const record = (teamId: string, opponentId: string, won: boolean, forCount: number, againstCount: number) => {
+      const row = stats.get(teamId);
+      if (row) {
+        row.wins += won ? 1 : 0;
+        row.losses += won ? 0 : 1;
+        row.matchesWon += forCount;
+        row.matchesLost += againstCount;
+        row.netMatches += forCount - againstCount;
+      }
+      const key = `${teamId}:${opponentId}`;
+      const pair = h2h.get(key) ?? { teamId, opponentId, wins: 0, losses: 0, matchesWon: 0, matchesLost: 0 };
+      pair.wins += won ? 1 : 0;
+      pair.losses += won ? 0 : 1;
+      pair.matchesWon += forCount;
+      pair.matchesLost += againstCount;
+      h2h.set(key, pair);
+    };
+    for (const e of encounters) {
+      if (!e.team1Id || !e.team2Id) continue;
+      record(e.team1Id, e.team2Id, e.winnerTeamId === e.team1Id, e.team1Wins, e.team2Wins);
+      record(e.team2Id, e.team1Id, e.winnerTeamId === e.team2Id, e.team2Wins, e.team1Wins);
+    }
+
+    const ranked = calculateGroupStandings([...stats.values()], [...h2h.values()]);
+    const hasResults = encounters.length > 0;
+    for (const row of ranked) {
+      await tx.teamGroupMember.update({
+        where: { groupId_teamId: { groupId, teamId: row.teamId } },
+        data: {
+          wins: row.wins, losses: row.losses, matchesWon: row.matchesWon, matchesLost: row.matchesLost,
+          netMatches: row.netMatches, groupRank: hasResults ? row.groupRank : null,
+        },
+      });
+    }
+  }
+
+  /**
+   * 管理员手动调整分组（抽签编排），只能在任何小组对阵开赛前进行。
+   * 调整后按新分组重新生成组内单循环对阵。
+   */
+  async adjustGroups(teamCompetitionId: string, dto: AdjustGroupsDto) {
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM TeamCompetition WHERE id = ${teamCompetitionId} FOR UPDATE`;
+      const competition = await tx.teamCompetition.findUnique({
+        where: { id: teamCompetitionId }, include: { items: { orderBy: { sortOrder: 'asc' } } },
+      });
+      if (!competition) throw new NotFoundException('团体赛不存在');
+      if (competition.format === TeamCompetitionFormat.SINGLE_ELIMINATION) {
+        throw new BadRequestException('单淘汰赛没有小组，请先把赛制改为小组赛');
+      }
+
+      const played = await tx.match.count({ where: { teamMatch: { teamCompetitionId }, OR: [
+        { status: { not: MatchStatus.PENDING } }, { startedAt: { not: null } }, { games: { some: {} } },
+      ] } });
+      if (played) throw new ConflictException('已有子项开赛或成绩，不能调整分组');
+
+      const teams = await tx.team.findMany({ where: { teamCompetitionId }, select: { id: true, name: true } });
+      const teamById = new Map(teams.map(t => [t.id, t]));
+      const groupNos = new Set<number>();
+      const assigned = new Set<string>();
+      for (const group of dto.groups) {
+        if (groupNos.has(group.groupNo)) throw new BadRequestException(`组号 ${group.groupNo} 重复`);
+        groupNos.add(group.groupNo);
+        if (group.teamIds.length < 2) throw new BadRequestException('每组至少 2 支队伍');
+        for (const teamId of group.teamIds) {
+          if (!teamById.has(teamId)) throw new BadRequestException('存在不属于本团体赛的队伍');
+          if (assigned.has(teamId)) throw new BadRequestException(`队伍「${teamById.get(teamId)!.name}」被分到了多个组`);
+          assigned.add(teamId);
+        }
+      }
+      if (assigned.size !== teams.length) throw new BadRequestException('所有队伍都必须分配到小组');
+      if (competition.format === TeamCompetitionFormat.GROUP_PLUS_KNOCKOUT && competition.advancePerGroup) {
+        const smallest = Math.min(...dto.groups.map(g => g.teamIds.length));
+        if (competition.advancePerGroup > smallest) {
+          throw new BadRequestException(`每组出线 ${competition.advancePerGroup} 队，但最小的组只有 ${smallest} 队`);
+        }
+      }
+
+      await tx.teamMatch.deleteMany({ where: { teamCompetitionId } });
+      await tx.teamGroup.deleteMany({ where: { teamCompetitionId } });
+
+      const sorted = [...dto.groups].sort((a, b) => a.groupNo - b.groupNo);
+      const distribution = sorted.map((group, index) => ({
+        groupNo: index + 1,
+        groupName: sorted.length === 1 ? '循环赛' : `${String.fromCharCode(65 + index)}组`,
+        teams: group.teamIds.map(id => ({ id, name: teamById.get(id)!.name })),
+      }));
+      await this.createGroupsWithFixtures(tx, teamCompetitionId, competition.items, distribution);
+      await tx.teamCompetition.update({ where: { id: teamCompetitionId }, data: { groupCount: distribution.length } });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+
+    return this.getGroups(teamCompetitionId);
+  }
+
+  /**
+   * 生成淘汰赛（小组赛后）
+   */
+  async generateKnockoutFromGroups(teamCompetitionId: string, dto: GenerateKnockoutFromGroupsDto) {
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM TeamCompetition WHERE id = ${teamCompetitionId} FOR UPDATE`;
+      
+      const competition = await tx.teamCompetition.findUnique({
+        where: { id: teamCompetitionId },
+        include: { items: { orderBy: { sortOrder: 'asc' } } },
+      });
+
+      if (!competition) {
+        throw new NotFoundException('团体赛不存在');
+      }
+
+      if (competition.format !== TeamCompetitionFormat.GROUP_PLUS_KNOCKOUT) {
+        throw new BadRequestException('只有小组+淘汰赛模式才能生成淘汰赛');
+      }
+
+      // 获取所有小组
+      const groups = await tx.teamGroup.findMany({
+        where: { teamCompetitionId },
+        include: {
+          teams: {
+            orderBy: [{ groupRank: 'asc' }],
+          },
+        },
+        orderBy: { groupNo: 'asc' },
+      });
+
+      if (groups.length === 0) {
+        throw new BadRequestException('未找到小组，请先生成小组赛');
+      }
+
+      // 检查小组赛是否全部完成
+      const pendingGroupMatches = await tx.teamMatch.count({
+        where: {
+          teamCompetitionId,
+          stage: 'GROUP',
+          status: { in: [MatchStatus.PENDING, MatchStatus.LIVE] },
+        },
+      });
+
+      if (pendingGroupMatches > 0) {
+        throw new ConflictException('小组赛尚未全部完成，不能生成淘汰赛');
+      }
+
+      // 检查是否已有淘汰赛
+      const existingKnockout = await tx.teamMatch.count({
+        where: { teamCompetitionId, stage: 'KNOCKOUT' },
+      });
+
+      if (existingKnockout > 0 && !dto.force) {
+        throw new ConflictException('淘汰赛已存在');
+      }
+      const knockoutPlayed = await tx.match.count({ where: { teamMatch: { teamCompetitionId, stage: 'KNOCKOUT' }, OR: [
+        { status: { not: MatchStatus.PENDING } }, { startedAt: { not: null } }, { games: { some: {} } },
+      ] } });
+      if (knockoutPlayed) throw new ConflictException('淘汰赛已有子项开赛或成绩，不能重新生成');
+
+      // 删除现有淘汰赛
+      await tx.teamMatch.deleteMany({
+        where: { teamCompetitionId, stage: 'KNOCKOUT' },
+      });
+
+      // 确定晋级队伍：先按名次、再按组号排成种子序列（A1, B1, ..., A2, B2, ...）
+      const advancePerGroup = competition.advancePerGroup || 2;
+      await tx.teamGroupMember.updateMany({ where: { group: { teamCompetitionId } }, data: { advanced: false } });
+      const seeds: string[] = [];
+      for (let rank = 1; rank <= advancePerGroup; rank++) {
+        for (const group of groups) {
+          const member = group.teams.find(m => m.groupRank === rank);
+          if (!member) continue;
+          seeds.push(member.teamId);
+          await tx.teamGroupMember.update({ where: { id: member.id }, data: { advanced: true } });
+        }
+      }
+
+      if (seeds.length < 2) {
+        throw new BadRequestException('晋级队伍不足，无法生成淘汰赛');
+      }
+
+      // 标准种子位：同组的第一、二名分在两个半区，小组第一优先获得轮空
+      const size = this.nextPowerOfTwo(seeds.length);
+      let slots: Array<{ id: string | null; resolved: boolean }> = this.seedPositions(size).map(seed => ({ id: seeds[seed - 1] ?? null, resolved: true }));
+
+      // 淘汰赛轮次编号接在小组赛之后，避免与小组赛 (roundNo, matchNo) 冲突，
+      // 也让 advanceTeamWinner 的 roundNo + 1 查找停留在淘汰赛内部。
+      const lastGroupRound = await tx.teamMatch.aggregate({
+        where: { teamCompetitionId, stage: 'GROUP' },
+        _max: { roundNo: true },
+      });
+      let roundNo = (lastGroupRound._max.roundNo ?? 0) + 1;
+      while (slots.length >= 2) {
+        const next: typeof slots = [];
+        for (let i = 0; i < slots.length; i += 2) {
+          const a = slots[i], b = slots[i + 1];
+          const bye = a.resolved && b.resolved && Boolean(a.id) !== Boolean(b.id);
+          const winner = bye ? a.id ?? b.id : null;
+          
+          const encounter = await tx.teamMatch.create({
+            data: {
+              teamCompetitionId,
+              round: this.roundLabel(slots.length),
+              roundNo,
+              matchNo: i / 2 + 1,
+              team1Id: a.id,
+              team2Id: b.id,
+              winnerTeamId: winner,
+              status: bye ? MatchStatus.COMPLETED : MatchStatus.PENDING,
+              stage: 'KNOCKOUT',
+            },
+          });
+
+          if (a.id && b.id) {
+            await this.createEncounterMatches(tx, encounter, competition.items);
+          }
+          
+          next.push({ id: winner, resolved: bye });
+        }
+        slots = next;
+        roundNo++;
+      }
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+
+    return this.findOne(teamCompetitionId);
+  }
 }
+

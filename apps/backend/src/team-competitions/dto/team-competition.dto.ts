@@ -15,7 +15,11 @@ import {
   ValidateIf,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { EventType, Gender, ScoringMode, ScoringRule } from '@prisma/client';
+import { EventType, Gender, ScoringMode, ScoringRule, TeamCompetitionFormat } from '@prisma/client';
+
+// 团体赛赛制：SINGLE_ELIMINATION 单淘汰 / ROUND_ROBIN 单组循环 /
+// GROUP_ROUND_ROBIN 多组循环 / GROUP_PLUS_KNOCKOUT 小组+淘汰
+export { TeamCompetitionFormat };
 
 export class TeamScoringDto {
   @ValidateIf((_, value) => value !== undefined)
@@ -98,6 +102,31 @@ export class CreateTeamCompetitionDto extends TeamScoringDto {
   @IsBoolean()
   isPublished?: boolean;
 
+  // 新增：赛制类型
+  @IsOptional()
+  @IsEnum(TeamCompetitionFormat)
+  format?: TeamCompetitionFormat;
+
+  // 新增：小组赛配置
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(26) // 最多26组（A-Z）
+  groupCount?: number | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(2)
+  teamsPerGroup?: number | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  advancePerGroup?: number | null;
+
   @IsArray()
   @ArrayMinSize(1)
   @ValidateNested({ each: true })
@@ -140,6 +169,30 @@ export class UpdateTeamCompetitionDto extends TeamScoringDto {
   @IsOptional()
   @IsBoolean()
   isPublished?: boolean;
+
+  // 新增：赛制配置更新
+  @IsOptional()
+  @IsEnum(TeamCompetitionFormat)
+  format?: TeamCompetitionFormat;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(26)
+  groupCount?: number | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(2)
+  teamsPerGroup?: number | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  advancePerGroup?: number | null;
 
   @IsOptional()
   @IsArray()
@@ -378,3 +431,59 @@ export class QuickTeamPreviewDto {
   @IsString({ each: true })
   benchNames?: string[];
 }
+
+// 小组赛相关DTO
+
+export class GenerateGroupDrawDto {
+  @IsOptional()
+  @IsBoolean()
+  force?: boolean;
+
+  @IsOptional()
+  @IsEnum(TeamCompetitionFormat)
+  format?: TeamCompetitionFormat;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(26)
+  groupCount?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  advancePerGroup?: number;
+}
+
+export class AdjustGroupsDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => GroupAdjustmentDto)
+  groups: GroupAdjustmentDto[];
+}
+
+export class GroupAdjustmentDto {
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  groupNo: number;
+
+  @IsArray()
+  @IsString({ each: true })
+  teamIds: string[];
+}
+
+export class GenerateKnockoutFromGroupsDto {
+  @IsOptional()
+  @IsBoolean()
+  force?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  knockoutFormat?: string; // 例如："直接淘汰", "交叉淘汰"
+}
+

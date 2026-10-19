@@ -18,17 +18,38 @@ export const TEAM_APPEARANCE_OPTIONS = [
   { value: 0, label: '兼项不限' },
 ];
 export const teamAppearanceLabel = (limit: number) => TEAM_APPEARANCE_OPTIONS.find(option => option.value === limit)?.label ?? '最多兼两项';
+export const TEAM_FORMAT_OPTIONS = [
+  { value: 'GROUP_ROUND_ROBIN', label: '小组赛' },
+  { value: 'GROUP_PLUS_KNOCKOUT', label: '小组赛 + 淘汰赛' },
+  { value: 'SINGLE_ELIMINATION', label: '单淘汰赛（兼容）' },
+  { value: 'ROUND_ROBIN', label: '小组赛（单组循环）' },
+];
+export const teamFormatLabel = (format?: string) => TEAM_FORMAT_OPTIONS.find(option => option.value === format)?.label ?? '单淘汰赛（兼容）';
+export const teamFormatPayload = (values: { format?: string; groupCount?: number; advancePerGroup?: number }) => ({
+  format: values.format ?? 'SINGLE_ELIMINATION',
+  groupCount: values.format === 'SINGLE_ELIMINATION' ? null : values.format === 'ROUND_ROBIN' ? 1 : values.groupCount ?? 1,
+  advancePerGroup: values.format === 'GROUP_PLUS_KNOCKOUT' ? values.advancePerGroup ?? 2 : null,
+});
 export const teamDefaults = {
   maxPlayerAppearances: 2, playAllMatches: false, winThreshold: 3, isPublished: false,
   scoringRule: 'TWENTYONE_BO3', scoringMode: 'CAPPED_30',
+  format: 'GROUP_ROUND_ROBIN', groupCount: 1, advancePerGroup: 2,
   items: TEAM_EVENT_OPTIONS.map(item => ({ eventType: item.value })),
 };
 
-export default function TeamCompetitionFields() {
+export default function TeamCompetitionFields({ formatLocked = false }: { formatLocked?: boolean }) {
   const form = Form.useFormInstance();
   const items = Form.useWatch('items', form) ?? [];
+  const format = Form.useWatch('format', form);
   return <>
     <Form.Item name="name" label="团体赛名称" rules={[{ required: true }]}><Input /></Form.Item>
+    <Form.Item name="format" label="赛制" rules={[{ required: true }]}><Select disabled={formatLocked} options={TEAM_FORMAT_OPTIONS} /></Form.Item>
+    {format !== 'SINGLE_ELIMINATION' && <Form.Item name="groupCount" label="小组数量" rules={[{ required: format !== 'ROUND_ROBIN', message: '请填写小组数量' }]} extra={format === 'ROUND_ROBIN' ? '单组循环固定为 1 组。' : '填 1 为单组循环，填 2 或以上为多组循环；每组至少 2 支队伍。'}>
+      <InputNumber disabled={formatLocked || format === 'ROUND_ROBIN'} min={1} precision={0} />
+    </Form.Item>}
+    {format === 'GROUP_PLUS_KNOCKOUT' && <Form.Item name="advancePerGroup" label="每组晋级队数" rules={[{ required: true, message: '请填写晋级队数' }]} extra="晋级队数不能超过最小小组队数，总晋级队数至少为 2。">
+      <InputNumber disabled={formatLocked} min={1} precision={0} />
+    </Form.Item>}
     <Form.Item name="maxPlayerAppearances" label="兼项规则" rules={[{ required: true }]} extra="按同一场团体对阵计算，下一轮重新计算。每队人数不限，不限制男女人数；出场选手仍须符合各项目的性别要求。">
       <Select options={TEAM_APPEARANCE_OPTIONS} />
     </Form.Item>

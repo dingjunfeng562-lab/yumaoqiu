@@ -16,7 +16,7 @@ export function applyFinalRankings<T extends { id: string; rank: number | null }
 
 export function teamStandings(competition: {
   teams: Array<{ id: string; name: string; affiliation: string; finalRank?: number | null }>;
-  teamMatches: Array<{ status: string; round?: string; roundNo?: number; team1Id: string | null; team2Id: string | null; winnerTeamId: string | null; team1Wins: number; team2Wins: number }>;
+  teamMatches: Array<{ status: string; stage?: string | null; round?: string; roundNo?: number; team1Id: string | null; team2Id: string | null; winnerTeamId: string | null; team1Wins: number; team2Wins: number }>;
 }) {
   const rows = competition.teams.map((team) => ({
     id: team.id, name: team.name, affiliation: team.affiliation, groupName: null,
@@ -35,7 +35,8 @@ export function teamStandings(competition: {
   const fixedRanks = new Map<string, number>();
   const eliminated = new Map<string, number>();
   for (const match of competition.teamMatches) {
-    if (match.status !== 'COMPLETED' || !match.winnerTeamId) continue;
+    // 小组循环赛的负场不代表被淘汰，只按淘汰赛场次计算淘汰轮次
+    if (match.status !== 'COMPLETED' || !match.winnerTeamId || match.stage === 'GROUP') continue;
     const loser = match.winnerTeamId === match.team1Id ? match.team2Id : match.team1Id;
     if (loser) eliminated.set(loser, Math.max(eliminated.get(loser) ?? 0, match.roundNo ?? 0));
     if (match.round === 'F' || match.round === 'BRONZE') {

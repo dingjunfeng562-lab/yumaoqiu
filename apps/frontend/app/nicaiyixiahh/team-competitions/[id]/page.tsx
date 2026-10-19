@@ -6,8 +6,9 @@ import { useSession } from 'next-auth/react';
 import { Alert, Button, Card, Form, Input, Modal, Select, Space, Table, Tag, Typography, message } from 'antd';
 import { PlusOutlined, ReloadOutlined, SettingOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
-import TeamCompetitionFields, { TEAM_SCORING_OPTIONS, teamDefaults, teamAppearanceLabel } from '@/components/TeamCompetitionFields';
+import TeamCompetitionFields, { TEAM_SCORING_OPTIONS, teamDefaults, teamAppearanceLabel, teamFormatLabel, teamFormatPayload } from '@/components/TeamCompetitionFields';
 import TeamRosterImportModal from '@/components/TeamRosterImport';
+import TeamCompetitionGroups from '@/components/TeamCompetitionGroups';
 
 type Player = { id: string; name: string; gender: 'MALE' | 'FEMALE'; affiliation: string };
 type Team = { id: string; name: string; affiliation: string; memberCount: number; members: Player[]; rosterOverrideConfirmed?: boolean };
@@ -15,7 +16,7 @@ type Item = { id: string; eventType: string; eventTypeLabel: string; sortOrder: 
 type Lineup = { teamId: string; teamCompetitionItemId: string; player1: Player; player2?: Player | null; name: string };
 type ChildMatch = { id: string; teamCompetitionItemId: string; matchNo: number; status: string; lineupLocked: boolean; eventTypeLabel: string; referee?: { username: string }; venue?: { name: string }; games: Array<{ side1Score: number; side2Score: number }> };
 type Encounter = { id: string; round: string; matchNo: number; status: string; team1?: { id: string; name: string }; team2?: { id: string; name: string }; team1Wins: number; team2Wins: number; winnerTeamName?: string; matches: ChildMatch[]; lineups: Lineup[] };
-type Competition = { id: string; name: string; description?: string; winThreshold: number; maxPlayerAppearances: number; playAllMatches: boolean; scoringRule: string; scoringMode: string; customGamePoint: number | null; customGameCap: number | null; customGamesToWin: number | null; isPublished: boolean; items: Item[]; teams: Team[]; teamMatches: Encounter[] };
+type Competition = { id: string; name: string; description?: string; format?: string; groupCount?: number | null; advancePerGroup?: number | null; winThreshold: number; maxPlayerAppearances: number; playAllMatches: boolean; scoringRule: string; scoringMode: string; customGamePoint: number | null; customGameCap: number | null; customGamesToWin: number | null; isPublished: boolean; items: Item[]; teams: Team[]; teamMatches: Encounter[] };
 type Selection = { teamId: string; teamCompetitionItemId: string; player1Id: string; player2Id?: string };
 const statusLabel: Record<string, string> = { PENDING: '未开始', LIVE: '进行中', COMPLETED: '已结束', CANCELLED: '无需比赛' };
 const doubles = (type: string) => type.endsWith('DOUBLES');
@@ -77,7 +78,7 @@ export default function TeamCompetitionDetailPage() {
     await apiFetch(`/team-competitions/${id}`, { method: 'PATCH', token, body: JSON.stringify({
       name: values.name, description: values.description, maxPlayerAppearances: values.maxPlayerAppearances,
       winThreshold: values.winThreshold, isPublished: values.isPublished, scoringRule: values.scoringRule, scoringMode: values.scoringMode,
-      playAllMatches: values.playAllMatches,
+      playAllMatches: values.playAllMatches, ...teamFormatPayload(values),
       customGamePoint: values.customGamePoint ?? null, customGameCap: values.customGameCap ?? null, customGamesToWin: values.customGamesToWin ?? null,
       items: values.items.map((item: Item, index: number) => ({ eventType: item.eventType, sortOrder: index + 1 })),
     }) });
@@ -165,7 +166,11 @@ export default function TeamCompetitionDetailPage() {
     <Card title="团体赛对阵与出场名单">
       <Table rowKey="id" dataSource={competition.teamMatches} pagination={false} scroll={{ x: 700 }} columns={[
         { title: '轮次', render: (_, row: Encounter) => `${row.round} / 第 ${row.matchNo} 场` },
-        { title: '对阵', render: (_, row: Encounter) => `${row.team1?.name ?? '待定'} VS ${row.team2?.name ?? (row.status === 'COMPLETED' ? '轮空' : '待定')}` },
+        { title: '对阵', render: (_, row: Encounter) => {
+          // 只有已结束且一侧为空的首轮场次才是轮空；后续轮次的空位是"待定"
+          const bye = row.status === 'COMPLETED' && Boolean(row.team1) !== Boolean(row.team2);
+          return `${row.team1?.name ?? (bye ? '轮空' : '待定')} VS ${row.team2?.name ?? (bye ? '轮空' : '待定')}`;
+        }},
         { title: '总比分', render: (_, row: Encounter) => `${row.team1Wins} : ${row.team2Wins}` },
         { title: '状态', render: (_, row: Encounter) => <Tag color={row.status === 'LIVE' ? 'blue' : undefined}>{statusLabel[row.status] ?? row.status}</Tag> },
         { title: '胜方', dataIndex: 'winnerTeamName', render: value => value || '-' },
@@ -180,6 +185,8 @@ export default function TeamCompetitionDetailPage() {
         { title: '操作', render: (_, match: ChildMatch) => <Button disabled={!encounter.team1 || !encounter.team2} onClick={() => openLineup(encounter, match)}>{match.lineupLocked || match.status !== 'PENDING' ? '查看名单' : '填报名单'}</Button> },
       ]} /> }} />
     </Card>
+    <TeamCompetitionGroups competitionId={id} token={token} teams={competition.teams} format={competition.format}
+      hasDraw={hasDraw} onChanged={loadData} />
     <TeamRosterImportModal competition={competition} open={batchOpen} onClose={() => setBatchOpen(false)} onImported={loadData} token={token} />
     <Modal title="团体赛设置" open={settingsOpen} onCancel={() => setSettingsOpen(false)} onOk={() => submit(saveSettings)} okText="保存" cancelText="取消" confirmLoading={busy} width={760}>
       {hasDraw && <Alert type="info" title="对阵已生成，兼项、胜场、项目顺序和计分规则不可修改；名称、说明和公开状态仍可编辑。" style={{ marginBottom: 16 }} />}

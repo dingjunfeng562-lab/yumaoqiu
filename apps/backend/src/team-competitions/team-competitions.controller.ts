@@ -29,6 +29,9 @@ import {
   SetTeamLineupsDto,
   UpdateTeamCompetitionDto,
   UpdateTeamDto,
+  GenerateGroupDrawDto,
+  AdjustGroupsDto,
+  GenerateKnockoutFromGroupsDto,
 } from './dto/team-competition.dto';
 import { TeamCompetitionsService } from './team-competitions.service';
 
@@ -140,5 +143,32 @@ export class TeamCompetitionsController {
   @Patch('matches/:matchId/referee')
   assignReferee(@Param('matchId') matchId: string, @Body() dto: AssignTeamMatchRefereeDto) {
     return this.teamCompetitionsService.assignTeamMatchReferee(matchId, dto);
+  }
+
+  // ==================== 小组赛API ====================
+
+  @Post(':id/draw-groups')
+  generateGroupDraw(@Param('id') id: string, @Body() dto: GenerateGroupDrawDto) {
+    return this.teamCompetitionsService.generateGroupDraw(id, dto);
+  }
+
+  @Get(':id/groups')
+  getGroups(@Param('id') id: string) {
+    return this.teamCompetitionsService.getGroups(id);
+  }
+
+  @Get(':id/groups/:groupId/standings')
+  getGroupStandings(@Param('id') id: string, @Param('groupId') groupId: string) {
+    return this.teamCompetitionsService.getGroupStandings(id, groupId);
+  }
+
+  @Patch(':id/groups/adjust')
+  adjustGroups(@Param('id') id: string, @Body() dto: AdjustGroupsDto) {
+    return this.teamCompetitionsService.adjustGroups(id, dto);
+  }
+
+  @Post(':id/knockout')
+  generateKnockout(@Param('id') id: string, @Body() dto: GenerateKnockoutFromGroupsDto) {
+    return this.teamCompetitionsService.generateKnockoutFromGroups(id, dto);
   }
 }

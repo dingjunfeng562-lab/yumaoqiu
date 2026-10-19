@@ -48,6 +48,13 @@ enum Format {
   SINGLE_ELIMINATION_PLUS_GROUP_RANKING
 }
 
+enum TeamCompetitionFormat {
+  SINGLE_ELIMINATION      // 单淘汰赛
+  ROUND_ROBIN            // 单组循环赛（所有队伍打一遍）
+  GROUP_ROUND_ROBIN      // 多组循环赛
+  GROUP_PLUS_KNOCKOUT    // 小组+淘汰赛
+}
+
 enum SecondStageStatus {
   NOT_STARTED
   DRAFT
@@ -873,9 +880,19 @@ model TeamCompetition {
   customGamesToWin Int?
   rankingLimit Int?
   isPublished  Boolean               @default(false)
+  
+  // 新增：赛制类型
+  format TeamCompetitionFormat @default(SINGLE_ELIMINATION)
+  
+  // 新增：小组赛配置
+  groupCount Int? // 分组数量，null表示单组或不分组
+  teamsPerGroup Int? // 每组队伍数（可选，自动计算）
+  advancePerGroup Int? // 每组晋级数（用于小组+淘汰）
+  
   items        TeamCompetitionItem[]
   teams        Team[]
   teamMatches  TeamMatch[]
+  groups       TeamGroup[]
   createdAt    DateTime              @default(now())
   updatedAt    DateTime              @updatedAt
 
@@ -912,6 +929,7 @@ model Team {
   team1Matches      TeamMatch[]  @relation("team1Matches")
   team2Matches      TeamMatch[]  @relation("team2Matches")
   wonMatches        TeamMatch[]  @relation("winnerTeamMatches")
+  groupMemberships  TeamGroupMember[]
   createdAt         DateTime     @default(now())
   updatedAt         DateTime     @updatedAt
 
@@ -948,6 +966,12 @@ model TeamMatch {
   team1Wins         Int             @default(0)
   team2Wins         Int             @default(0)
   lineupLocked      Boolean         @default(false)
+  
+  // 新增：小组赛关联
+  groupId           String?
+  group             TeamGroup?      @relation("groupMatches", fields: [groupId], references: [id])
+  stage             String?         // "GROUP", "KNOCKOUT", "FINAL"
+  
   matches           Match[]
   lineups           TeamLineup[]
   createdAt         DateTime        @default(now())
@@ -956,6 +980,49 @@ model TeamMatch {
   @@unique([teamCompetitionId, roundNo, matchNo])
   @@index([teamCompetitionId, status])
   @@index([winnerTeamId])
+  @@index([groupId])
+}
+
+// 新增：小组表
+model TeamGroup {
+  id                String            @id @default(cuid())
+  teamCompetitionId String
+  teamCompetition   TeamCompetition   @relation(fields: [teamCompetitionId], references: [id], onDelete: Cascade)
+  groupNo           Int               // 组号：1, 2, 3...
+  groupName         String            // 组名：A组, B组...
+  teams             TeamGroupMember[]
+  matches           TeamMatch[]       @relation("groupMatches")
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  
+  @@unique([teamCompetitionId, groupNo])
+  @@index([teamCompetitionId])
+}
+
+// 新增：小组队伍关联表
+model TeamGroupMember {
+  id          String    @id @default(cuid())
+  groupId     String
+  group       TeamGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  teamId      String
+  team        Team      @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  seedOrder   Int?      // 种子位顺序
+  
+  // 小组赛积分统计（自动计算）
+  wins        Int       @default(0) // 胜场数（团体赛维度）
+  losses      Int       @default(0) // 负场数（团体赛维度）
+  matchesWon  Int       @default(0) // 赢的子项数
+  matchesLost Int       @default(0) // 输的子项数
+  netMatches  Int       @default(0) // 净胜分（子项维度）
+  groupRank   Int?      // 小组排名
+  advanced    Boolean   @default(false) // 是否晋级
+  
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  @@unique([groupId, teamId])
+  @@index([teamId])
+  @@index([groupId, groupRank])
 }
 
 model TeamLineup {

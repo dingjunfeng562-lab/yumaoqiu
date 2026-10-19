@@ -157,7 +157,16 @@ type ExportVenue = {
 };
 
 type ExportTournament = {
-  teamCompetitions?: Array<Parameters<typeof teamStandings>[0] & { name: string }>;
+  teamCompetitions?: Array<Parameters<typeof teamStandings>[0] & {
+    name: string;
+    groups?: Array<{ id: string; groupName: string }>;
+    teamMatches: Array<Parameters<typeof teamStandings>[0]['teamMatches'][number] & {
+      id: string; groupId?: string | null; matchNo: number;
+      lineups?: Array<{ teamId: string; teamCompetitionItemId: string; player1: { name: string }; player2: { name: string } | null }>;
+      matches?: Array<{ lineupLocked: boolean; scheduledAt: Date | null; venue: { name: string } | null; teamCompetitionItemId: string | null;
+        teamCompetitionItem: { eventType: string; sortOrder: number } | null }>;
+    }>;
+  }>;
   name: string;
   startDate: Date;
   endDate: Date;
@@ -509,7 +518,13 @@ export class ExportsService {
       where: { id: tournamentId },
       select: {
         ...baseSelect,
-        teamCompetitions: { include: { teams: true, teamMatches: true } },
+        teamCompetitions: { include: {
+          teams: true, groups: { orderBy: { groupNo: 'asc' } },
+          teamMatches: { orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }], include: {
+            lineups: { include: { player1: true, player2: true } },
+            matches: { orderBy: { matchNo: 'asc' }, include: { teamCompetitionItem: true, venue: true } },
+          } },
+        } },  
         venues: {
           orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
           select: { id: true, name: true, sortOrder: true },

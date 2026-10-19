@@ -45,6 +45,17 @@ import {
   type KnockoutBracketData,
 } from '@/components/bracket/KnockoutBracket';
 import { SecondStageBracket, type SecondStageData } from '@/components/bracket/SecondStageBracket';
+import TeamCompetitionGroups from '@/components/TeamCompetitionGroups';
+
+type TeamCompetitionOption = {
+  id: string;
+  name: string;
+  format?: string;
+  groupCount?: number | null;
+  advancePerGroup?: number | null;
+  _count?: { teams: number; teamMatches: number };
+};
+type TeamCompetitionTeam = { id: string; name: string };
 
 const EVENT_TYPE_LABELS: Record<string, string> = {
   MENS_SINGLES: '男子单打',
@@ -485,6 +496,14 @@ export default function DrawsPage() {
   const [rejectingRequest, setRejectingRequest] = useState<RedrawRequestItem | null>(null);
   const [rejectForm] = Form.useForm();
   const [secondStageForm] = Form.useForm();
+  const [teamCompetitions, setTeamCompetitions] = useState<TeamCompetitionOption[]>([]);
+  const [selectedTeamCompetitionId, setSelectedTeamCompetitionId] = useState('');
+  const [teamCompetitionTeams, setTeamCompetitionTeams] = useState<TeamCompetitionTeam[]>([]);
+
+  const selectedTeamCompetition = useMemo(
+    () => teamCompetitions.find((item) => item.id === selectedTeamCompetitionId),
+    [teamCompetitions, selectedTeamCompetitionId],
+  );
 
   const selectedEvent = useMemo(
     () => events.find((event) => event.id === selectedEventId),
@@ -687,7 +706,32 @@ export default function DrawsPage() {
   useEffect(() => {
     if (!token || !selectedTournamentId) return;
     loadEvents(selectedTournamentId).catch((error) => message.error(error instanceof Error ? error.message : '加载单项失败'));
+    loadTeamCompetitions(selectedTournamentId).catch((error) => message.error(error instanceof Error ? error.message : '加载团体赛失败'));
   }, [token, selectedTournamentId]);
+
+  useEffect(() => {
+    if (!token || !selectedTeamCompetitionId) { setTeamCompetitionTeams([]); return; }
+    loadTeamCompetitionTeams(selectedTeamCompetitionId)
+      .catch((error) => message.error(error instanceof Error ? error.message : '加载团体队伍失败'));
+  }, [token, selectedTeamCompetitionId]);
+
+  async function loadTeamCompetitions(tournamentId: string) {
+    if (!token) return;
+    const data = await apiFetch<TeamCompetitionOption[]>(`/team-competitions?tournamentId=${tournamentId}`, { token });
+    setTeamCompetitions(data);
+    setSelectedTeamCompetitionId((current) => (data.some((item) => item.id === current) ? current : data[0]?.id ?? ''));
+  }
+
+  async function loadTeamCompetitionTeams(competitionId: string) {
+    if (!token || !competitionId) return;
+    const data = await apiFetch<TeamCompetitionTeam[]>(`/team-competitions/${competitionId}/teams`, { token });
+    setTeamCompetitionTeams(data);
+  }
+
+  async function refreshTeamCompetition() {
+    await loadTeamCompetitionTeams(selectedTeamCompetitionId);
+    await loadTeamCompetitions(selectedTournamentId);
+  }
 
   useEffect(() => {
     if (!token || !selectedEventId) return;
@@ -1139,6 +1183,40 @@ export default function DrawsPage() {
           </Col>
         </Row>
       </section>
+
+      {teamCompetitions.length > 0 && (
+        <section style={{ marginBottom: 16, border: '1px solid #f0f0f0', borderRadius: 8, padding: 16, background: '#fff' }}>
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Space wrap align="center">
+              <Typography.Text strong>团体赛分组编排</Typography.Text>
+              <Select
+                style={{ minWidth: 280 }}
+                placeholder="选择团体赛"
+                value={selectedTeamCompetitionId || undefined}
+                onChange={setSelectedTeamCompetitionId}
+                options={teamCompetitions.map((item) => ({
+                  value: item.id,
+                  label: `${item.name} · ${item._count?.teams ?? 0} 队`,
+                }))}
+              />
+              <Typography.Text type="secondary">
+                抽签后可在此手动移动队伍分组，保存会按新分组重新生成小组对阵。
+              </Typography.Text>
+            </Space>
+            {selectedTeamCompetition && (
+              <TeamCompetitionGroups
+                competitionId={selectedTeamCompetition.id}
+                token={token}
+                teams={teamCompetitionTeams}
+                format={selectedTeamCompetition.format}
+                hasDraw={(selectedTeamCompetition._count?.teamMatches ?? 0) > 0}
+                onChanged={refreshTeamCompetition}
+                showDraw
+              />
+            )}
+          </Space>
+        </section>
+      )}
 
       {pendingRedrawRequest && (
         <section
