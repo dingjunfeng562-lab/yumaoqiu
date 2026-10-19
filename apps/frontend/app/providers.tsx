@@ -15,6 +15,7 @@ export function Providers({
   initialAnnouncement?: ActiveAnnouncement | null;
 }) {
   const pathname = usePathname();
+  const isAdminPage = pathname === '/nicaiyixiahh' || pathname.startsWith('/nicaiyixiahh/');
   // Dedicated display surfaces: the tournament screen and the OBS scoreboard.
   // Neither may show the global announcement or bounce to /login, which would
   // put a modal or a login form into the live broadcast.
@@ -22,6 +23,12 @@ export function Providers({
     || pathname.startsWith('/broadcast/overlay/');
 
   useEffect(() => {
+    if (isAdminPage) {
+      // Include portals mounted under body, such as admin modals and drawers.
+      document.body.setAttribute('data-allow-copy', '');
+      return () => document.body.removeAttribute('data-allow-copy');
+    }
+
     const preventClipboardExport = (event: ClipboardEvent) => {
       const selection = window.getSelection();
       if (event.type === 'copy' && selection && !selection.isCollapsed && selection.rangeCount === 1) {
@@ -42,7 +49,7 @@ export function Providers({
       document.removeEventListener('copy', preventClipboardExport, true);
       document.removeEventListener('cut', preventClipboardExport, true);
     };
-  }, []);
+  }, [isAdminPage]);
 
   return (
     <SessionProvider>

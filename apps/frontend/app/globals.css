@@ -1995,7 +1995,7 @@ a {
   line-height: 1.6;
 }
 
-/* Disable selection throughout the UI, including portals mounted under body. */
+/* Disable selection by default, including portals mounted under body. */
 body,
 body * {
   -webkit-user-select: none !important;
@@ -2003,7 +2003,7 @@ body * {
   -webkit-touch-callout: none !important;
 }
 
-/* Keep selection available for editing; Providers still blocks copy and cut. */
+/* Keep selection available for editing; Providers controls copy and cut. */
 body input,
 body textarea,
 body [contenteditable='true'],
@@ -2016,6 +2016,8 @@ body [contenteditable='plaintext-only'] * {
   user-select: text !important;
 }
 
+body[data-allow-copy],
+body[data-allow-copy] *,
 body [data-allow-copy],
 body [data-allow-copy] * {
   -webkit-user-select: text !important;

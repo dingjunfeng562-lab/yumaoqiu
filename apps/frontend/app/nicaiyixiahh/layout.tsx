@@ -262,7 +262,6 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           collapsible
           collapsed={collapsed}
           onCollapse={setCollapsed}
-          onCopy={(event) => event.preventDefault()}
           theme="dark"
           style={{
             height: '100vh',
@@ -290,10 +289,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         }}
         rootClassName="admin-mobile-drawer"
       >
-        <div
-          className="admin-navigation-panel"
-          onCopy={(event) => event.preventDefault()}
-        >
+        <div className="admin-navigation-panel">
           {brandRow(false)}
           {navMenu}
         </div>
