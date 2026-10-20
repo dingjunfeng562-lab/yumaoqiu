@@ -210,7 +210,7 @@ model User {
   manager           User?              @relation("ManagedUsers", fields: [managerId], references: [id], onDelete: SetNull)
   managedUsers      User[]             @relation("ManagedUsers")
   issuedInvites     InviteCode[]       @relation("IssuedInvites")
-  staffInviteLimit  Int                @default(50)
+  staffInviteLimit  Int                @default(20)
   staffInviteUsed   Int                @default(0)
   permissions       Json?
   staffQuotaCharged Boolean            @default(false)

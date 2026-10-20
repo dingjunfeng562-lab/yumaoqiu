@@ -80,7 +80,7 @@ export default function AdminUsersPage() {
   const token = session?.user?.accessToken;
   const role = useCurrentRole();
   const [quotaTarget, setQuotaTarget] = useState<UserItem | null>(null);
-  const [quotaLimit, setQuotaLimit] = useState(50);
+  const [quotaLimit, setQuotaLimit] = useState(20);
   const [quotaSaving, setQuotaSaving] = useState(false);
   const [ownQuota, setOwnQuota] = useState<{ limit: number | null; used: number; remaining: number | null }>();
   const [permissionTarget, setPermissionTarget] = useState<UserItem | null>(null);
@@ -441,7 +441,7 @@ export default function AdminUsersPage() {
             {
               title: '裁判 / 图片员名额',
               key: 'staffQuota',
-              render: (_: unknown, row: UserItem) => row.role !== 'ROOT' ? `已用 ${row.staffInviteUsed ?? 0} / 总额 ${row.staffInviteLimit ?? 50}` : '-',
+              render: (_: unknown, row: UserItem) => row.role !== 'ROOT' ? `已用 ${row.staffInviteUsed ?? 0} / 总额 ${row.staffInviteLimit ?? 20}` : '-',
             },
             {
               title: '已裁场次',
@@ -488,7 +488,7 @@ export default function AdminUsersPage() {
                     角色
                   </Button>}
                   {role === 'ROOT' && <Button disabled={row.role === 'ROOT'} onClick={() => openPermissions(row)} title={row.role === 'ROOT' ? '超级管理员固定拥有全部权限' : undefined}>功能权限</Button>}
-                  {row.role !== 'ROOT' && role === 'ROOT' && <Button onClick={() => { setQuotaTarget(row); setQuotaLimit(row.staffInviteLimit ?? 50); }}>分配名额</Button>}
+                  {row.role !== 'ROOT' && role === 'ROOT' && <Button onClick={() => { setQuotaTarget(row); setQuotaLimit(row.staffInviteLimit ?? 20); }}>分配名额</Button>}
                   <Button
                     icon={<LockOutlined />}
                     onClick={() => {
@@ -533,7 +533,7 @@ export default function AdminUsersPage() {
         </Checkbox.Group>
       </Modal>
       <Modal title={quotaTarget ? `分配名额：${quotaTarget.username}` : '分配名额'} open={!!quotaTarget} onCancel={() => setQuotaTarget(null)} onOk={saveQuota} confirmLoading={quotaSaving}>
-        <Typography.Paragraph>裁判和图片员共用总额度，默认 50。已累计使用 {quotaTarget?.staffInviteUsed ?? 0} 个，删除账号不会返还。</Typography.Paragraph>
+        <Typography.Paragraph>裁判和图片员共用总额度，默认 20。已累计使用 {quotaTarget?.staffInviteUsed ?? 0} 个，删除账号不会返还。</Typography.Paragraph>
         <InputNumber aria-label="邀请码总额度" min={quotaTarget?.staffInviteUsed ?? 0} max={2147483647} precision={0} value={quotaLimit} onChange={(value) => setQuotaLimit(value ?? 0)} style={{ width: '100%' }} />
       </Modal>
       <Modal title="新建账号" open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} destroyOnHidden>
