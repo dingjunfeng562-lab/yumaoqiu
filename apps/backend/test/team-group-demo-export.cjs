@@ -16,8 +16,10 @@ const competitionId = randomUUID();
 const outDir = path.join(__dirname, '..', '..', '..', 'outputs', 'team-group-verification');
 
 const TEAMS = [
-  ['市第一中学', '市第一中学'], ['实验中学', '实验中学'],
-  ['外国语学校', '外国语学校'], ['育才中学', '育才中学'],
+  ['市第一中学', '市第一中学', [['陈昊', 'MALE'], ['李承泽', 'MALE'], ['周雨桐', 'FEMALE'], ['林书瑶', 'FEMALE']]],
+  ['实验中学', '实验中学', [['王子航', 'MALE'], ['赵一鸣', 'MALE'], ['孙嘉怡', 'FEMALE'], ['吴思彤', 'FEMALE']]],
+  ['外国语学校', '外国语学校', [['郑浩然', 'MALE'], ['黄子轩', 'MALE'], ['何静怡', 'FEMALE'], ['徐若曦', 'FEMALE']]],
+  ['育才中学', '育才中学', [['马天佑', 'MALE'], ['高远', 'MALE'], ['冯雨欣', 'FEMALE'], ['蒋梦琪', 'FEMALE']]],
 ];
 
 async function main() {
@@ -35,11 +37,11 @@ async function main() {
   for (const [i, eventType] of ['MENS_SINGLES', 'WOMENS_SINGLES', 'MIXED_DOUBLES'].entries()) {
     await db.teamCompetitionItem.create({ data: { teamCompetitionId: competitionId, eventType, sortOrder: i + 1 } });
   }
-  for (const [name, affiliation] of TEAMS) {
+  for (const [name, affiliation, roster] of TEAMS) {
     const team = await db.team.create({ data: { teamCompetitionId: competitionId, name, affiliation } });
-    const roster = [['陈昊', 'MALE'], ['李承泽', 'MALE'], ['周雨桐', 'FEMALE'], ['林书瑶', 'FEMALE']];
+    // 选手姓名只写姓名：单位由秩序表的“单位”行体现，不拼进姓名。
     for (const [playerName, gender] of roster) {
-      const player = await db.player.create({ data: { name: `${name}-${playerName}`, gender, affiliation, ownerId: actorId } });
+      const player = await db.player.create({ data: { name: playerName, gender, affiliation, ownerId: actorId } });
       await db.teamMember.create({ data: { teamId: team.id, playerId: player.id } });
     }
   }

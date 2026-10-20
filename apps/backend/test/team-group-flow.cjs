@@ -222,6 +222,8 @@ async function main() {
 
   const lockedOrder = orderLines.filter(line => line.includes('队') && /男\d|女\d/.test(line));
   ok(lockedOrder.length > 0, '已锁定名单的团体场次显示具体选手', lockedOrder.slice(0, 2));
+  // 单位已单独占一行，姓名行只写姓名，不重复单位
+  ok(lockedOrder.every(line => !line.includes('单位')), '姓名行只写姓名，不拼单位', lockedOrder.slice(0, 2));
   ok(orderLines.some(line => line.includes('待提交名单')), '未提交名单的团体场次只显示占位，不泄露选手');
   console.log(`  文件：${filePath}`);
 }
