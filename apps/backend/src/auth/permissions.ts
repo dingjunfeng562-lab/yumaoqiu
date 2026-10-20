@@ -28,7 +28,13 @@ export const PERMISSION_KEYS: string[] = PERMISSION_OPTIONS.map((item) => item.k
 export type PermissionUser = { role: Role; permissions?: Prisma.JsonValue };
 export const DEFAULT_PERMISSIONS: Record<Role, PermissionKey[]> = {
   ROOT: PERMISSION_OPTIONS.map((item) => item.key),
-  ADMIN: ['TOURNAMENTS', 'PLAYERS', 'ORDERBOOK', 'USERS', 'INVITES', 'PHOTOS', 'DASHBOARD'],
+  // 管理员默认拥有赛事运营的整套功能，只保留四项平台级配置（赛事审核发布、
+  // 公告、AI 配置、图片审核、邮件设置）给超级管理员；邀请码始终由角色固定授予。
+  ADMIN: [
+    'TOURNAMENTS', 'PLAYERS', 'ORDERBOOK', 'DATA_EXPORT', 'EVENTS', 'TEAMS',
+    'DRAWS', 'SCHEDULING', 'SCORING', 'PHOTOS', 'USERS', 'DASHBOARD',
+    'REGISTRATION', 'REFEREE', 'PHOTO_UPLOAD',
+  ],
   PLAYER: ['REGISTRATION'],
   REFEREE: ['REFEREE'],
   PHOTOGRAPHER: ['PHOTO_UPLOAD'],

@@ -1,5 +1,5 @@
 export const DEFAULT_PERMISSIONS: Record<string, string[]> = {
-  ADMIN: ['TOURNAMENTS', 'PLAYERS', 'ORDERBOOK', 'USERS', 'INVITES', 'PHOTOS', 'DASHBOARD'],
+  ADMIN: ['TOURNAMENTS', 'PLAYERS', 'ORDERBOOK', 'DATA_EXPORT', 'EVENTS', 'TEAMS', 'DRAWS', 'SCHEDULING', 'SCORING', 'PHOTOS', 'USERS', 'DASHBOARD', 'REGISTRATION', 'REFEREE', 'PHOTO_UPLOAD'],
   PLAYER: ['REGISTRATION'], REFEREE: ['REFEREE'], PHOTOGRAPHER: ['PHOTO_UPLOAD'],
 };
 export function hasFeature(role: string | undefined, permissions: string[] | undefined, key: string) {

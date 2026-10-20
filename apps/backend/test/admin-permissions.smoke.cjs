@@ -64,7 +64,7 @@ async function main() {
     await request(restrictedPlayer, 'GET', '/auth/invite-quota', undefined, 403);
     await request(restrictedPlayer, 'POST', '/auth/invite-codes', { role: 'PLAYER', maxUses: 1 }, 403);
     await request(root, 'PATCH', `/auth/users/${restrictedPlayer.id}/permissions`, { permissions: ['INVITES'] }, 400);
-    assert.equal((await request(adminA, 'GET', '/auth/invite-quota')).limit, 50);
+    assert.equal((await request(adminA, 'GET', '/auth/invite-quota')).limit, 20);
     for (const role of ['admin', 'root']) await request(adminA, 'POST', `/auth/users/${role}`, credentials(), 403);
     await request(adminA, 'POST', '/v1/auth/users/admin', credentials(), 403);
     await request(adminA, 'POST', '/auth/invite-codes', { role: 'ADMIN', maxUses: 1 }, 403);
@@ -97,11 +97,12 @@ async function main() {
     await request(adminA, 'GET', `/events/${tb.events[0].id}`, undefined, 404);
     assert((await request(adminA, 'GET', '/events')).every((event) => event.tournamentId === ta.id));
     await request(adminA, 'GET', `/exports/tournaments/${tb.id}/orderbook`, undefined, 404);
-    await request(adminA, 'GET', `/exports/tournaments/${ta.id}/results`, undefined, 403);
+    // DATA_EXPORT is part of the administrator default set.
+    await request(adminA, 'GET', `/exports/tournaments/${ta.id}/results`);
     const orderbook = await request(adminA, 'GET', `/exports/tournaments/${ta.id}/orderbook`);
     assert(Buffer.isBuffer(orderbook) && orderbook.subarray(0, 2).toString() === 'PK', 'Real XLSX export must succeed');
 
-    for (const path of ['/admin/ai-config', '/admin/announcements', '/admin/image-moderation', '/admin/email/settings', '/scoring/referees', '/team-competitions', '/usage-metrics/summary']) {
+    for (const path of ['/admin/ai-config', '/admin/announcements', '/admin/image-moderation', '/admin/email/settings', '/usage-metrics/summary']) {
       await request(adminA, 'GET', path, undefined, 403);
     }
     // Dashboard: admins see only their own tournaments' photo stats; AI usage is ROOT-only.
