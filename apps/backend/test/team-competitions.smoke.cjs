@@ -187,8 +187,25 @@ async function main() {
     user = await db.user.update({ where: { id: actorId }, data: { permissions: [...user.permissions, 'PLAYERS'] } });
     await require('./team-competitions.browser.cjs').run({ base, token, user, competition: custom, batchCompetition: beforeBrowser, tournamentId, api });
   }
+  // 未发布的对阵视为草稿：改名单时自动清空，导入照常成功。
   await api(`/team-competitions/${batch.id}/draw`, 'POST', {}, 201);
-  await api(`/team-competitions/${batch.id}/teams/batch-import`, 'POST', { players: batchRows }, 409);
+  const draftRows = ['草稿后甲队'].flatMap(teamName => teamPayload(teamName).players.map(player => ({ ...player, teamName })));
+  const draftImport = await api(`/team-competitions/${batch.id}/teams/batch-import`, 'POST', { players: draftRows }, 201);
+  assert.equal(draftImport.drawCleared, true);
+  const afterDraftImport = await detail(batch.id);
+  assert.equal(afterDraftImport.teamMatches.length, 0);
+  assert.equal(afterDraftImport.teams.length, 3);
+  // 发布后名单锁定：导入被拒绝；取消对阵会清空并取消公开，之后可继续导入。
+  await api(`/team-competitions/${batch.id}/draw`, 'POST', {}, 201);
+  await api(`/team-competitions/${batch.id}`, 'PATCH', { isPublished: true });
+  const blockedRows = ['发布后乙队'].flatMap(teamName => teamPayload(teamName).players.map(player => ({ ...player, teamName })));
+  await api(`/team-competitions/${batch.id}/teams/batch-import`, 'POST', { players: blockedRows }, 409);
+  const clearedBatch = await api(`/team-competitions/${batch.id}/draw/clear`, 'POST', {}, 201);
+  assert.equal(clearedBatch.teamMatches.length, 0);
+  assert.equal(clearedBatch.isPublished, false);
+  assert.equal(clearedBatch.teams.length, 3);
+  await api(`/team-competitions/${batch.id}/teams/batch-import`, 'POST', { players: blockedRows }, 201);
+  assert.equal((await detail(batch.id)).teams.length, 4);
   console.log(JSON.stringify({ ok: true, httpChecks: checks, fixtures: competitionIds.length, roster: 'variable', perItemLock: true, overrideKeepsScore: true, clinchCancelsPendingAndLive: true, nextRoundLineupsIndependent: true, customScoring: true }));
 }
 main().finally(async () => {

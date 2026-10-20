@@ -245,24 +245,27 @@ export class TeamCompetitionsService {
     const playerIds = this.uniquePlayerIds(dto.playerIds);
     const players = await this.loadPlayers(playerIds, actor);
     validateTeamRoster(players);
-    await this.ensureRosterEditable(teamCompetitionId);
     this.ensureSingleCompetitionMembership(players, teamCompetitionId);
 
-    return this.prisma.team.create({
-      data: {
-        teamCompetitionId,
-        name: dto.name,
-        affiliation: dto.affiliation,
-        notes: dto.notes,
-        members: {
-          create: playerIds.map((playerId) => ({ playerId })),
+    return this.prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM TeamCompetition WHERE id = ${teamCompetitionId} FOR UPDATE`;
+      await this.clearDraftDrawForRosterChange(tx, teamCompetitionId);
+      return tx.team.create({
+        data: {
+          teamCompetitionId,
+          name: dto.name,
+          affiliation: dto.affiliation,
+          notes: dto.notes,
+          members: {
+            create: playerIds.map((playerId) => ({ playerId })),
+          },
         },
-      },
-      include: {
-        teamCompetition: true,
-        members: { include: { player: true } },
-      },
-    });
+        include: {
+          teamCompetition: true,
+          members: { include: { player: true } },
+        },
+      });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
   }
 
   async listTeams(teamCompetitionId: string) {
@@ -345,16 +348,20 @@ export class TeamCompetitionsService {
 
   async removeTeam(teamId: string) {
     const team = await this.ensureTeam(teamId);
-    await this.ensureRosterEditable(team.teamCompetitionId);
-    return this.prisma.team.delete({ where: { id: teamId } });
+    return this.prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM TeamCompetition WHERE id = ${team.teamCompetitionId} FOR UPDATE`;
+      await this.clearDraftDrawForRosterChange(tx, team.teamCompetitionId);
+      return tx.team.delete({ where: { id: teamId } });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
   }
 
   async importTeamPlayers(teamCompetitionId: string, dto: ImportTeamPlayersDto, actor?: AuthActor) {
     await this.ensureCompetition(teamCompetitionId);
     validateTeamRoster(dto.players);
-    await this.ensureRosterEditable(teamCompetitionId);
 
     return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM TeamCompetition WHERE id = ${teamCompetitionId} FOR UPDATE`;
+      const drawCleared = await this.clearDraftDrawForRosterChange(tx, teamCompetitionId);
       const createdPlayers = [] as Array<{ id: string }>;
       for (const player of dto.players) {
         const created = await tx.player.create({
@@ -371,7 +378,7 @@ export class TeamCompetitionsService {
         createdPlayers.push(created);
       }
 
-      return tx.team.create({
+      const team = await tx.team.create({
         data: {
           teamCompetitionId,
           name: dto.teamName,
@@ -385,6 +392,7 @@ export class TeamCompetitionsService {
           members: { include: { player: true }, orderBy: { createdAt: 'asc' } },
         },
       });
+      return { ...team, drawCleared };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
   }
 
@@ -392,11 +400,8 @@ export class TeamCompetitionsService {
     // Share the competition lock with draw generation; validate the entire batch before writing.
     return this.prisma.$transaction(async tx => {
       await tx.$queryRaw`SELECT id FROM TeamCompetition WHERE id = ${teamCompetitionId} FOR UPDATE`;
-      const competition = await tx.teamCompetition.findUnique({ where: { id: teamCompetitionId } });
-      if (!competition) throw new NotFoundException('团体赛不存在');
-      if (await tx.teamMatch.count({ where: { teamCompetitionId } })) {
-        throw new ConflictException('已生成对阵，不能批量新增队伍；临时补充人员请使用队伍的例外调整按钮');
-      }
+      // 未发布的对阵视为草稿：改名单时直接清空；已发布的须先“取消对阵”。
+      const drawCleared = await this.clearDraftDrawForRosterChange(tx, teamCompetitionId);
       const groups = new Map<string, BatchImportTeamsDto['players']>();
       for (const [index, input] of dto.players.entries()) {
         const row = { ...input, teamName: input.teamName.trim(), name: input.name.trim(), lineNumber: input.lineNumber ?? index + 1 };
@@ -420,7 +425,7 @@ export class TeamCompetitionsService {
           await tx.teamMember.create({ data: { teamId: team.id, playerId: player.id } });
         }
       }
-      return { teamCount: groups.size, playerCount: dto.players.length };
+      return { teamCount: groups.size, playerCount: dto.players.length, drawCleared };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, timeout: 30000 });
   }
 
@@ -494,6 +499,27 @@ export class TeamCompetitionsService {
         roundNo++;
       }
     }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+    return this.findOne(teamCompetitionId);
+  }
+
+  /**
+   * 取消已生成的对阵：清空对阵、小组分组、赛前名单与比赛结果，回到“有队伍、无对阵”的状态。
+   * 与单项的“取消全部编排”一致，属于不可撤销的破坏性操作，界面须二次确认。
+   * 队伍、出场项目与赛制配置全部保留，便于补录队伍后重新生成对阵。
+   */
+  async clearDraw(teamCompetitionId: string) {
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM TeamCompetition WHERE id = ${teamCompetitionId} FOR UPDATE`;
+      const competition = await tx.teamCompetition.findUnique({ where: { id: teamCompetitionId }, select: { id: true } });
+      if (!competition) throw new NotFoundException('团体赛不存在');
+      // 级联清除子项比赛及其比分、赛前名单、小组分组和组内排名。
+      await tx.teamMatch.deleteMany({ where: { teamCompetitionId } });
+      await tx.teamGroup.deleteMany({ where: { teamCompetitionId } });
+      await tx.team.updateMany({ where: { teamCompetitionId }, data: { finalRank: null } });
+      // 与单项“取消全部编排”一致：清空即取消公开，避免公开端出现空的已发布对阵。
+      await tx.teamCompetition.update({ where: { id: teamCompetitionId }, data: { isPublished: false } });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+
     return this.findOne(teamCompetitionId);
   }
 
@@ -970,10 +996,26 @@ export class TeamCompetitionsService {
     return uniqueIds;
   }
 
-  private async ensureRosterEditable(teamCompetitionId: string) {
-    if (await this.prisma.teamMatch.count({ where: { teamCompetitionId } })) {
-      throw new ConflictException('已生成对阵后不能增删队伍或变更队员库，可在各子项开赛前调整出场选手');
+  /**
+   * 名单变更前处理已生成的对阵：未发布的对阵属于草稿，直接清空，改完名单重新生成即可；
+   * 已发布的对阵锁定名单，须先在团体赛详情“取消对阵”。
+   * 返回是否清空了对阵，便于接口告知前端需要重新生成。
+   */
+  private async clearDraftDrawForRosterChange(tx: Prisma.TransactionClient, teamCompetitionId: string) {
+    const competition = await tx.teamCompetition.findUnique({
+      where: { id: teamCompetitionId },
+      select: { isPublished: true },
+    });
+    if (!competition) throw new NotFoundException('团体赛不存在');
+    const drawn = await tx.teamMatch.count({ where: { teamCompetitionId } });
+    if (!drawn) return false;
+    if (competition.isPublished) {
+      throw new ConflictException('对阵已发布，不能增删队伍；请先在团体赛详情点击“取消对阵”再修改名单');
     }
+    await tx.teamMatch.deleteMany({ where: { teamCompetitionId } });
+    await tx.teamGroup.deleteMany({ where: { teamCompetitionId } });
+    await tx.team.updateMany({ where: { teamCompetitionId }, data: { finalRank: null } });
+    return true;
   }
 
   private async loadPlayers(playerIds: string[], actor?: AuthActor) {

@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { Alert, Button, Card, Form, Input, Modal, Select, Space, Table, Tag, Typography, message } from 'antd';
-import { PlusOutlined, ReloadOutlined, SettingOutlined } from '@ant-design/icons';
+import { Alert, Button, Card, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography, message } from 'antd';
+import { DeleteOutlined, PlusOutlined, ReloadOutlined, SettingOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import TeamCompetitionFields, { TEAM_SCORING_OPTIONS, teamDefaults, teamAppearanceLabel, teamFormatLabel, teamFormatPayload } from '@/components/TeamCompetitionFields';
 import TeamRosterImportModal from '@/components/TeamRosterImport';
@@ -105,16 +105,24 @@ export default function TeamCompetitionDetailPage() {
       if (!name || !['男', '女', 'MALE', 'FEMALE'].includes(gender)) throw new Error(`第 ${index + 1} 行请填写姓名和明确的性别（男/女）`);
       return { name, gender: ['女', 'FEMALE'].includes(gender) ? 'FEMALE' : 'MALE', affiliation: affiliation || values.affiliation, contact };
     });
+    let drawCleared = false;
     if (addingToTeam) {
       await apiFetch(`/team-competitions/teams/${addingToTeam.id}/players`, { method: 'POST', token, body: JSON.stringify({ players: members, overrideConfirmed: true }) });
     } else {
-      await apiFetch(`/team-competitions/${id}/teams/import`, { method: 'POST', token, body: JSON.stringify({ teamName: values.teamName, affiliation: values.affiliation, players: members }) });
+      const created = await apiFetch<{ drawCleared?: boolean }>(`/team-competitions/${id}/teams/import`, { method: 'POST', token, body: JSON.stringify({ teamName: values.teamName, affiliation: values.affiliation, players: members }) });
+      drawCleared = Boolean(created.drawCleared);
     }
-    setImportOpen(false); importForm.resetFields(); message.success('队员已导入'); await loadData();
+    setImportOpen(false); importForm.resetFields();
+    message.success(drawCleared ? '队员已导入；原对阵尚未发布，已清空，请重新生成对阵' : '队员已导入');
+    await loadData();
   }
   async function draw(force: boolean) {
     await apiFetch(`/team-competitions/${id}/draw`, { method: 'POST', token, body: JSON.stringify({ force }) });
     message.success('对阵已生成，请逐项填报出场名单'); await loadData();
+  }
+  async function clearDraw() {
+    await apiFetch(`/team-competitions/${id}/draw/clear`, { method: 'POST', token });
+    message.success('已取消对阵，可继续调整队伍后重新生成'); await loadData();
   }
   function openLineup(encounter: Encounter, match: ChildMatch) {
     setLineupOverride(false);
@@ -134,6 +142,7 @@ export default function TeamCompetitionDetailPage() {
   }
   if (!competition) return <Card loading={loading}><Button onClick={loadData}>重新加载</Button></Card>;
   const hasDraw = competition.teamMatches.length > 0;
+  const rosterLocked = hasDraw && competition.isPublished;
   const rosterText = `每队人数不限 · ${teamAppearanceLabel(competition.maxPlayerAppearances)}`;
   const activeFinal = Boolean(active && (['COMPLETED', 'CANCELLED'].includes(active.match.status) || ['COMPLETED', 'CANCELLED'].includes(active.encounter.status)));
   const activeReadonly = activeFinal || Boolean(active && !lineupOverride && (active.match.lineupLocked || active.match.status !== 'PENDING'));
@@ -152,11 +161,13 @@ export default function TeamCompetitionDetailPage() {
         <Button icon={<SettingOutlined />} onClick={openSettings}>团体赛设置</Button>
         <Button type="primary" disabled={hasDraw} loading={busy} onClick={() => submit(() => draw(false))}>生成对阵</Button>
         {hasDraw && <Button danger onClick={() => Modal.confirm({ title: '重新生成对阵？', content: '将清除已有对阵和赛前名单。已有子项开赛时不能重新生成。', okText: '重新生成', cancelText: '取消', onOk: () => submit(() => draw(true)) })}>重新生成</Button>}
+        {hasDraw && <Popconfirm title="清空该团体赛的抽签、对阵与比赛结果并取消公开（队伍名单保留），且无法撤销，确认继续？" okText="清空" cancelText="取消" onConfirm={() => submit(clearDraw)}><Button danger icon={<DeleteOutlined />} loading={busy}>取消对阵</Button></Popconfirm>}
       </Space>
     </Space>
     <Alert type="info" showIcon title={`各子项赛前独立填报名单并锁定，在同一场地按顺序开赛；${competition.playAllMatches ? '胜负确定后继续打完剩余子项，再推进下一轮' : '达到团体胜场数后其余子项无需比赛'}。下一轮可重新安排选手。`} />
     <Card title="项目出场顺序"><Space wrap>{competition.items.map(item => <Tag key={item.id} color="blue">{item.sortOrder}. {item.eventTypeLabel}</Tag>)}</Space></Card>
-    <Card title={<div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingBlock: 12 }}><span>队伍与队员</span><Space wrap><Button icon={<PlusOutlined />} disabled={hasDraw} onClick={() => openTeam()}>从选手库建队</Button><Button disabled={hasDraw} onClick={() => setBatchOpen(true)}>批量导入团体队员</Button></Space></div>}>
+    <Card title={<div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingBlock: 12 }}><span>队伍与队员</span><Space wrap><Button icon={<PlusOutlined />} disabled={rosterLocked} title={rosterLocked ? '对阵已发布，需先取消对阵才能新增队伍' : undefined} onClick={() => openTeam()}>从选手库建队</Button><Button disabled={rosterLocked} title={rosterLocked ? '对阵已发布，需先取消对阵才能批量导入队伍' : undefined} onClick={() => setBatchOpen(true)}>批量导入团体队员</Button></Space></div>}>
+      {hasDraw && <Alert type={rosterLocked ? 'warning' : 'info'} showIcon title={rosterLocked ? '对阵已发布，暂不能新增或删除队伍。' : '对阵尚未发布，仍可调整队伍。'} description={rosterLocked ? '需要调整队伍时，先点右上角“取消对阵”，改完名单再重新生成对阵；已有队伍补人请用该队的“例外补充队员”。' : '新增或删除队伍会清空当前对阵，调整完请重新生成对阵；已有队伍补人请用该队的“例外补充队员”。'} style={{ marginBottom: 12 }} />}
       <Table rowKey="id" dataSource={competition.teams} pagination={false} scroll={{ x: 650 }} columns={[
         { title: '队伍', dataIndex: 'name' }, { title: '单位', dataIndex: 'affiliation' },
         { title: '队员人数', render: (_, team: Team) => `${team.memberCount} 人（${team.members.filter(p => p.gender === 'MALE').length} 男 ${team.members.filter(p => p.gender === 'FEMALE').length} 女）` },

@@ -1,7 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, Button, Card, Empty, Modal, Select, Space, Table, Tag, message } from 'antd';
+import { Alert, Button, Card, Empty, Modal, Popconfirm, Select, Space, Table, Tag, message } from 'antd';
+import { DeleteOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { teamFormatLabel } from './TeamCompetitionFields';
 
@@ -55,6 +56,7 @@ export default function TeamCompetitionGroups({ competitionId, token, teams, for
   return <Card loading={loading} title={isGroup ? '小组分组与积分榜' : '团体赛抽签'} extra={<Space wrap>
     {showDraw && <Button type="primary" disabled={hasDraw || teams.length < 2} loading={busy} onClick={() => run('draw', { force: false }, '团体对阵已生成')}>生成团体对阵</Button>}
     {showDraw && hasDraw && <Button danger disabled={busy} onClick={() => Modal.confirm({ title: '重新抽签？', content: '将清除已有对阵和赛前名单。已有子项开赛时不能重新生成。', okText: '重新生成', cancelText: '取消', onOk: () => run('draw', { force: true }, '团体对阵已重新生成') })}>重新抽签</Button>}
+    {showDraw && hasDraw && <Popconfirm title="清空该团体赛的抽签、对阵与比赛结果并取消公开（队伍名单保留），且无法撤销，确认继续？" okText="清空" cancelText="取消" onConfirm={() => run('draw/clear', {}, '已取消团体对阵，可调整队伍后重新生成')}><Button danger icon={<DeleteOutlined />} disabled={busy}>取消对阵</Button></Popconfirm>}
     {groups.length > 0 && !editing && <Button disabled={busy} onClick={startEditing}>手动调整分组</Button>}
     <Button onClick={load} disabled={busy}>刷新分组</Button>
   </Space>}>

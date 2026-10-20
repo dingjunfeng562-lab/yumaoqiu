@@ -130,6 +130,11 @@ export class TeamCompetitionsController {
     return this.teamCompetitionsService.generateDraw(id, dto);
   }
 
+  @Post(':id/draw/clear')
+  clearDraw(@Param('id') id: string) {
+    return this.teamCompetitionsService.clearDraw(id);
+  }
+
   @Get('team-matches/:teamMatchId/lineups')
   getTeamMatchLineups(@Param('teamMatchId') teamMatchId: string) {
     return this.teamCompetitionsService.getTeamMatchLineups(teamMatchId);

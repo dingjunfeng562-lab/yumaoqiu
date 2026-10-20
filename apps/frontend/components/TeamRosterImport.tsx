@@ -35,7 +35,7 @@ export function parseTeamRoster(text: string) {
 export async function importTeamRoster(competition: TeamImportCompetition, text: string, token?: string) {
   const parsed = parseTeamRoster(text);
   if (!parsed.valid) throw new Error('请先修正导入预览中的行数据问题');
-  return apiFetch<{ teamCount: number; playerCount: number }>(`/team-competitions/${competition.id}/teams/batch-import`, {
+  return apiFetch<{ teamCount: number; playerCount: number; drawCleared?: boolean }>(`/team-competitions/${competition.id}/teams/batch-import`, {
     method: 'POST', token, body: JSON.stringify({ players: parsed.rows.map(row => ({ teamName: row.teamName, name: row.name, gender: row.gender, affiliation: row.affiliation, contact: row.contact, lineNumber: row.lineNumber })) }),
   });
 }
@@ -68,7 +68,7 @@ export default function TeamRosterImportModal({ competition, open, onClose, onIm
     setBusy(true);
     try {
       const result = await importTeamRoster(competition, text, token);
-      message.success(`已导入 ${result.teamCount} 个团体、${result.playerCount} 名队员`);
+      message.success(`已导入 ${result.teamCount} 个团体、${result.playerCount} 名队员${result.drawCleared ? '；原对阵尚未发布，已清空，请重新生成对阵' : ''}`);
       setText(''); onClose(); await onImported();
     } catch (error) { message.error(error instanceof Error ? error.message : '导入失败'); }
     finally { setBusy(false); }
