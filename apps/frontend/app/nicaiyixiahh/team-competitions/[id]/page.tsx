@@ -18,6 +18,7 @@ type ChildMatch = { id: string; teamCompetitionItemId: string; matchNo: number; 
 type Encounter = { id: string; round: string; matchNo: number; status: string; team1?: { id: string; name: string }; team2?: { id: string; name: string }; team1Wins: number; team2Wins: number; winnerTeamName?: string; matches: ChildMatch[]; lineups: Lineup[] };
 type Competition = { id: string; name: string; description?: string; format?: string; groupCount?: number | null; advancePerGroup?: number | null; winThreshold: number; maxPlayerAppearances: number; playAllMatches: boolean; scoringRule: string; scoringMode: string; customGamePoint: number | null; customGameCap: number | null; customGamesToWin: number | null; isPublished: boolean; items: Item[]; teams: Team[]; teamMatches: Encounter[] };
 type Selection = { teamId: string; teamCompetitionItemId: string; player1Id: string; player2Id?: string };
+type ClearRequest = { id: string; status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED'; reason?: string | null; requesterId: string; requesterNameSnapshot?: string | null; decidedByNameSnapshot?: string | null; decisionRemark?: string | null; decidedAt?: string | null; createdAt: string };
 const statusLabel: Record<string, string> = { PENDING: '未开始', LIVE: '进行中', COMPLETED: '已结束', CANCELLED: '无需比赛' };
 const doubles = (type: string) => type.endsWith('DOUBLES');
 
@@ -25,8 +26,15 @@ export default function TeamCompetitionDetailPage() {
   const { id } = useParams<{ id: string }>();
   const { data: session } = useSession();
   const token = session?.user?.accessToken;
+  const userId = session?.user?.id;
+  const isRoot = session?.user?.role === 'ROOT';
   const [competition, setCompetition] = useState<Competition | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
+  const [clearRequests, setClearRequests] = useState<ClearRequest[]>([]);
+  const [requestOpen, setRequestOpen] = useState(false);
+  const [requestReason, setRequestReason] = useState('');
+  const [decision, setDecision] = useState<{ request: ClearRequest; action: 'approve' | 'reject' } | null>(null);
+  const [decisionRemark, setDecisionRemark] = useState('');
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -48,11 +56,12 @@ export default function TeamCompetitionDetailPage() {
     if (!token || !id) return;
     setLoading(true);
     try {
-      const [detail, available] = await Promise.all([
+      const [detail, available, requests] = await Promise.all([
         apiFetch<Competition>(`/team-competitions/${id}`, { token }),
         apiFetch<Player[]>(`/team-competitions/${id}/available-players`, { token }),
+        apiFetch<ClearRequest[]>(`/team-competitions/${id}/draw/clear-requests`, { token }),
       ]);
-      setCompetition(detail); setPlayers(available);
+      setCompetition(detail); setPlayers(available); setClearRequests(requests);
     } catch (error) { message.error(error instanceof Error ? error.message : '加载失败'); }
     finally { setLoading(false); }
   }, [id, token]);
@@ -124,6 +133,23 @@ export default function TeamCompetitionDetailPage() {
     await apiFetch(`/team-competitions/${id}/draw/clear`, { method: 'POST', token });
     message.success('已取消对阵，可继续调整队伍后重新生成'); await loadData();
   }
+  async function submitClearRequest() {
+    await apiFetch(`/team-competitions/${id}/draw/clear-request`, { method: 'POST', token, body: JSON.stringify({ reason: requestReason }) });
+    setRequestOpen(false); setRequestReason('');
+    message.success('已提交取消申请，等待超级管理员审批'); await loadData();
+  }
+  async function decideClearRequest() {
+    if (!decision) return;
+    await apiFetch(`/team-competitions/${id}/draw/clear-requests/${decision.request.id}/${decision.action}`, {
+      method: 'POST', token, body: JSON.stringify({ reason: decisionRemark }),
+    });
+    message.success(decision.action === 'approve' ? '已通过申请并清空对阵' : '已驳回取消申请');
+    setDecision(null); setDecisionRemark(''); await loadData();
+  }
+  async function withdrawClearRequest(request: ClearRequest) {
+    await apiFetch(`/team-competitions/${id}/draw/clear-requests/${request.id}/cancel`, { method: 'POST', token });
+    message.success('已撤回取消申请'); await loadData();
+  }
   function openLineup(encounter: Encounter, match: ChildMatch) {
     setLineupOverride(false);
     const item = competition?.items.find(i => i.id === match.teamCompetitionItemId);
@@ -143,6 +169,8 @@ export default function TeamCompetitionDetailPage() {
   if (!competition) return <Card loading={loading}><Button onClick={loadData}>重新加载</Button></Card>;
   const hasDraw = competition.teamMatches.length > 0;
   const rosterLocked = hasDraw && competition.isPublished;
+  const pendingClear = clearRequests.find(request => request.status === 'PENDING');
+  const hasStarted = competition.teamMatches.some(encounter => encounter.matches.some(match => match.status !== 'PENDING' || match.games.length > 0));
   const rosterText = `每队人数不限 · ${teamAppearanceLabel(competition.maxPlayerAppearances)}`;
   const activeFinal = Boolean(active && (['COMPLETED', 'CANCELLED'].includes(active.match.status) || ['COMPLETED', 'CANCELLED'].includes(active.encounter.status)));
   const activeReadonly = activeFinal || Boolean(active && !lineupOverride && (active.match.lineupLocked || active.match.status !== 'PENDING'));
@@ -161,9 +189,19 @@ export default function TeamCompetitionDetailPage() {
         <Button icon={<SettingOutlined />} onClick={openSettings}>团体赛设置</Button>
         <Button type="primary" disabled={hasDraw} loading={busy} onClick={() => submit(() => draw(false))}>生成对阵</Button>
         {hasDraw && <Button danger onClick={() => Modal.confirm({ title: '重新生成对阵？', content: '将清除已有对阵和赛前名单。已有子项开赛时不能重新生成。', okText: '重新生成', cancelText: '取消', onOk: () => submit(() => draw(true)) })}>重新生成</Button>}
-        {hasDraw && <Popconfirm title="清空该团体赛的抽签、对阵与比赛结果并取消公开（队伍名单保留），且无法撤销，确认继续？" okText="清空" cancelText="取消" onConfirm={() => submit(clearDraw)}><Button danger icon={<DeleteOutlined />} loading={busy}>取消对阵</Button></Popconfirm>}
+        {hasDraw && pendingClear && <Button danger icon={<DeleteOutlined />} disabled title="已有待审批的取消申请">取消对阵</Button>}
+        {hasDraw && !pendingClear && (!hasStarted || isRoot) && <Popconfirm title="清空该团体赛的抽签、对阵与比赛结果并取消公开（队伍名单保留），且无法撤销，确认继续？" okText="清空" cancelText="取消" onConfirm={() => submit(clearDraw)}><Button danger icon={<DeleteOutlined />} loading={busy}>取消对阵</Button></Popconfirm>}
+        {hasDraw && !pendingClear && hasStarted && !isRoot && <Button danger icon={<DeleteOutlined />} loading={busy} onClick={() => { setRequestReason(''); setRequestOpen(true); }}>申请取消对阵</Button>}
       </Space>
     </Space>
+    {pendingClear && <Alert
+      type="warning" showIcon
+      title={isRoot ? '有待审批的取消对阵申请' : '取消对阵申请待超级管理员审批'}
+      description={`提交人：${pendingClear.requesterNameSnapshot ?? '管理员'} · 提交时间：${new Date(pendingClear.createdAt).toLocaleString('zh-CN', { hour12: false })}${pendingClear.reason ? ` · 理由：${pendingClear.reason}` : ''}。通过后将清空对阵、赛前名单和比赛结果并取消公开。`}
+      action={isRoot
+        ? <Space><Button type="primary" size="small" onClick={() => { setDecision({ request: pendingClear, action: 'approve' }); setDecisionRemark(''); }}>通过并清空</Button><Button size="small" onClick={() => { setDecision({ request: pendingClear, action: 'reject' }); setDecisionRemark(''); }}>驳回</Button></Space>
+        : pendingClear.requesterId === userId ? <Button size="small" onClick={() => submit(() => withdrawClearRequest(pendingClear))}>撤回申请</Button> : null}
+    />}
     <Alert type="info" showIcon title={`各子项赛前独立填报名单并锁定，在同一场地按顺序开赛；${competition.playAllMatches ? '胜负确定后继续打完剩余子项，再推进下一轮' : '达到团体胜场数后其余子项无需比赛'}。下一轮可重新安排选手。`} />
     <Card title="项目出场顺序"><Space wrap>{competition.items.map(item => <Tag key={item.id} color="blue">{item.sortOrder}. {item.eventTypeLabel}</Tag>)}</Space></Card>
     <Card title={<div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingBlock: 12 }}><span>队伍与队员</span><Space wrap><Button icon={<PlusOutlined />} disabled={rosterLocked} title={rosterLocked ? '对阵已发布，需先取消对阵才能新增队伍' : undefined} onClick={() => openTeam()}>从选手库建队</Button><Button disabled={rosterLocked} title={rosterLocked ? '对阵已发布，需先取消对阵才能批量导入队伍' : undefined} onClick={() => setBatchOpen(true)}>批量导入团体队员</Button></Space></div>}>
@@ -244,6 +282,27 @@ export default function TeamCompetitionDetailPage() {
           </Card>;
         })}</Space>}</Form.List>
       </Form>
+    </Modal>
+    <Modal title="申请取消对阵" open={requestOpen} onCancel={() => setRequestOpen(false)} onOk={() => submit(submitClearRequest)} okText="提交申请" cancelText="取消" confirmLoading={busy}>
+      <Alert type="warning" showIcon title="该团体赛已有子项开赛或产生比分。" description="取消会清空全部对阵、赛前名单和比赛结果，并取消公开。申请提交后需由超级管理员审批，通过后立即清空。" style={{ marginBottom: 12 }} />
+      <Input.TextArea aria-label="取消原因" rows={4} maxLength={500} showCount value={requestReason} onChange={event => setRequestReason(event.target.value)} placeholder="请说明取消原因，例如：队员资格问题，需要重新编排" />
+    </Modal>
+    <Modal
+      title={decision?.action === 'approve' ? '通过取消申请？' : '驳回取消申请？'}
+      open={Boolean(decision)}
+      onCancel={() => setDecision(null)}
+      onOk={() => submit(decideClearRequest)}
+      okText={decision?.action === 'approve' ? '通过并清空' : '驳回'}
+      cancelText="取消"
+      confirmLoading={busy}
+      okButtonProps={{ danger: decision?.action === 'approve' }}
+    >
+      <Alert
+        type={decision?.action === 'approve' ? 'warning' : 'info'} showIcon
+        title={decision?.action === 'approve' ? '通过后将立即清空对阵、赛前名单与比赛结果，并取消公开，无法撤销。' : '驳回后申请关闭，管理员可重新提交。'}
+        style={{ marginBottom: 12 }}
+      />
+      <Input.TextArea aria-label="审批备注" rows={3} maxLength={500} showCount value={decisionRemark} onChange={event => setDecisionRemark(event.target.value)} placeholder={decision?.action === 'approve' ? '审批备注（可选）' : '驳回理由（可选）'} />
     </Modal>
   </Space>;
 }

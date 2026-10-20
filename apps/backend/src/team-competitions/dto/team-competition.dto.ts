@@ -487,3 +487,17 @@ export class GenerateKnockoutFromGroupsDto {
   knockoutFormat?: string; // 例如："直接淘汰", "交叉淘汰"
 }
 
+export class CreateTeamDrawClearRequestDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+}
+
+export class RejectTeamDrawClearRequestDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+}
+

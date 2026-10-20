@@ -157,6 +157,13 @@ enum DrawRedrawRequestStatus {
   CANCELLED
 }
 
+enum TeamDrawClearRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
 enum EmailLogStatus {
   SENT
   FAILED
@@ -215,6 +222,8 @@ model User {
   drawSeedSettings  DrawSeedSetting[]  @relation("drawSeedSettingCreator")
   drawRedrawRequests        DrawRedrawRequest[] @relation("drawRedrawRequestRequester")
   drawRedrawDecisions       DrawRedrawRequest[] @relation("drawRedrawRequestDecider")
+  teamDrawClearRequests     TeamDrawClearRequest[] @relation("teamDrawClearRequestRequester")
+  teamDrawClearDecisions    TeamDrawClearRequest[] @relation("teamDrawClearRequestDecider")
   photos            Photo[]
   createdPhotoActivities PhotoActivity[] @relation("PhotoActivityCreator")
   approvedPhotoActivities PhotoActivity[] @relation("PhotoActivityApprover")
@@ -893,6 +902,7 @@ model TeamCompetition {
   teams        Team[]
   teamMatches  TeamMatch[]
   groups       TeamGroup[]
+  drawClearRequests TeamDrawClearRequest[]
   createdAt    DateTime              @default(now())
   updatedAt    DateTime              @updatedAt
 
@@ -1267,6 +1277,27 @@ model DrawRedrawRequest {
   @@index([requesterId])
   @@index([status, createdAt])
   @@map("draw_redraw_request")
+}
+
+model TeamDrawClearRequest {
+  id                    String                     @id @default(cuid())
+  teamCompetitionId     String
+  teamCompetition       TeamCompetition            @relation(fields: [teamCompetitionId], references: [id], onDelete: Cascade)
+  status                TeamDrawClearRequestStatus @default(PENDING)
+  reason                String?                    @db.VarChar(500)
+  requesterId           String
+  requester             User                       @relation("teamDrawClearRequestRequester", fields: [requesterId], references: [id], onDelete: Restrict)
+  requesterNameSnapshot String?                    @db.VarChar(64)
+  decidedById           String?
+  decidedBy             User?                      @relation("teamDrawClearRequestDecider", fields: [decidedById], references: [id], onDelete: Restrict)
+  decidedByNameSnapshot String?                    @db.VarChar(64)
+  decisionRemark        String?                    @db.VarChar(500)
+  decidedAt             DateTime?
+  createdAt             DateTime                   @default(now())
+  updatedAt             DateTime                   @updatedAt
+
+  @@index([teamCompetitionId, status])
+  @@index([status, createdAt])
 }
 
 model AiConfig {

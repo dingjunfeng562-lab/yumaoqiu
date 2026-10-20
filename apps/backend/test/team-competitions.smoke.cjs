@@ -9,7 +9,7 @@ const db = new PrismaService();
 const base = process.env.TEAM_QA_API || 'http://localhost:4011/api';
 assert(['localhost', '127.0.0.1'].includes(new URL(base).hostname));
 assert(['localhost', '127.0.0.1'].includes(new URL(process.env.DATABASE_URL).hostname));
-const actorId = randomUUID(), otherId = randomUUID(), tournamentId = randomUUID();
+const actorId = randomUUID(), otherId = randomUUID(), rootId = randomUUID(), tournamentId = randomUUID();
 const competitionIds = [];
 let user, token, checks = 0;
 async function api(url, method = 'GET', body, expected = 200) {
@@ -53,6 +53,7 @@ const lineup = (encounter, selections, extra = {}, expected = 200) => api(`/team
 async function main() {
   user = await db.user.create({ data: { id: actorId, username: `team-qa-${actorId}`, email: `${actorId}@team-qa.invalid`, passwordHash: 'test-only-unused', role: 'ADMIN', permissions: ['TEAMS', 'SCORING', 'SCHEDULING', 'TOURNAMENTS'] } });
   await db.user.create({ data: { id: otherId, username: `team-qa-${otherId}`, email: `${otherId}@team-qa.invalid`, passwordHash: 'test-only-unused', role: 'ADMIN' } });
+  await db.user.create({ data: { id: rootId, username: `team-root-${rootId}`, email: `${rootId}@team-qa.invalid`, passwordHash: 'test-only-unused', role: 'ROOT' } });
   await db.tournament.create({ data: { id: tournamentId, name: '团体赛隔离验证', startDate: new Date('2026-10-18T00:00:00Z'), endDate: new Date('2026-10-20T12:00:00Z'), submittedById: actorId, isPublished: true, approvalStatus: 'APPROVED' } });
   token = new JwtService({ secret: process.env.JWT_SECRET }).sign({ sub: actorId }, { expiresIn: '1h' });
   let competition = await makeCompetition(3);
@@ -206,6 +207,20 @@ async function main() {
   assert.equal(clearedBatch.teams.length, 3);
   await api(`/team-competitions/${batch.id}/teams/batch-import`, 'POST', { players: blockedRows }, 201);
   assert.equal((await detail(batch.id)).teams.length, 4);
+  // 已开赛：管理员不能直接取消，须提交申请并由超级管理员审批。
+  await api(`/team-competitions/${batch.id}/draw`, 'POST', {}, 201);
+  const startedMatch = await db.match.findFirst({ where: { teamMatch: { teamCompetitionId: batch.id } }, orderBy: { matchNo: 'asc' } });
+  await db.match.update({ where: { id: startedMatch.id }, data: { status: 'LIVE', startedAt: new Date() } });
+  await api(`/team-competitions/${batch.id}/draw/clear`, 'POST', {}, 409);
+  const clearRequest = await api(`/team-competitions/${batch.id}/draw/clear-request`, 'POST', { reason: '验证审批' }, 201);
+  assert.equal((await api(`/team-competitions/${batch.id}/draw/clear-requests`, 'GET')).filter(request => request.status === 'PENDING').length, 1);
+  const adminToken = token;
+  token = new JwtService({ secret: process.env.JWT_SECRET }).sign({ sub: rootId }, { expiresIn: '1h' });
+  await api(`/team-competitions/${batch.id}/draw/clear-requests/${clearRequest.id}/approve`, 'POST', {}, 201);
+  token = adminToken;
+  const afterApproval = await detail(batch.id);
+  assert.equal(afterApproval.teamMatches.length, 0);
+  assert.equal(afterApproval.isPublished, false);
   console.log(JSON.stringify({ ok: true, httpChecks: checks, fixtures: competitionIds.length, roster: 'variable', perItemLock: true, overrideKeepsScore: true, clinchCancelsPendingAndLive: true, nextRoundLineupsIndependent: true, customScoring: true }));
 }
 main().finally(async () => {
@@ -213,6 +228,7 @@ main().finally(async () => {
   await db.teamCompetition.deleteMany({ where: { id: { in: competitionIds } } });
   await db.tournament.deleteMany({ where: { id: tournamentId } });
   await db.player.deleteMany({ where: { ownerId: { in: [actorId, otherId] } } });
-  await db.user.deleteMany({ where: { id: { in: [actorId, otherId] } } });
+  await db.teamDrawClearRequest.deleteMany({ where: { requesterId: { in: [actorId, otherId] } } }).catch(() => {});
+  await db.user.deleteMany({ where: { id: { in: [actorId, otherId, rootId] } } });
   await db.$disconnect();
 }).catch(error => { console.error(error); process.exitCode = 1; });

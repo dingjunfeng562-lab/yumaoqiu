@@ -21,10 +21,12 @@ import {
   BatchImportTeamsDto,
   AssignTeamMatchRefereeDto,
   CreateTeamCompetitionDto,
+  CreateTeamDrawClearRequestDto,
   CreateTeamDto,
   GenerateTeamDrawDto,
   ImportTeamPlayersDto,
   ParseQuickTeamDto,
+  RejectTeamDrawClearRequestDto,
   ReplaceTeamMembersDto,
   SetTeamLineupsDto,
   UpdateTeamCompetitionDto,
@@ -131,8 +133,49 @@ export class TeamCompetitionsController {
   }
 
   @Post(':id/draw/clear')
-  clearDraw(@Param('id') id: string) {
-    return this.teamCompetitionsService.clearDraw(id);
+  clearDraw(@Param('id') id: string, @Req() req: { user: AuthActor }) {
+    return this.teamCompetitionsService.clearDraw(id, req.user);
+  }
+
+  @Post(':id/draw/clear-request')
+  requestClearDraw(
+    @Param('id') id: string,
+    @Body() dto: CreateTeamDrawClearRequestDto,
+    @Req() req: { user: AuthActor & { username?: string | null } },
+  ) {
+    return this.teamCompetitionsService.requestClearDraw(id, dto.reason, req.user);
+  }
+
+  @Get(':id/draw/clear-requests')
+  listClearDrawRequests(@Param('id') id: string, @Req() req: { user: AuthActor }) {
+    return this.teamCompetitionsService.listClearDrawRequests(id, req.user);
+  }
+
+  @Roles(Role.ROOT)
+  @Post(':id/draw/clear-requests/:requestId/approve')
+  approveClearDrawRequest(
+    @Param('requestId') requestId: string,
+    @Req() req: { user: AuthActor & { username?: string | null } },
+  ) {
+    return this.teamCompetitionsService.approveClearDrawRequest(requestId, req.user);
+  }
+
+  @Roles(Role.ROOT)
+  @Post(':id/draw/clear-requests/:requestId/reject')
+  rejectClearDrawRequest(
+    @Param('requestId') requestId: string,
+    @Body() dto: RejectTeamDrawClearRequestDto,
+    @Req() req: { user: AuthActor & { username?: string | null } },
+  ) {
+    return this.teamCompetitionsService.rejectClearDrawRequest(requestId, dto.reason, req.user);
+  }
+
+  @Post(':id/draw/clear-requests/:requestId/cancel')
+  cancelClearDrawRequest(
+    @Param('requestId') requestId: string,
+    @Req() req: { user: AuthActor & { username?: string | null } },
+  ) {
+    return this.teamCompetitionsService.cancelClearDrawRequest(requestId, req.user);
   }
 
   @Get('team-matches/:teamMatchId/lineups')
