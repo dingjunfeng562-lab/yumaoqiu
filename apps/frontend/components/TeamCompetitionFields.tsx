@@ -1,6 +1,6 @@
 'use client';
 
-import { Button, Form, Input, InputNumber, Select, Space, Switch, Typography } from 'antd';
+import { Alert, Button, Form, Input, InputNumber, Select, Space, Switch, Typography } from 'antd';
 import { ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 
 export const TEAM_EVENT_OPTIONS = [
@@ -43,7 +43,8 @@ export default function TeamCompetitionFields({ formatLocked = false }: { format
   const format = Form.useWatch('format', form);
   return <>
     <Form.Item name="name" label="团体赛名称" rules={[{ required: true }]}><Input /></Form.Item>
-    <Form.Item name="format" label="赛制" rules={[{ required: true }]}><Select disabled={formatLocked} options={TEAM_FORMAT_OPTIONS} /></Form.Item>
+    <Form.Item name="format" label="赛制" rules={[{ required: true }]}><Select disabled={formatLocked} options={TEAM_FORMAT_OPTIONS} onChange={value => { if (value === 'ROUND_ROBIN') form.setFieldsValue({ groupCount: 1, advancePerGroup: null }); }} /></Form.Item>
+    {format === 'ROUND_ROBIN' && <Alert showIcon type="info" style={{ marginBottom: 16 }} title="全部团体同组，每两队交手一次" description="全部对阵打完即结束比赛，按胜场、净胜分（胜项数减负项数）、两队相互胜负依次确定各队名次。胜次统计赢下的子项总数。6 队共 5 轮、15 场团体对阵，每轮最多使用 3 片场地。" />}
     {format !== 'SINGLE_ELIMINATION' && <Form.Item name="groupCount" label="小组数量" rules={[{ required: format !== 'ROUND_ROBIN', message: '请填写小组数量' }]} extra={format === 'ROUND_ROBIN' ? '单组循环固定为 1 组。' : '填 1 为单组循环，填 2 或以上为多组循环；每组至少 2 支队伍。'}>
       <InputNumber disabled={formatLocked || format === 'ROUND_ROBIN'} min={1} precision={0} />
     </Form.Item>}

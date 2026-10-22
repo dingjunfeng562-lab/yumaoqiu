@@ -135,6 +135,7 @@ function formatActualDuration(row: ScheduleMatch) {
 }
 
 interface ScheduleData {
+  teamCourtLimits?: Array<{ competitionId: string; name: string; teamCount: number; maxCourts: number; canAdjust: boolean }>;
   venues: Venue[];
   matches: ScheduleMatch[];
   conflicts: ConflictItem[];
@@ -225,7 +226,7 @@ export default function AdminSchedulingPage() {
   const canScheduleSecondStage = selectedEventId
     ? hasSecondStageFormat(selectedEvent?.format)
     : events.some((event) => hasSecondStageFormat(event.format));
-  const configuredVenues = selectedTournament?.venues ?? schedule.venues;
+  const configuredVenues = schedule.venues;
   const activeVenues = useMemo(() => configuredVenues.filter((venue) => venue.isActive), [configuredVenues]);
 
   async function loadSchedule(tournamentId = selectedTournamentId, eventId = selectedEventId) {
@@ -308,11 +309,27 @@ export default function AdminSchedulingPage() {
   }) {
     if (!token || !selectedTournamentId) return;
     try {
+      const selectedVenueCount = values.venueIds?.length || activeVenues.length;
+      const exceeded = (schedule.teamCourtLimits ?? []).filter(limit => selectedVenueCount > limit.maxCourts);
+      let adjustTeamVenueCount = false;
+      if (exceeded.length) {
+        const canAdjust = exceeded.length === 1 && exceeded[0].canAdjust;
+        adjustTeamVenueCount = await new Promise<boolean>(resolve => Modal.confirm({
+          zIndex: 2000,
+          title: '场地数量超过团体循环赛所需',
+          content: `${exceeded.map(limit => `${limit.name}：${limit.teamCount} 支团体，每轮最多同时打 ${limit.maxCourts} 场`).join('；')}。选择“保留场地”：全部场地继续启用，自动排程时多余场地留空，之后可在“抽签编排”的对阵表手工调整场地与时间。${canAdjust ? `选择“调整为 ${exceeded[0].maxCourts} 片”：停用本次所选范围内多余的空闲场地；多余场地已有比赛开赛时保留配置。` : '赛事还有其他项目，保留赛事场地配置。'}`,
+          okText: canAdjust ? `调整为 ${exceeded[0].maxCourts} 片并排程` : '保留配置并排程',
+          cancelText: '保留场地，多余留空',
+          closable: false, mask: { closable: false },
+          onOk: () => resolve(canAdjust), onCancel: () => resolve(false),
+        }));
+      }
       const data = await apiFetch<ScheduleData>('/scheduling/auto', {
         method: 'POST',
         token,
         body: JSON.stringify({
           tournamentId: selectedTournamentId,
+          adjustTeamVenueCount,
           eventId: selectedEventId || undefined,
           startAt: values.startAt.toISOString(),
           startAtLocal: values.startAt.format('YYYY-MM-DD HH:mm'),

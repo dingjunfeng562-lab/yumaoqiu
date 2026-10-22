@@ -1200,7 +1200,9 @@ export default function DrawsPage() {
                 }))}
               />
               <Typography.Text type="secondary">
-                抽签后可在此手动移动队伍分组，保存会按新分组重新生成小组对阵。
+                {selectedTeamCompetition?.format === 'ROUND_ROBIN'
+                  ? '全部队伍在同一组，每两队交手一次。自动排程后，可在下方对阵表手工调整场地与时间，保留的空闲场地也可使用。'
+                  : '抽签后可在此手动移动队伍分组；保存会重新生成小组对阵。对阵表可手工调整场地与时间。'}
               </Typography.Text>
             </Space>
             {selectedTeamCompetition && (

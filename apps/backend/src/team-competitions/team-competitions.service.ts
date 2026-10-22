@@ -1,5 +1,6 @@
 import { AuthActor, playerScope, tournamentScope } from '../auth/admin-scope';
 import { validateTeamRoster } from './team-roster';
+import { rankTeamRoundRobin } from '../common/team-round-robin-ranking';
 import {
   BadRequestException,
   ConflictException,
@@ -189,6 +190,9 @@ export class TeamCompetitionsService {
 
   async update(id: string, dto: UpdateTeamCompetitionDto) {
     const current = await this.ensureCompetition(id);
+    if ((dto.format ?? current.format) === TeamCompetitionFormat.ROUND_ROBIN) {
+      dto = { ...dto, groupCount: 1, advancePerGroup: null };
+    }
     const nextItems = dto.items ? this.normalizeItems(dto.items) : null;
     this.ensureWinThreshold(dto.winThreshold ?? current.winThreshold, nextItems?.length ?? current.items.length);
     this.validateScoring({ ...current, ...dto });
@@ -768,6 +772,7 @@ export class TeamCompetitionsService {
         const a = merged.get(`${encounter.team1Id}:${match.teamCompetitionItemId}`);
         const b = merged.get(`${encounter.team2Id}:${match.teamCompetitionItemId}`);
         if (dto.lock && (!a || !b)) throw new BadRequestException('锁定前须填齐本项双方出场名单');
+        // 填报名单只更新出场方和锁定状态；沿用抽签及排程产生的场次、场地与时间。
         await tx.match.update({ where: { id: match.id }, data: {
           side1Id: a ? this.lineupSlotId(a.teamId, a.teamCompetitionItemId, teamMatchId) : null,
           side2Id: b ? this.lineupSlotId(b.teamId, b.teamCompetitionItemId, teamMatchId) : null,
@@ -1250,6 +1255,7 @@ export class TeamCompetitionsService {
       ...(dto.format !== undefined ? { format: dto.format } : {}),
       ...(dto.groupCount !== undefined ? { groupCount: dto.groupCount } : {}),
       ...(dto.advancePerGroup !== undefined ? { advancePerGroup: dto.advancePerGroup } : {}),
+      ...(dto.format === TeamCompetitionFormat.ROUND_ROBIN ? { groupCount: 1, advancePerGroup: null } : {}),
     };
   }
 
@@ -1674,9 +1680,11 @@ export class TeamCompetitionsService {
             team1: true,
             team2: true,
             matches: {
+              orderBy: { matchNo: 'asc' },
               include: {
                 teamCompetitionItem: true,
                 games: true,
+                venue: { select: { id: true, name: true } },
               },
             },
           },
@@ -1689,6 +1697,7 @@ export class TeamCompetitionsService {
     return {
       competition: {
         id: competition.id,
+        tournamentId: competition.tournamentId,
         name: competition.name,
         format: competition.format,
         groupCount: competition.groupCount,
@@ -1720,6 +1729,10 @@ export class TeamCompetitionsService {
           team2Wins: match.team2Wins,
           status: match.status,
           winnerTeamId: match.winnerTeamId,
+          matches: match.matches.map(child => ({
+            id: child.id, status: child.status, matchNo: child.matchNo,
+            scheduledAt: child.scheduledAt, venue: child.venue,
+          })),
         })),
       })),
     };
@@ -1809,7 +1822,11 @@ export class TeamCompetitionsService {
       record(e.team2Id, e.team1Id, e.winnerTeamId === e.team2Id, e.team2Wins, e.team1Wins);
     }
 
-    const ranked = calculateGroupStandings([...stats.values()], [...h2h.values()]);
+    const group = await tx.teamGroup.findUniqueOrThrow({ where: { id: groupId }, include: { teamCompetition: true } });
+    const ranked = group.teamCompetition.format === TeamCompetitionFormat.ROUND_ROBIN
+      ? rankTeamRoundRobin([...stats.values()].map(row => ({ ...row, id: row.teamId, gameDiff: row.netMatches })), encounters)
+        .map(row => ({ ...row, groupRank: row.rank }))
+      : calculateGroupStandings([...stats.values()], [...h2h.values()]);
     const hasResults = encounters.length > 0;
     for (const row of ranked) {
       await tx.teamGroupMember.update({
@@ -1835,6 +1852,9 @@ export class TeamCompetitionsService {
       if (!competition) throw new NotFoundException('团体赛不存在');
       if (competition.format === TeamCompetitionFormat.SINGLE_ELIMINATION) {
         throw new BadRequestException('单淘汰赛没有小组，请先把赛制改为小组赛');
+      }
+      if (competition.format === TeamCompetitionFormat.ROUND_ROBIN && dto.groups.length !== 1) {
+        throw new BadRequestException('单组循环必须将全部团体放在同一个小组，每两队交手一次');
       }
 
       const played = await tx.match.count({ where: { teamMatch: { teamCompetitionId }, OR: [

@@ -52,6 +52,10 @@ export class UpdateVenueDto {
 }
 
 export class AutoScheduleDto {
+  @IsOptional()
+  @IsBoolean()
+  adjustTeamVenueCount?: boolean;
+
   @IsString()
   tournamentId: string;
 

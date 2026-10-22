@@ -12,6 +12,7 @@ type EventResults = {
   } | null;
 };
 type TeamResults = {
+  format?: string | null;
   teams: Array<{ id: string }>;
   teamMatches: Array<{ status: string; round: string; winnerTeamId: string | null }>;
 };
@@ -44,8 +45,15 @@ export function tournamentResultsReady(tournament: {
   const hasMatches = events.some((event) => event.matches.length) || teams.some((competition) => competition.teamMatches.length);
   // Keep explicitly finalized, manually entered historical results available.
   if (!hasMatches) return tournament.status === 'FINISHED';
-  return events.every(eventResultsReady) && teams.every((competition) =>
-    competition.teamMatches.length > 0 && competition.teamMatches.every(terminal)
-    && competition.teamMatches.some((match) => match.round === 'F' && match.status === 'COMPLETED' && match.winnerTeamId),
-  );
+  return events.every(eventResultsReady) && teams.every(teamResultsReady);
+}
+
+export function teamResultsReady(competition: TeamResults): boolean {
+  if (competition.format === 'ROUND_ROBIN') {
+    const count = competition.teams.length;
+    return count >= 2 && competition.teamMatches.length === count * (count - 1) / 2
+      && competition.teamMatches.every(match => match.status === 'COMPLETED' && Boolean(match.winnerTeamId));
+  }
+  return competition.teamMatches.length > 0 && competition.teamMatches.every(terminal)
+    && competition.teamMatches.some((match) => match.round === 'F' && match.status === 'COMPLETED' && Boolean(match.winnerTeamId));
 }

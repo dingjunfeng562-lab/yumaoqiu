@@ -175,7 +175,7 @@ export default function TournamentCourts({ tournamentId, initialCourt }: { tourn
                   </Button>
                 </article>;
               })}
-            </div> : <Empty description="此场地暂无比赛，请等待赛程安排或刷新" />}
+            </div> : <Empty description="此场地暂无可执裁比赛。团体赛各子项须先填齐并锁定双方出场名单，完成后请刷新。" />}
           </section> : courtId && <Empty description="场地不存在或已停用，请返回场地列表" />}
         </>}
       </div>

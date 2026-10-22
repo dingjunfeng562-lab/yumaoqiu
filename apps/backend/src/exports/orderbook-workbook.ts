@@ -1,5 +1,7 @@
 import * as ExcelJS from 'exceljs';
 import { buildKnockoutSkeleton } from '../common/knockout-skeleton';
+import { teamStandings } from '../common/final-rankings';
+import { teamResultsReady } from '../common/tournament-results-ready';
 import type {
   ExportEvent,
   ExportMatch,
@@ -538,7 +540,7 @@ function teamCompetitionEvents(tournament: ExportTournament): ExportEvent[] {
           venue: child.venue ? { name: child.venue.name, sortOrder: child.venue.sortOrder } : null,
           referee: null,
           games: child.games ?? [],
-          label: item ? `${competition.name}·${TEAM_ITEM_ABBR[item.eventType] ?? item.eventType}` : competition.name,
+          label: item ? TEAM_ITEM_ABBR[item.eventType] ?? item.eventType : '团体赛',
           side1Text: { unit: unitOf(encounter.team1Id), name: playerText(encounter.team1Id, child.teamCompetitionItemId, child.lineupLocked) },
           side2Text: { unit: unitOf(encounter.team2Id), name: playerText(encounter.team2Id, child.teamCompetitionItemId, child.lineupLocked) },
           side1Name: encounter.team1Id ? teamById.get(encounter.team1Id)?.name ?? '' : '',
@@ -551,10 +553,11 @@ function teamCompetitionEvents(tournament: ExportTournament): ExportEvent[] {
 
     events.push({
       type: 'TEAM_COMPETITION',
+      teamCompetition: competition,
       label: competition.name,
       codePrefix: '团体',
       codeStart: codeOffset,
-      format: groups.length ? GROUP_KNOCKOUT_STD : 'SINGLE_ELIMINATION',
+      format: competition.format === 'ROUND_ROBIN' ? 'ROUND_ROBIN' : groups.length ? GROUP_KNOCKOUT_STD : 'SINGLE_ELIMINATION',
       registrations,
       matches,
       secondStage: null,
@@ -611,7 +614,10 @@ function buildScheduleSheet(wb: ExcelJS.Workbook, tournament: ExportTournament) 
 
 function buildOrderSheet(wb: ExcelJS.Workbook, tournament: ExportTournament) {
   const ws = wb.addWorksheet('秩序表');
-  const venueList = venues(tournament);
+  const title = `${tournament.name.trim()} 秩 序 表`.trim();
+  const preserveTeamCourts = tournament.teamCompetitions?.some(competition => competition.format === 'ROUND_ROBIN');
+  const usedVenueIds = new Set(tournament.events.flatMap(event => event.matches.map(match => match.venueId)));
+  const venueList = venues(tournament).filter(venue => !preserveTeamCourts || venue.isActive !== false || usedVenueIds.has(venue.id));
   const regMap = registrationMap(tournament);
   const codeMap = matchCodeMap(tournament);
   const posMap = new Map<string, { group: string; pos: number }>();
@@ -630,7 +636,8 @@ function buildOrderSheet(wb: ExcelJS.Workbook, tournament: ExportTournament) {
 
   ws.mergeCells(1, 1, 2, colCount);
   styleTitleCell(ws.getCell(1, 1));
-  ws.getCell(1, 1).value = '秩 序 表';
+  ws.getCell(1, 1).value = title;
+  ws.getCell(1, 1).alignment = { ...ws.getCell(1, 1).alignment, shrinkToFit: true };
   ws.getRow(1).height = 14.4;
   ws.getRow(2).height = 22;
 
@@ -647,21 +654,12 @@ function buildOrderSheet(wb: ExcelJS.Workbook, tournament: ExportTournament) {
       .map((venue, index) => (sessionMatches.some(({ match }) => match.venueId === venue.id) ? index : -1))
       .filter((index) => index >= 0);
     // 场地列保持全局顺序与编号；若某节只使用后面的场地，前面的列留空，避免“2号场”被挪到“1号场”位置。
-    const sessionVenues = activeVenueIndexes.length ? venueList.slice(0, Math.max(...activeVenueIndexes) + 1) : [];
+    const sessionVenues = preserveTeamCourts ? venueList : activeVenueIndexes.length ? venueList.slice(0, Math.max(...activeVenueIndexes) + 1) : [];
     const sessionColCount = 2 + sessionVenues.length * 2;
     sessionNo += 1;
 
-    if (sessionNo > 1) {
-      ws.mergeCells(row, 1, row, sessionColCount);
-      const repeatTitle = ws.getCell(row, 1);
-      repeatTitle.value = '秩  序  表';
-      repeatTitle.font = { ...REFERENCE_TEXT, bold: true, size: 14, color: { argb: 'FF000000' } };
-      repeatTitle.alignment = { horizontal: 'center', vertical: 'middle' };
-      ws.getRow(row).height = 18.15;
-      row += 2; // 重复标题下保留一行空白，再开始下一节
-    } else {
-      row += 1; // 首节位于主标题下方
-    }
+    // 总标题只在表格开头出现；上午、下午及后续日期仅保留分节标题。
+    row += 1;
     ws.mergeCells(row, 1, row, sessionColCount);
     const sessionCell = ws.getCell(row, 1);
     sessionCell.value = `第${sessionNo}节（${session.label}）`;
@@ -777,10 +775,11 @@ function buildFlowSheet(
     // 团体赛按“场”呈现：多子项场次折叠为一条，避免签位被重复画多次。
     const event: ExportEvent = { ...item, matches: dedupeFixtures(item.matches) };
     const label = eventLabel(event);
+    const teamRoundRobin = event.teamCompetition?.format === 'ROUND_ROBIN';
     // 第一阶段：仅「小组循环+淘汰(标准2023)」输出小组循环成绩网格。按阶段导出时，
     // 第二阶段不画第一阶段；第一阶段不画第二阶段（全量导出 stage 为空时两段都画）。
-    if (stage !== 'second' && event.format === GROUP_KNOCKOUT_STD) {
-      row = sectionTitle(ws, row, `${label}第一阶段：`);
+    if (stage !== 'second' && (event.format === GROUP_KNOCKOUT_STD || teamRoundRobin)) {
+      row = sectionTitle(ws, row, teamRoundRobin ? `${label}单组循环：` : `${label}第一阶段：`);
       row = renderGroupGrids(ws, row, event, regMap, codeMap);
       row += 1;
     }
@@ -788,7 +787,11 @@ function buildFlowSheet(
     //（无任何场次时仅留标题占位，与参考件一致）。
     if (stage !== 'first') {
       row = sectionTitle(ws, row, `${label}第二阶段：`);
-      if (event.secondStage && event.secondStage.matches.length) {
+      if (teamRoundRobin) {
+        // 保留秩序册模板的第二阶段占位；单组循环打完即结束，不生成淘汰场次。
+        ws.getCell(row, 1).value = '单组循环全部结束后确定各队名次，见“名次汇总”。';
+        row += 2;
+      } else if (event.secondStage && event.secondStage.matches.length) {
         row = renderSecondStagePlacement(ws, row, event, event.secondStage, regMap);
       } else if (event.matches.some((m) => isPlayoff(m))) {
         row = renderPlayoffPlacementMatches(ws, row, event, regMap);
@@ -866,7 +869,7 @@ function renderGroupGrids(
       col += CROSS_W;
     }
     const statStart = col;
-    ['胜次', '净胜', '名次'].forEach((text) => {
+    (event.teamCompetition ? ['胜场', '胜次', '净胜分', '名次'] : ['胜次', '净胜', '名次']).forEach((text) => {
       ws.mergeCells(headerRow, col, headerRow, col + STAT_W - 1);
       ws.getCell(headerRow, col).value = text;
       styleHeaderCell(ws.getCell(headerRow, col));
@@ -875,7 +878,7 @@ function renderGroupGrids(
     const lastCol = col - 1;
     row += 1;
 
-    const standings = computeGroupStandings(members, groupMatchByPair);
+    const standings = computeGroupStandings(members, groupMatchByPair, event);
 
     members.forEach((member, i) => {
       const reg = regMap.get(member.id) ?? null;
@@ -897,12 +900,14 @@ function renderGroupGrids(
       }
 
       const stat = standings.get(member.id)!;
-      ws.mergeCells(row, statStart, row, statStart + STAT_W - 1);
-      ws.getCell(row, statStart).value = stat.played ? stat.wins : '';
-      ws.mergeCells(row, statStart + STAT_W, row, statStart + STAT_W * 2 - 1);
-      ws.getCell(row, statStart + STAT_W).value = stat.played ? stat.netGames : '';
-      ws.mergeCells(row, statStart + STAT_W * 2, row, statStart + STAT_W * 3 - 1);
-      ws.getCell(row, statStart + STAT_W * 2).value = stat.rank ?? '-';
+      const stats = [stat.played ? stat.wins : '',
+        ...(event.teamCompetition ? [stat.played ? stat.matchesWon : ''] : []),
+        stat.played ? stat.netGames : '', stat.rank ?? '-'];
+      stats.forEach((value, index) => {
+        const statCol = statStart + index * STAT_W;
+        ws.mergeCells(row, statCol, row, statCol + STAT_W - 1);
+        ws.getCell(row, statCol).value = value;
+      });
 
       for (let c = 1; c <= lastCol; c += 1) ws.getCell(row, c).border = thinBorder();
       row += 1;
@@ -921,7 +926,7 @@ function crossCellText(
   const match = groupMatchByPair.get(pairKey(selfId, oppId));
   if (!match) return '';
   // 团体赛直接显示这场对阵的团体比分。
-  if (match.scoreText) return match.scoreText;
+  if (match.scoreText) return match.side1Id === selfId ? match.scoreText : match.scoreText.split(':').reverse().join(':');
   // 已赛完：从本方视角显示比局数（赢局:输局）。
   if (match.winnerSide && match.games.length) {
     const self1 = match.side1Id === selfId;
@@ -944,6 +949,7 @@ function standingCrossCellText(
   groupMatchByPair: Map<string, ExportMatch>,
 ) {
   const match = groupMatchByPair.get(pairKey(selfId, oppId));
+  if (match?.scoreText) return match.side1Id === selfId ? match.scoreText : match.scoreText.split(':').reverse().join(':');
   if (!match || !match.winnerSide || !match.games.length) return '';
   const self1 = match.side1Id === selfId;
   return `${gamesWonBy(match, self1 ? 1 : 2)}:${gamesWonBy(match, self1 ? 2 : 1)}`;
@@ -952,7 +958,22 @@ function standingCrossCellText(
 function computeGroupStandings(
   members: Array<{ id: string; pos: number }>,
   groupMatchByPair: Map<string, ExportMatch>,
+  event: ExportEvent,
 ) {
+  if (event.teamCompetition) {
+    const ids = new Set(members.map(member => member.id));
+    const competition = event.teamCompetition;
+    const standings = teamStandings({
+      format: competition.format,
+      teams: competition.teams.filter(team => ids.has(team.id)).map(team => ({ ...team, finalRank: null })),
+      teamMatches: competition.teamMatches.filter(match => match.stage === 'GROUP'
+        && match.team1Id && ids.has(match.team1Id) && match.team2Id && ids.has(match.team2Id)),
+    });
+    return new Map(standings.map(row => [row.id, {
+      wins: row.wins, played: row.played, matchesWon: row.matchesWon, netGames: row.gameDiff, pointDiff: row.gameDiff,
+      rank: row.played ? row.rank : null,
+    }]));
+  }
   const rows = members.map((m) => ({
     id: m.id,
     wins: 0,
@@ -998,6 +1019,7 @@ function computeGroupStandings(
   );
   const result = new Map<string, {
     wins: number;
+    matchesWon: number;
     netGames: number;
     pointDiff: number;
     played: number;
@@ -1006,6 +1028,7 @@ function computeGroupStandings(
   ranked.forEach((r, index) => {
     result.set(r.id, {
       wins: r.wins,
+      matchesWon: 0,
       netGames: r.netGames,
       pointDiff: r.pointDiff,
       played: r.played,
@@ -1401,7 +1424,7 @@ function buildGroupStandingSheet(wb: ExcelJS.Workbook, tournament: ExportTournam
     if (!groups.length) continue;
     wrote = true;
     const eventMaxGroupSize = Math.max(...groups.map(([, members]) => members.length));
-    const eventLastCol = eventMaxGroupSize + 7;
+    const eventLastCol = eventMaxGroupSize + (event.teamCompetition ? 8 : 7);
     ws.mergeCells(row, 1, row, eventLastCol);
     const titleCell = ws.getCell(row, 1);
     titleCell.font = { ...REFERENCE_TEXT, bold: true, size: 18, color: { argb: 'FF000000' } };
@@ -1428,13 +1451,13 @@ function buildGroupStandingSheet(wb: ExcelJS.Workbook, tournament: ExportTournam
         ws.getCell(headerRow, 5 + i).value = i + 1;
         referenceCell(ws.getCell(headerRow, 5 + i), { bold: true });
       }
-      ['胜次', '净胜分', '名次'].forEach((header, i) => {
+      (event.teamCompetition ? ['胜场', '胜次', '净胜分', '名次'] : ['胜次', '净胜分', '名次']).forEach((header, i) => {
         ws.getCell(headerRow, lastCross + i + 1).value = header;
         referenceCell(ws.getCell(headerRow, lastCross + i + 1), { bold: true });
       });
       for (let c = 2; c <= 4; c += 1) referenceCell(ws.getCell(headerRow, c), { bold: true });
       row += 1;
-      const standings = computeGroupStandings(members, matchesByPair);
+      const standings = computeGroupStandings(members, matchesByPair, event);
       members.forEach((member) => {
         ws.getCell(row, 1).value = member.pos;
         referenceCell(ws.getCell(row, 1));
@@ -1456,12 +1479,14 @@ function buildGroupStandingSheet(wb: ExcelJS.Workbook, tournament: ExportTournam
             cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DIAGONAL } };
           }
         }
-        ws.getCell(row, lastCross + 1).value = stat?.played ? stat.wins : '';
-        ws.getCell(row, lastCross + 2).value = stat?.played ? stat.pointDiff : '';
-        ws.getCell(row, lastCross + 3).value = stat?.rank ?? '';
-        referenceCell(ws.getCell(row, lastCross + 1));
-        referenceCell(ws.getCell(row, lastCross + 2));
-        referenceCell(ws.getCell(row, lastCross + 3));
+        const stats = [stat?.played ? stat.wins : '',
+          ...(event.teamCompetition ? [stat?.played ? stat.matchesWon : ''] : []),
+          stat?.played ? stat.pointDiff : '', stat?.rank ?? ''];
+        stats.forEach((value, index) => {
+          const cell = ws.getCell(row, lastCross + index + 1);
+          cell.value = value;
+          referenceCell(cell);
+        });
         row += 1;
       });
       row += 1;
@@ -1482,6 +1507,24 @@ function buildRankingSummarySheet(wb: ExcelJS.Workbook, tournament: ExportTourna
   });
   let row = 3;
   for (const event of tournament.events) {
+    if (event.teamCompetition) {
+      const competition = event.teamCompetition;
+      const ready = teamResultsReady(competition);
+      const manual = competition.teams.some(team => team.finalRank != null);
+      // 以团体对阵统计胜场、净胜项及相互胜负；逐队输出，保留并列和全部名次。
+      for (const standing of teamStandings(competition)) {
+        ws.getCell(row, 1).value = eventLabel(event);
+        ws.getCell(row, 2).value = manual || ready
+          ? standing.rank == null ? '未设置' : `第${standing.rank}名`
+          : standing.played ? `暂列第${standing.rank}名` : '待定';
+        ws.getCell(row, 3).value = standing.name;
+        ws.getCell(row, 4).value = manual ? '手动设置' : ready ? '团体赛最终排名' : '团体赛实时积分';
+        ws.getCell(row, 5).value = (manual ? standing.rank != null : ready) ? '已确定' : '待定';
+        styleBodyRange(ws, row, row, 1, 5);
+        row++;
+      }
+      continue;
+    }
     if (event.registrations.some((registration) => registration.finalRank != null)) {
       for (const registration of [...event.registrations].sort((a, b) => (a.finalRank ?? Infinity) - (b.finalRank ?? Infinity) || a.id.localeCompare(b.id))) {
         ws.getCell(row, 1).value = eventLabel(event);

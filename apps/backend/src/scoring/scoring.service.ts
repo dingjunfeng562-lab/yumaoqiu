@@ -139,6 +139,7 @@ export class ScoringService {
     const authorized = { isArchived: false, refereeGrants: { some: { userId: user.id } } };
     return this.listMatchSummaries({
       refereeId: user.id,
+      AND: [this.refereeLineupFilter()],
       OR: [
         { event: { tournament: authorized } },
         { teamMatch: { teamCompetition: { tournament: authorized } } },
@@ -212,11 +213,19 @@ export class ScoringService {
 
   private tournamentMatchFilter(tournamentId: string): Prisma.MatchWhereInput {
     return {
+      AND: [this.refereeLineupFilter()],
       OR: [
         { event: { tournamentId, tournament: { isArchived: false } } },
         { teamMatch: { teamCompetition: { tournamentId, tournament: { isArchived: false } } } },
       ],
     };
+  }
+
+  private refereeLineupFilter(): Prisma.MatchWhereInput {
+    return { OR: [
+      { teamMatchId: null },
+      { teamMatchId: { not: null }, status: { not: MatchStatus.CANCELLED }, lineupLocked: true, side1Id: { not: null }, side2Id: { not: null } },
+    ] };
   }
 
   async listTournamentCourts(tournamentId: string, user: AuthUser) {
@@ -1705,6 +1714,9 @@ export class ScoringService {
     });
     if (!match) throw new NotFoundException('场次不存在');
     if (!hasPermission(user, 'SCORING')) {
+      if (match.teamMatchId && (!match.lineupLocked || !match.side1Id || !match.side2Id)) {
+        throw new NotFoundException('双方出场名单尚未填齐并锁定，比赛暂不对裁判开放');
+      }
       const tournamentId = match.event?.tournamentId ?? match.teamMatch?.teamCompetition.tournamentId;
       if (!tournamentId) throw new ForbiddenException('该场次未关联赛事');
       await this.requireTournamentAuthorization(tournamentId, user);

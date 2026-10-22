@@ -64,3 +64,42 @@ describe('SchedulingService daily scheduling window', () => {
     ).toThrow(BadRequestException);
   });
 });
+
+describe('manual team court adjustments', () => {
+  function setup() {
+    const matches = [0, 10, 20].map((minutes, index) => ({
+      id: `m${index}`, matchNo: index + 1, teamMatchId: 'encounter', eventId: null,
+      status: 'PENDING', venueId: 'court1', durationMinutes: 10,
+      scheduledAt: new Date(Date.UTC(2026, 9, 22, 0, minutes)),
+    }));
+    const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      match: { findMany: jest.fn().mockResolvedValue(matches), update: jest.fn().mockResolvedValue({}) },
+      tournament: { findUniqueOrThrow: jest.fn().mockResolvedValue({ breakMinutes: 10 }) },
+    };
+    const prisma = {
+      match: { findUnique: jest.fn().mockResolvedValue(matches[0]) },
+      venue: { findUnique: jest.fn().mockResolvedValue({ id: 'court4', isActive: true, tournamentId: 't' }) },
+      teamMatch: { findUnique: jest.fn().mockResolvedValue({ teamCompetition: { tournamentId: 't' } }) },
+      $transaction: jest.fn(async callback => callback(tx)),
+    };
+    const service = new SchedulingService(prisma as unknown as PrismaService);
+    jest.spyOn(service, 'getSchedule').mockResolvedValue({} as never);
+    return { service, tx, matches };
+  }
+  it('moves every pending child without rewriting its time on a court-only change', async () => {
+    const { service, tx } = setup();
+    await service.updateMatchSchedule('m0', { venueId: 'court4' });
+    expect(tx.match.update).toHaveBeenCalledTimes(3);
+    for (const [update] of tx.match.update.mock.calls) {
+      expect(update.data.venueId).toBe('court4');
+      expect(update.data).not.toHaveProperty('scheduledAt');
+    }
+  });
+  it('shifts times while preserving the zero-minute gap chosen in automatic scheduling', async () => {
+    const { service, tx } = setup();
+    await service.updateMatchSchedule('m0', { venueId: 'court4', scheduledAt: '2026-10-22T01:00:00.000Z' });
+    expect(tx.match.update.mock.calls.map(([update]) => update.data.scheduledAt.toISOString()))
+      .toEqual(['2026-10-22T01:00:00.000Z', '2026-10-22T01:10:00.000Z', '2026-10-22T01:20:00.000Z']);
+  });
+});

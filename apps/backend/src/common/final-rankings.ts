@@ -1,3 +1,5 @@
+import { rankTeamRoundRobin } from './team-round-robin-ranking';
+
 export function limitRankings<T extends { rank: number | null }>(rows: T[], limit?: number | null): T[] {
   return rows.filter((row) => row.rank != null && (limit == null || row.rank <= limit));
 }
@@ -15,12 +17,13 @@ export function applyFinalRankings<T extends { id: string; rank: number | null }
 }
 
 export function teamStandings(competition: {
+  format?: string | null;
   teams: Array<{ id: string; name: string; affiliation: string; finalRank?: number | null }>;
   teamMatches: Array<{ status: string; stage?: string | null; round?: string; roundNo?: number; team1Id: string | null; team2Id: string | null; winnerTeamId: string | null; team1Wins: number; team2Wins: number }>;
 }) {
   const rows = competition.teams.map((team) => ({
     id: team.id, name: team.name, affiliation: team.affiliation, groupName: null,
-    played: 0, wins: 0, losses: 0, gameDiff: 0,
+    played: 0, wins: 0, losses: 0, matchesWon: 0, gameDiff: 0,
   }));
   for (const match of competition.teamMatches) {
     if (match.status !== 'COMPLETED' || !match.winnerTeamId) continue;
@@ -29,8 +32,12 @@ export function teamStandings(competition: {
       row.played++;
       if (row.id === match.winnerTeamId) row.wins++;
       else row.losses++;
+      row.matchesWon += row.id === match.team1Id ? match.team1Wins : match.team2Wins;
       row.gameDiff += row.id === match.team1Id ? match.team1Wins - match.team2Wins : match.team2Wins - match.team1Wins;
     }
+  }
+  if (competition.format === 'ROUND_ROBIN') {
+    return applyFinalRankings(rankTeamRoundRobin(rows, competition.teamMatches), competition.teams);
   }
   const fixedRanks = new Map<string, number>();
   const eliminated = new Map<string, number>();

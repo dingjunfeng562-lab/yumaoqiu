@@ -165,12 +165,14 @@ type ExportEvent = {
   label?: string;
   codePrefix?: string;
   codeStart?: number;
+  teamCompetition?: ExportTeamCompetition;
 };
 
 type ExportVenue = {
   id: string;
   name: string;
   sortOrder: number;
+  isActive?: boolean;
 };
 
 type ExportTeamItem = { id: string; eventType: string; sortOrder: number };
@@ -272,7 +274,7 @@ export class ExportsService {
     const tournament = await this.findTournamentForExport(tournamentId, kind);
     if (!tournament) throw new NotFoundException('赛事不存在');
 
-    const fingerprint = createHash('sha256').update(kind).update(JSON.stringify(tournament)).digest('hex');
+    const fingerprint = createHash('sha256').update(kind === 'orderbook' ? 'team-orderbook-v5-single-title' : 'team-standings-v2').update(kind).update(JSON.stringify(tournament)).digest('hex');
     return { kind, tournament, fingerprint };
   }
 
@@ -594,7 +596,7 @@ export class ExportsService {
         } },
         venues: {
           orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
-          select: { id: true, name: true, sortOrder: true },
+          select: { id: true, name: true, sortOrder: true, isActive: true },
         },
         events: {
           orderBy: { type: 'asc' },
@@ -811,7 +813,6 @@ export class ExportsService {
     }
 
     for (const competition of tournament.teamCompetitions ?? []) {
-      if (!competition.teams.some((team) => team.finalRank != null)) continue;
       for (const row of teamStandings(competition)) {
         rows.push([tournament.name, `团体赛 · ${competition.name}`, row.rank ?? '未设置', row.name, row.affiliation, row.played, row.wins, row.losses, row.gameDiff]);
       }
