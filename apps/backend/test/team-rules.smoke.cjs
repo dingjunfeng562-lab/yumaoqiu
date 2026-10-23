@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
 
-exports.run = async ({ db, actorId, api, makeCompetition, teamPayload, selection, lineup, detail }) => {
+exports.run = async ({ db, actorId, api, makeCompetition, teamPayload, selection, lineup, detail, browserSession }) => {
   // Keep scheduling fixtures separate from other tests and all user tournaments.
   const tournamentId = randomUUID();
   await db.tournament.create({ data: { id: tournamentId, name: '团体规则与场地验证', submittedById: actorId,
@@ -78,7 +78,7 @@ exports.run = async ({ db, actorId, api, makeCompetition, teamPayload, selection
     await api(`/matches/${encounter.matches[2].id}/start`, 'POST', { servingSide: 1, serverPlayerIndex: 1, receiverPlayerIndex: 1 }, 201);
     await api(`/matches/${encounter.matches[2].id}/score`, 'PATCH', { games: [{ side1Score: 0, side2Score: 15 }] });
     updated = (await detail(scheduled.id)).teamMatches.find(row => row.id === encounter.id);
-    assert.equal(updated.status, 'COMPLETED'); assert.equal(updated.team1Wins, 2); assert.equal(updated.team2Wins, 1);
+    assert.equal(updated.status, 'COMPLETED'); assert.equal(updated.team1Wins, 2); assert.equal(updated.team2Wins, 0);
     const finalAfter = (await detail(scheduled.id)).teamMatches.find(row => row.round === 'F');
     assert([finalAfter.team1?.id, finalAfter.team2?.id].includes(encounter.team1.id));
 
@@ -92,6 +92,9 @@ exports.run = async ({ db, actorId, api, makeCompetition, teamPayload, selection
     }
     const result = (await detail(low.id)).teamMatches[0];
     assert.equal(result.winnerTeamId, lowMatch.team2.id); assert.equal(result.status, 'COMPLETED');
+    assert.equal(result.team1Wins, 0); assert.equal(result.team2Wins, 1);
+
+    await require('./team-official-results.smoke.cjs').run({ db, create, api, lineup, detail, selection, browserSession });
 
     // Tournament settings use the same rules and preserve false/zero on edit.
     await api(`/tournaments/${tournamentId}`, 'PATCH', { eventTypes: ['MENS_SINGLES', 'WOMENS_SINGLES', 'MENS_DOUBLES', 'WOMENS_DOUBLES', 'MIXED_DOUBLES'], teamMaxPlayerAppearances: 0, teamPlayAllMatches: true }, 409);

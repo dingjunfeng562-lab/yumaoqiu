@@ -12,6 +12,7 @@ export type TeamEncounterGame = {
 
 export type TeamEncounterChild = {
   id: string;
+  isSupplemental?: boolean;
   matchNo: number;
   status: string;
   lineupLocked?: boolean;
@@ -28,6 +29,7 @@ export type TeamEncounterChild = {
 
 export type TeamEncounter = {
   id: string;
+  resultDecided?: boolean;
   round: string;
   roundNo?: number;
   matchNo: number;
@@ -81,9 +83,13 @@ export default function TeamEncounterTable({
   const childColumns = (encounter: TeamEncounter) => [
     {
       title: '子项',
-      width: 96,
-      render: (_: unknown, child: TeamEncounterChild) =>
-        `${child.matchNo}. ${child.eventTypeLabel ?? '子项'}`,
+      width: 150,
+      render: (_: unknown, child: TeamEncounterChild) => (
+        <Space size={4} wrap>
+          <span>{`${child.matchNo}. ${child.eventTypeLabel ?? '子项'}`}</span>
+          {child.isSupplemental && <Tag>补打 · 不计排名</Tag>}
+        </Space>
+      ),
     },
     {
       title: encounter.team1?.name ?? '队伍一',
@@ -158,7 +164,7 @@ export default function TeamEncounterTable({
           : '未排程',
     },
     {
-      title: '总比分',
+      title: '正式比分',
       width: 90,
       render: (_: unknown, encounter: TeamEncounter) => (
         <span style={{ fontVariantNumeric: 'tabular-nums' }}>{`${encounter.team1Wins} : ${encounter.team2Wins}`}</span>
@@ -179,7 +185,7 @@ export default function TeamEncounterTable({
       title: '状态',
       width: 96,
       render: (_: unknown, encounter: TeamEncounter) => (
-        <Tag color={STATUS_COLOR[encounter.status]}>{TEAM_MATCH_STATUS_LABEL[encounter.status] ?? encounter.status}</Tag>
+        <Tag color={STATUS_COLOR[encounter.status]}>{encounter.resultDecided && encounter.status === 'LIVE' ? '胜负已定·补打中' : TEAM_MATCH_STATUS_LABEL[encounter.status] ?? encounter.status}</Tag>
       ),
     },
     ...(canSchedule
@@ -210,6 +216,8 @@ export default function TeamEncounterTable({
       columns={columns}
       scroll={{ x: showRound ? 960 : 840 }}
       expandable={{
+        // 子项通过展开面板展示；避免 Table 把业务字段 children 当作树形行递归渲染。
+        childrenColumnName: '__treeChildren',
         rowExpandable: (encounter) => encounter.children.length > 0,
         expandedRowRender: (encounter) => (
           <Table<TeamEncounterChild>

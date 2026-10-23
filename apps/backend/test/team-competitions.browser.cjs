@@ -97,7 +97,7 @@ exports.run = async ({ base, token, user, competition, batchCompetition, tournam
     const savedSettings = await api(`/team-competitions/${batchCompetition.id}`);
     assert.equal(savedSettings.maxPlayerAppearances, 0); assert.equal(savedSettings.playAllMatches, true);
     await page.getByText('每队人数不限 · 兼项不限', { exact: false }).first().waitFor();
-    await page.getByText(/胜负确定后继续打完剩余子项/).waitFor();
+    await page.getByText(/补打不计入正式比分、胜次或净胜分/).waitFor();
     await page.getByRole('button', { name: '批量导入团体队员', exact: true }).click();
     const batchDialog = page.getByRole('dialog').filter({ hasText: '批量导入团体队员' });
     const header = '团体名称\t姓名\t性别\t单位\t联系方式';

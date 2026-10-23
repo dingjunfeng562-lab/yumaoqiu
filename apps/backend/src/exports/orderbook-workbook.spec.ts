@@ -21,6 +21,31 @@ async function rankingRows(tournament: ExportTournament) {
 }
 
 describe('team orderbook final rankings', () => {
+  it.each(['LIVE', 'COMPLETED'])('exports the official 3:0 and +45 points while the encounter is %s', async (status) => {
+    const tournament = fixture();
+    const competition = tournament.teamCompetitions![0];
+    competition.winThreshold = 3;
+    competition.teams = ['甲队', '乙队'].map(id => ({ id, name: id, affiliation: '', finalRank: null }));
+    competition.groups![0].teams = competition.teams.map(team => ({ teamId: team.id }));
+    competition.teamMatches = [{ ...competition.teamMatches[0], status, team1Id: '甲队', team2Id: '乙队', winnerTeamId: '甲队',
+      team1Wins: 3, team2Wins: 2,
+      matches: [1, 1, 1, 2, 2].map((side, index) => ({
+        id: `child${index}`, matchNo: index + 1, status: status === 'LIVE' && index > 2 ? 'PENDING' : 'COMPLETED',
+        winnerSide: status === 'LIVE' && index > 2 ? null : side,
+        scheduledAt: null, lineupLocked: true, teamCompetitionItemId: null, teamCompetitionItem: null, venue: null,
+        games: [{ gameNo: 1, side1Score: side === 1 ? 15 : 0, side2Score: side === 2 ? 15 : 0 }],
+      })),
+    }];
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(await buildOrderbookWorkbook(tournament) as never);
+    const sheet = workbook.getWorksheet('分组表')!;
+    let winnerRow: ExcelJS.Row | undefined;
+    sheet.eachRow(row => { if (row.getCell(2).text === '甲队') winnerRow = row; });
+    expect(winnerRow).toBeDefined();
+    expect([6, 7, 8, 9, 10].map(col => winnerRow!.getCell(col).text)).toEqual(['3:0', '1', '3', '45', '1']);
+    expect(workbook.getWorksheet('名次汇总')!.getCell('B3').text).toBe(status === 'LIVE' ? '暂列第1名' : '第1名');
+  });
+
   it('retains the second-stage template area without adding knockout matches', async () => {
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(await buildOrderbookWorkbook(fixture()) as never);

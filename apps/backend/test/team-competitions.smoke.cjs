@@ -183,7 +183,12 @@ async function main() {
   await api(`/team-competitions/${batch.id}/teams/batch-import`, 'POST', { players: batchRows }, 409);
   assert.equal(await db.player.count({ where: { ownerId: actorId, name: { startsWith: '批量' } } }), 10);
   const beforeBrowser = await makeCompetition(0, { name: '浏览器批量导入验证' });
-  await require('./team-rules.smoke.cjs').run({ db, actorId, api, makeCompetition, teamPayload, selection, lineup, detail });
+  await require('./team-rules.smoke.cjs').run({ db, actorId, api, makeCompetition, teamPayload, selection, lineup, detail,
+    browserSession: process.env.TEAM_OFFICIAL_BROWSER === '1' ? {
+      user: await db.user.findUniqueOrThrow({ where: { id: rootId } }),
+      token: new JwtService({ secret: process.env.JWT_SECRET }).sign({ sub: rootId }, { expiresIn: '1h' }),
+    } : undefined,
+  });
   if (process.env.TEAM_QA_BROWSER === '1') {
     user = await db.user.update({ where: { id: actorId }, data: { permissions: [...user.permissions, 'PLAYERS'] } });
     await require('./team-competitions.browser.cjs').run({ base, token, user, competition: custom, batchCompetition: beforeBrowser, tournamentId, api });

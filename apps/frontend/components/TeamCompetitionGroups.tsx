@@ -156,8 +156,8 @@ export default function TeamCompetitionGroups({ competitionId, token, teams, for
   </Space></div>}>
     {showDraw && hasDraw && <div style={{ marginBottom: 16 }}><TeamDrawActions key={competitionId} competitionId={competitionId} token={token} hasDraw={hasDraw} disabled={busy} revision={data} onChanged={async () => { await onChanged(); await load(); }} /></div>}
     {error && <Alert type="error" showIcon title={error} style={{ marginBottom: 12 }} />}
-    {isGroup && <Alert type="info" showIcon title={`${teamFormatLabel(format)} · ${data?.competition.groupCount ?? groups.length} 组${format === 'GROUP_PLUS_KNOCKOUT' ? ` · 每组晋级 ${data?.competition.advancePerGroup ?? 2} 队` : ''}`} description={format === 'ROUND_ROBIN' ? '全部团体在同一组，每两队交手一次，全部打完即结束比赛并确定各队名次。胜场为赢下的团体对阵数；胜次为赢下的子项总数；净胜分为胜项减负项。排名依次比较胜场、净胜分、两队相互胜负；仍无法区分时并列。各子项双方名单填齐并锁定后，才会显示在裁判端。' : '积分榜显示胜场（团体对阵）、胜次（赢下的子项总数）和净胜分（胜项减负项）。小组排名和晋级资格以比赛结果为准。'} style={{ marginBottom: 16 }} />}
-    {isGroup && <Alert type="success" showIcon title="每个子项的出场名单和每局比分都会显示在对阵下方，比赛进行中自动刷新。" style={{ marginBottom: 16 }} />}
+    {isGroup && <Alert type="info" showIcon title={`${teamFormatLabel(format)} · ${data?.competition.groupCount ?? groups.length} 组${format === 'GROUP_PLUS_KNOCKOUT' ? ` · 每组晋级 ${data?.competition.advancePerGroup ?? 2} 队` : ''}`} description={format === 'ROUND_ROBIN' ? '全部团体在同一组，每两队交手一次，全部打完即结束比赛并确定各队名次。胜场为赢下的团体对阵数；胜次为正式子项获胜数；净胜分为正式子项每局得分减失分的合计。排名依次比较胜场、胜次、净胜分、两队相互胜负；仍无法区分时并列。各子项双方名单填齐并锁定后，才会显示在裁判端。' : '排名依次比较胜场（赢下团体对阵数）、胜次（正式子项获胜数）、净胜分（正式子项逐局得分减失分的合计）。补打不计入胜次和净胜分。'} style={{ marginBottom: 16 }} />}
+    {isGroup && <Alert type="success" showIcon title="每个子项的出场名单和每局比分都会显示在对阵下方，比赛进行中自动刷新。" description={`先赢 ${data?.competition.winThreshold ?? '规定'} 场时即计入胜场和排名；胜次、净胜分只统计到胜负确定的那一场，之后的补打只保留比分，不计排名。`} style={{ marginBottom: 16 }} />}
     {showPlayAllHint && (
       <Alert
         type="warning"

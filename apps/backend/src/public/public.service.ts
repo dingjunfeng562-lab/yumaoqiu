@@ -654,7 +654,7 @@ export class PublicService {
       },
       include: {
         teamCompetitions: {
-          include: { teams: true, teamMatches: true },
+          include: { teams: true, teamMatches: { include: { matches: { include: { games: true } } } } },
           orderBy: { createdAt: 'asc' },
         },
         events: {

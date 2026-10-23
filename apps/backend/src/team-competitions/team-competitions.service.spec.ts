@@ -1,5 +1,6 @@
 import { PrismaService } from '../prisma/prisma.service';
 import { TeamCompetitionsService } from './team-competitions.service';
+import { Prisma } from '@prisma/client';
 
 describe('TeamCompetitionsService draw view', () => {
   function setup() {
@@ -214,5 +215,72 @@ describe('TeamCompetitionsService play-all recovery', () => {
     expect(reopened).toBe(0);
     expect(tx.match.updateMany).not.toHaveBeenCalled();
     expect(tx.teamMatch.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('TeamCompetitionsService official scores and live group rankings', () => {
+  function setup(playAllMatches = true) {
+    const competition = { format: 'ROUND_ROBIN', winThreshold: 3, playAllMatches, items: [] };
+    const members = ['a', 'b'].map(teamId => ({ teamId, team: { name: teamId },
+      wins: 0, losses: 0, matchesWon: 0, matchesLost: 0, netMatches: 0, groupRank: null as number | null }));
+    const encounter = { id: 'tie', groupId: 'group', stage: 'GROUP', team1Id: 'a', team2Id: 'b',
+      winnerTeamId: null as string | null, team1Wins: 0, team2Wins: 0, status: 'PENDING', teamCompetition: competition,
+      matches: [1, 2, 3, 4, 5].map(matchNo => ({ id: `child${matchNo}`, matchNo, status: 'PENDING', winnerSide: null as number | null, games: [] as Array<{ side1Score: number; side2Score: number }> })) };
+    const tx = {
+      match: {
+        findUnique: jest.fn(async () => ({ teamMatch: encounter })),
+        updateMany: jest.fn(async ({ where, data }) => {
+          encounter.matches.filter(child => where.id.in.includes(child.id)).forEach(child => Object.assign(child, data));
+          return { count: where.id.in.length };
+        }),
+      },
+      teamMatch: {
+        findUnique: jest.fn(async () => encounter),
+        findMany: jest.fn(async () => [encounter]),
+        update: jest.fn(async ({ data }) => Object.assign(encounter, data)),
+      },
+      teamGroup: { findUniqueOrThrow: jest.fn(async () => ({ teamCompetition: competition })) },
+      teamGroupMember: {
+        findMany: jest.fn(async () => members),
+        update: jest.fn(async ({ where, data }) => Object.assign(members.find(row => row.teamId === where.groupId_teamId.teamId)!, data)),
+      },
+    };
+    const service = new TeamCompetitionsService({} as PrismaService);
+    async function finish(index: number, side: number) {
+      Object.assign(encounter.matches[index], { status: 'COMPLETED', winnerSide: side,
+        games: [{ side1Score: side === 1 ? 21 : 11, side2Score: side === 2 ? 21 : 11 }] });
+      await service.updateTeamMatchAggregate(tx as unknown as Prisma.TransactionClient, encounter.matches[index].id);
+    }
+    return { tx, service, encounter, members, finish };
+  }
+
+  it('counts 3:0 immediately while keeping later children playable, and never counts their results', async () => {
+    const { tx, service, encounter, members, finish } = setup();
+    await finish(0, 1); await finish(1, 1);
+    expect(members[0]).toMatchObject({ wins: 0, groupRank: null });
+    await finish(2, 1);
+    expect(encounter).toMatchObject({ status: 'LIVE', winnerTeamId: 'a', team1Wins: 3, team2Wins: 0 });
+    expect(members[0]).toMatchObject({ wins: 1, matchesWon: 3, netMatches: 30, groupRank: 1 });
+    expect(encounter.matches.slice(3).map(child => child.status)).toEqual(['PENDING', 'PENDING']);
+    await finish(3, 2); await finish(4, 2);
+    expect(encounter).toMatchObject({ status: 'COMPLETED', team1Wins: 3, team2Wins: 0 });
+    expect(members[0]).toMatchObject({ wins: 1, matchesWon: 3, netMatches: 30 });
+    expect(encounter.matches.filter(child => child.winnerSide === 2)).toHaveLength(2);
+    await service.updateTeamMatchAggregate(tx as unknown as Prisma.TransactionClient, 'child5');
+    expect(members[0].wins).toBe(1);
+  });
+
+  it('keeps the losing official item in a 3:1 score and ignores a fourth win', async () => {
+    const { encounter, members, finish } = setup();
+    for (const [index, side] of [1, 2, 1, 1, 1].entries()) await finish(index, side);
+    expect(encounter).toMatchObject({ team1Wins: 3, team2Wins: 1 });
+    expect(members[0]).toMatchObject({ wins: 1, matchesWon: 3, matchesLost: 1, netMatches: 20 });
+  });
+
+  it('still cancels remaining children when play-all is disabled', async () => {
+    const { encounter, finish } = setup(false);
+    await finish(0, 1); await finish(1, 1); await finish(2, 1);
+    expect(encounter.status).toBe('COMPLETED');
+    expect(encounter.matches.slice(3).map(child => child.status)).toEqual(['CANCELLED', 'CANCELLED']);
   });
 });

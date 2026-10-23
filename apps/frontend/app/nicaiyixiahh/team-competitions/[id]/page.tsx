@@ -15,8 +15,8 @@ type Player = { id: string; name: string; gender: 'MALE' | 'FEMALE'; affiliation
 type Team = { id: string; name: string; affiliation: string; memberCount: number; members: Player[]; rosterOverrideConfirmed?: boolean };
 type Item = { id: string; eventType: string; eventTypeLabel: string; sortOrder: number };
 type Lineup = { teamId: string; teamCompetitionItemId: string; player1: Player; player2?: Player | null; name: string };
-type ChildMatch = { id: string; teamCompetitionItemId: string; matchNo: number; status: string; lineupLocked: boolean; eventTypeLabel: string; referee?: { username: string }; venue?: { name: string }; games: Array<{ side1Score: number; side2Score: number }> };
-type Encounter = { id: string; round: string; matchNo: number; status: string; team1?: { id: string; name: string }; team2?: { id: string; name: string }; team1Wins: number; team2Wins: number; winnerTeamName?: string; matches: ChildMatch[]; lineups: Lineup[] };
+type ChildMatch = { id: string; isSupplemental?: boolean; teamCompetitionItemId: string; matchNo: number; status: string; lineupLocked: boolean; eventTypeLabel: string; referee?: { username: string }; venue?: { name: string }; games: Array<{ side1Score: number; side2Score: number }> };
+type Encounter = { id: string; resultDecided?: boolean; round: string; matchNo: number; status: string; team1?: { id: string; name: string }; team2?: { id: string; name: string }; team1Wins: number; team2Wins: number; winnerTeamName?: string; matches: ChildMatch[]; lineups: Lineup[] };
 type Competition = { id: string; name: string; description?: string; format?: string; groupCount?: number | null; advancePerGroup?: number | null; winThreshold: number; maxPlayerAppearances: number; playAllMatches: boolean; scoringRule: string; scoringMode: string; customGamePoint: number | null; customGameCap: number | null; customGamesToWin: number | null; isPublished: boolean; items: Item[]; teams: Team[]; teamMatches: Encounter[] };
 type Selection = { teamId: string; teamCompetitionItemId: string; player1Id: string; player2Id?: string };
 const statusLabel: Record<string, string> = { PENDING: '未开始', LIVE: '进行中', COMPLETED: '已结束', CANCELLED: '无需比赛' };
@@ -165,7 +165,7 @@ export default function TeamCompetitionDetailPage() {
       </Space>
     </Space>
     <TeamDrawActions competitionId={id} token={token} hasDraw={hasDraw} disabled={busy} revision={competition} onChanged={loadData} />
-    <Alert type="info" showIcon title={`各子项赛前独立填报名单并锁定，在同一场地按顺序开赛；${competition.playAllMatches ? '胜负确定后继续打完剩余子项，再推进下一轮' : '达到团体胜场数后其余子项无需比赛'}。下一轮可重新安排选手。`} />
+    <Alert type="info" showIcon title={`各子项赛前独立填报名单并锁定，在同一场地按顺序开赛；${competition.playAllMatches ? '胜负确定时即计入排名，补打不计入正式比分、胜次或净胜分；全部打完再推进下一轮' : '达到团体胜场数后其余子项无需比赛'}。下一轮可重新安排选手。`} />
     <Card title="项目出场顺序"><Space wrap>{competition.items.map(item => <Tag key={item.id} color="blue">{item.sortOrder}. {item.eventTypeLabel}</Tag>)}</Space></Card>
     <Card title={<div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingBlock: 12 }}><span>队伍与队员</span><Space wrap><Button icon={<PlusOutlined />} disabled={rosterLocked} title={rosterLocked ? '对阵已发布，需先取消对阵才能新增队伍' : undefined} onClick={() => openTeam()}>从选手库建队</Button><Button disabled={rosterLocked} title={rosterLocked ? '对阵已发布，需先取消对阵才能批量导入队伍' : undefined} onClick={() => setBatchOpen(true)}>批量导入团体队员</Button></Space></div>}>
       {hasDraw && <Alert type={rosterLocked ? 'warning' : 'info'} showIcon title={rosterLocked ? '对阵已发布，暂不能新增或删除队伍。' : '对阵尚未发布，仍可调整队伍。'} description={rosterLocked ? '需要调整队伍时，先点右上角“取消对阵”，改完名单再重新生成对阵；已有队伍补人请用该队的“例外补充队员”。' : '新增或删除队伍会清空当前对阵，调整完请重新生成对阵；已有队伍补人请用该队的“例外补充队员”。'} style={{ marginBottom: 12 }} />}
@@ -183,11 +183,11 @@ export default function TeamCompetitionDetailPage() {
           const bye = row.status === 'COMPLETED' && Boolean(row.team1) !== Boolean(row.team2);
           return `${row.team1?.name ?? (bye ? '轮空' : '待定')} VS ${row.team2?.name ?? (bye ? '轮空' : '待定')}`;
         }},
-        { title: '总比分', render: (_, row: Encounter) => `${row.team1Wins} : ${row.team2Wins}` },
-        { title: '状态', render: (_, row: Encounter) => <Tag color={row.status === 'LIVE' ? 'blue' : undefined}>{statusLabel[row.status] ?? row.status}</Tag> },
+        { title: '正式比分', render: (_, row: Encounter) => `${row.team1Wins} : ${row.team2Wins}` },
+        { title: '状态', render: (_, row: Encounter) => <Tag color={row.status === 'LIVE' ? 'blue' : undefined}>{row.resultDecided && row.status === 'LIVE' ? '胜负已定·补打中' : statusLabel[row.status] ?? row.status}</Tag> },
         { title: '胜方', dataIndex: 'winnerTeamName', render: value => value || '-' },
       ]} expandable={{ defaultExpandAllRows: true, expandedRowRender: encounter => <Table rowKey="id" size="small" dataSource={encounter.matches} pagination={false} columns={[
-        { title: '出场顺序', render: (_, match: ChildMatch) => `${match.matchNo}. ${match.eventTypeLabel}` },
+        { title: '出场顺序', render: (_, match: ChildMatch) => <Space wrap>{`${match.matchNo}. ${match.eventTypeLabel}`}{match.isSupplemental && <Tag>补打 · 不计排名</Tag>}</Space> },
         { title: encounter.team1?.name ?? '队伍一', render: (_, match: ChildMatch) => lineupNames(encounter, match, encounter.team1?.id) },
         { title: encounter.team2?.name ?? '队伍二', render: (_, match: ChildMatch) => lineupNames(encounter, match, encounter.team2?.id) },
         { title: '状态', render: (_, match: ChildMatch) => <Space><Tag>{statusLabel[match.status]}</Tag>{match.lineupLocked && <Tag color="gold">名单已锁定</Tag>}</Space> },

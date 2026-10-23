@@ -1,6 +1,7 @@
 import * as ExcelJS from 'exceljs';
 import { buildKnockoutSkeleton } from '../common/knockout-skeleton';
 import { teamStandings } from '../common/final-rankings';
+import { withOfficialTeamResult } from '../common/team-official-result';
 import { teamResultsReady } from '../common/tournament-results-ready';
 import type {
   ExportEvent,
@@ -504,7 +505,8 @@ function teamCompetitionEvents(tournament: ExportTournament): ExportEvent[] {
     )].sort((a, b) => a - b);
 
     const matches: ExportMatch[] = [];
-    for (const encounter of competition.teamMatches) {
+    for (const storedEncounter of competition.teamMatches) {
+      const encounter = withOfficialTeamResult(storedEncounter, competition.winThreshold);
       const isGroup = encounter.stage === 'GROUP';
       const groupCode = encounter.groupId ? groupCodeById.get(encounter.groupId) ?? '' : '';
       const roundNo = isGroup ? 0 : knockoutRoundNos.indexOf(encounter.roundNo) + 1;
@@ -546,7 +548,7 @@ function teamCompetitionEvents(tournament: ExportTournament): ExportEvent[] {
           side1Name: encounter.team1Id ? teamById.get(encounter.team1Id)?.name ?? '' : '',
           side2Name: encounter.team2Id ? teamById.get(encounter.team2Id)?.name ?? '' : '',
           matchNoText: `第${encounter.matchNo}场`,
-          scoreText: encounter.status === 'COMPLETED' ? `${encounter.team1Wins}:${encounter.team2Wins}` : '',
+          scoreText: encounter.resultDecided ? `${encounter.team1Wins}:${encounter.team2Wins}` : '',
         });
       });
     }
@@ -965,6 +967,7 @@ function computeGroupStandings(
     const competition = event.teamCompetition;
     const standings = teamStandings({
       format: competition.format,
+      winThreshold: competition.winThreshold,
       teams: competition.teams.filter(team => ids.has(team.id)).map(team => ({ ...team, finalRank: null })),
       teamMatches: competition.teamMatches.filter(match => match.stage === 'GROUP'
         && match.team1Id && ids.has(match.team1Id) && match.team2Id && ids.has(match.team2Id)),
@@ -1511,7 +1514,7 @@ function buildRankingSummarySheet(wb: ExcelJS.Workbook, tournament: ExportTourna
       const competition = event.teamCompetition;
       const ready = teamResultsReady(competition);
       const manual = competition.teams.some(team => team.finalRank != null);
-      // 以团体对阵统计胜场、净胜项及相互胜负；逐队输出，保留并列和全部名次。
+      // 以正式团体成绩统计胜场、逐局净胜分及相互胜负；保留并列和全部名次。
       for (const standing of teamStandings(competition)) {
         ws.getCell(row, 1).value = eventLabel(event);
         ws.getCell(row, 2).value = manual || ready

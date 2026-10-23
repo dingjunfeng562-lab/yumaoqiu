@@ -44,7 +44,7 @@ export default function TeamCompetitionFields({ formatLocked = false }: { format
   return <>
     <Form.Item name="name" label="团体赛名称" rules={[{ required: true }]}><Input /></Form.Item>
     <Form.Item name="format" label="赛制" rules={[{ required: true }]}><Select disabled={formatLocked} options={TEAM_FORMAT_OPTIONS} onChange={value => { if (value === 'ROUND_ROBIN') form.setFieldsValue({ groupCount: 1, advancePerGroup: null }); }} /></Form.Item>
-    {format === 'ROUND_ROBIN' && <Alert showIcon type="info" style={{ marginBottom: 16 }} title="全部团体同组，每两队交手一次" description="全部对阵打完即结束比赛，按胜场、净胜分（胜项数减负项数）、两队相互胜负依次确定各队名次。胜次统计赢下的子项总数。6 队共 5 轮、15 场团体对阵，每轮最多使用 3 片场地。" />}
+    {format === 'ROUND_ROBIN' && <Alert showIcon type="info" style={{ marginBottom: 16 }} title="全部团体同组，每两队交手一次" description="全部对阵打完即结束比赛，依次比较胜场、胜次、净胜分，再比较两队相互胜负。胜次为正式子项获胜数；净胜分为正式子项每局得分减失分的合计，补打不计入。6 队共 5 轮、15 场团体对阵，每轮最多使用 3 片场地。" />}
     {format !== 'SINGLE_ELIMINATION' && <Form.Item name="groupCount" label="小组数量" rules={[{ required: format !== 'ROUND_ROBIN', message: '请填写小组数量' }]} extra={format === 'ROUND_ROBIN' ? '单组循环固定为 1 组。' : '填 1 为单组循环，填 2 或以上为多组循环；每组至少 2 支队伍。'}>
       <InputNumber disabled={formatLocked || format === 'ROUND_ROBIN'} min={1} precision={0} />
     </Form.Item>}
@@ -74,7 +74,7 @@ export default function TeamCompetitionFields({ formatLocked = false }: { format
     <Form.Item name="winThreshold" label="团体对阵先赢几项获胜" rules={[{ required: true }]} extra="先达到此胜场数的队伍获胜。">
       <InputNumber min={1} max={Math.ceil(items.length / 2) || 1} precision={0} />
     </Form.Item>
-    <Form.Item name="playAllMatches" label="胜负确定后继续比赛" valuePropName="checked" extra="开启后继续打完剩余子项并记录完整比分；关闭时达到胜场数即结束，其余子项标记为无需比赛。抽签后也可开启，开启时会把尚未开赛的剩余子项恢复为未开始，方便补录。">
+    <Form.Item name="playAllMatches" label="胜负确定后继续比赛" valuePropName="checked" extra="开启后打完剩余子项并保留比分；正式比分、胜次和净胜分只统计到先赢够场数时，补打不影响排名。关闭时其余子项无需比赛。抽签后开启可恢复尚未开赛的剩余子项（已生成淘汰赛时不恢复）。">
       <Switch checkedChildren="继续比赛" unCheckedChildren="结束对阵" />
     </Form.Item>
     <Form.Item name="scoringRule" label="子项计分规则" rules={[{ required: true }]}><Select options={TEAM_SCORING_OPTIONS} /></Form.Item>

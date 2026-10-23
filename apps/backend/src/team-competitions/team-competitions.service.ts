@@ -1,6 +1,7 @@
 import { AuthActor, playerScope, tournamentScope } from '../auth/admin-scope';
 import { validateTeamRoster } from './team-roster';
 import { rankTeamRoundRobin } from '../common/team-round-robin-ranking';
+import { hasOfficialTeamResult, withOfficialTeamResult, type TeamResult } from '../common/team-official-result';
 import {
   BadRequestException,
   ConflictException,
@@ -53,9 +54,6 @@ import {
 } from './group-round-robin';
 import {
   calculateGroupStandings,
-  markAdvancedTeams,
-  updateTeamStanding,
-  TeamStanding,
 } from './group-standings';
 
 type TeamWithMembers = Prisma.TeamGetPayload<{
@@ -313,13 +311,13 @@ export class TeamCompetitionsService {
           finishedAt: null,
         },
       });
-      // 对阵重新变为进行中；达到胜场的 winnerTeamId 保留，补录完剩余子项后会再次结算。
+      // 对阵重新变为进行中以允许补打；正式胜负和排名仍按先赢场数结算。
       await tx.teamMatch.update({ where: { id: encounter.id }, data: { status: MatchStatus.LIVE } });
       if (encounter.groupId) groupIds.add(encounter.groupId);
       reopened += childIds.length;
     }
 
-    // 重新进入进行中后，小组积分应暂时不再计入该对阵。
+    // 恢复补打不撤回已经确定的正式成绩。
     for (const groupId of groupIds) await this.recalculateGroupRankings(tx, groupId);
     return reopened;
   }
@@ -993,27 +991,14 @@ export class TeamCompetitionsService {
 
     const teamMatch = match.teamMatch;
     const finished = teamMatch.matches.filter((item) => item.status === MatchStatus.COMPLETED && item.winnerSide);
-    const team1Wins = finished.filter((item) => item.winnerSide === 1).length;
-    const team2Wins = finished.filter((item) => item.winnerSide === 2).length;
+    const { team1Wins, team2Wins, winnerTeamId } = withOfficialTeamResult(teamMatch, teamMatch.teamCompetition.winThreshold);
 
     const teamMatchData = {
       team1Wins,
       team2Wins,
     };
 
-    let winnerTeamId: string | null = null;
     let nextStatus: MatchStatus = MatchStatus.PENDING;
-    // The first team to reach the target wins, even when later sub-event
-    // results bring both teams above a configured target below the majority.
-    const runningWins = [0, 0];
-    for (const item of finished) {
-      const side = item.winnerSide! - 1;
-      runningWins[side] += 1;
-      if (runningWins[side] >= teamMatch.teamCompetition.winThreshold) {
-        winnerTeamId = side === 0 ? teamMatch.team1Id : teamMatch.team2Id;
-        break;
-      }
-    }
     const allFinished = teamMatch.matches.every(item => item.status === MatchStatus.COMPLETED || item.status === MatchStatus.CANCELLED);
     if (winnerTeamId && (!teamMatch.teamCompetition.playAllMatches || allFinished)) {
       nextStatus = MatchStatus.COMPLETED;
@@ -1425,6 +1410,7 @@ export class TeamCompetitionsService {
   }
 
   private toCompetitionView(competition: TeamCompetitionDetail) {
+    const encounters = competition.teamMatches.map(match => withOfficialTeamResult(match, competition.winThreshold));
     return {
       id: competition.id,
       tournamentId: competition.tournamentId,
@@ -1452,7 +1438,7 @@ export class TeamCompetitionsService {
         sortOrder: item.sortOrder,
       })),
       teams: competition.teams.map((team) => this.toTeamView(team)),
-      teamMatches: competition.teamMatches.map((teamMatch) => ({
+      teamMatches: encounters.map((teamMatch) => ({
         id: teamMatch.id,
         round: teamMatch.round,
         stage: teamMatch.stage,
@@ -1461,7 +1447,8 @@ export class TeamCompetitionsService {
         matchNo: teamMatch.matchNo,
         status: teamMatch.status,
         winnerTeamId: teamMatch.winnerTeamId,
-        winnerTeamName: teamMatch.winnerTeam?.name ?? null,
+        resultDecided: teamMatch.resultDecided,
+        winnerTeamName: [teamMatch.team1, teamMatch.team2].find(team => team?.id === teamMatch.winnerTeamId)?.name ?? null,
         team1: teamMatch.team1,
         team2: teamMatch.team2,
         team1Wins: teamMatch.team1Wins,
@@ -1470,6 +1457,7 @@ export class TeamCompetitionsService {
         lineups: teamMatch.lineups.map((lineup) => this.toLineupView(lineup)),
         matches: teamMatch.matches.map((match) => ({
           id: match.id,
+          isSupplemental: teamMatch.supplementalMatchIds.includes(match.id),
           round: match.round,
           roundNo: match.roundNo,
           matchNo: match.matchNo,
@@ -1545,6 +1533,7 @@ export class TeamCompetitionsService {
   }
 
   private toPublicCompetitionView(competition: any) {
+    const encounters = competition.teamMatches.map((match: TeamResult) => withOfficialTeamResult(match, competition.winThreshold));
     return {
       id: competition.id,
       tournamentId: competition.tournamentId,
@@ -1577,7 +1566,7 @@ export class TeamCompetitionsService {
         affiliation: team.affiliation,
         memberCount: team.members.length,
       })),
-      teamMatches: competition.teamMatches.map((teamMatch: any) => ({
+      teamMatches: encounters.map((teamMatch: any) => ({
         id: teamMatch.id,
         round: teamMatch.round,
         stage: teamMatch.stage,
@@ -1588,11 +1577,13 @@ export class TeamCompetitionsService {
         team1: teamMatch.team1,
         team2: teamMatch.team2,
         winnerTeamId: teamMatch.winnerTeamId,
-        winnerTeamName: teamMatch.winnerTeam?.name ?? null,
+        resultDecided: teamMatch.resultDecided,
+        winnerTeamName: [teamMatch.team1, teamMatch.team2].find(team => team?.id === teamMatch.winnerTeamId)?.name ?? null,
         team1Wins: teamMatch.team1Wins,
         team2Wins: teamMatch.team2Wins,
         matches: teamMatch.matches.map((match: any) => ({
           id: match.id,
+          isSupplemental: teamMatch.supplementalMatchIds.includes(match.id),
           status: match.status,
           lineupLocked: match.lineupLocked,
           teamCompetitionItemId: match.teamCompetitionItemId,
@@ -1807,25 +1798,22 @@ export class TeamCompetitionsService {
         winThreshold: competition.winThreshold,
         playAllMatches: competition.playAllMatches,
       },
-      groups: groups.map(group => ({
-        id: group.id,
-        groupNo: group.groupNo,
-        groupName: group.groupName,
-        standings: group.teams.map(member => ({
-          teamId: member.teamId,
-          teamName: member.team.name,
-          wins: member.wins,
-          losses: member.losses,
-          matchesWon: member.matchesWon,
-          matchesLost: member.matchesLost,
-          netMatches: member.netMatches,
-          groupRank: member.groupRank,
-          advanced: member.advanced,
-        })),
-        matches: (groupEncounters.get(group.id) ?? []).map(encounter => this.toTeamEncounterCard(encounter)),
-      })),
+      groups: groups.map(group => {
+        const matches = groupEncounters.get(group.id) ?? [];
+        const standings = new Map(this.calculateGroupRankings(group.teams, matches, competition).map(row => [row.teamId, row]));
+        return {
+          id: group.id,
+          groupNo: group.groupNo,
+          groupName: group.groupName,
+          standings: group.teams.map(member => ({
+            ...standings.get(member.teamId)!,
+            advanced: member.advanced,
+          })).sort((a, b) => (a.groupRank ?? Infinity) - (b.groupRank ?? Infinity)),
+          matches: matches.map(encounter => this.toTeamEncounterCard(encounter, competition.winThreshold)),
+        };
+      }),
       // 淘汰赛（含单淘汰制）对阵单独返回：抽签编排页在小组赛后仍能看到每一轮与每个子项的比分。
-      knockout: encounters.filter(encounter => !encounter.groupId).map(encounter => this.toTeamEncounterCard(encounter)),
+      knockout: encounters.filter(encounter => !encounter.groupId).map(encounter => this.toTeamEncounterCard(encounter, competition.winThreshold)),
     };
   }
 
@@ -1833,7 +1821,8 @@ export class TeamCompetitionsService {
    * 团体对阵的展示结构：总比分 + 每个子项的出场名单、每局比分与状态。
    * 抽签编排页据此在“每一局比赛结束后”直接显示结果，无需跳转团体详情。
    */
-  private toTeamEncounterCard(encounter: TeamEncounterDetail) {
+  private toTeamEncounterCard(encounter: TeamEncounterDetail, winThreshold: number) {
+    const official = withOfficialTeamResult(encounter, winThreshold);
     const lineupName = (teamId: string | null, itemId: string | null) => {
       if (!teamId || !itemId) return null;
       const lineup = encounter.lineups.find(row => row.teamId === teamId && row.teamCompetitionItemId === itemId);
@@ -1849,12 +1838,14 @@ export class TeamCompetitionsService {
       groupId: encounter.groupId,
       team1: encounter.team1,
       team2: encounter.team2,
-      team1Wins: encounter.team1Wins,
-      team2Wins: encounter.team2Wins,
+      team1Wins: official.team1Wins,
+      team2Wins: official.team2Wins,
       status: encounter.status,
-      winnerTeamId: encounter.winnerTeamId,
+      winnerTeamId: official.winnerTeamId,
+      resultDecided: official.resultDecided,
       children: encounter.matches.map(match => ({
         id: match.id,
+        isSupplemental: official.supplementalMatchIds.includes(match.id),
         matchNo: match.matchNo,
         status: match.status,
         lineupLocked: match.lineupLocked,
@@ -1883,11 +1874,12 @@ export class TeamCompetitionsService {
    * 获取小组积分榜
    */
   async getGroupStandings(teamCompetitionId: string, groupId: string) {
-    await this.ensureCompetition(teamCompetitionId);
+    const competition = await this.ensureCompetition(teamCompetitionId);
     
     const group = await this.prisma.teamGroup.findUnique({
       where: { id: groupId },
       include: {
+        matches: { include: { matches: { include: { games: true } } } },
         teams: {
           include: {
             team: true,
@@ -1901,28 +1893,23 @@ export class TeamCompetitionsService {
       throw new NotFoundException('小组不存在');
     }
 
+    const standings = new Map(this.calculateGroupRankings(group.teams, group.matches, competition).map(row => [row.teamId, row]));
+
     return {
       groupId: group.id,
       groupNo: group.groupNo,
       groupName: group.groupName,
       standings: group.teams.map(member => ({
-        teamId: member.teamId,
-        teamName: member.team.name,
         teamAffiliation: member.team.affiliation,
-        wins: member.wins,
-        losses: member.losses,
-        matchesWon: member.matchesWon,
-        matchesLost: member.matchesLost,
-        netMatches: member.netMatches,
-        groupRank: member.groupRank,
+        ...standings.get(member.teamId)!,
         advanced: member.advanced,
-      })),
+      })).sort((a, b) => (a.groupRank ?? Infinity) - (b.groupRank ?? Infinity)),
     };
   }
 
   /**
    * 重新计算小组积分（对阵结果变化后调用）。
-   * 每次都从该组所有已完成对阵重新汇总，改分或重赛不会重复累计。
+   * 每次从已确定正式胜负的对阵重新汇总，补打中也计入，改分或重赛不会重复累计。
    */
   async updateGroupStandings(tx: Prisma.TransactionClient, teamMatchId: string) {
     const teamMatch = await tx.teamMatch.findUnique({ where: { id: teamMatchId }, select: { groupId: true } });
@@ -1933,51 +1920,62 @@ export class TeamCompetitionsService {
   private async recalculateGroupRankings(tx: Prisma.TransactionClient, groupId: string) {
     const members = await tx.teamGroupMember.findMany({ where: { groupId }, include: { team: true } });
     const encounters = await tx.teamMatch.findMany({
-      where: { groupId, status: MatchStatus.COMPLETED, winnerTeamId: { not: null } },
+      where: { groupId }, include: { matches: { include: { games: true } } },
     });
+    const group = await tx.teamGroup.findUniqueOrThrow({ where: { id: groupId }, include: { teamCompetition: true } });
+    const ranked = this.calculateGroupRankings(members, encounters, group.teamCompetition);
+    for (const row of ranked) {
+      await tx.teamGroupMember.update({
+        where: { groupId_teamId: { groupId, teamId: row.teamId } },
+        data: {
+          wins: row.wins, losses: row.losses, matchesWon: row.matchesWon, matchesLost: row.matchesLost,
+          netMatches: row.netMatches, groupRank: row.groupRank,
+        },
+      });
+    }
+  }
+
+  private calculateGroupRankings(
+    members: Array<{ teamId: string; team: { name: string } }>,
+    matches: TeamResult[],
+    competition: { format: string; winThreshold: number },
+  ) {
+    const encounters = matches.map(match => withOfficialTeamResult(match, competition.winThreshold)).filter(hasOfficialTeamResult);
 
     const stats = new Map(members.map(m => [m.teamId, {
       teamId: m.teamId, teamName: m.team.name, wins: 0, losses: 0, matchesWon: 0, matchesLost: 0, netMatches: 0,
     }]));
-    const h2h = new Map<string, { teamId: string; opponentId: string; wins: number; losses: number; matchesWon: number; matchesLost: number }>();
-    const record = (teamId: string, opponentId: string, won: boolean, forCount: number, againstCount: number) => {
+    const h2h = new Map<string, { teamId: string; opponentId: string; wins: number; losses: number; matchesWon: number; matchesLost: number; netMatches: number }>();
+    const record = (teamId: string, opponentId: string, won: boolean, forCount: number, againstCount: number, pointDiff: number) => {
       const row = stats.get(teamId);
       if (row) {
         row.wins += won ? 1 : 0;
         row.losses += won ? 0 : 1;
         row.matchesWon += forCount;
         row.matchesLost += againstCount;
-        row.netMatches += forCount - againstCount;
+        row.netMatches += pointDiff;
       }
       const key = `${teamId}:${opponentId}`;
-      const pair = h2h.get(key) ?? { teamId, opponentId, wins: 0, losses: 0, matchesWon: 0, matchesLost: 0 };
+      const pair = h2h.get(key) ?? { teamId, opponentId, wins: 0, losses: 0, matchesWon: 0, matchesLost: 0, netMatches: 0 };
       pair.wins += won ? 1 : 0;
       pair.losses += won ? 0 : 1;
       pair.matchesWon += forCount;
       pair.matchesLost += againstCount;
+      pair.netMatches += pointDiff;
       h2h.set(key, pair);
     };
     for (const e of encounters) {
       if (!e.team1Id || !e.team2Id) continue;
-      record(e.team1Id, e.team2Id, e.winnerTeamId === e.team1Id, e.team1Wins, e.team2Wins);
-      record(e.team2Id, e.team1Id, e.winnerTeamId === e.team2Id, e.team2Wins, e.team1Wins);
+      record(e.team1Id, e.team2Id, e.winnerTeamId === e.team1Id, e.team1Wins, e.team2Wins, e.team1PointDiff);
+      record(e.team2Id, e.team1Id, e.winnerTeamId === e.team2Id, e.team2Wins, e.team1Wins, -e.team1PointDiff);
     }
 
-    const group = await tx.teamGroup.findUniqueOrThrow({ where: { id: groupId }, include: { teamCompetition: true } });
-    const ranked = group.teamCompetition.format === TeamCompetitionFormat.ROUND_ROBIN
+    const ranked = competition.format === TeamCompetitionFormat.ROUND_ROBIN
       ? rankTeamRoundRobin([...stats.values()].map(row => ({ ...row, id: row.teamId, gameDiff: row.netMatches })), encounters)
         .map(row => ({ ...row, groupRank: row.rank }))
       : calculateGroupStandings([...stats.values()], [...h2h.values()]);
     const hasResults = encounters.length > 0;
-    for (const row of ranked) {
-      await tx.teamGroupMember.update({
-        where: { groupId_teamId: { groupId, teamId: row.teamId } },
-        data: {
-          wins: row.wins, losses: row.losses, matchesWon: row.matchesWon, matchesLost: row.matchesLost,
-          netMatches: row.netMatches, groupRank: hasResults ? row.groupRank : null,
-        },
-      });
-    }
+    return ranked.map(row => ({ ...row, groupRank: hasResults ? row.groupRank : null }));
   }
 
   /**
@@ -2110,6 +2108,8 @@ export class TeamCompetitionsService {
       });
 
       // 确定晋级队伍：先按名次、再按组号排成种子序列（A1, B1, ..., A2, B2, ...）
+      const groupsToRank = await tx.teamGroup.findMany({ where: { teamCompetitionId }, select: { id: true } });
+      for (const group of groupsToRank) await this.recalculateGroupRankings(tx, group.id);
       const advancePerGroup = competition.advancePerGroup || 2;
       await tx.teamGroupMember.updateMany({ where: { group: { teamCompetitionId } }, data: { advanced: false } });
       const seeds: string[] = [];

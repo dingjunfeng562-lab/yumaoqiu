@@ -1,8 +1,23 @@
 import { rankTeamRoundRobin } from './team-round-robin-ranking';
 import { teamStandings } from './final-rankings';
 import { tournamentResultsReady } from './tournament-results-ready';
+import { calculateGroupStandings } from '../team-competitions/group-standings';
 
 describe('single-group team rankings', () => {
+  it('orders by encounter wins, official item wins, then detailed point difference', () => {
+    const rows = [
+      { id: 'large-points', wins: 1, matchesWon: 3, gameDiff: 100 },
+      { id: 'more-items', wins: 1, matchesWon: 5, gameDiff: -10 },
+      { id: 'more-encounters', wins: 2, matchesWon: 2, gameDiff: -100 },
+      { id: 'same-items-more-points', wins: 1, matchesWon: 5, gameDiff: 1 },
+    ];
+    const expected = ['more-encounters', 'same-items-more-points', 'more-items', 'large-points'];
+    expect(rankTeamRoundRobin(rows, []).map(row => row.id)).toEqual(expected);
+    expect(calculateGroupStandings(rows.map(row => ({ teamId: row.id, teamName: row.id,
+      wins: row.wins, losses: 0, matchesWon: row.matchesWon, matchesLost: 0, netMatches: row.gameDiff })))
+      .map(row => row.teamId)).toEqual(expected);
+  });
+
   it('publishes only after every round-robin encounter is confirmed, without a final', () => {
     const competition = { format: 'ROUND_ROBIN', teams: ['a', 'b', 'c'].map(id => ({ id })),
       teamMatches: [1, 2, 3].map(round => ({ round: `第${round}轮`, status: 'COMPLETED', winnerTeamId: 'a' })) };

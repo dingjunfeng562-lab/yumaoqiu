@@ -179,6 +179,8 @@ type ExportTeamItem = { id: string; eventType: string; sortOrder: number };
 
 type ExportTeamMatchChild = {
   id: string;
+  matchNo?: number;
+  finishedAt?: Date | string | null;
   status: string;
   winnerSide: number | null;
   scheduledAt: Date | null;
@@ -216,6 +218,7 @@ type ExportTeamMatch = {
 
 type ExportTeamCompetition = {
   name: string;
+  winThreshold?: number;
   format?: string | null;
   groupCount?: number | null;
   advancePerGroup?: number | null;
@@ -274,7 +277,7 @@ export class ExportsService {
     const tournament = await this.findTournamentForExport(tournamentId, kind);
     if (!tournament) throw new NotFoundException('赛事不存在');
 
-    const fingerprint = createHash('sha256').update(kind === 'orderbook' ? 'team-orderbook-v5-single-title' : 'team-standings-v2').update(kind).update(JSON.stringify(tournament)).digest('hex');
+    const fingerprint = createHash('sha256').update(kind === 'orderbook' ? 'team-orderbook-v6-official-cutoff' : 'team-standings-v3-official-cutoff').update(kind).update(JSON.stringify(tournament)).digest('hex');
     return { kind, tournament, fingerprint };
   }
 

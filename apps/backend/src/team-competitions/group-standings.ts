@@ -12,7 +12,7 @@ export interface TeamStanding {
   losses: number;         // 负场数（团体赛维度）
   matchesWon: number;     // 赢的子项数
   matchesLost: number;    // 输的子项数
-  netMatches: number;     // 净胜分（子项维度）
+  netMatches: number;     // 正式子项所有局的得分减失分，补打不计入
   groupRank: number;      // 小组排名
   advanced: boolean;      // 是否晋级
 }
@@ -24,15 +24,16 @@ export interface HeadToHeadRecord {
   losses: number;
   matchesWon: number;
   matchesLost: number;
+  netMatches: number;
 }
 
 /**
  * 计算小组排名
  * 排名规则（优先级从高到低）：
  * 1. 胜场数（团体赛维度）
- * 2. 净胜分（子项维度）
- * 3. 相互战绩
- * 4. 总赢局数
+ * 2. 胜次（正式子项获胜数）
+ * 3. 正式子项逐局净胜分
+ * 4. 相互战绩
  * 
  * @param standings 小组积分数据
  * @param headToHeadRecords 相互战绩记录（可选）
@@ -53,12 +54,17 @@ export function calculateGroupStandings(
       return b.wins - a.wins;
     }
 
-    // 2. 净胜分（降序）
+    // 2. 胜次（降序）
+    if (a.matchesWon !== b.matchesWon) {
+      return b.matchesWon - a.matchesWon;
+    }
+
+    // 3. 净胜分（降序）
     if (a.netMatches !== b.netMatches) {
       return b.netMatches - a.netMatches;
     }
 
-    // 3. 相互战绩（如果提供）
+    // 4. 相互战绩（如果提供）
     if (headToHeadRecords) {
       const headToHead = getHeadToHeadComparison(
         a.teamId,
@@ -69,11 +75,6 @@ export function calculateGroupStandings(
         // getHeadToHeadComparison 返回 >0 表示 A 更优；sort 比较器需要负数才把 A 排前
         return -headToHead;
       }
-    }
-
-    // 4. 总赢局数（降序）
-    if (a.matchesWon !== b.matchesWon) {
-      return b.matchesWon - a.matchesWon;
     }
 
     // 5. 总输局数（升序）
@@ -123,11 +124,8 @@ function getHeadToHeadComparison(
     return aVsB.wins - bVsA.wins;
   }
 
-  // 比较净胜分
-  const aNet = aVsB.matchesWon - aVsB.matchesLost;
-  const bNet = bVsA.matchesWon - bVsA.matchesLost;
-
-  return aNet - bNet;
+  // 比较胜次、正式子项逐局净胜分
+  return aVsB.matchesWon - bVsA.matchesWon || aVsB.netMatches - bVsA.netMatches;
 }
 
 /**
@@ -164,6 +162,7 @@ export interface MatchResult {
   isWinner: boolean;      // 是否胜利
   matchesWon: number;     // 本场赢的子项数
   matchesLost: number;    // 本场输的子项数
+  pointDiff: number;      // 正式子项逐局得分减失分
 }
 
 export function updateTeamStanding(
@@ -176,10 +175,7 @@ export function updateTeamStanding(
     losses: currentStanding.losses + (matchResult.isWinner ? 0 : 1),
     matchesWon: currentStanding.matchesWon + matchResult.matchesWon,
     matchesLost: currentStanding.matchesLost + matchResult.matchesLost,
-    netMatches:
-      currentStanding.netMatches +
-      matchResult.matchesWon -
-      matchResult.matchesLost,
+    netMatches: currentStanding.netMatches + matchResult.pointDiff,
   };
 }
 
@@ -204,12 +200,12 @@ export function calculateMultiTeamHeadToHead(
     const teamRecords = relevantRecords.filter(r => r.teamId === teamId);
     const wins = teamRecords.reduce((sum, r) => sum + r.wins, 0);
     const matchesWon = teamRecords.reduce((sum, r) => sum + r.matchesWon, 0);
-    const matchesLost = teamRecords.reduce((sum, r) => sum + r.matchesLost, 0);
+    const netMatches = teamRecords.reduce((sum, r) => sum + r.netMatches, 0);
 
     return {
       teamId,
       wins,
-      netMatches: matchesWon - matchesLost,
+      netMatches,
       matchesWon,
     };
   });
@@ -217,8 +213,8 @@ export function calculateMultiTeamHeadToHead(
   // 按小循环战绩排序
   miniStandings.sort((a, b) => {
     if (a.wins !== b.wins) return b.wins - a.wins;
-    if (a.netMatches !== b.netMatches) return b.netMatches - a.netMatches;
-    return b.matchesWon - a.matchesWon;
+    if (a.matchesWon !== b.matchesWon) return b.matchesWon - a.matchesWon;
+    return b.netMatches - a.netMatches;
   });
 
   return miniStandings.map(s => s.teamId);
@@ -236,12 +232,9 @@ export function validateStandings(
   const errors: string[] = [];
 
   for (const team of standings) {
-    // 验证净胜分计算正确
-    const expectedNet = team.matchesWon - team.matchesLost;
-    if (team.netMatches !== expectedNet) {
-      errors.push(
-        `队伍${team.teamName}的净胜分不正确：期望${expectedNet}，实际${team.netMatches}`,
-      );
+    // 汇总表没有逐局原始分数，只能验证数值；净胜分不能由胜次减负次推导。
+    if (!Number.isInteger(team.netMatches)) {
+      errors.push(`队伍${team.teamName}的净胜分必须为整数`);
     }
 
     // 验证胜负场总和
