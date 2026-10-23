@@ -154,28 +154,32 @@ export class TeamCompetitionsController {
   @Roles(Role.ROOT)
   @Post(':id/draw/clear-requests/:requestId/approve')
   approveClearDrawRequest(
+    @Param('id') id: string,
     @Param('requestId') requestId: string,
+    @Body() dto: RejectTeamDrawClearRequestDto,
     @Req() req: { user: AuthActor & { username?: string | null } },
   ) {
-    return this.teamCompetitionsService.approveClearDrawRequest(requestId, req.user);
+    return this.teamCompetitionsService.approveClearDrawRequest(id, requestId, req.user, dto.reason);
   }
 
   @Roles(Role.ROOT)
   @Post(':id/draw/clear-requests/:requestId/reject')
   rejectClearDrawRequest(
+    @Param('id') id: string,
     @Param('requestId') requestId: string,
     @Body() dto: RejectTeamDrawClearRequestDto,
     @Req() req: { user: AuthActor & { username?: string | null } },
   ) {
-    return this.teamCompetitionsService.rejectClearDrawRequest(requestId, dto.reason, req.user);
+    return this.teamCompetitionsService.rejectClearDrawRequest(id, requestId, dto.reason, req.user);
   }
 
   @Post(':id/draw/clear-requests/:requestId/cancel')
   cancelClearDrawRequest(
+    @Param('id') id: string,
     @Param('requestId') requestId: string,
     @Req() req: { user: AuthActor & { username?: string | null } },
   ) {
-    return this.teamCompetitionsService.cancelClearDrawRequest(requestId, req.user);
+    return this.teamCompetitionsService.cancelClearDrawRequest(id, requestId, req.user);
   }
 
   @Get('team-matches/:teamMatchId/lineups')

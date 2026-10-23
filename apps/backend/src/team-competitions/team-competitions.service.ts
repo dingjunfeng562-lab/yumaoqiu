@@ -545,25 +545,29 @@ export class TeamCompetitionsService {
     reason: string | undefined,
     actor: AuthActor & { username?: string | null },
   ) {
-    await this.ensureCompetition(teamCompetitionId);
-    const drawn = await this.prisma.teamMatch.count({ where: { teamCompetitionId } });
-    if (!drawn) throw new ConflictException('当前没有已生成的对阵');
-    if (!(await this.drawHasProgress(this.prisma, teamCompetitionId))) {
-      throw new ConflictException('对阵尚未开赛且没有比分，可直接取消，无需申请');
-    }
-    const pending = await this.prisma.teamDrawClearRequest.findFirst({
-      where: { teamCompetitionId, status: TeamDrawClearRequestStatus.PENDING },
-    });
-    if (pending) throw new ConflictException('该团体赛已存在待审批的取消申请');
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM TeamCompetition WHERE id = ${teamCompetitionId} FOR UPDATE`;
+      const competition = await tx.teamCompetition.findFirst({ where: { id: teamCompetitionId, tournament: tournamentScope(actor) } });
+      if (!competition) throw new NotFoundException('团体赛不存在或不属于你');
+      const drawn = await tx.teamMatch.count({ where: { teamCompetitionId } });
+      if (!drawn) throw new ConflictException('当前没有已生成的对阵');
+      if (!(await this.drawHasProgress(tx, teamCompetitionId))) {
+        throw new ConflictException('对阵尚未开赛且没有比分，可直接取消，无需申请');
+      }
+      const pending = await tx.teamDrawClearRequest.findFirst({
+        where: { teamCompetitionId, status: TeamDrawClearRequestStatus.PENDING },
+      });
+      if (pending) throw new ConflictException('该团体赛已存在待审批的取消申请');
 
-    return this.prisma.teamDrawClearRequest.create({
-      data: {
-        teamCompetitionId,
-        reason: reason?.trim() || null,
-        requesterId: actor.id,
-        requesterNameSnapshot: actor.username ?? null,
-      },
-    });
+      return tx.teamDrawClearRequest.create({
+        data: {
+          teamCompetitionId,
+          reason: reason?.trim() || null,
+          requesterId: actor.id,
+          requesterNameSnapshot: actor.username ?? null,
+        },
+      });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
   }
 
   async listClearDrawRequests(teamCompetitionId: string, actor?: AuthActor) {
@@ -576,14 +580,10 @@ export class TeamCompetitionsService {
   }
 
   /** 超级管理员审批通过：立即清空对阵并取消公开。 */
-  async approveClearDrawRequest(requestId: string, actor: AuthActor & { username?: string | null }) {
+  async approveClearDrawRequest(teamCompetitionId: string, requestId: string, actor: AuthActor & { username?: string | null }, remark?: string) {
+    if (actor.role !== Role.ROOT) throw new ForbiddenException('仅超级管理员可审批取消申请');
     await this.prisma.$transaction(async (tx) => {
-      const request = await tx.teamDrawClearRequest.findUnique({ where: { id: requestId } });
-      if (!request) throw new NotFoundException('取消申请不存在');
-      if (request.status !== TeamDrawClearRequestStatus.PENDING) {
-        throw new ConflictException('该申请已处理，无法重复审批');
-      }
-      await tx.$queryRaw`SELECT id FROM TeamCompetition WHERE id = ${request.teamCompetitionId} FOR UPDATE`;
+      const request = await this.lockPendingClearRequest(tx, teamCompetitionId, requestId, actor);
       if (!(await tx.teamMatch.count({ where: { teamCompetitionId: request.teamCompetitionId } }))) {
         throw new ConflictException('对阵已不存在，无需审批');
       }
@@ -595,6 +595,7 @@ export class TeamCompetitionsService {
           decidedById: actor.id,
           decidedByNameSnapshot: actor.username ?? null,
           decidedAt: new Date(),
+          decisionRemark: remark?.trim() || null,
         },
       });
     }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
@@ -604,46 +605,54 @@ export class TeamCompetitionsService {
   }
 
   async rejectClearDrawRequest(
+    teamCompetitionId: string,
     requestId: string,
     reason: string | undefined,
     actor: AuthActor & { username?: string | null },
   ) {
-    const request = await this.prisma.teamDrawClearRequest.findUnique({ where: { id: requestId } });
-    if (!request) throw new NotFoundException('取消申请不存在');
-    if (request.status !== TeamDrawClearRequestStatus.PENDING) {
-      throw new ConflictException('该申请已处理，无法重复审批');
-    }
-    return this.prisma.teamDrawClearRequest.update({
-      where: { id: requestId },
-      data: {
-        status: TeamDrawClearRequestStatus.REJECTED,
-        decidedById: actor.id,
-        decidedByNameSnapshot: actor.username ?? null,
-        decisionRemark: reason?.trim() || null,
-        decidedAt: new Date(),
-      },
-    });
+    if (actor.role !== Role.ROOT) throw new ForbiddenException('仅超级管理员可审批取消申请');
+    return this.prisma.$transaction(async (tx) => {
+      await this.lockPendingClearRequest(tx, teamCompetitionId, requestId, actor);
+      return tx.teamDrawClearRequest.update({
+        where: { id: requestId },
+        data: {
+          status: TeamDrawClearRequestStatus.REJECTED,
+          decidedById: actor.id,
+          decidedByNameSnapshot: actor.username ?? null,
+          decisionRemark: reason?.trim() || null,
+          decidedAt: new Date(),
+        },
+      });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
   }
 
-  async cancelClearDrawRequest(requestId: string, actor: AuthActor & { username?: string | null }) {
-    const request = await this.prisma.teamDrawClearRequest.findUnique({ where: { id: requestId } });
-    if (!request) throw new NotFoundException('取消申请不存在');
-    if (request.status !== TeamDrawClearRequestStatus.PENDING) {
-      throw new ConflictException('该申请已处理，无法撤回');
-    }
-    if (request.requesterId !== actor.id && actor.role !== Role.ROOT) {
-      throw new ForbiddenException('只能撤回自己提交的取消申请');
-    }
-    return this.prisma.teamDrawClearRequest.update({
-      where: { id: requestId },
-      data: {
-        status: TeamDrawClearRequestStatus.CANCELLED,
-        decidedById: actor.id,
-        decidedByNameSnapshot: actor.username ?? null,
-        decisionRemark: '申请人撤回',
-        decidedAt: new Date(),
-      },
-    });
+  async cancelClearDrawRequest(teamCompetitionId: string, requestId: string, actor: AuthActor & { username?: string | null }) {
+    return this.prisma.$transaction(async (tx) => {
+      const request = await this.lockPendingClearRequest(tx, teamCompetitionId, requestId, actor);
+      if (request.requesterId !== actor.id && actor.role !== Role.ROOT) {
+        throw new ForbiddenException('只能撤回自己提交的取消申请');
+      }
+      return tx.teamDrawClearRequest.update({
+        where: { id: requestId },
+        data: {
+          status: TeamDrawClearRequestStatus.CANCELLED,
+          decidedById: actor.id,
+          decidedByNameSnapshot: actor.username ?? null,
+          decisionRemark: '申请人撤回',
+          decidedAt: new Date(),
+        },
+      });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+  }
+
+  private async lockPendingClearRequest(tx: Prisma.TransactionClient, teamCompetitionId: string, requestId: string, actor: AuthActor) {
+    await tx.$queryRaw`SELECT id FROM TeamCompetition WHERE id = ${teamCompetitionId} FOR UPDATE`;
+    const competition = await tx.teamCompetition.findFirst({ where: { id: teamCompetitionId, tournament: tournamentScope(actor) } });
+    if (!competition) throw new NotFoundException('团体赛不存在或不属于你');
+    const request = await tx.teamDrawClearRequest.findUnique({ where: { id: requestId } });
+    if (!request || request.teamCompetitionId !== teamCompetitionId) throw new NotFoundException('该团体赛的取消申请不存在');
+    if (request.status !== TeamDrawClearRequestStatus.PENDING) throw new ConflictException('该申请已处理，无法重复操作');
+    return request;
   }
 
   /** 级联清除子项比赛及比分、赛前名单、小组分组和组内排名，并取消公开。 */
@@ -788,10 +797,20 @@ export class TeamCompetitionsService {
     await tx.$queryRaw`SELECT id FROM TeamMatch WHERE id = ${teamMatchId} FOR UPDATE`;
   }
 
-  async prepareScoring(tx: Prisma.TransactionClient, matchId: string, options: { starting?: boolean; correcting?: boolean } = {}) {
-    const ref = await tx.match.findUnique({ where: { id: matchId }, select: { teamMatchId: true } });
-    if (!ref?.teamMatchId) return;
-    await this.lockEncounter(tx, ref.teamMatchId);
+  async prepareScoring(tx: Prisma.TransactionClient, matchId: string, options: { starting?: boolean; correcting?: boolean; expectedUpdatedAt?: Date } = {}) {
+    const ref = await tx.match.findUnique({ where: { id: matchId }, select: { teamMatchId: true, eventId: true, teamMatch: { select: { teamCompetitionId: true } } } });
+    if (!ref) throw new NotFoundException('场次不存在');
+    // Use the same lock order as result reset, then revalidate the state read
+    // before the transaction. An in-flight scoring request cannot restore discarded scores.
+    if (ref.teamMatch) await tx.$queryRaw`SELECT id FROM TeamCompetition WHERE id = ${ref.teamMatch.teamCompetitionId} FOR UPDATE`;
+    else if (ref.eventId) await tx.$queryRaw`SELECT id FROM Event WHERE id = ${ref.eventId} FOR UPDATE`;
+    if (ref.teamMatchId) await this.lockEncounter(tx, ref.teamMatchId);
+    await tx.$queryRaw`SELECT id FROM \`Match\` WHERE id = ${matchId} FOR UPDATE`;
+    if (options.expectedUpdatedAt) {
+      const current = await tx.match.findUniqueOrThrow({ where: { id: matchId }, select: { updatedAt: true } });
+      if (current.updatedAt.getTime() !== options.expectedUpdatedAt.getTime()) throw new ConflictException('比赛状态已变化，请刷新后重试');
+    }
+    if (!ref.teamMatchId) return;
     const match = await tx.match.findUniqueOrThrow({ where: { id: matchId }, include: { teamMatch: { include: { matches: true } } } });
     const encounter = match.teamMatch!;
     if (!options.correcting && (encounter.status === MatchStatus.COMPLETED || encounter.status === MatchStatus.CANCELLED)) {
@@ -1953,7 +1972,9 @@ export class TeamCompetitionsService {
         where: { teamCompetitionId, stage: 'KNOCKOUT' },
       });
 
-      if (existingKnockout > 0 && !dto.force) {
+      const retained = await tx.teamMatch.findMany({ where: { teamCompetitionId, stage: 'KNOCKOUT' } });
+      const restoreSkeleton = retained.length > 0 && retained.every(match => !match.team1Id && !match.team2Id);
+      if (existingKnockout > 0 && !dto.force && !restoreSkeleton) {
         throw new ConflictException('淘汰赛已存在');
       }
       const knockoutPlayed = await tx.match.count({ where: { teamMatch: { teamCompetitionId, stage: 'KNOCKOUT' }, OR: [
@@ -1962,7 +1983,7 @@ export class TeamCompetitionsService {
       if (knockoutPlayed) throw new ConflictException('淘汰赛已有子项开赛或成绩，不能重新生成');
 
       // 删除现有淘汰赛
-      await tx.teamMatch.deleteMany({
+      if (!restoreSkeleton) await tx.teamMatch.deleteMany({
         where: { teamCompetitionId, stage: 'KNOCKOUT' },
       });
 
@@ -2001,18 +2022,21 @@ export class TeamCompetitionsService {
           const bye = a.resolved && b.resolved && Boolean(a.id) !== Boolean(b.id);
           const winner = bye ? a.id ?? b.id : null;
           
-          const encounter = await tx.teamMatch.create({
-            data: {
-              teamCompetitionId,
-              round: this.roundLabel(slots.length),
-              roundNo,
-              matchNo: i / 2 + 1,
-              team1Id: a.id,
-              team2Id: b.id,
-              winnerTeamId: winner,
-              status: bye ? MatchStatus.COMPLETED : MatchStatus.PENDING,
-              stage: 'KNOCKOUT',
-            },
+          const encounterData = {
+            teamCompetitionId,
+            round: this.roundLabel(slots.length),
+            roundNo,
+            matchNo: i / 2 + 1,
+            team1Id: a.id,
+            team2Id: b.id,
+            winnerTeamId: winner,
+            status: bye ? MatchStatus.COMPLETED : MatchStatus.PENDING,
+            stage: 'KNOCKOUT',
+          };
+          const encounter = await tx.teamMatch.upsert({
+            where: { teamCompetitionId_roundNo_matchNo: { teamCompetitionId, roundNo, matchNo: i / 2 + 1 } },
+            create: encounterData,
+            update: { ...encounterData, team1Wins: 0, team2Wins: 0, lineupLocked: false },
           });
 
           if (a.id && b.id) {

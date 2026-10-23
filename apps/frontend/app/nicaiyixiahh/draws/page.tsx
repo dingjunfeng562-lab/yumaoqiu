@@ -46,6 +46,7 @@ import {
 } from '@/components/bracket/KnockoutBracket';
 import { SecondStageBracket, type SecondStageData } from '@/components/bracket/SecondStageBracket';
 import TeamCompetitionGroups from '@/components/TeamCompetitionGroups';
+import ClearResultsButton from '@/components/ClearResultsButton';
 
 type TeamCompetitionOption = {
   id: string;
@@ -1092,7 +1093,8 @@ export default function DrawsPage() {
           <Button icon={<SwapOutlined />} onClick={openSwapDialog}>
             换签位
           </Button>
-          {isSuperAdmin && (
+          <ClearResultsButton scope="event" id={selectedEventId} token={token} disabled={loading || !selectedEventId || !bracket?.currentDraw} onChanged={refreshDraw} />
+          {userRole === 'ROOT' && (
             <Popconfirm
               title="清空该赛事下所有单项的抽签、对阵与比赛结果（报名名单保留），且无法撤销，确认继续？"
               onConfirm={handleClearAllDraws}

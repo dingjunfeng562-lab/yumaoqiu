@@ -24,6 +24,7 @@ import { BroadcastsModule } from './broadcasts/broadcasts.module';
 import { PhotoActivitiesModule } from './photo-activities/photo-activities.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { ResultsResetModule } from './common/results-reset.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { AppService } from './app.service';
     PublicModule,
     UploadsModule,
     ScoringModule,
+    ResultsResetModule,
     SchedulingModule,
     ExportsModule,
     TeamCompetitionsModule,

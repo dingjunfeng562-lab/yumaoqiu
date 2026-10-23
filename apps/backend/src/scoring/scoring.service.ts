@@ -484,7 +484,7 @@ export class ScoringService {
     );
 
     await this.prisma.$transaction(async (tx) => {
-      await this.teamCompetitionsService.prepareScoring(tx, matchId, { starting: true });
+      await this.teamCompetitionsService.prepareScoring(tx, matchId, { starting: true, expectedUpdatedAt: match.updatedAt });
       await tx.game.upsert({
         where: { matchId_gameNo: { matchId, gameNo: 1 } },
         update: { server: options.servingSide },
@@ -533,7 +533,7 @@ export class ScoringService {
     }
 
     await this.prisma.$transaction(async (tx) => {
-      await this.teamCompetitionsService.prepareScoring(tx, matchId);
+      await this.teamCompetitionsService.prepareScoring(tx, matchId, { expectedUpdatedAt: match.updatedAt });
       const currentGame = await this.ensureCurrentGame(tx, matchId);
       const [gamesBeforePoint, servingEventsBeforePoint, pauseEventsBeforePoint, courtEventsBeforePoint] = await Promise.all([
         tx.game.findMany({ where: { matchId }, orderBy: { gameNo: 'asc' } }),
@@ -774,7 +774,7 @@ export class ScoringService {
     }
 
     await this.prisma.$transaction(async (tx) => {
-      await this.teamCompetitionsService.prepareScoring(tx, matchId);
+      await this.teamCompetitionsService.prepareScoring(tx, matchId, { expectedUpdatedAt: match.updatedAt });
       const games = await tx.game.findMany({ where: { matchId }, orderBy: { gameNo: 'asc' } });
       const servingEvents = await tx.matchEvent.findMany({
         where: {
@@ -864,7 +864,7 @@ export class ScoringService {
     }
 
     await this.prisma.$transaction(async (tx) => {
-      await this.teamCompetitionsService.prepareScoring(tx, matchId);
+      await this.teamCompetitionsService.prepareScoring(tx, matchId, { expectedUpdatedAt: match.updatedAt });
       const lastPoint = await tx.matchEvent.findFirst({
         where: { matchId, type: MatchEventType.POINT, undoneAt: null },
         orderBy: { createdAt: 'desc' },
@@ -967,7 +967,7 @@ export class ScoringService {
     }
 
     await this.prisma.$transaction(async (tx) => {
-      await this.teamCompetitionsService.prepareScoring(tx, matchId);
+      await this.teamCompetitionsService.prepareScoring(tx, matchId, { expectedUpdatedAt: match.updatedAt });
       await tx.match.update({
         where: { id: matchId },
         data: {
@@ -1114,7 +1114,7 @@ export class ScoringService {
     const winnerSide: 1 | 2 = forfeitedSide === 1 ? 2 : 1;
 
     await this.prisma.$transaction(async (tx) => {
-      await this.teamCompetitionsService.prepareScoring(tx, matchId);
+      await this.teamCompetitionsService.prepareScoring(tx, matchId, { expectedUpdatedAt: match.updatedAt });
       const existingGames = await tx.game.findMany({
         where: { matchId },
         orderBy: { gameNo: 'asc' },
@@ -1198,7 +1198,7 @@ export class ScoringService {
     }
 
     await this.prisma.$transaction(async (tx) => {
-      await this.teamCompetitionsService.prepareScoring(tx, matchId);
+      await this.teamCompetitionsService.prepareScoring(tx, matchId, { expectedUpdatedAt: match.updatedAt });
       // Mark this match as cancelled. forfeitedSide = 0 sentinel = "both sides forfeited"
       await tx.match.update({
         where: { id: matchId },
@@ -1331,7 +1331,7 @@ export class ScoringService {
         : MatchStatus.PENDING;
 
     await this.prisma.$transaction(async (tx) => {
-      await this.teamCompetitionsService.prepareScoring(tx, matchId, { correcting: true });
+      await this.teamCompetitionsService.prepareScoring(tx, matchId, { correcting: true, expectedUpdatedAt: match.updatedAt });
       for (const game of correctedGames) {
         await tx.game.upsert({
           where: { matchId_gameNo: { matchId, gameNo: game.gameNo } },
@@ -2276,10 +2276,10 @@ export class ScoringService {
     });
     if (event?.format !== Format.GROUP_PLUS_KNOCKOUT_STD) return;
 
-    const existingKnockout = await tx.match.count({
-      where: { eventId, roundNo: { gte: 1 } },
-    });
-    if (existingKnockout > 0) return;
+    const existingKnockout = await tx.match.findMany({ where: { eventId, roundNo: { gte: 1 } } });
+    // Cleared results retain an empty skeleton. Refill its original records
+    // after the groups finish again; populated knockout trees remain untouched.
+    if (existingKnockout.some(match => match.side1Id || match.side2Id || match.status !== MatchStatus.PENDING)) return;
 
     const groupMatches = await tx.match.findMany({
       where: { eventId, roundNo: 0 },
@@ -2586,19 +2586,18 @@ export class ScoringService {
     });
     const minutes = event?.defaultMatchMinutes ?? event?.tournament?.defaultMatchMinutes ?? 45;
     for (const draft of drafts) {
-      await tx.match.create({
-        data: {
-          eventId,
-          round: draft.round,
-          roundNo: draft.roundNo,
-          matchNo: draft.matchNo,
-          side1Id: draft.side1Id,
-          side2Id: draft.side2Id,
-          status: draft.status,
-          winnerSide: draft.winnerSide,
-          durationMinutes: minutes,
-        },
-      });
+      const existing = await tx.match.findFirst({ where: { eventId, roundNo: draft.roundNo, matchNo: draft.matchNo, round: draft.round } });
+      const data = {
+        round: draft.round,
+        roundNo: draft.roundNo,
+        matchNo: draft.matchNo,
+        side1Id: draft.side1Id,
+        side2Id: draft.side2Id,
+        status: draft.status,
+        winnerSide: draft.winnerSide,
+      };
+      if (existing) await tx.match.update({ where: { id: existing.id }, data });
+      else await tx.match.create({ data: { ...data, eventId, durationMinutes: minutes } });
     }
   }
 

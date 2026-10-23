@@ -1336,6 +1336,12 @@ export class DrawsService {
     }
 
     await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM Event WHERE id = ${eventId} FOR UPDATE`;
+      const matchTemplates = this.secondStageMatchTemplates(slotMap, dto.rankingMode);
+      const previousStage = await tx.secondStage.findUnique({ where: { eventId } });
+      const retainedMatches = previousStage?.status === SecondStageStatus.NOT_STARTED
+        ? await tx.match.findMany({ where: { eventId, roundNo: { gte: SECOND_STAGE_FORMAL_ROUND_NO_BASE }, matchNo: { in: matchTemplates.map(match => match.matchNo) } }, select: { id: true } })
+        : [];
       await tx.secondStage.deleteMany({ where: { eventId } });
       const stage = await tx.secondStage.create({
         data: {
@@ -1362,7 +1368,6 @@ export class DrawsService {
         }),
       });
 
-      const matchTemplates = this.secondStageMatchTemplates(slotMap, dto.rankingMode);
       await tx.secondStageMatch.createMany({
         data: matchTemplates.map((match) => ({
           secondStageId: stage.id,
@@ -1385,6 +1390,7 @@ export class DrawsService {
           roundNo: {
             gte: isStandard2023Format ? 1 : SECOND_STAGE_FORMAL_ROUND_NO_BASE,
           },
+          ...(retainedMatches.length ? { id: { notIn: retainedMatches.map(match => match.id) } } : {}),
         },
       });
       await this.createSecondStageFormalMatches(tx, eventId, matchTemplates);
@@ -2297,18 +2303,18 @@ export class DrawsService {
       event?.defaultMatchMinutes ?? event?.tournament?.defaultMatchMinutes ?? 45;
 
     for (const template of templates) {
-      await tx.match.create({
-        data: {
-          eventId,
-          round: template.roundName,
-          roundNo: secondStageFormalRoundNo(template.matchNo),
-          matchNo: template.matchNo,
-          side1Id: template.side1?.id ?? null,
-          side2Id: template.side2?.id ?? null,
-          status: MatchStatus.PENDING,
-          durationMinutes: minutes,
-        },
-      });
+      const existing = await tx.match.findFirst({ where: { eventId, roundNo: secondStageFormalRoundNo(template.matchNo), matchNo: template.matchNo } });
+      const data = {
+        round: template.roundName,
+        roundNo: secondStageFormalRoundNo(template.matchNo),
+        matchNo: template.matchNo,
+        side1Id: template.side1?.id ?? null,
+        side2Id: template.side2?.id ?? null,
+        status: MatchStatus.PENDING,
+        winnerSide: null, startedAt: null, finishedAt: null,
+      };
+      if (existing) await tx.match.update({ where: { id: existing.id }, data });
+      else await tx.match.create({ data: { ...data, eventId, durationMinutes: minutes } });
     }
   }
 

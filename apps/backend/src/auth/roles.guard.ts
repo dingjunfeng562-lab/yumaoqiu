@@ -16,6 +16,10 @@ export class RolesGuard implements CanActivate {
     const user = req.user as AuthActor | undefined;
     if (!user) return false;
     if (user.role === Role.ROOT) return true;
+    // A ROOT-only action remains a role boundary even when its controller
+    // otherwise grants access through feature permissions.
+    const actionRoles = this.reflector.get<Role[]>(ROLES_KEY, context.getHandler());
+    if (actionRoles?.length === 1 && actionRoles[0] === Role.ROOT) return false;
     const controller = context.getClass().name;
     const action = context.getHandler().name;
     const params = req.params ?? {};

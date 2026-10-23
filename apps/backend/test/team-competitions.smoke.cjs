@@ -178,7 +178,7 @@ async function main() {
   assert.equal((await detail(batch.id)).teams.length, 0);
   assert.equal(await db.player.count({ where: { ownerId: actorId, name: { startsWith: '批量' } } }), 0);
   const imported = await api(`/team-competitions/${batch.id}/teams/batch-import`, 'POST', { players: batchRows }, 201);
-  assert.deepEqual(imported, { teamCount: 2, playerCount: 10 });
+  assert.deepEqual(imported, { teamCount: 2, playerCount: 10, drawCleared: false });
   assert.equal((await detail(batch.id)).teams.length, 2);
   await api(`/team-competitions/${batch.id}/teams/batch-import`, 'POST', { players: batchRows }, 409);
   assert.equal(await db.player.count({ where: { ownerId: actorId, name: { startsWith: '批量' } } }), 10);

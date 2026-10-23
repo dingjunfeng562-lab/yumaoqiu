@@ -1,12 +1,12 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, Button, Card, DatePicker, Empty, Form, Modal, Popconfirm, Select, Space, Table, Tag, message } from 'antd';
+import { Alert, Button, Card, DatePicker, Empty, Form, Modal, Select, Space, Table, Tag, message } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
-import { DeleteOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { useCurrentAccess } from '@/lib/use-current-role';
 import { teamFormatLabel } from './TeamCompetitionFields';
+import TeamDrawActions from './TeamDrawActions';
 
 type Team = { id: string; name: string };
 type Standing = { teamId: string; teamName: string; wins: number; losses: number; matchesWon: number; matchesLost: number; netMatches: number; groupRank: number | null; advanced: boolean };
@@ -93,13 +93,14 @@ export default function TeamCompetitionGroups({ competitionId, token, teams, for
     finally { setBusy(false); }
   }
   if (!isGroup && !showDraw) return null;
-  return <Card loading={loading} title={isGroup ? '小组分组与积分榜' : '团体赛抽签'} extra={<Space wrap>
+  return <Card loading={loading} title={<div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingBlock: 12 }}>
+    <span>{isGroup ? '小组分组与积分榜' : '团体赛抽签'}</span><Space wrap>
     {showDraw && <Button type="primary" disabled={hasDraw || teams.length < 2} loading={busy} onClick={() => run('draw', { force: false }, '团体对阵已生成')}>生成团体对阵</Button>}
     {showDraw && hasDraw && <Button danger disabled={busy} onClick={() => Modal.confirm({ title: '重新抽签？', content: '将清除已有对阵和赛前名单。已有子项开赛时不能重新生成。', okText: '重新生成', cancelText: '取消', onOk: () => run('draw', { force: true }, '团体对阵已重新生成') })}>重新抽签</Button>}
-    {showDraw && hasDraw && <Popconfirm title="清空该团体赛的抽签、对阵与比赛结果并取消公开（队伍名单保留），且无法撤销，确认继续？" description="已有子项开赛或产生比分时不能直接取消，需到团体赛详情提交取消申请，由超级管理员审批。" okText="清空" cancelText="取消" onConfirm={() => run('draw/clear', {}, '已取消团体对阵，可调整队伍后重新生成')}><Button danger icon={<DeleteOutlined />} disabled={busy}>取消对阵</Button></Popconfirm>}
     {groups.length > 0 && format !== 'ROUND_ROBIN' && !editing && <Button disabled={busy} onClick={startEditing}>手动调整分组</Button>}
     <Button onClick={load} disabled={busy}>刷新分组</Button>
-  </Space>}>
+  </Space></div>}>
+    {showDraw && hasDraw && <div style={{ marginBottom: 16 }}><TeamDrawActions key={competitionId} competitionId={competitionId} token={token} hasDraw={hasDraw} disabled={busy} revision={data} onChanged={async () => { await onChanged(); await load(); }} /></div>}
     {error && <Alert type="error" showIcon title={error} style={{ marginBottom: 12 }} />}
     {isGroup && <Alert type="info" showIcon title={`${teamFormatLabel(format)} · ${data?.competition.groupCount ?? groups.length} 组${format === 'GROUP_PLUS_KNOCKOUT' ? ` · 每组晋级 ${data?.competition.advancePerGroup ?? 2} 队` : ''}`} description={format === 'ROUND_ROBIN' ? '全部团体在同一组，每两队交手一次，全部打完即结束比赛并确定各队名次。胜场为赢下的团体对阵数；胜次为赢下的子项总数；净胜分为胜项减负项。排名依次比较胜场、净胜分、两队相互胜负；仍无法区分时并列。各子项双方名单填齐并锁定后，才会显示在裁判端。' : '积分榜显示胜场（团体对阵）、胜次（赢下的子项总数）和净胜分（胜项减负项）。小组排名和晋级资格以比赛结果为准。'} style={{ marginBottom: 16 }} />}
     {editing && <Space orientation="vertical" style={{ width: '100%', marginBottom: 16 }}>
