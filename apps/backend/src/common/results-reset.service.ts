@@ -8,7 +8,7 @@ import { isSecondStageFormalRoundNo, SECOND_STAGE_FORMAL_ROUND_NO_BASE } from '.
 import { resetElimination } from './reset-elimination';
 
 const emptyResult = { status: MatchStatus.PENDING, winnerSide: null, startedAt: null, finishedAt: null,
-  forfeitedSide: null, forfeitReason: null };
+  forfeitedSide: null, forfeitReason: null, refereeId: null };
 
 @Injectable()
 export class ResultsResetService {

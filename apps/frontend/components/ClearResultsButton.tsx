@@ -26,10 +26,10 @@ export default function ClearResultsButton({ scope, id, token, disabled, onChang
   }
   const unavailable = !allowed || disabled || !id || busy;
   return <Tooltip title={allowed
-    ? '丢弃当前项目的全部比分、胜负、弃权和排名，撤回由成绩产生的晋级。保留分组、签表位置、场地和时间；轮空仍按原签位处理。'
+    ? '丢弃当前项目的全部比分、胜负、弃权和排名，撤回由成绩产生的晋级，并释放裁判认领。保留分组、签表位置、场地和时间；裁判需重新接手，轮空仍按原签位处理。'
     : '仅超级管理员可清除比分并撤回晋级'}>
     <span><Popconfirm title="清除全部比分，保留对阵？"
-      description="已得比分和比赛结果将全部作废，分组积分与排名归零，已晋级的队伍撤回，无法撤销。"
+      description="已得比分和比赛结果将全部作废，分组积分与排名归零，已晋级的队伍撤回，裁判需重新接手，无法撤销。"
       okText="丢弃全部成绩" cancelText="取消" okButtonProps={{ danger: true }}
       disabled={unavailable} onConfirm={clear}>
       <Button danger icon={<ClearOutlined />} loading={busy} disabled={unavailable}>清除比分，保留对阵</Button>

@@ -2,7 +2,7 @@
 import { useCurrentAccess } from '@/lib/use-current-role';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { Alert, Button, Input, Modal, Spin, message } from 'antd';
@@ -117,6 +117,7 @@ type PendingRefereeAction =
 
 type ScoreState = {
   id: string;
+  referee?: { id: string } | null;
   status: 'PENDING' | 'LIVE' | 'COMPLETED' | 'CANCELLED';
   winnerSide?: number | null;
   pendingFinish?: boolean;
@@ -450,6 +451,8 @@ export default function RefereeScoringPage() {
   const canReferee = access.ready && access.can('REFEREE');
   const token = session?.user?.accessToken;
   const [score, setScore] = useState<ScoreState | null>(null);
+  const [accessRevoked, setAccessRevoked] = useState(false);
+  const newestScoreAt = useRef(0);
   const [loading, setLoading] = useState(false);
   const [busyAction, setBusyAction] = useState('');
   const [socketStatus, setSocketStatus] = useState<'连接中' | '已连接' | '已断开'>('连接中');
@@ -470,6 +473,14 @@ export default function RefereeScoringPage() {
   });
   const [pendingRefereeAction, setPendingRefereeAction] = useState<PendingRefereeAction>(null);
 
+  const applyScore = useCallback((nextScore: ScoreState) => {
+    const at = Date.parse(nextScore.updatedAt ?? '') || 0;
+    if (at < newestScoreAt.current) return;
+    newestScoreAt.current = at;
+    setScore(nextScore);
+  }, []);
+  const noLongerAssigned = access.ready && !!score && !access.can('SCORING') && score.referee?.id !== session?.user?.id;
+
   const currentGame = score ? currentGameOf(score) : null;
   const disabled = !score || score.status === 'COMPLETED' || score.status === 'CANCELLED' || busyAction !== '';
 
@@ -484,9 +495,11 @@ export default function RefereeScoringPage() {
     if (!token || !matchId) return;
     setLoading(true);
     try {
-      const data = await apiFetch<ScoreState>(`/matches/${matchId}/score`, { token });
-      setScore(data);
+      const data = await apiFetch<ScoreState>(`/matches/${matchId}/score`, { token, redirectOnForbidden: false });
+      applyScore(data);
+      setAccessRevoked(false);
     } catch (error) {
+      if ((error as { status?: number }).status === 403) setAccessRevoked(true);
       message.error(error instanceof Error ? error.message : '加载比分失败');
     } finally {
       setLoading(false);
@@ -500,10 +513,12 @@ export default function RefereeScoringPage() {
       const data = await apiFetch<ScoreState>(path, {
         method: 'POST',
         token,
+        redirectOnForbidden: false,
         body: body ? JSON.stringify(body) : undefined,
       });
-      setScore(data);
+      applyScore(data);
     } catch (error) {
+      if ((error as { status?: number }).status === 403) setAccessRevoked(true);
       message.error(error instanceof Error ? error.message : '操作失败');
     } finally {
       setBusyAction('');
@@ -519,6 +534,7 @@ export default function RefereeScoringPage() {
   }
 
   useEffect(() => {
+    newestScoreAt.current = 0;
     loadScore();
   }, [token, matchId]);
 
@@ -551,16 +567,28 @@ export default function RefereeScoringPage() {
     socket.on('connect', () => {
       setSocketStatus('已连接');
       socket.emit('joinMatch', { matchId });
+      void loadScore();
     });
     socket.on('disconnect', () => setSocketStatus('已断开'));
     socket.on('match:update', (nextScore: ScoreState) => {
-      if (nextScore.id === matchId) setScore(nextScore);
+      if (nextScore.id === matchId) applyScore(nextScore);
     });
     return () => {
       socket.emit('leaveMatch', { matchId });
       socket.disconnect();
     };
-  }, [matchId]);
+  }, [matchId, token, applyScore]);
+
+  if (accessRevoked || noLongerAssigned) {
+    const back = score?.venue && score.event.tournament
+      ? `/referee/tournaments/${encodeURIComponent(score.event.tournament.id)}/courts/${encodeURIComponent(score.venue.id)}`
+      : '/referee/my-matches';
+    return <main className="grid min-h-screen place-items-center bg-slate-50 p-6">
+      <Alert type="info" showIcon title="本场执裁已解除，请重新接手"
+        description="比赛成绩已清除或裁判安排已调整。请返回场次列表，重新接手后再开始记分。"
+        action={<Button type="primary" href={back}>返回场次列表</Button>} />
+    </main>;
+  }
 
   if (sessionStatus === 'loading' || loading || !score) {
     return (

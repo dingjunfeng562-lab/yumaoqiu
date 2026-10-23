@@ -139,6 +139,11 @@ export class UpdateTeamCompetitionDto extends TeamScoringDto {
   @IsIn([0, 1, 2])
   maxPlayerAppearances?: 0 | 1 | 2;
 
+  /** 仅用于请求：把已取消、尚未开赛的剩余子项恢复为未开始，便于开启“打满所有子项”后补录。 */
+  @IsOptional()
+  @IsBoolean()
+  reopenCancelledChildren?: boolean;
+
   @IsOptional()
   @Type(() => Number)
   @IsInt()

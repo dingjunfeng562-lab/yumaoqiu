@@ -74,7 +74,7 @@ export default function TeamCompetitionFields({ formatLocked = false }: { format
     <Form.Item name="winThreshold" label="团体对阵先赢几项获胜" rules={[{ required: true }]} extra="先达到此胜场数的队伍获胜。">
       <InputNumber min={1} max={Math.ceil(items.length / 2) || 1} precision={0} />
     </Form.Item>
-    <Form.Item name="playAllMatches" label="胜负确定后继续比赛" valuePropName="checked" extra="开启后继续打完剩余子项并记录完整比分，再推进下一轮；关闭时达到胜场数即结束，其余子项取消。">
+    <Form.Item name="playAllMatches" label="胜负确定后继续比赛" valuePropName="checked" extra="开启后继续打完剩余子项并记录完整比分；关闭时达到胜场数即结束，其余子项标记为无需比赛。抽签后也可开启，开启时会把尚未开赛的剩余子项恢复为未开始，方便补录。">
       <Switch checkedChildren="继续比赛" unCheckedChildren="结束对阵" />
     </Form.Item>
     <Form.Item name="scoringRule" label="子项计分规则" rules={[{ required: true }]}><Select options={TEAM_SCORING_OPTIONS} /></Form.Item>

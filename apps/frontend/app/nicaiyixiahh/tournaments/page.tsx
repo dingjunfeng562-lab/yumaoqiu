@@ -851,7 +851,7 @@ export default function TournamentsPage() {
                   <Select options={TEAM_APPEARANCE_OPTIONS} />
                 </Form.Item>
                 <Form.Item name="teamScoringRule" label="团体子项计分规则" rules={[{ required: true }]} extra="自定义分数和局数可在团体赛设置中调整。"><Select options={TEAM_SCORING_OPTIONS} /></Form.Item>
-                <Form.Item name="teamPlayAllMatches" label="胜负确定后继续比赛" valuePropName="checked" extra="开启后继续打完剩余子项并记录完整比分，再推进下一轮；关闭时达到胜场数即结束。">
+                <Form.Item name="teamPlayAllMatches" label="胜负确定后继续比赛" valuePropName="checked" extra="开启后继续打完剩余子项并记录完整比分；关闭时达到胜场数即结束。抽签后也可开启，开启时会恢复尚未开赛的剩余子项以便补录。">
                   <Switch checkedChildren="继续比赛" unCheckedChildren="结束对阵" />
                 </Form.Item>
                 <Form.Item name="teamScoringMode" label="团体子项平分规则" rules={[{ required: true }]}><Select options={[{ value: 'CAPPED_30', label: '领先 2 分，封顶决胜' }, { value: 'STANDARD_GOLDEN', label: '目标分直接获胜（金球）' }]} /></Form.Item>

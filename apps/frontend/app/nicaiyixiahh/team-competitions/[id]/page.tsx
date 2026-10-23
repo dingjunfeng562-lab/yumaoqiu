@@ -76,14 +76,18 @@ export default function TeamCompetitionDetailPage() {
   }
   async function saveSettings() {
     const values = await settingsForm.validateFields();
-    await apiFetch(`/team-competitions/${id}`, { method: 'PATCH', token, body: JSON.stringify({
+    const saved = await apiFetch<{ reopenedChildren?: number }>(`/team-competitions/${id}`, { method: 'PATCH', token, body: JSON.stringify({
       name: values.name, description: values.description, maxPlayerAppearances: values.maxPlayerAppearances,
       winThreshold: values.winThreshold, isPublished: values.isPublished, scoringRule: values.scoringRule, scoringMode: values.scoringMode,
       playAllMatches: values.playAllMatches, ...teamFormatPayload(values),
       customGamePoint: values.customGamePoint ?? null, customGameCap: values.customGameCap ?? null, customGamesToWin: values.customGamesToWin ?? null,
       items: values.items.map((item: Item, index: number) => ({ eventType: item.eventType, sortOrder: index + 1 })),
     }) });
-    setSettingsOpen(false); message.success('团体赛配置已保存'); await loadData();
+    setSettingsOpen(false);
+    message.success(saved.reopenedChildren
+      ? `团体赛配置已保存，恢复了 ${saved.reopenedChildren} 个剩余子项，可继续补录比分`
+      : '团体赛配置已保存');
+    await loadData();
   }
   function openTeam(team?: Team) {
     setEditingTeam(team ?? null); teamForm.resetFields();
@@ -197,7 +201,7 @@ export default function TeamCompetitionDetailPage() {
       hasDraw={hasDraw} onChanged={loadData} />
     <TeamRosterImportModal competition={competition} open={batchOpen} onClose={() => setBatchOpen(false)} onImported={loadData} token={token} />
     <Modal title="团体赛设置" open={settingsOpen} onCancel={() => setSettingsOpen(false)} onOk={() => submit(saveSettings)} okText="保存" cancelText="取消" confirmLoading={busy} width={760}>
-      {hasDraw && <Alert type="info" title="对阵已生成，兼项、胜场、项目顺序和计分规则不可修改；名称、说明和公开状态仍可编辑。" style={{ marginBottom: 16 }} />}
+      {hasDraw && <Alert type="info" title="对阵已生成，兼项、胜场、项目顺序和计分规则不可修改；名称、说明、公开状态和「胜负确定后继续比赛」仍可编辑。" description="开启「胜负确定后继续比赛」时，此前因胜负已定取消、尚未开赛的剩余子项会恢复为未开始，可继续补录比分（已生成淘汰赛对阵时不恢复）。" style={{ marginBottom: 16 }} />}
       <Form form={settingsForm} layout="vertical"><TeamCompetitionFields /></Form>
     </Modal>
     <Modal title={editingTeam ? '例外调整队员' : '从选手库建队'} open={teamOpen} onCancel={() => setTeamOpen(false)} onOk={() => editingTeam ? Modal.confirm({ title: '确认例外调整本队名单？', content: '原则上队员名单不能更改。本次确认将按当前选择调整人员；已结束子项保留原记录。', okText: '确认调整', cancelText: '取消', onOk: () => submit(saveTeam) }) : submit(saveTeam)} okText="保存" cancelText="取消" confirmLoading={busy} width={700}>

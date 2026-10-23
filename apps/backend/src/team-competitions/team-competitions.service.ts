@@ -123,6 +123,29 @@ type ParsedQuickAssignment = {
   names: string[];
 };
 
+/**
+ * 抽签编排/小组页展示一场团体对阵所需的全部数据：双方、子项比分与出场名单。
+ * 子项比分是“每一局结束后”可见的关键信息，抽签编排页直接复用该结构。
+ */
+const TEAM_ENCOUNTER_DETAIL_INCLUDE = {
+  team1: true,
+  team2: true,
+  matches: {
+    include: {
+      teamCompetitionItem: true,
+      referee: { select: { username: true } },
+      venue: { select: { id: true, name: true } },
+      games: { orderBy: { gameNo: 'asc' } },
+    },
+    orderBy: { matchNo: 'asc' },
+  },
+  lineups: { include: { player1: true, player2: true } },
+} as const satisfies Prisma.TeamMatchInclude;
+
+type TeamEncounterDetail = Prisma.TeamMatchGetPayload<{
+  include: typeof TEAM_ENCOUNTER_DETAIL_INCLUDE;
+}>;
+
 const EVENT_TYPE_LABELS: Record<EventType, string> = {
   MENS_SINGLES: '男单',
   WOMENS_SINGLES: '女单',
@@ -199,13 +222,18 @@ export class TeamCompetitionsService {
 
     const rulesChanged = (dto.winThreshold !== undefined && dto.winThreshold !== current.winThreshold)
       || (dto.maxPlayerAppearances !== undefined && dto.maxPlayerAppearances !== current.maxPlayerAppearances)
-      || (dto.playAllMatches !== undefined && dto.playAllMatches !== current.playAllMatches)
       || Object.entries(this.formatData(dto)).some(([key, value]) => value !== current[key as keyof typeof current])
       || Object.entries(this.scoringData(dto)).some(([key, value]) => value !== undefined && value !== current[key as keyof typeof current]);
     const itemsChanged = nextItems && JSON.stringify(nextItems.map(i => [i.eventType, i.sortOrder])) !== JSON.stringify(current.items.map(i => [i.eventType, i.sortOrder]));
     if ((rulesChanged || itemsChanged) && await this.prisma.teamMatch.count({ where: { teamCompetitionId: id } })) {
       throw new ConflictException('已生成对阵后不能修改赛制、兼项、胜场、计分规则或项目顺序');
     }
+    // 「胜负确定后继续比赛」不影响签表结构，抽签后仍可开启；开启时把此前因胜负已定
+    // 取消、且尚未开赛的剩余子项恢复为未开始，让这些子项可以补录。
+    // reopenCancelledChildren 供已开启该选项、但历史数据仍被取消时手动恢复。
+    const reopenCancelled = dto.reopenCancelledChildren === true
+      || (dto.playAllMatches === true && !current.playAllMatches);
+    let reopenedChildren = 0;
 
     await this.prisma.$transaction(async (tx) => {
       await tx.teamCompetition.update({
@@ -236,9 +264,64 @@ export class TeamCompetitionsService {
           })),
         });
       }
+
+      if (reopenCancelled) {
+        reopenedChildren = await this.reopenCancelledChildren(tx, id);
+      }
     }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
 
-    return this.findOne(id);
+    return { ...(await this.findOne(id)), reopenedChildren };
+  }
+
+  /**
+   * 开启「胜负确定后继续比赛」时，把此前因胜负已定被取消、且从未开赛的剩余子项恢复为未开始，
+   * 让这些子项可以继续补录比分。只处理小组赛对阵；已生成淘汰赛时不恢复，避免打乱已经产生的晋级。
+   */
+  async reopenCancelledChildren(tx: Prisma.TransactionClient, teamCompetitionId: string) {
+    const knockoutCount = await tx.teamMatch.count({
+      where: { teamCompetitionId, stage: 'KNOCKOUT' },
+    });
+    if (knockoutCount > 0) return 0;
+
+    const encounters = await tx.teamMatch.findMany({
+      where: {
+        teamCompetitionId,
+        groupId: { not: null },
+        status: { in: [MatchStatus.COMPLETED, MatchStatus.LIVE] },
+        matches: { some: { status: MatchStatus.CANCELLED } },
+      },
+      include: { matches: { include: { games: true } } },
+    });
+
+    let reopened = 0;
+    const groupIds = new Set<string>();
+    for (const encounter of encounters) {
+      const childIds = encounter.matches
+        .filter(child => child.status === MatchStatus.CANCELLED
+          && !child.startedAt
+          && child.forfeitedSide === null
+          && child.games.length === 0)
+        .map(child => child.id);
+      if (!childIds.length) continue;
+      await tx.match.updateMany({
+        where: { id: { in: childIds } },
+        data: {
+          status: MatchStatus.PENDING,
+          winnerSide: null,
+          forfeitedSide: null,
+          forfeitReason: null,
+          finishedAt: null,
+        },
+      });
+      // 对阵重新变为进行中；达到胜场的 winnerTeamId 保留，补录完剩余子项后会再次结算。
+      await tx.teamMatch.update({ where: { id: encounter.id }, data: { status: MatchStatus.LIVE } });
+      if (encounter.groupId) groupIds.add(encounter.groupId);
+      reopened += childIds.length;
+    }
+
+    // 重新进入进行中后，小组积分应暂时不再计入该对阵。
+    for (const groupId of groupIds) await this.recalculateGroupRankings(tx, groupId);
+    return reopened;
   }
 
   async remove(id: string) {
@@ -1680,38 +1763,38 @@ export class TeamCompetitionsService {
    */
   async getGroups(teamCompetitionId: string) {
     const competition = await this.ensureCompetition(teamCompetitionId);
-    
-    const groups = await this.prisma.teamGroup.findMany({
-      where: { teamCompetitionId },
-      include: {
-        teams: {
-          include: {
-            team: {
-              include: {
-                members: { include: { player: true } },
+
+    const [groups, encounters] = await Promise.all([
+      this.prisma.teamGroup.findMany({
+        where: { teamCompetitionId },
+        include: {
+          teams: {
+            include: {
+              team: {
+                include: {
+                  members: { include: { player: true } },
+                },
               },
             },
+            orderBy: [{ groupRank: 'asc' }, { wins: 'desc' }],
           },
-          orderBy: [{ groupRank: 'asc' }, { wins: 'desc' }],
         },
-        matches: {
-          include: {
-            team1: true,
-            team2: true,
-            matches: {
-              orderBy: { matchNo: 'asc' },
-              include: {
-                teamCompetitionItem: true,
-                games: true,
-                venue: { select: { id: true, name: true } },
-              },
-            },
-          },
-          orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }],
-        },
-      },
-      orderBy: { groupNo: 'asc' },
-    });
+        orderBy: { groupNo: 'asc' },
+      }),
+      this.prisma.teamMatch.findMany({
+        where: { teamCompetitionId },
+        include: TEAM_ENCOUNTER_DETAIL_INCLUDE,
+        orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }],
+      }),
+    ]);
+
+    const groupEncounters = new Map<string, TeamEncounterDetail[]>();
+    for (const encounter of encounters) {
+      if (!encounter.groupId) continue;
+      const list = groupEncounters.get(encounter.groupId) ?? [];
+      list.push(encounter);
+      groupEncounters.set(encounter.groupId, list);
+    }
 
     return {
       competition: {
@@ -1721,6 +1804,8 @@ export class TeamCompetitionsService {
         format: competition.format,
         groupCount: competition.groupCount,
         advancePerGroup: competition.advancePerGroup,
+        winThreshold: competition.winThreshold,
+        playAllMatches: competition.playAllMatches,
       },
       groups: groups.map(group => ({
         id: group.id,
@@ -1737,21 +1822,58 @@ export class TeamCompetitionsService {
           groupRank: member.groupRank,
           advanced: member.advanced,
         })),
-        matches: group.matches.map(match => ({
-          id: match.id,
-          round: match.round,
-          roundNo: match.roundNo,
-          matchNo: match.matchNo,
-          team1: match.team1,
-          team2: match.team2,
-          team1Wins: match.team1Wins,
-          team2Wins: match.team2Wins,
-          status: match.status,
-          winnerTeamId: match.winnerTeamId,
-          matches: match.matches.map(child => ({
-            id: child.id, status: child.status, matchNo: child.matchNo,
-            scheduledAt: child.scheduledAt, venue: child.venue,
-          })),
+        matches: (groupEncounters.get(group.id) ?? []).map(encounter => this.toTeamEncounterCard(encounter)),
+      })),
+      // 淘汰赛（含单淘汰制）对阵单独返回：抽签编排页在小组赛后仍能看到每一轮与每个子项的比分。
+      knockout: encounters.filter(encounter => !encounter.groupId).map(encounter => this.toTeamEncounterCard(encounter)),
+    };
+  }
+
+  /**
+   * 团体对阵的展示结构：总比分 + 每个子项的出场名单、每局比分与状态。
+   * 抽签编排页据此在“每一局比赛结束后”直接显示结果，无需跳转团体详情。
+   */
+  private toTeamEncounterCard(encounter: TeamEncounterDetail) {
+    const lineupName = (teamId: string | null, itemId: string | null) => {
+      if (!teamId || !itemId) return null;
+      const lineup = encounter.lineups.find(row => row.teamId === teamId && row.teamCompetitionItemId === itemId);
+      if (!lineup) return null;
+      return lineup.player2 ? `${lineup.player1.name} / ${lineup.player2.name}` : lineup.player1.name;
+    };
+    return {
+      id: encounter.id,
+      round: encounter.round,
+      roundNo: encounter.roundNo,
+      matchNo: encounter.matchNo,
+      stage: encounter.stage,
+      groupId: encounter.groupId,
+      team1: encounter.team1,
+      team2: encounter.team2,
+      team1Wins: encounter.team1Wins,
+      team2Wins: encounter.team2Wins,
+      status: encounter.status,
+      winnerTeamId: encounter.winnerTeamId,
+      children: encounter.matches.map(match => ({
+        id: match.id,
+        matchNo: match.matchNo,
+        status: match.status,
+        lineupLocked: match.lineupLocked,
+        eventType: match.teamCompetitionItem?.eventType ?? null,
+        eventTypeLabel: match.teamCompetitionItem
+          ? EVENT_TYPE_LABELS[match.teamCompetitionItem.eventType as EventType]
+          : null,
+        winnerSide: match.winnerSide,
+        side1Name: lineupName(encounter.team1Id, match.teamCompetitionItemId),
+        side2Name: lineupName(encounter.team2Id, match.teamCompetitionItemId),
+        referee: match.referee?.username ?? null,
+        venue: match.venue,
+        scheduledAt: match.scheduledAt,
+        durationMinutes: match.durationMinutes,
+        games: match.games.map(game => ({
+          gameNo: game.gameNo,
+          side1Score: game.side1Score,
+          side2Score: game.side2Score,
+          winnerSide: game.winnerSide,
         })),
       })),
     };

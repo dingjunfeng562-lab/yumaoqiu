@@ -9,6 +9,9 @@ import { Alert, Button, Empty, Spin, Tag } from 'antd';
 import { ReloadOutlined, ScanOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { roundCn } from '@/lib/round';
+import { io } from 'socket.io-client';
+
+const SOCKET_BASE = process.env.NEXT_PUBLIC_API_URL!.replace(/\/api$/, '');
 
 type Court = { id: string; name: string; courtNumber: number; matchCount: number };
 type CourtsData = {
@@ -101,6 +104,32 @@ export default function TournamentCourts({ tournamentId, initialCourt }: { tourn
     }, 15000);
     return () => { controller.abort(); window.clearInterval(timer); listVersion.current += 1; };
   }, [loadMatches]);
+
+  useEffect(() => {
+    if (!token || !isReferee) return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const refresh = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        void loadCourts(controller.signal);
+        void loadMatches(controller.signal);
+      }, 150);
+    };
+    const socket = io(`${SOCKET_BASE}/scores`, { transports: ['polling', 'websocket'], withCredentials: true });
+    socket.on('connect', refresh);
+    socket.on('bracket:update', (payload: { tournamentId?: string }) => {
+      if (payload.tournamentId === tournamentId) refresh();
+    });
+    const onVisible = () => { if (document.visibilityState === 'visible') refresh(); };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      controller.abort(); clearTimeout(timer); socket.disconnect();
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [token, isReferee, tournamentId, loadCourts, loadMatches]);
 
   async function enterMatch(match: CourtMatch) {
     if (!token || claimingRef.current) return;

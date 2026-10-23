@@ -17,6 +17,7 @@ import {
   TournamentStatus,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { TeamCompetitionsService } from '../team-competitions/team-competitions.service';
 import { CreateTournamentDto, UpdateTournamentDto } from './dto/tournament.dto';
 import { sanitizeAnnouncementContent } from '../announcements/announcement-content';
 import { ScreenSettingsDto } from './dto/screen-settings.dto';
@@ -49,7 +50,10 @@ type TournamentDetail = Prisma.TournamentGetPayload<{
 
 @Injectable()
 export class TournamentsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private teamCompetitionsService: TeamCompetitionsService,
+  ) {}
 
   async getScreenSettings(id: string) {
     const tournament = await this.prisma.tournament.findUnique({
@@ -462,9 +466,10 @@ export class TournamentsService {
       return;
     }
 
-    if (current._count.teamMatches > 0 && (data.winThreshold !== current.winThreshold || data.maxPlayerAppearances !== current.maxPlayerAppearances || data.playAllMatches !== current.playAllMatches || data.scoringRule !== current.scoringRule || data.scoringMode !== current.scoringMode)) {
+    if (current._count.teamMatches > 0 && (data.winThreshold !== current.winThreshold || data.maxPlayerAppearances !== current.maxPlayerAppearances || data.scoringRule !== current.scoringRule || data.scoringMode !== current.scoringMode)) {
       throw new ConflictException('已生成团体对阵，不能修改兼项、胜场或计分规则');
     }
+    const playAllTurnedOn = data.playAllMatches && !current.playAllMatches;
     await tx.teamCompetition.update({
       where: { id: current.id },
       data: {
@@ -477,6 +482,8 @@ export class TournamentsService {
         scoringMode: data.scoringMode,
       },
     });
+    // 与团体赛设置页保持一致：开启「胜负确定后继续比赛」时恢复因胜负已定取消的剩余子项。
+    if (playAllTurnedOn) await this.teamCompetitionsService.reopenCancelledChildren(tx, current.id);
 
     const currentTypes = current.items.sort((a, b) => a.sortOrder - b.sortOrder).map((item) => item.eventType);
     if (JSON.stringify(currentTypes) !== JSON.stringify(teamEventTypes)) {
