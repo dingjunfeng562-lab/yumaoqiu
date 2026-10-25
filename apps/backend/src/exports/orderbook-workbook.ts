@@ -471,7 +471,7 @@ const TEAM_ITEM_ABBR: Record<string, string> = {
   MENS_DOUBLES: '男双', WOMENS_DOUBLES: '女双', MIXED_DOUBLES: '混双',
 };
 
-function teamCompetitionEvents(tournament: ExportTournament): ExportEvent[] {
+export function teamCompetitionEvents(tournament: ExportTournament): ExportEvent[] {
   const events: ExportEvent[] = [];
   let codeOffset = 0;
   for (const competition of tournament.teamCompetitions ?? []) {

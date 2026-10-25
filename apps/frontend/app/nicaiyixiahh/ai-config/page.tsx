@@ -225,7 +225,7 @@ export default function AdminAiConfigPage() {
     setFetchingModels(true);
     try {
       const result = await apiFetch<{ success: boolean; message: string; models: string[] }>(
-        '/nicaiyixiahh/ai-config/models',
+        '/admin/ai-config/models',
         {
           method: 'POST',
           token,

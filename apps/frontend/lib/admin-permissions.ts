@@ -8,8 +8,9 @@ export function hasFeature(role: string | undefined, permissions: string[] | und
 }
 export function canAccessAdminPage(role: string | undefined, pathname: string, permissions?: string[]) {
   if (role === 'ROOT') return true;
-  // 直播管理仅超级管理员，没有可分配的功能权限键。
+  // 直播管理、裁判员对局管理仅超级管理员可见，没有可分配的功能权限键。
   if (pathname === '/nicaiyixiahh/broadcasts') return false;
+  if (pathname.startsWith('/nicaiyixiahh/match-management')) return false;
   if (/^\/nicaiyixiahh\/team-competitions\/[^/]+$/.test(pathname)) {
     return hasFeature(role, permissions, 'TEAMS');
   }

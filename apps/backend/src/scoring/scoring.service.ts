@@ -72,6 +72,23 @@ type SecondStageEntrant = {
   name: string | null;
 };
 
+/**
+ * 场次一方的展示信息。裁判员对局管理需要一次性把整届赛事的对阵双方都解析出来，
+ * 复用记分模块对报名/团体出场位（lineup:）的解析逻辑，避免两套实现漂移。
+ */
+export type MatchSideView = {
+  id: string;
+  name: string;
+  teamName: string | null;
+  affiliation: string | null;
+  players: Array<{
+    id: string;
+    index: number;
+    name: string;
+    affiliation: string | null;
+  }>;
+};
+
 export type MatchScoringInput = {
   round?: string | null;
   roundNo?: number | null;
@@ -452,6 +469,19 @@ export class ScoringService {
       events: match.events,
       updatedAt: match.updatedAt,
     };
+  }
+
+  /**
+   * 批量解析场次双方（报名选手或团体出场位）。供赛事级对局总览复用。
+   */
+  async resolveSideViews(ids: Array<string | null>): Promise<Map<string, MatchSideView>> {
+    const sideMap = await this.resolveSideMap(ids);
+    return new Map(
+      [...sideMap.entries()].map(([id, registration]) => [
+        id,
+        this.registrationView(registration),
+      ]),
+    );
   }
 
   async startMatch(matchId: string, user: AuthUser, options: StartMatchOptions) {
@@ -986,12 +1016,159 @@ export class ScoringService {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
 
     this.gateway.emitBracketUpdate({
-      tournamentId: match.event?.tournamentId ?? null,
+      tournamentId: this.tournamentIdForMatch(match),
       eventId: match.eventId,
       matchId,
     });
 
     return this.getMatchState(matchId, user);
+  }
+
+  /**
+   * “裁判员对局管理”专用：超级管理员直接结束一场已经决出胜方的比赛。
+   *
+   * 与 finishMatch 的差别：不强制比赛处于 LIVE（管理员补录比分后可以直接结束），
+   * 但仍然要求有胜方，并复用同一套淘汰赛晋级 / 第二阶段同步 / 团体总分推进逻辑。
+   */
+  async completeMatchForAdmin(matchId: string) {
+    const match = await this.ensurePlayableMatch(matchId);
+    if (match.status === MatchStatus.COMPLETED) return this.getMatchState(matchId);
+    if (match.status === MatchStatus.CANCELLED) {
+      throw new BadRequestException('已取消的场次不能结束');
+    }
+    const winner = match.winnerSide === 1 || match.winnerSide === 2 ? match.winnerSide : null;
+    if (!winner) {
+      throw new BadRequestException('比分尚未决出胜方，请先录入能判定胜负的比分');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await this.teamCompetitionsService.prepareScoring(tx, matchId, {
+        expectedUpdatedAt: match.updatedAt,
+      });
+      await tx.match.update({
+        where: { id: matchId },
+        data: {
+          status: MatchStatus.COMPLETED,
+          winnerSide: winner,
+          finishedAt: new Date(),
+        },
+      });
+      const secondStageSynced = await this.syncSecondStageFormalMatchResult(tx, match, winner);
+      if (!secondStageSynced) {
+        await this.advanceSingleEliminationWinner(tx, match, winner);
+        await this.fillPlayoffMatchesIfReady(tx, match.eventId);
+        await this.fillGroupKnockoutIfReady(tx, match.eventId);
+      }
+      await this.teamCompetitionsService.updateTeamMatchAggregate(tx, matchId);
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+
+    return this.getMatchState(matchId);
+  }
+
+  /**
+   * “裁判员对局管理”专用：撤销一场已结束比赛的赛果，让管理员可以改分后重新结束。
+   *
+   * 为避免破坏已经推进的签表，重开前会检查后续轮次/团体后续子项是否已经开赛；
+   * 若已开赛则要求先处理后续场次。第二阶段正式场次由其独立编排维护，这里不直接重开。
+   */
+  async reopenMatchForAdmin(matchId: string) {
+    const match = await this.ensurePlayableMatch(matchId);
+    if (match.status !== MatchStatus.COMPLETED) {
+      throw new BadRequestException('只有已结束的场次可以重开');
+    }
+    if (match.forfeitedSide !== null) {
+      throw new BadRequestException('弃权、退赛或黑牌判罚产生的赛果不能在这里重开');
+    }
+    if (match.eventId && isSecondStageFormalRoundNo(match.roundNo)) {
+      throw new BadRequestException('第二阶段场次请在第二阶段编排中调整');
+    }
+
+    const hasScore = await this.prisma.game.count({
+      where: {
+        matchId,
+        OR: [{ side1Score: { gt: 0 } }, { side2Score: { gt: 0 } }],
+      },
+    });
+    const nextStatus = hasScore > 0 ? MatchStatus.LIVE : MatchStatus.PENDING;
+
+    await this.prisma.$transaction(async (tx) => {
+      await this.teamCompetitionsService.prepareScoring(tx, matchId, {
+        correcting: true,
+        expectedUpdatedAt: match.updatedAt,
+      });
+      const current = await tx.match.findUniqueOrThrow({
+        where: { id: matchId },
+        include: {
+          teamMatch: {
+            include: {
+              matches: { select: { id: true, matchNo: true, status: true } },
+            },
+          },
+        },
+      });
+
+      if (current.eventId && current.roundNo === 0) {
+        const stage = await tx.secondStage.findUnique({
+          where: { eventId: current.eventId },
+          select: { status: true },
+        });
+        if (stage && stage.status !== SecondStageStatus.NOT_STARTED) {
+          throw new BadRequestException('第二阶段已编排或已结束，不能重开本阶段小组赛');
+        }
+      }
+
+      if (current.teamMatch) {
+        if (current.teamMatch.status === MatchStatus.COMPLETED) {
+          throw new BadRequestException('团体对阵已结束，请先在团体赛管理中重开');
+        }
+        const laterStarted = current.teamMatch.matches.some(
+          (item) =>
+            item.matchNo > current.matchNo &&
+            (item.status === MatchStatus.LIVE || item.status === MatchStatus.COMPLETED),
+        );
+        if (laterStarted) {
+          throw new BadRequestException('同一团体对阵的后续子项已开赛或结束，请先处理后续子项');
+        }
+      }
+
+      if (current.eventId && current.roundNo >= 1) {
+        const targetSide = current.matchNo % 2 === 1 ? 'side1Id' : 'side2Id';
+        const nextMatches = await tx.match.findMany({
+          where: {
+            eventId: current.eventId,
+            roundNo: current.roundNo + 1,
+            OR: [
+              { matchNo: Math.ceil(current.matchNo / 2), round: { not: 'BRONZE' } },
+              { round: 'BRONZE' },
+            ],
+          },
+          select: { id: true, status: true, side1Id: true, side2Id: true },
+        });
+        const blocking = nextMatches.filter(
+          (item) => Boolean(targetSide === 'side1Id' ? item.side1Id : item.side2Id)
+            && item.status !== MatchStatus.PENDING,
+        );
+        if (blocking.length) {
+          throw new BadRequestException('后续轮次已开赛或结束，请先重开后续场次');
+        }
+      }
+
+      await tx.match.update({
+        where: { id: matchId },
+        data: {
+          status: nextStatus,
+          winnerSide: null,
+          finishedAt: null,
+        },
+      });
+
+      if (current.eventId && current.roundNo >= 1) {
+        await this.clearSingleEliminationAdvancement(tx, current);
+      }
+      await this.teamCompetitionsService.updateTeamMatchAggregate(tx, matchId);
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+
+    return this.getMatchState(matchId);
   }
 
   async logMatchEvent(
@@ -1177,7 +1354,7 @@ export class ScoringService {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
 
     this.gateway.emitBracketUpdate({
-      tournamentId: match.event?.tournamentId ?? null,
+      tournamentId: this.tournamentIdForMatch(match),
       eventId: match.eventId,
       matchId,
     });
@@ -1233,7 +1410,7 @@ export class ScoringService {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
 
     this.gateway.emitBracketUpdate({
-      tournamentId: match.event?.tournamentId ?? null,
+      tournamentId: this.tournamentIdForMatch(match),
       eventId: match.eventId,
       matchId,
     });
@@ -1381,7 +1558,7 @@ export class ScoringService {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
 
     this.gateway.emitBracketUpdate({
-      tournamentId: match.event?.tournamentId ?? null,
+      tournamentId: this.tournamentIdForMatch(match),
       eventId: match.eventId,
       matchId,
     });
@@ -3077,6 +3254,17 @@ export class ScoringService {
     return new Map<string, any>([...regularMap.entries(), ...lineupMap.entries()]);
   }
 
+  private tournamentIdForMatch(match: {
+    event?: { tournamentId: string } | null;
+    teamMatch?: { teamCompetition?: { tournamentId: string } | null } | null;
+  }): string | null {
+    return (
+      match.event?.tournamentId ??
+      match.teamMatch?.teamCompetition?.tournamentId ??
+      null
+    );
+  }
+
   private async registrationMap(ids: string[]) {
     const compactIds = [...new Set(ids)];
     if (!compactIds.length) return new Map<string, any>();
@@ -3087,7 +3275,7 @@ export class ScoringService {
     return new Map(registrations.map((registration) => [registration.id, registration]));
   }
 
-  private registrationView(registration: any) {
+  private registrationView(registration: any): MatchSideView {
     const players = registration.players?.length
       ? registration.players
       : [

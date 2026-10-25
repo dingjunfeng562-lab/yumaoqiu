@@ -56,6 +56,7 @@
 - 抽签编排：种子、交换签位、冻结/解冻、发布、重抽及重抽申请审批、操作日志、第二阶段（小组出线后排位）
 - 场地排程：场地维护，自动/手动排程，一键清空
 - 裁判分配：分配裁判、生成赛事裁判授权码/二维码
+- 裁判员对局管理（仅超级管理员）：先选赛事，查看全部单项/团体的对阵、时间、比分与结束状态；可修改时间、场地、裁判、比分并结束/重开，实时联动公开赛程、现场大屏与裁判端
 - 公告管理：富文本公告、上下线、首页弹窗
 - 秩序册/数据导出：Excel 导出、出场顺序表
 - 图片管理：上传、分类、删除、操作日志、原图下载，水印配置
@@ -235,6 +236,7 @@ pnpm lint
 | 账号 | `/login`、`/signup`、`/account`、`/my-registrations`、`/competitions/:id/register` |
 | 管理 | `/admin`、`/admin/users`、`/admin/invite-codes`、`/admin/approvals`、`/admin/tournaments`、`/admin/competitions`、`/admin/events`、`/admin/players`、`/admin/team-competitions` |
 | 管理 | `/admin/draws`、`/admin/scheduling`、`/admin/scoring`、`/admin/announcements`、`/admin/exports`、`/admin/email`、`/admin/ai-config`、`/admin/image-moderation` |
+| 管理（仅超级管理员） | `/nicaiyixiahh/match-management` 裁判员对局管理 |
 | 管理（按赛事） | `/admin/competitions/:id/registrations`、`/players`、`/photos`、`/watermark` |
 | 裁判 | `/referee`、`/referee/scan`、`/referee/authorize/:accessCode`、`/referee/my-matches`、`/referee/tournaments/:tournamentId`、`.../courts/:venueId`、`/referee/matches/:matchId` |
 | 摄影师 | `/photographer/upload` |
@@ -254,6 +256,7 @@ pnpm lint
 | 抽签 | `/events/:eventId/draw/*`、`/draw/redraw-requests/*`、`/events/:eventId/second-stage/*` | 草稿/执行、种子、交换、冻结、发布、重抽及审批、日志、第二阶段 |
 | 排程 | `/tournaments/:id/venues`、`/venues/:id`、`/scheduling/*`、`/matches/:id/schedule` | 场地、自动/手动排程、清空 |
 | 裁判与记分 | `/referee/*`、`/matches/:id/*`、`/tournaments/:id/referee-access-code` | 授权码、领取场次、记分、撤销、暂停、弃权、退赛、违例、红黄牌 |
+| 裁判员对局管理 | `/match-management/*` | 赛事级对局总览；修改时间/场地/裁判/比分；结束/重开并联动晋级（仅 ROOT） |
 | 公告 | `/admin/announcements/*`、`/announcements/active` | 后台管理、前台展示 |
 | 图片 | `/photos/*`、`/photographer/*`、`/admin/photos/*`、`/admin/tournaments/:id/watermark` | 浏览/下载计数、分享访问、上传、原图、水印、操作日志 |
 | 图片审核 | `/admin/image-moderation` | 审核配置与测试（ROOT） |

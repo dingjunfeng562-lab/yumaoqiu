@@ -4,7 +4,7 @@ import { useCurrentAccess } from '@/lib/use-current-role';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { Button, Popconfirm, Select, Space, Table, Tag, Typography, message, Modal, Input } from 'antd';
+import { Button, Card, Popconfirm, Select, Space, Table, Tag, Typography, message, Modal, Input } from 'antd';
 import { CheckOutlined, CloseOutlined, TeamOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import CompetitionEmailSettingsCard from '@/components/admin/CompetitionEmailSettingsCard';
@@ -119,7 +119,10 @@ export default function AdminCompetitionRegistrationsPage() {
   }, [token, id, status]);
 
   useEffect(() => {
-    loadData();
+    const timer = window.setTimeout(() => {
+      void loadData();
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [loadData]);
 
   const pendingCount = useMemo(
@@ -159,20 +162,23 @@ export default function AdminCompetitionRegistrationsPage() {
   }
 
   const columns = [
-    { title: '邮箱', dataIndex: 'email', key: 'email' },
-    { title: '姓名', dataIndex: 'name', key: 'name', width: 110 },
-    { title: '学号', dataIndex: 'studentId', key: 'studentId', width: 140 },
+    { title: '邮箱', dataIndex: 'email', key: 'email', width: 190, ellipsis: true },
+    { title: '姓名', dataIndex: 'name', key: 'name', width: 90 },
+    { title: '学号', dataIndex: 'studentId', key: 'studentId', width: 120 },
     {
       title: '学校',
       dataIndex: 'school',
       key: 'school',
+      width: 150,
+      ellipsis: true,
       render: (value?: string) => value || <Typography.Text type="secondary">未填写</Typography.Text>,
     },
-    { title: '联系方式', dataIndex: 'phone', key: 'phone', width: 140 },
-    { title: '性别', dataIndex: 'genderLabel', key: 'genderLabel', width: 70 },
+    { title: '联系方式', dataIndex: 'phone', key: 'phone', width: 130 },
+    { title: '性别', dataIndex: 'genderLabel', key: 'genderLabel', width: 60 },
     {
       title: '报名项目',
       key: 'eventSummary',
+      width: 260,
       render: (_: unknown, record: Registration) => (
         <Space direction="vertical" size={2}>
           <Typography.Text>{record.eventSummary}</Typography.Text>
@@ -193,15 +199,21 @@ export default function AdminCompetitionRegistrationsPage() {
       title: '报名时间',
       dataIndex: 'createdAt',
       key: 'createdAt',
+      width: 150,
       render: (value: string) => formatDateTime(value),
     },
     {
       title: '审核状态',
       key: 'status',
+      width: 120,
       render: (_: unknown, record: Registration) => (
         <Space direction="vertical" size={2}>
           <Tag color={STATUS_COLORS[record.status]}>{record.statusLabel}</Tag>
-          {record.rejectReason ? <Typography.Text type="danger">{record.rejectReason}</Typography.Text> : null}
+          {record.rejectReason ? (
+            <Typography.Text type="danger" ellipsis={{ tooltip: record.rejectReason }} style={{ fontSize: 12 }}>
+              {record.rejectReason}
+            </Typography.Text>
+          ) : null}
         </Space>
       ),
     },
@@ -247,16 +259,24 @@ export default function AdminCompetitionRegistrationsPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'flex-start',
+          gap: 12,
+          flexWrap: 'wrap',
+        }}
+      >
         <div>
-          <Typography.Title level={4} style={{ margin: 0 }}>
+          <Typography.Title level={3} style={{ margin: 0 }}>
             报名审核
           </Typography.Title>
           <Typography.Text type="secondary">
             {competition?.title ?? '当前赛事'}，待审核记录默认优先处理。
           </Typography.Text>
         </div>
-        <Space>
+        <Space wrap>
           <Select
             value={status}
             onChange={setStatus}
@@ -273,15 +293,30 @@ export default function AdminCompetitionRegistrationsPage() {
           <Button onClick={() => router.push('/nicaiyixiahh/competitions')}>返回赛事管理</Button>
         </Space>
       </div>
-      <Table
-        rowKey="id"
-        columns={columns}
-        dataSource={registrations}
-        loading={loading}
-        pagination={{ pageSize: 20 }}
-      />
+      <Card
+        style={{ marginTop: 16 }}
+        title={<span style={{ fontSize: 14, fontWeight: 700 }}>报名列表</span>}
+        extra={<Typography.Text type="secondary">共 {registrations.length} 条</Typography.Text>}
+        styles={{ body: { padding: 0 } }}
+      >
+        <Table
+          rowKey="id"
+          columns={columns}
+          dataSource={registrations}
+          loading={loading}
+          pagination={{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }}
+          scroll={registrations.length
+            ? { x: 1450, y: 'calc(100vh - 440px)' }
+            : { x: 1450 }}
+          tableLayout="fixed"
+          size="middle"
+          locale={{ emptyText: '暂无报名记录' }}
+        />
+      </Card>
       {isRoot && token && id ? (
-        <CompetitionEmailSettingsCard competitionId={id} token={token} />
+        <div style={{ marginTop: 16 }}>
+          <CompetitionEmailSettingsCard competitionId={id} token={token} />
+        </div>
       ) : null}
       <Modal
         title="填写驳回原因"

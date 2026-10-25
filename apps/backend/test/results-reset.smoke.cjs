@@ -16,6 +16,9 @@ const reportDir = path.resolve(__dirname, '../../../outputs/results-reset-202610
 fs.mkdirSync(reportDir, { recursive: true });
 const prefix = `reset-qa-${randomUUID().slice(0, 8)}`;
 const adminId = randomUUID(), rootId = randomUUID(), tournamentId = randomUUID();
+const refereeIds = [randomUUID(), randomUUID()];
+let refereeTokens;
+const refereeBrowsers = [];
 const password = `QA-${randomUUID()}`;
 const report = { fixture: prefix, checks: [], apiRequests: 0, browser: [], cleaned: false };
 const base = 'http://127.0.0.1:4017/api';
@@ -29,7 +32,7 @@ async function api(url, method = 'GET', body, token = adminToken, expected = met
 }
 const detail = id => api(`/team-competitions/${id}`);
 const rows = where => db.match.findMany({ where, orderBy: { id: 'asc' } });
-const schedule = data => data.map(m => [m.id, m.teamMatchId, m.eventId, m.round, m.roundNo, m.matchNo, m.venueId, m.scheduledAt?.toISOString(), m.durationMinutes, m.refereeId]);
+const schedule = data => data.map(m => [m.id, m.teamMatchId, m.eventId, m.round, m.roundNo, m.matchNo, m.venueId, m.scheduledAt?.toISOString(), m.durationMinutes]);
 async function scheduleAll(where) {
   for (const [i, match] of (await rows(where)).entries()) await db.match.update({ where: { id: match.id }, data: { venueId: venue.id, scheduledAt: new Date(Date.UTC(2026, 10, 1, 0, i * 45)), durationMinutes: 45 } });
 }
@@ -46,6 +49,7 @@ async function ensureEmpty(where) {
   assert.equal(await db.game.count({ where: { match: where } }), 0);
   assert.equal(await db.matchEvent.count({ where: { match: where } }), 0);
   for (const m of await rows(where)) {
+    assert.equal(m.refereeId, null, 'clearing results must release the previous referee');
     assert.equal(m.startedAt, null); assert.equal(m.finishedAt, null); assert.equal(m.forfeitedSide, null); assert.equal(m.forfeitReason, null);
   }
 }
@@ -192,6 +196,79 @@ async function eventCases() {
   assert.deepEqual(schedule(await rows({ eventId: event.id })), schedule(before));
   check('单项 A-H 第二阶段：撤销签位与名次，重新确认后保留原正式比赛 ID 和排程');
 }
+async function refereeReplayCases() {
+  for (const scope of ['team', 'event']) {
+    let match, resetPath, where;
+    if (scope === 'team') {
+      const c = await makeTeam('ROUND_ROBIN', 2);
+      await teamLineup(c, c.teamMatches[0]);
+      match = c.teamMatches[0].matches[0];
+      where = { teamMatch: { teamCompetitionId: c.id } };
+      resetPath = `/team-competitions/${c.id}/results/clear`;
+    } else {
+      const event = await makeEvent('SINGLE_ELIMINATION', 2);
+      where = { eventId: event.id };
+      match = (await rows(where))[0];
+      resetPath = `/events/${event.id}/results/clear`;
+    }
+    await scheduleAll(where);
+    const before = await rows(where);
+    const claim = `/referee/tournaments/${tournamentId}/courts/${venue.id}/matches/${match.id}/claim`;
+    const start = { servingSide: 1, serverPlayerIndex: 1, receiverPlayerIndex: 1 };
+    await api(claim, 'POST', {}, refereeTokens[0]);
+    await api(`/matches/${match.id}/start`, 'POST', start, refereeTokens[0]);
+    await api(`/matches/${match.id}/point`, 'POST', { side: 1 }, refereeTokens[0]);
+    let browser, context, listPage, scorePage;
+    if (scope === 'team' && process.env.RUN_REFEREE_BROWSER === '1') {
+      const { chromium } = require(process.env.PLAYWRIGHT_MODULE || path.resolve(__dirname, '../../../.codex-work/photo-access-qa/node_modules/playwright'));
+      browser = await chromium.launch({ headless: true, channel: 'chrome', args: ['--disable-gpu', '--renderer-process-limit=2'] });
+      refereeBrowsers.push(browser);
+      context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+      const { csrfToken } = await (await context.request.get('http://127.0.0.1:3017/api/auth/csrf')).json();
+      await context.request.post('http://127.0.0.1:3017/api/auth/callback/credentials', { maxRedirects: 0, timeout: 120000, form: {
+        csrfToken, identifier: `${refereeIds[0]}@qa.invalid`, password, loginType: 'email', callbackUrl: 'http://127.0.0.1:3017/referee/my-matches',
+      } });
+      const session = await (await context.request.get('http://127.0.0.1:3017/api/auth/session')).json();
+      assert.equal(session.user?.id, refereeIds[0]);
+      listPage = await context.newPage(); scorePage = await context.newPage();
+      for (const page of [listPage, scorePage]) page.setDefaultTimeout(60000);
+      await listPage.goto(`http://127.0.0.1:3017/referee/tournaments/${tournamentId}/courts/${venue.id}`, { waitUntil: 'networkidle', timeout: 120000 });
+      await listPage.getByText('裁判：我正在负责', { exact: true }).waitFor();
+      await scorePage.goto(`http://127.0.0.1:3017/referee/matches/${match.id}`, { waitUntil: 'networkidle', timeout: 120000 });
+      await scorePage.getByText('实时同步：已连接', { exact: false }).waitFor();
+    }
+    try {
+      await api(resetPath, 'POST', { confirm: true }, rootToken);
+      await ensureEmpty(where);
+      assert.deepEqual(schedule(await rows(where)), schedule(before));
+      const state = await api(`/matches/${match.id}/score`, 'GET', undefined, rootToken);
+      assert.equal(state.referee, null); assert.equal(state.currentGame, null); assert.equal(state.status, 'PENDING');
+      assert.equal(state.events.length, 0); assert.equal(state.matchPaused, false);
+      const list = await api(`/referee/tournaments/${tournamentId}/courts/${venue.id}/matches`, 'GET', undefined, refereeTokens[0]);
+      assert.equal(list.matches.find(m => m.id === match.id).referee, null);
+      await api(`/matches/${match.id}/score`, 'GET', undefined, refereeTokens[0], 403);
+      await api(`/matches/${match.id}/point`, 'POST', { side: 1 }, refereeTokens[0], 403);
+      await api(`/matches/${match.id}/start`, 'POST', start, refereeTokens[0], 403);
+      if (browser) {
+        await scorePage.getByText('本场执裁已解除，请重新接手', { exact: true }).waitFor();
+        await listPage.getByText('裁判：我正在负责', { exact: true }).waitFor({ state: 'hidden' });
+        await listPage.getByRole('button', { name: '执裁此场比赛', exact: true }).waitFor();
+        await scorePage.screenshot({ path: path.join(reportDir, 'referee-reset-score.png'), fullPage: true });
+        await listPage.screenshot({ path: path.join(reportDir, 'referee-reset-list.png'), fullPage: true });
+        await scorePage.reload({ waitUntil: 'networkidle' });
+        await scorePage.getByText('本场执裁已解除，请重新接手', { exact: true }).waitFor();
+        report.browser.push('已打开的裁判列表自动解除认领，旧记分页实时退出记分，刷新后仍提示重新接手');
+      }
+      await api(claim, 'POST', {}, refereeTokens[1]);
+      const fresh = await api(`/matches/${match.id}/start`, 'POST', start, refereeTokens[1]);
+      assert.equal(fresh.currentGame.side1Score, 0); assert.equal(fresh.currentGame.side2Score, 0);
+      const point = await api(`/matches/${match.id}/point`, 'POST', { side: 2 }, refereeTokens[1]);
+      assert.equal(point.currentGame.side1Score, 0); assert.equal(point.currentGame.side2Score, 1);
+      assert.equal(point.referee.id, refereeIds[1]);
+      check(`${scope} 裁判完整重赛：释放认领、清空比分、保留排程、旧裁判拒绝操作、新裁判从 0:0 开始`);
+    } finally { if (browser) await browser.close(); }
+  }
+}
 async function browserCases() {
   const { chromium } = require(path.resolve(__dirname, '../../../.codex-work/photo-access-qa/node_modules/playwright'));
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
@@ -277,10 +354,13 @@ async function main() {
   app.get(require('../dist/broadcasts/multicamera.service').MulticameraService).onModuleDestroy();
   const hash = await bcrypt.hash(password, 4);
   for (const [id, role] of [[adminId, 'ADMIN'], [rootId, 'ROOT']]) await db.user.create({ data: { id, username: `${prefix}-${role.toLowerCase()}`, email: `${id}@qa.invalid`, passwordHash: hash, role, permissions: ['TEAMS', 'DRAWS', 'SCORING', 'EVENTS', 'TOURNAMENTS', 'SCHEDULING'], mustChangePassword: false } });
+  for (const [i, id] of refereeIds.entries()) await db.user.create({ data: { id, username: `${prefix}-referee-${i}`, email: `${id}@qa.invalid`, passwordHash: hash, role: 'REFEREE', permissions: ['REFEREE'], mustChangePassword: false } });
   const jwt = new JwtService({ secret: process.env.JWT_SECRET });
   adminToken = jwt.sign({ sub: adminId }, { expiresIn: '1h' }); rootToken = jwt.sign({ sub: rootId }, { expiresIn: '1h' });
+  refereeTokens = refereeIds.map(id => jwt.sign({ sub: id }, { expiresIn: '1h' }));
   await db.tournament.create({ data: { id: tournamentId, name: `${prefix} 隔离验证`, startDate: new Date('2026-11-01'), endDate: new Date('2026-11-02'), submittedById: adminId, isPublished: true, approvalStatus: 'APPROVED' } });
   venue = await db.venue.create({ data: { tournamentId, name: '保留排程验证场地' } });
+  await db.refereeTournamentGrant.createMany({ data: refereeIds.map(userId => ({ tournamentId, userId })) });
   if (process.env.RUN_LEGACY_SMOKE === '1') {
     const { promisify } = require('node:util');
     const { execFile } = require('node:child_process');
@@ -288,19 +368,20 @@ async function main() {
     report.teamRegression = JSON.parse(legacy.stdout.trim().split('\n').at(-1));
     check(`原团体赛流程回归：${report.teamRegression.httpChecks} 次 HTTP 校验通过`);
   }
-  await security(); await teamCases(); await eventCases();
+  await refereeReplayCases(); await security(); await teamCases(); await eventCases();
   if (process.env.RUN_BROWSER === '1') await browserCases();
   report.ok = true;
 }
 main().catch(error => { report.ok = false; report.error = error.stack; console.error(error); process.exitCode = 1; })
   .finally(async () => {
+    await Promise.all(refereeBrowsers.map(browser => browser.close()));
     if (db) {
       await db.teamMatch.deleteMany({ where: { teamCompetition: { tournamentId } } });
       await db.teamGroup.deleteMany({ where: { teamCompetition: { tournamentId } } });
       await db.tournament.deleteMany({ where: { id: tournamentId } });
       await db.player.deleteMany({ where: { ownerId: adminId } });
-      await db.user.deleteMany({ where: { id: { in: [adminId, rootId] } } });
-      report.cleaned = await db.tournament.count({ where: { id: tournamentId } }) === 0 && await db.user.count({ where: { id: { in: [adminId, rootId] } } }) === 0;
+      await db.user.deleteMany({ where: { id: { in: [adminId, rootId, ...refereeIds] } } });
+      report.cleaned = await db.tournament.count({ where: { id: tournamentId } }) === 0 && await db.user.count({ where: { id: { in: [adminId, rootId, ...refereeIds] } } }) === 0;
     }
     if (app) await app.close();
     fs.writeFileSync(path.join(reportDir, 'report.json'), JSON.stringify(report, null, 2) + '\n');

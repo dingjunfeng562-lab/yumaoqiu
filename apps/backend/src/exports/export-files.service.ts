@@ -82,26 +82,51 @@ export class ExportFilesService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  /** 取最新的导出文件：没有或数据已变动则重新生成（并删除旧文件）。 */
-  async getFresh(tournamentId: string, kind: string) {
+  /** 取最新的导出文件；force=true 时每次下载都重新生成并替换上一版。 */
+  async getFresh(tournamentId: string, kind: string, force = false) {
     return this.withLock(tournamentId, async () => {
       const snapshot = await this.exportsService.tournamentSnapshot(
         tournamentId,
         kind,
       );
-      const manifest = await this.readManifest(tournamentId);
-      const current = manifest[snapshot.kind];
-      const item =
-        current?.fingerprint === snapshot.fingerprint &&
-        existsSync(this.filePath(tournamentId, current.storedName))
-          ? current
-          : await this.rebuild(tournamentId, snapshot, manifest);
-      // 在锁内读取，避免读到一半被并发重建删除。
-      return {
-        filename: item.filename,
-        contentType: item.contentType,
-        content: await readFile(this.filePath(tournamentId, item.storedName)),
-      };
+      try {
+        const manifest = await this.readManifest(tournamentId);
+        const current = manifest[snapshot.kind];
+        const item =
+          !force &&
+          current?.fingerprint === snapshot.fingerprint &&
+          existsSync(this.filePath(tournamentId, current.storedName))
+            ? current
+            : await this.rebuild(tournamentId, snapshot, manifest);
+        if (item === current) {
+          await this.pruneStaleFiles(tournamentId, manifest).catch((error) => {
+            this.logger.warn(
+              `清理旧导出文件失败（赛事 ${tournamentId}）：${error instanceof Error ? error.message : String(error)}`,
+            );
+          });
+        }
+        // 在锁内读取，避免读到一半被并发重建删除。
+        const content = await readFile(this.filePath(tournamentId, item.storedName));
+        if (content.length === 0 || content.length !== item.size) {
+          throw new Error('导出缓存文件不完整');
+        }
+        return {
+          filename: item.filename,
+          contentType: item.contentType,
+          content,
+        };
+      } catch (error) {
+        // 导出缓存目录可能被系统权限、只读挂载或沙箱限制为不可写；
+        // 此时不要让下载失败，直接按当前数据在内存中生成文件返回。
+        // 缓存会在后续请求或后台扫描恢复可写后重新建立。
+        this.logger.warn(
+          `导出缓存不可写，改为直接生成（赛事 ${tournamentId}，${snapshot.kind}）：${error instanceof Error ? error.message : String(error)}`,
+        );
+        return this.exportsService.buildTournamentExport(
+          snapshot.tournament,
+          snapshot.kind,
+        );
+      }
     });
   }
 
@@ -169,6 +194,7 @@ export class ExportFilesService implements OnModuleInit, OnModuleDestroy {
     snapshot: Awaited<ReturnType<ExportsService['tournamentSnapshot']>>,
     manifest: Manifest,
   ) {
+    await mkdir(this.tournamentDir(tournamentId), { recursive: true });
     const file = await this.exportsService.buildTournamentExport(
       snapshot.tournament,
       snapshot.kind,
@@ -179,7 +205,6 @@ export class ExportFilesService implements OnModuleInit, OnModuleDestroy {
       : Buffer.from(file.content as string, 'utf8');
     const storedName = `${snapshot.kind}-${Date.now()}-${randomBytes(4).toString('hex')}${extname(file.filename)}`;
 
-    await mkdir(this.tournamentDir(tournamentId), { recursive: true });
     await writeFile(this.filePath(tournamentId, storedName), content);
 
     const previous = manifest[snapshot.kind];
@@ -194,22 +219,39 @@ export class ExportFilesService implements OnModuleInit, OnModuleDestroy {
       fingerprint: snapshot.fingerprint,
       generatedAt: new Date().toISOString(),
     };
-    await this.writeManifest(tournamentId, {
-      ...manifest,
-      [snapshot.kind]: item,
-    });
+    const nextManifest: Manifest = { ...manifest, [snapshot.kind]: item };
+    await this.writeManifest(tournamentId, nextManifest);
 
-    // 新文件和 manifest 落盘后再删旧文件，中途失败也不会丢失可下载的文件。
-    if (previous && previous.storedName !== storedName) {
-      await rm(this.filePath(tournamentId, previous.storedName), {
-        force: true,
-      });
+    // 新文件和 manifest 落盘后再清理旧版本；清理失败不影响本次下载。
+    try {
+      await this.pruneStaleFiles(tournamentId, nextManifest);
+    } catch (error) {
+      this.logger.warn(
+        `清理旧导出文件失败（赛事 ${tournamentId}）：${error instanceof Error ? error.message : String(error)}`,
+      );
     }
     if (previous)
       this.logger.log(
         `赛事 ${tournamentId} 的${file.filename}已因数据变动重新生成`,
       );
     return item;
+  }
+
+  /**
+   * 每个赛事目录只保留 manifest 中记录的“当前版本”文件，删除旧版本、
+   * 上次重建中断留下的临时文件和其它孤立文件。
+   */
+  private async pruneStaleFiles(tournamentId: string, manifest: Manifest) {
+    const keep = new Set<string>([MANIFEST_FILE]);
+    for (const item of Object.values(manifest)) {
+      if (item?.storedName) keep.add(item.storedName);
+    }
+    const dir = this.tournamentDir(tournamentId);
+    const entries = await readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile() || keep.has(entry.name)) continue;
+      await rm(join(dir, entry.name), { force: true });
+    }
   }
 
   private async withLock<T>(

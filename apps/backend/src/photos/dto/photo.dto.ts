@@ -16,6 +16,9 @@ import { Type } from 'class-transformer';
 import { PhotoCategory } from '@prisma/client';
 
 const CATEGORIES: PhotoCategory[] = ['PLAYER', 'MATCH', 'AWARD'];
+/** A legacy corner name, or a free "x,y" center in percentages. */
+const WATERMARK_POSITION_PATTERN =
+  /^(TOP_LEFT|TOP_RIGHT|BOTTOM_LEFT|BOTTOM_RIGHT|-?\d{1,3}(?:\.\d+)?,-?\d{1,3}(?:\.\d+)?)$/;
 
 export enum PublicPhotoSort {
   POPULAR = 'POPULAR',
@@ -127,13 +130,21 @@ export class UpdateWatermarkDto {
   @Type(() => WatermarkLogoDto)
   logos: WatermarkLogoDto[];
 
-  /** Logo height as a percentage of the image height (2–80). */
+  /** Logo height as a percentage of the image's shorter edge (2–80). */
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(2)
   @Max(80)
   logoHeightPercent?: number;
+
+  /** Portrait-only logo height, as a percentage of the shorter edge (2–80). */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(2)
+  @Max(80)
+  portraitLogoHeightPercent?: number;
 
   /** Gap between logos as a percentage of the logo height (0–200). */
   @IsOptional()
@@ -143,15 +154,25 @@ export class UpdateWatermarkDto {
   @Max(200)
   logoGapPercent?: number;
 
-  /** Watermark corner position. */
+  /** Portrait-only gap between logos (0–200). */
   @IsOptional()
-  @IsIn(['TOP_LEFT', 'TOP_RIGHT', 'BOTTOM_LEFT', 'BOTTOM_RIGHT'])
-  position?: 'TOP_LEFT' | 'TOP_RIGHT' | 'BOTTOM_LEFT' | 'BOTTOM_RIGHT';
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(200)
+  portraitLogoGapPercent?: number;
 
-  /** Watermark corner position for portrait photos. */
+  /** Watermark position: a legacy corner name or an "x,y" center. */
   @IsOptional()
-  @IsIn(['TOP_LEFT', 'TOP_RIGHT', 'BOTTOM_LEFT', 'BOTTOM_RIGHT'])
-  portraitPosition?: 'TOP_LEFT' | 'TOP_RIGHT' | 'BOTTOM_LEFT' | 'BOTTOM_RIGHT';
+  @IsString()
+  @Matches(WATERMARK_POSITION_PATTERN, { message: '位置必须是四角名称或 x,y 坐标' })
+  position?: string;
+
+  /** Watermark position for portrait photos. */
+  @IsOptional()
+  @IsString()
+  @Matches(WATERMARK_POSITION_PATTERN, { message: '位置必须是四角名称或 x,y 坐标' })
+  portraitPosition?: string;
 
   /** Text watermark content; empty string clears it. */
   @IsOptional()
@@ -165,7 +186,7 @@ export class UpdateWatermarkDto {
   @Matches(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/, { message: '文字颜色必须是 #RGB 或 #RRGGBB 十六进制' })
   textColor?: string;
 
-  /** Text height as a percentage of the image height (2–80). */
+  /** Text height as a percentage of the image's shorter edge (2–80). */
   @IsOptional()
   @Type(() => Number)
   @IsInt()
@@ -173,20 +194,30 @@ export class UpdateWatermarkDto {
   @Max(80)
   textSizePercent?: number;
 
+  /** Portrait-only text height, as a percentage of the shorter edge (2–80). */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(2)
+  @Max(80)
+  portraitTextSizePercent?: number;
+
   /** Text font: HEITI (黑体), SONGTI (宋体), KAITI (楷体). */
   @IsOptional()
   @IsIn(['HEITI', 'SONGTI', 'KAITI'])
   textFont?: 'HEITI' | 'SONGTI' | 'KAITI';
 
-  /** Text watermark corner position for landscape photos. */
+  /** Text watermark position (kept for older clients; text follows the logo). */
   @IsOptional()
-  @IsIn(['TOP_LEFT', 'TOP_RIGHT', 'BOTTOM_LEFT', 'BOTTOM_RIGHT'])
-  textPosition?: 'TOP_LEFT' | 'TOP_RIGHT' | 'BOTTOM_LEFT' | 'BOTTOM_RIGHT';
+  @IsString()
+  @Matches(WATERMARK_POSITION_PATTERN, { message: '位置必须是四角名称或 x,y 坐标' })
+  textPosition?: string;
 
-  /** Text watermark corner position for portrait photos. */
+  /** Text watermark position for portrait photos. */
   @IsOptional()
-  @IsIn(['TOP_LEFT', 'TOP_RIGHT', 'BOTTOM_LEFT', 'BOTTOM_RIGHT'])
-  textPortraitPosition?: 'TOP_LEFT' | 'TOP_RIGHT' | 'BOTTOM_LEFT' | 'BOTTOM_RIGHT';
+  @IsString()
+  @Matches(WATERMARK_POSITION_PATTERN, { message: '位置必须是四角名称或 x,y 坐标' })
+  textPortraitPosition?: string;
 }
 
 export class BatchDeletePhotosDto {

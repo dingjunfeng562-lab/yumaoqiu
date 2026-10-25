@@ -1,9 +1,22 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSession } from 'next-auth/react';
-import { Button, Card, Checkbox, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Typography, message } from 'antd';
-import { DeleteOutlined, PlusOutlined, ReloadOutlined, LockOutlined, StopOutlined, CheckCircleOutlined, EditOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
+import { Avatar, Button, Card, Checkbox, Dropdown, Form, Input, InputNumber, Modal, Popconfirm, Progress, Select, Space, Switch, Table, Tag, Typography, message } from 'antd';
+import type { MenuProps } from 'antd';
+import {
+  CheckCircleOutlined,
+  DeleteOutlined,
+  EditOutlined,
+  LockOutlined,
+  MoreOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  SafetyCertificateOutlined,
+  SearchOutlined,
+  StopOutlined,
+  TeamOutlined,
+} from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { useCurrentRole } from '@/lib/use-current-role';
 
@@ -49,6 +62,14 @@ const roleColors: Record<UserRole, string> = {
   REFEREE: 'green',
   PLAYER: 'gold',
   PHOTOGRAPHER: 'purple',
+};
+
+const roleAvatarColors: Record<UserRole, string> = {
+  ROOT: '#dc2626',
+  ADMIN: '#2563eb',
+  REFEREE: '#16a34a',
+  PLAYER: '#d97706',
+  PHOTOGRAPHER: '#7c3aed',
 };
 
 const ROLE_CREATE_ENDPOINT: Record<CreatableRole, string> = {
@@ -98,6 +119,7 @@ export default function AdminUsersPage() {
   const [resetTarget, setResetTarget] = useState<UserItem | null>(null);
   const [temporaryPassword, setTemporaryPassword] = useState<string | null>(null);
   const [roleFilter, setRoleFilter] = useState<UserRole | 'ALL'>('ALL');
+  const [keyword, setKeyword] = useState('');
   const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
   const [batchDeleting, setBatchDeleting] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
@@ -110,10 +132,18 @@ export default function AdminUsersPage() {
   const [renameForm] = Form.useForm();
   const [roleForm] = Form.useForm();
 
-  const filteredUsers = useMemo(
-    () => (roleFilter === 'ALL' ? users : users.filter((user) => user.role === roleFilter)),
-    [users, roleFilter],
-  );
+  const filteredUsers = useMemo(() => {
+    const query = keyword.trim().toLowerCase();
+    return users.filter((user) => {
+      if (roleFilter !== 'ALL' && user.role !== roleFilter) return false;
+      if (!query) return true;
+      return [user.username, user.name, user.email, user.inviteCode]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(query));
+    });
+  }, [keyword, roleFilter, users]);
+  const activeCount = filteredUsers.filter((user) => user.status === 'ACTIVE').length;
+  const disabledCount = filteredUsers.length - activeCount;
   const selectedCount = selectedUserIds.length;
   const assignablePermissionOptions = useMemo(
     () => permissionOptions.filter((item) => item.key !== 'INVITES'),
@@ -156,6 +186,82 @@ export default function AdminUsersPage() {
     return role === 'ROOT' || ['PLAYER', 'REFEREE', 'PHOTOGRAPHER'].includes(value);
   }
 
+  function confirmDelete(user: UserItem) {
+    Modal.confirm({
+      title: `确认删除账号「${user.username ?? user.email ?? '未命名'}」？`,
+      content: '删除后该账号将无法登录，且此操作不可恢复。',
+      okText: '删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: () => deleteUser(user.id),
+    });
+  }
+
+  function moreMenuItems(user: UserItem): NonNullable<MenuProps['items']> {
+    const isSelf = user.id === currentUserId;
+    const items: NonNullable<MenuProps['items']> = [
+      { key: 'reset', icon: <LockOutlined />, label: '重置密码' },
+      { key: 'rename', icon: <EditOutlined />, label: '修改昵称' },
+    ];
+    if (role === 'ROOT') {
+      items.push({
+        key: 'role',
+        icon: <SafetyCertificateOutlined />,
+        label: '修改角色',
+        disabled: isSelf,
+      });
+      if (user.role !== 'ROOT') {
+        items.push({
+          key: 'permissions',
+          icon: <SafetyCertificateOutlined />,
+          label: '功能权限',
+        });
+        items.push({
+          key: 'quota',
+          icon: <TeamOutlined />,
+          label: '分配名额',
+        });
+      }
+    }
+    items.push({ type: 'divider' });
+    items.push({
+      key: 'delete',
+      icon: <DeleteOutlined />,
+      label: '删除账号',
+      danger: true,
+      disabled: isSelf,
+    });
+    return items;
+  }
+
+  function handleMoreAction(user: UserItem, key: string) {
+    switch (key) {
+      case 'reset':
+        setResetTarget(user);
+        setTemporaryPassword(null);
+        setResetOpen(true);
+        break;
+      case 'rename':
+        openRename(user);
+        break;
+      case 'role':
+        openRole(user);
+        break;
+      case 'permissions':
+        void openPermissions(user);
+        break;
+      case 'quota':
+        setQuotaTarget(user);
+        setQuotaLimit(user.staffInviteLimit ?? 20);
+        break;
+      case 'delete':
+        confirmDelete(user);
+        break;
+      default:
+        break;
+    }
+  }
+
   async function saveQuota() {
     if (!token || !quotaTarget) return;
     setQuotaSaving(true);
@@ -168,7 +274,7 @@ export default function AdminUsersPage() {
     finally { setQuotaSaving(false); }
   }
 
-  async function loadUsers() {
+  const loadUsers = useCallback(async () => {
     if (!token) return;
     setLoading(true);
     try {
@@ -187,19 +293,28 @@ export default function AdminUsersPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [currentUserId, token]);
 
   useEffect(() => {
-    loadUsers();
-  }, [token]);
+    const timer = window.setTimeout(() => {
+      void loadUsers();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadUsers]);
 
   useEffect(() => {
-    setSelectedUserIds([]);
-  }, [roleFilter]);
+    const timer = window.setTimeout(() => {
+      setSelectedUserIds([]);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [keyword, roleFilter]);
 
   useEffect(() => {
     if (!currentUserId) return;
-    setSelectedUserIds((prev) => prev.filter((id) => id !== currentUserId));
+    const timer = window.setTimeout(() => {
+      setSelectedUserIds((prev) => prev.filter((id) => id !== currentUserId));
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [currentUserId]);
 
   async function createUser(values: CreatedUserPayload) {
@@ -360,16 +475,188 @@ export default function AdminUsersPage() {
     }
   }
 
+  const columns = [
+    {
+      title: '用户',
+      key: 'user',
+      width: 220,
+      render: (_: unknown, row: UserItem) => {
+        const name = row.username || row.name || row.email || '未命名';
+        const initial = name.slice(0, 1).toUpperCase();
+        return (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+            <Avatar
+              size={34}
+              style={{
+                background: roleAvatarColors[row.role],
+                flex: 'none',
+                fontSize: 13,
+                fontWeight: 700,
+              }}
+            >
+              {initial}
+            </Avatar>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Typography.Text strong ellipsis={{ tooltip: name }} style={{ fontSize: 13 }}>
+                  {name}
+                </Typography.Text>
+                {row.id === currentUserId ? (
+                  <Tag color="blue" style={{ marginInlineEnd: 0, fontSize: 10 }}>本人</Tag>
+                ) : null}
+              </div>
+              <Typography.Text
+                type="secondary"
+                ellipsis={{ tooltip: row.email ?? '' }}
+                style={{ display: 'block', fontSize: 12 }}
+              >
+                {row.email || '未填写邮箱'}
+              </Typography.Text>
+            </div>
+          </div>
+        );
+      },
+    },
+    {
+      title: '角色',
+      dataIndex: 'role',
+      key: 'role',
+      width: 100,
+      render: (value: UserRole) => <Tag color={roleColors[value]}>{roleLabels[value]}</Tag>,
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      width: 80,
+      render: (value: UserItem['status']) => (
+        <Tag color={value === 'ACTIVE' ? 'green' : 'red'}>{statusLabels[value]}</Tag>
+      ),
+    },
+    {
+      title: '邀请码',
+      dataIndex: 'inviteCode',
+      key: 'inviteCode',
+      width: 140,
+      render: (value: string | null) => value ? (
+        <Typography.Text copyable={{ text: value }} style={{ fontSize: 12 }}>
+          {value}
+        </Typography.Text>
+      ) : (
+        <Typography.Text type="secondary">—</Typography.Text>
+      ),
+    },
+    {
+      title: '裁判 / 图片员名额',
+      key: 'staffQuota',
+      width: 110,
+      render: (_: unknown, row: UserItem) => {
+        if (row.role === 'ROOT' || row.role === 'PLAYER') return '—';
+        const used = row.staffInviteUsed ?? 0;
+        const limit = row.staffInviteLimit ?? 20;
+        return (
+          <div>
+            <div style={{ color: '#475569', fontSize: 12 }}>{used} / {limit}</div>
+            <Progress
+              percent={limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0}
+              showInfo={false}
+              size="small"
+              strokeColor={used >= limit ? '#dc2626' : '#2563eb'}
+              style={{ marginTop: 2 }}
+            />
+          </div>
+        );
+      },
+    },
+    {
+      title: '已裁场次',
+      dataIndex: 'refereedMatchesCount',
+      key: 'refereedMatchesCount',
+      width: 90,
+      render: (value: number | undefined, row: UserItem) =>
+        row.role === 'REFEREE' ? (
+          <Tag color={value ? 'blue' : 'default'}>{value ?? 0} 场</Tag>
+        ) : (
+          '—'
+        ),
+    },
+    {
+      title: '创建时间',
+      dataIndex: 'createdAt',
+      key: 'createdAt',
+      width: 130,
+      render: (value: string) => {
+        const date = new Date(value);
+        return (
+          <div style={{ fontSize: 12 }}>
+            {date.toLocaleDateString('zh-CN')}
+            <div style={{ color: '#94a3b8', fontSize: 11 }}>
+              {date.toLocaleTimeString('zh-CN', { hour12: false })}
+            </div>
+          </div>
+        );
+      },
+    },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 190,
+      render: (_: unknown, row: UserItem) => {
+        if (!canManageUser(row)) {
+          return <Typography.Text type="secondary">只读</Typography.Text>;
+        }
+        const isSelf = row.id === currentUserId;
+        return (
+          <Space size={4} wrap>
+            {row.status === 'ACTIVE' ? (
+              <Button
+                size="small"
+                icon={<StopOutlined />}
+                disabled={isSelf}
+                title={isSelf ? '不能禁用自己的账号' : undefined}
+                onClick={() => updateStatus(row, 'DISABLED')}
+              >
+                禁用
+              </Button>
+            ) : (
+              <Button size="small" icon={<CheckCircleOutlined />} onClick={() => updateStatus(row, 'ACTIVE')}>
+                启用
+              </Button>
+            )}
+            <Dropdown
+              trigger={['click']}
+              placement="bottomRight"
+              menu={{
+                items: moreMenuItems(row),
+                onClick: ({ key }) => handleMoreAction(row, key),
+              }}
+            >
+              <Button size="small" icon={<MoreOutlined />}>更多</Button>
+            </Dropdown>
+          </Space>
+        );
+      },
+    },
+  ];
+
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
         <div>
           <Typography.Title level={3} style={{ margin: 0 }}>用户管理</Typography.Title>
           <Typography.Text type="secondary">
-            管理 <strong>超级管理员 / 管理员 / 裁判 / 选手</strong> 四类账号,支持状态切换和临时密码重置。
+            管理超级管理员 / 管理员 / 裁判 / 选手 / 图片上传员账号，支持搜索、状态切换和密码重置。
           </Typography.Text>
         </div>
-        <Space>
+        <Space wrap>
+          <Input
+            allowClear
+            prefix={<SearchOutlined />}
+            placeholder="搜索用户名 / 邮箱 / 邀请码"
+            value={keyword}
+            onChange={(event) => setKeyword(event.target.value)}
+            style={{ width: 240 }}
+          />
           <Select
             value={roleFilter}
             onChange={(value) => setRoleFilter(value)}
@@ -388,16 +675,56 @@ export default function AdminUsersPage() {
               批量删除{selectedCount ? `(${selectedCount})` : ''}
             </Button>
           </Popconfirm>
-          <Button icon={<ReloadOutlined />} onClick={loadUsers} loading={loading}>刷新</Button>
+          <Button icon={<ReloadOutlined />} onClick={() => void loadUsers()} loading={loading}>刷新</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>新建账号</Button>
         </Space>
       </div>
 
-      {role !== 'ROOT' && ownQuota && <Card size="small" title="裁判 / 图片员共享名额">
-        <Typography.Text strong>总额度 {ownQuota.limit} · 累计已使用 {ownQuota.used} · 剩余 {ownQuota.remaining}</Typography.Text>
-        <Typography.Paragraph type="secondary" style={{ margin: '8px 0 0' }}>注册或直接创建账号时扣除，删除不返还。选手账号不占额度。</Typography.Paragraph>
-      </Card>}
-      <Card>
+      {role !== 'ROOT' && ownQuota ? (
+        <Card
+          size="small"
+          title="裁判 / 图片员共享名额"
+          extra={<Tag color="blue">剩余 {ownQuota.remaining ?? '—'}</Tag>}
+        >
+          <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
+            <div>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>总额度</Typography.Text>
+              <div style={{ fontSize: 20, fontWeight: 800, lineHeight: 1.2 }}>{ownQuota.limit ?? '—'}</div>
+            </div>
+            <div>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>累计已使用</Typography.Text>
+              <div style={{ fontSize: 20, fontWeight: 800, lineHeight: 1.2 }}>{ownQuota.used}</div>
+            </div>
+            <div>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>剩余</Typography.Text>
+              <div style={{ fontSize: 20, fontWeight: 800, lineHeight: 1.2, color: '#2563eb' }}>
+                {ownQuota.remaining ?? '—'}
+              </div>
+            </div>
+          </div>
+          <Progress
+            percent={ownQuota.limit ? Math.min(100, Math.round((ownQuota.used / ownQuota.limit) * 100)) : 0}
+            showInfo={false}
+            strokeColor="#2563eb"
+            style={{ marginTop: 12 }}
+          />
+          <Typography.Text type="secondary" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
+            注册或直接创建账号时扣除，删除不返还。选手账号不占额度。
+          </Typography.Text>
+        </Card>
+      ) : null}
+
+      <Card
+        title={<span style={{ fontSize: 14, fontWeight: 700 }}>账号列表</span>}
+        extra={
+          <Space size={8} wrap>
+            <Typography.Text type="secondary">共 {filteredUsers.length} 个账号</Typography.Text>
+            <Tag color="green">启用 {activeCount}</Tag>
+            <Tag color="red">禁用 {disabledCount}</Tag>
+          </Space>
+        }
+        styles={{ body: { padding: 0 } }}
+      >
         <Table
           rowKey="id"
           loading={loading}
@@ -410,108 +737,12 @@ export default function AdminUsersPage() {
               name: row.username ?? row.email ?? row.id,
             }),
           }}
-          columns={[
-            {
-              title: '用户名',
-              dataIndex: 'username',
-              render: (value: string | null) => value || '-',
-            },
-            {
-              title: '邮箱',
-              dataIndex: 'email',
-              render: (value: string | null) => value || '-',
-            },
-            {
-              title: '角色',
-              dataIndex: 'role',
-              render: (role: UserItem['role']) => <Tag color={roleColors[role]}>{roleLabels[role]}</Tag>,
-            },
-            {
-              title: '账号状态',
-              dataIndex: 'status',
-              render: (status: UserItem['status']) => (
-                <Tag color={status === 'ACTIVE' ? 'green' : 'red'}>{statusLabels[status]}</Tag>
-              ),
-            },
-            {
-              title: '邀请码',
-              dataIndex: 'inviteCode',
-              render: (value: string | null) => value || '-',
-            },
-            {
-              title: '裁判 / 图片员名额',
-              key: 'staffQuota',
-              render: (_: unknown, row: UserItem) => row.role !== 'ROOT' ? `已用 ${row.staffInviteUsed ?? 0} / 总额 ${row.staffInviteLimit ?? 20}` : '-',
-            },
-            {
-              title: '已裁场次',
-              dataIndex: 'refereedMatchesCount',
-              render: (value: number | undefined, row: UserItem) =>
-                row.role === 'REFEREE' ? (
-                  <Tag color={value ? 'blue' : 'default'}>{value ?? 0} 场</Tag>
-                ) : (
-                  '-'
-                ),
-            },
-            {
-              title: '创建时间',
-              dataIndex: 'createdAt',
-              render: (value: string) => new Date(value).toLocaleString('zh-CN'),
-            },
-            {
-              title: '操作',
-              render: (_, row: UserItem) => canManageUser(row) ? (
-                <Space wrap>
-                  {row.status === 'ACTIVE' ? (
-                    <Button
-                      icon={<StopOutlined />}
-                      onClick={() => updateStatus(row, 'DISABLED')}
-                      disabled={row.id === currentUserId}
-                      title={row.id === currentUserId ? '不能禁用自己的账号' : undefined}
-                    >
-                      禁用
-                    </Button>
-                  ) : (
-                    <Button icon={<CheckCircleOutlined />} onClick={() => updateStatus(row, 'ACTIVE')}>
-                      启用
-                    </Button>
-                  )}
-                  <Button icon={<EditOutlined />} onClick={() => openRename(row)}>
-                    改名
-                  </Button>
-                  {role === 'ROOT' && <Button
-                    icon={<SafetyCertificateOutlined />}
-                    onClick={() => openRole(row)}
-                    disabled={row.id === currentUserId}
-                    title={row.id === currentUserId ? '不能修改自己的角色' : undefined}
-                  >
-                    角色
-                  </Button>}
-                  {role === 'ROOT' && <Button disabled={row.role === 'ROOT'} onClick={() => openPermissions(row)} title={row.role === 'ROOT' ? '超级管理员固定拥有全部权限' : undefined}>功能权限</Button>}
-                  {row.role !== 'ROOT' && role === 'ROOT' && <Button onClick={() => { setQuotaTarget(row); setQuotaLimit(row.staffInviteLimit ?? 20); }}>分配名额</Button>}
-                  <Button
-                    icon={<LockOutlined />}
-                    onClick={() => {
-                      setResetTarget(row);
-                      setTemporaryPassword(null);
-                      setResetOpen(true);
-                    }}
-                  >
-                    重置密码
-                  </Button>
-                  {row.id === currentUserId ? (
-                    <Button danger icon={<DeleteOutlined />} disabled title="不能删除自己的账号">
-                      删除
-                    </Button>
-                  ) : (
-                    <Popconfirm title="确认删除该账号？" onConfirm={() => deleteUser(row.id)}>
-                      <Button danger icon={<DeleteOutlined />}>删除</Button>
-                    </Popconfirm>
-                  )}
-                </Space>
-              ) : <Typography.Text type="secondary">只读</Typography.Text>,
-            },
-          ]}
+          columns={columns}
+          scroll={{ x: 1090 }}
+          tableLayout="fixed"
+          size="middle"
+          pagination={{ pageSize: 10, showSizeChanger: false, hideOnSinglePage: true }}
+          locale={{ emptyText: '暂无账号' }}
         />
       </Card>
 

@@ -185,15 +185,18 @@ export class PhotosService {
   private async loadLogoConfig(tournamentId: string): Promise<{
     buffers: Buffer[];
     logoHeightPercent: number;
+    portraitLogoHeightPercent: number;
     logoGapPercent: number;
-    position: WatermarkPosition;
-    portraitPosition: WatermarkPosition;
+    portraitLogoGapPercent: number;
+    position: string;
+    portraitPosition: string;
     text: string | null;
     textColor: string;
     textSizePercent: number;
+    portraitTextSizePercent: number;
     textFont: TextFontType;
-    textPosition: WatermarkPosition;
-    textPortraitPosition: WatermarkPosition;
+    textPosition: string;
+    textPortraitPosition: string;
   }> {
     const config = await this.prisma.tournamentWatermark.findUnique({
       where: { tournamentId },
@@ -202,15 +205,18 @@ export class PhotosService {
       return {
         buffers: [],
         logoHeightPercent: DEFAULT_LOGO_HEIGHT_PERCENT,
+        portraitLogoHeightPercent: DEFAULT_LOGO_HEIGHT_PERCENT,
         logoGapPercent: DEFAULT_LOGO_GAP_PERCENT,
+        portraitLogoGapPercent: DEFAULT_LOGO_GAP_PERCENT,
         position: DEFAULT_WATERMARK_POSITION,
         portraitPosition: DEFAULT_WATERMARK_POSITION,
         text: null,
         textColor: DEFAULT_TEXT_COLOR,
         textSizePercent: DEFAULT_TEXT_SIZE_PERCENT,
+        portraitTextSizePercent: DEFAULT_TEXT_SIZE_PERCENT,
         textFont: DEFAULT_TEXT_FONT,
-        textPosition: DEFAULT_WATERMARK_POSITION,
-        textPortraitPosition: DEFAULT_WATERMARK_POSITION,
+        textPosition: this.separateTextPosition(undefined, DEFAULT_WATERMARK_POSITION),
+        textPortraitPosition: this.separateTextPosition(undefined, DEFAULT_WATERMARK_POSITION),
       };
     }
     const logos = this.parseLogos(config.logos);
@@ -224,19 +230,27 @@ export class PhotosService {
     return {
       buffers,
       logoHeightPercent: config.logoHeightPercent ?? DEFAULT_LOGO_HEIGHT_PERCENT,
+      portraitLogoHeightPercent:
+        config.portraitLogoHeightPercent ??
+        config.logoHeightPercent ??
+        DEFAULT_LOGO_HEIGHT_PERCENT,
       logoGapPercent: config.logoGapPercent ?? DEFAULT_LOGO_GAP_PERCENT,
+      portraitLogoGapPercent:
+        config.portraitLogoGapPercent ?? config.logoGapPercent ?? DEFAULT_LOGO_GAP_PERCENT,
       position: this.normalizePosition(config.position),
       portraitPosition: this.normalizePosition(config.portraitPosition ?? config.position),
       text: config.text?.trim() ? config.text.trim() : null,
       textColor: config.textColor ?? DEFAULT_TEXT_COLOR,
       textSizePercent: config.textSizePercent ?? DEFAULT_TEXT_SIZE_PERCENT,
+      portraitTextSizePercent:
+        config.portraitTextSizePercent ??
+        config.textSizePercent ??
+        DEFAULT_TEXT_SIZE_PERCENT,
       textFont: (config.textFont as TextFontType) ?? DEFAULT_TEXT_FONT,
-      textPosition: this.normalizePosition(config.textPosition ?? config.position),
-      textPortraitPosition: this.normalizePosition(
-        config.textPortraitPosition ??
-          config.textPosition ??
-          config.portraitPosition ??
-          config.position,
+      textPosition: this.separateTextPosition(config.textPosition, config.position),
+      textPortraitPosition: this.separateTextPosition(
+        config.textPortraitPosition ?? config.textPosition,
+        config.portraitPosition ?? config.position,
       ),
     };
   }
@@ -348,10 +362,13 @@ export class PhotosService {
     if (!config) {
       return {
         buffers: [], logoHeightPercent: DEFAULT_LOGO_HEIGHT_PERCENT, logoGapPercent: DEFAULT_LOGO_GAP_PERCENT,
+        portraitLogoHeightPercent: DEFAULT_LOGO_HEIGHT_PERCENT, portraitLogoGapPercent: DEFAULT_LOGO_GAP_PERCENT,
         position: DEFAULT_WATERMARK_POSITION, portraitPosition: DEFAULT_WATERMARK_POSITION,
         text: null, textColor: DEFAULT_TEXT_COLOR, textSizePercent: DEFAULT_TEXT_SIZE_PERCENT,
-        textFont: DEFAULT_TEXT_FONT, textPosition: DEFAULT_WATERMARK_POSITION,
-        textPortraitPosition: DEFAULT_WATERMARK_POSITION,
+        portraitTextSizePercent: DEFAULT_TEXT_SIZE_PERCENT,
+        textFont: DEFAULT_TEXT_FONT,
+        textPosition: this.separateTextPosition(undefined, DEFAULT_WATERMARK_POSITION),
+        textPortraitPosition: this.separateTextPosition(undefined, DEFAULT_WATERMARK_POSITION),
       };
     }
     const buffers: Buffer[] = [];
@@ -362,22 +379,81 @@ export class PhotosService {
     return {
       buffers,
       logoHeightPercent: this.clampLogoHeightPercent(config.logoHeightPercent),
+      portraitLogoHeightPercent: this.clampLogoHeightPercent(
+        config.portraitLogoHeightPercent ?? config.logoHeightPercent,
+      ),
       logoGapPercent: this.clampLogoGapPercent(config.logoGapPercent),
+      portraitLogoGapPercent: this.clampLogoGapPercent(
+        config.portraitLogoGapPercent ?? config.logoGapPercent,
+      ),
       position: this.normalizePosition(config.position),
       portraitPosition: this.normalizePosition(config.portraitPosition ?? config.position),
       text: this.sanitizeText(config.text),
       textColor: this.sanitizeTextColor(config.textColor),
       textSizePercent: this.clampTextSizePercent(config.textSizePercent),
+      portraitTextSizePercent: this.clampTextSizePercent(
+        config.portraitTextSizePercent ?? config.textSizePercent,
+      ),
       textFont: this.sanitizeTextFont(config.textFont),
-      textPosition: this.normalizePosition(config.textPosition ?? config.position),
-      textPortraitPosition: this.normalizePosition(config.textPortraitPosition ?? config.portraitPosition ?? config.textPosition ?? config.position),
+      textPosition: this.separateTextPosition(config.textPosition, config.position),
+      textPortraitPosition: this.separateTextPosition(
+        config.textPortraitPosition ?? config.textPosition,
+        config.portraitPosition ?? config.position,
+      ),
     };
   }
 
-  private normalizePosition(value?: string | null): WatermarkPosition {
-    return WATERMARK_POSITIONS.includes(value as WatermarkPosition)
-      ? (value as WatermarkPosition)
-      : DEFAULT_WATERMARK_POSITION;
+  private normalizePosition(value?: string | null): string {
+    const v = (value ?? '').trim();
+    if (WATERMARK_POSITIONS.includes(v as WatermarkPosition)) return v;
+    const match = /^(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$/.exec(v);
+    if (!match) return DEFAULT_WATERMARK_POSITION;
+    const clamp = (n: number) => Math.min(100, Math.max(0, n));
+    return `${Number(clamp(Number(match[1])).toFixed(1))},${Number(clamp(Number(match[2])).toFixed(1))}`;
+  }
+
+  /**
+   * Logo and text are separate watermark layers. Legacy configs stored the same
+   * corner for both (and rendered them as one row), which would now overlap;
+   * move the text to the opposite corner in that case.
+   */
+  private separateTextPosition(
+    textValue: string | null | undefined,
+    logoValue: string | null | undefined,
+  ): string {
+    const logo = this.normalizePosition(logoValue);
+    const isCorner = (value: string): value is WatermarkPosition =>
+      WATERMARK_POSITIONS.includes(value as WatermarkPosition);
+    const opposite: Record<WatermarkPosition, WatermarkPosition> = {
+      TOP_LEFT: 'BOTTOM_RIGHT',
+      TOP_RIGHT: 'BOTTOM_LEFT',
+      BOTTOM_LEFT: 'TOP_RIGHT',
+      BOTTOM_RIGHT: 'TOP_LEFT',
+    };
+
+    // No text position yet: pick a corner away from the logo so a newly enabled
+    // text watermark does not land on top of the logo.
+    if (!textValue || !textValue.trim()) {
+      if (isCorner(logo)) return opposite[logo];
+      const match = /^(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$/.exec(logo);
+      if (!match) return DEFAULT_WATERMARK_POSITION;
+      const x = Number(match[1]);
+      const y = Number(match[2]);
+      return x < 50
+        ? y < 50
+          ? 'BOTTOM_RIGHT'
+          : 'TOP_RIGHT'
+        : y < 50
+          ? 'BOTTOM_LEFT'
+          : 'TOP_LEFT';
+    }
+
+    const text = this.normalizePosition(textValue);
+    if (text !== logo) return text;
+    // Legacy configs stored the same corner for logo and text (rendered as one
+    // row before); keep them apart now that they are independent layers.
+    if (isCorner(text) && isCorner(logo)) return opposite[logo];
+    return text;
   }
 
   private isMissingTableError(error: unknown) {
@@ -430,12 +506,15 @@ export class PhotosService {
     const {
       buffers: logos,
       logoHeightPercent,
+      portraitLogoHeightPercent,
       logoGapPercent,
+      portraitLogoGapPercent,
       position,
       portraitPosition,
       text,
       textColor,
       textSizePercent,
+      portraitTextSizePercent,
       textFont,
       textPosition,
       textPortraitPosition,
@@ -466,9 +545,14 @@ export class PhotosService {
             const uuid = randomUUID();
             const info = await this.watermark.imageInfo(file.buffer);
             const origExt = this.originalImageExtension(info.format);
-            const resolvedPosition = info.height > info.width ? portraitPosition : position;
-            const resolvedTextPosition =
-              info.height > info.width ? textPortraitPosition : textPosition;
+            const isPortrait = info.height > info.width;
+            const resolvedPosition = isPortrait ? portraitPosition : position;
+            const resolvedTextPosition = isPortrait ? textPortraitPosition : textPosition;
+            const resolvedLogoHeightPercent = isPortrait
+              ? portraitLogoHeightPercent
+              : logoHeightPercent;
+            const resolvedLogoGapPercent = isPortrait ? portraitLogoGapPercent : logoGapPercent;
+            const resolvedTextSizePercent = isPortrait ? portraitTextSizePercent : textSizePercent;
 
             const originalPath = `photos/${tournamentId}/original/${uuid}${origExt}`;
             const thumbnailPath = `photos/${tournamentId}/thumb/${uuid}.jpg`;
@@ -476,13 +560,13 @@ export class PhotosService {
             const watermarked = await this.watermark.applyWatermark(
               file.buffer,
               logos,
-              logoHeightPercent,
-              logoGapPercent,
+              resolvedLogoHeightPercent,
+              resolvedLogoGapPercent,
               resolvedPosition,
               {
                 content: text,
                 color: textColor,
-                heightPercent: textSizePercent,
+                heightPercent: resolvedTextSizePercent,
                 position: resolvedTextPosition,
                 font: textFont,
               },
@@ -586,14 +670,18 @@ export class PhotosService {
         await this.moderation.assertAllowed(file.buffer);
         const uuid = randomUUID();
         const info = await this.watermark.imageInfo(file.buffer);
+        const isPortrait = info.height > info.width;
         const originalPath = `photos/${activityId}/original/${uuid}${this.originalImageExtension(info.format)}`;
         const thumbnailPath = `photos/${activityId}/thumb/${uuid}.jpg`;
         const watermarked = await this.watermark.applyWatermark(
-          file.buffer, config.buffers, config.logoHeightPercent, config.logoGapPercent,
-          info.height > info.width ? config.portraitPosition : config.position,
+          file.buffer, config.buffers,
+          isPortrait ? config.portraitLogoHeightPercent : config.logoHeightPercent,
+          isPortrait ? config.portraitLogoGapPercent : config.logoGapPercent,
+          isPortrait ? config.portraitPosition : config.position,
           {
-            content: config.text, color: config.textColor, heightPercent: config.textSizePercent,
-            position: info.height > info.width ? config.textPortraitPosition : config.textPosition,
+            content: config.text, color: config.textColor,
+            heightPercent: isPortrait ? config.portraitTextSizePercent : config.textSizePercent,
+            position: isPortrait ? config.textPortraitPosition : config.textPosition,
             font: config.textFont,
           },
         );
@@ -867,19 +955,27 @@ export class PhotosService {
       tournamentId,
       logos: logos.map((l) => ({ ...l, url: this.url(l.path) })),
       logoHeightPercent: config?.logoHeightPercent ?? DEFAULT_LOGO_HEIGHT_PERCENT,
+      portraitLogoHeightPercent:
+        config?.portraitLogoHeightPercent ??
+        config?.logoHeightPercent ??
+        DEFAULT_LOGO_HEIGHT_PERCENT,
       logoGapPercent: config?.logoGapPercent ?? DEFAULT_LOGO_GAP_PERCENT,
+      portraitLogoGapPercent:
+        config?.portraitLogoGapPercent ?? config?.logoGapPercent ?? DEFAULT_LOGO_GAP_PERCENT,
       position: this.normalizePosition(config?.position),
       portraitPosition: this.normalizePosition(config?.portraitPosition ?? config?.position),
       text: config?.text?.trim() ? config.text.trim() : '',
       textColor: config?.textColor ?? DEFAULT_TEXT_COLOR,
       textSizePercent: config?.textSizePercent ?? DEFAULT_TEXT_SIZE_PERCENT,
+      portraitTextSizePercent:
+        config?.portraitTextSizePercent ??
+        config?.textSizePercent ??
+        DEFAULT_TEXT_SIZE_PERCENT,
       textFont: (config?.textFont as TextFontType) ?? DEFAULT_TEXT_FONT,
-      textPosition: this.normalizePosition(config?.textPosition ?? config?.position),
-      textPortraitPosition: this.normalizePosition(
-        config?.textPortraitPosition ??
-          config?.portraitPosition ??
-          config?.textPosition ??
-          config?.position,
+      textPosition: this.separateTextPosition(config?.textPosition, config?.position),
+      textPortraitPosition: this.separateTextPosition(
+        config?.textPortraitPosition ?? config?.textPosition,
+        config?.portraitPosition ?? config?.position,
       ),
       updatedAt: config?.updatedAt ?? null,
     };
@@ -893,19 +989,29 @@ export class PhotosService {
     const data = {
       logos: logos as unknown as Prisma.InputJsonValue,
       logoHeightPercent: this.clampLogoHeightPercent(dto.logoHeightPercent),
+      portraitLogoHeightPercent:
+        dto.portraitLogoHeightPercent != null
+          ? this.clampLogoHeightPercent(dto.portraitLogoHeightPercent)
+          : undefined,
       logoGapPercent: this.clampLogoGapPercent(dto.logoGapPercent),
+      portraitLogoGapPercent:
+        dto.portraitLogoGapPercent != null
+          ? this.clampLogoGapPercent(dto.portraitLogoGapPercent)
+          : undefined,
       position: this.normalizePosition(dto.position),
       portraitPosition: this.normalizePosition(dto.portraitPosition ?? dto.position),
       text: this.sanitizeText(dto.text),
       textColor: this.sanitizeTextColor(dto.textColor),
       textSizePercent: this.clampTextSizePercent(dto.textSizePercent),
+      portraitTextSizePercent:
+        dto.portraitTextSizePercent != null
+          ? this.clampTextSizePercent(dto.portraitTextSizePercent)
+          : undefined,
       textFont: this.sanitizeTextFont(dto.textFont),
-      textPosition: this.normalizePosition(dto.textPosition ?? dto.position),
-      textPortraitPosition: this.normalizePosition(
-        dto.textPortraitPosition ??
-          dto.portraitPosition ??
-          dto.textPosition ??
-          dto.position,
+      textPosition: this.separateTextPosition(dto.textPosition, dto.position),
+      textPortraitPosition: this.separateTextPosition(
+        dto.textPortraitPosition ?? dto.textPosition,
+        dto.portraitPosition ?? dto.position,
       ),
     };
     await this.prisma.tournamentWatermark.upsert({
@@ -977,15 +1083,28 @@ export class PhotosService {
       activityId,
       logos: logos.map((logo) => ({ ...logo, url: this.url(logo.path) })),
       logoHeightPercent: config?.logoHeightPercent ?? DEFAULT_LOGO_HEIGHT_PERCENT,
+      portraitLogoHeightPercent:
+        config?.portraitLogoHeightPercent ??
+        config?.logoHeightPercent ??
+        DEFAULT_LOGO_HEIGHT_PERCENT,
       logoGapPercent: config?.logoGapPercent ?? DEFAULT_LOGO_GAP_PERCENT,
+      portraitLogoGapPercent:
+        config?.portraitLogoGapPercent ?? config?.logoGapPercent ?? DEFAULT_LOGO_GAP_PERCENT,
       position: this.normalizePosition(config?.position),
       portraitPosition: this.normalizePosition(config?.portraitPosition ?? config?.position),
       text: config?.text?.trim() ? config.text.trim() : '',
       textColor: config?.textColor ?? DEFAULT_TEXT_COLOR,
       textSizePercent: config?.textSizePercent ?? DEFAULT_TEXT_SIZE_PERCENT,
+      portraitTextSizePercent:
+        config?.portraitTextSizePercent ??
+        config?.textSizePercent ??
+        DEFAULT_TEXT_SIZE_PERCENT,
       textFont: (config?.textFont as TextFontType) ?? DEFAULT_TEXT_FONT,
-      textPosition: this.normalizePosition(config?.textPosition ?? config?.position),
-      textPortraitPosition: this.normalizePosition(config?.textPortraitPosition ?? config?.portraitPosition ?? config?.textPosition ?? config?.position),
+      textPosition: this.separateTextPosition(config?.textPosition, config?.position),
+      textPortraitPosition: this.separateTextPosition(
+        config?.textPortraitPosition ?? config?.textPosition,
+        config?.portraitPosition ?? config?.position,
+      ),
       updatedAt: config?.updatedAt ?? null,
     };
   }
@@ -996,15 +1115,30 @@ export class PhotosService {
     const data = {
       logos: logos as unknown as Prisma.InputJsonValue,
       logoHeightPercent: this.clampLogoHeightPercent(dto.logoHeightPercent),
+      portraitLogoHeightPercent:
+        dto.portraitLogoHeightPercent != null
+          ? this.clampLogoHeightPercent(dto.portraitLogoHeightPercent)
+          : undefined,
       logoGapPercent: this.clampLogoGapPercent(dto.logoGapPercent),
+      portraitLogoGapPercent:
+        dto.portraitLogoGapPercent != null
+          ? this.clampLogoGapPercent(dto.portraitLogoGapPercent)
+          : undefined,
       position: this.normalizePosition(dto.position),
       portraitPosition: this.normalizePosition(dto.portraitPosition ?? dto.position),
       text: this.sanitizeText(dto.text),
       textColor: this.sanitizeTextColor(dto.textColor),
       textSizePercent: this.clampTextSizePercent(dto.textSizePercent),
+      portraitTextSizePercent:
+        dto.portraitTextSizePercent != null
+          ? this.clampTextSizePercent(dto.portraitTextSizePercent)
+          : undefined,
       textFont: this.sanitizeTextFont(dto.textFont),
-      textPosition: this.normalizePosition(dto.textPosition ?? dto.position),
-      textPortraitPosition: this.normalizePosition(dto.textPortraitPosition ?? dto.portraitPosition ?? dto.textPosition ?? dto.position),
+      textPosition: this.separateTextPosition(dto.textPosition, dto.position),
+      textPortraitPosition: this.separateTextPosition(
+        dto.textPortraitPosition ?? dto.textPosition,
+        dto.portraitPosition ?? dto.position,
+      ),
     };
     await this.prisma.photoActivityWatermark.upsert({
       where: { activityId }, create: { activityId, ...data }, update: data,

@@ -15,6 +15,7 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 const SOCKET_BASE = API_BASE.replace(/\/api\/?$/, '');
 
 type SocketState = 'connecting' | 'synced' | 'offline';
+type MatchFilter = 'ALL' | 'LIVE' | 'PENDING' | 'COMPLETED';
 
 const STATUS_LABELS: Record<string, string> = {
   PENDING: '待开始',
@@ -146,8 +147,12 @@ function LivePill({ state }: { state: SocketState }) {
         ? 'bg-red-400/20 text-red-100'
         : 'bg-white/12 text-white/70';
   return (
-    <span className={`inline-flex h-9 items-center gap-2 rounded-full px-4 text-xs font-black ${cls}`}>
-      <span className={`h-2 w-2 rounded-full ${state === 'synced' ? 'bg-slate-950' : 'bg-current'}`} />
+    <span className={`inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full px-3 text-[11px] font-black sm:h-9 sm:gap-2 sm:px-4 sm:text-xs ${cls}`}>
+      <span
+        className={`h-1.5 w-1.5 rounded-full sm:h-2 sm:w-2 ${
+          state === 'synced' ? 'bg-slate-950' : state === 'connecting' ? 'animate-pulse bg-current' : 'bg-current'
+        }`}
+      />
       {text}
     </span>
   );
@@ -194,24 +199,24 @@ function MatchCard({ bracket, match }: { bracket: KnockoutBracketData; match: Br
   const footerNote = forfeit && match.gamesText ? match.gamesText : match.latestEvents?.[0]?.text ?? '';
 
   return (
-    <article className={`rounded-lg border p-3 shadow-[0_18px_44px_rgba(0,0,0,0.22)] ${statusClasses(String(match.status), paused)}`}>
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <p className="truncate text-xs font-black text-cyan-100">
+    <article className={`rounded-xl border p-3 shadow-[0_14px_34px_rgba(0,0,0,0.2)] ${statusClasses(String(match.status), paused)}`}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-[11px] font-black leading-tight text-cyan-100/90 sm:text-xs">
             {roundTitle(match)} · 第 {match.matchNo} 场 · {match.venueName || '待排场地'}
           </p>
-          <p className="mt-0.5 truncate text-[11px] font-semibold tabular-nums text-white/45">
+          <p className="mt-1 truncate text-[10px] font-semibold leading-none tabular-nums text-white/45 sm:text-[11px]">
             {status === 'LIVE' && currentGameIndex >= 0
               ? `局数 ${sets.left}:${sets.right} · 第 ${games.length} 局`
               : formatTime(match.scheduledAt)}
           </p>
         </div>
-        <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-black ${statusPillClasses(String(match.status), paused)}`}>
+        <span className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-black leading-none sm:text-[11px] ${statusPillClasses(String(match.status), paused)}`}>
           {paused ? '比赛暂停' : statusText(String(match.status))}
         </span>
       </div>
 
-      <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3">
+      <div className="mt-2.5 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 sm:mt-3 sm:gap-3">
         <SideName
           name={playerName(leftSide)}
           players={playersFor(leftSide)}
@@ -221,30 +226,30 @@ function MatchCard({ bracket, match }: { bracket: KnockoutBracketData; match: Br
         <div className="text-center">
           {forfeit ? (
             <>
-              <strong className="block text-3xl font-black leading-none text-amber-300">WO</strong>
-              <p className="mt-1 text-xs font-semibold text-white/45">{match.forfeitLabel ?? '弃权'}</p>
+              <strong className="block text-[26px] font-black leading-none text-amber-300 sm:text-3xl">WO</strong>
+              <p className="mt-1 text-[10px] font-semibold text-white/45 sm:text-xs">{match.forfeitLabel ?? '弃权'}</p>
             </>
           ) : status === 'LIVE' && currentGame ? (
-            <strong className="block whitespace-nowrap text-4xl font-black leading-none tabular-nums text-amber-300 sm:text-5xl">
+            <strong className="block whitespace-nowrap text-[34px] font-black leading-none tabular-nums text-amber-300 sm:text-5xl">
               {currentGame.left}
-              <span className="px-1.5 text-white/30">:</span>
+              <span className="px-1 text-white/25 sm:px-1.5">:</span>
               {currentGame.right}
             </strong>
           ) : (status === 'COMPLETED' || decided) && games.length ? (
             <>
-              <strong className="block whitespace-nowrap text-4xl font-black leading-none tabular-nums text-amber-300 sm:text-5xl">
+              <strong className="block whitespace-nowrap text-[34px] font-black leading-none tabular-nums text-amber-300 sm:text-5xl">
                 {sets.left}
-                <span className="px-1.5 text-white/30">:</span>
+                <span className="px-1 text-white/25 sm:px-1.5">:</span>
                 {sets.right}
               </strong>
               {lastGame ? (
-                <p className="mt-1 text-xs font-semibold tabular-nums text-white/45">
+                <p className="mt-1 text-[10px] font-semibold tabular-nums text-white/45 sm:text-xs">
                   末局 {lastGame.left}:{lastGame.right}
                 </p>
               ) : null}
             </>
           ) : (
-            <span className="block px-2 text-2xl font-black leading-none text-white/30">VS</span>
+            <span className="block px-2 text-xl font-black leading-none text-white/25 sm:text-2xl">VS</span>
           )}
         </div>
         <SideName
@@ -256,7 +261,7 @@ function MatchCard({ bracket, match }: { bracket: KnockoutBracketData; match: Br
       </div>
 
       {games.length && !forfeit ? (
-        <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+        <div className="mt-2.5 flex flex-wrap items-center justify-center gap-1.5 sm:mt-3 sm:gap-2">
           {games.map((game, index) => {
             const view = orient(game);
             const isCurrent = index === currentGameIndex;
@@ -265,7 +270,7 @@ function MatchCard({ bracket, match }: { bracket: KnockoutBracketData; match: Br
             return (
               <span
                 key={index}
-                className={`rounded-lg border px-2.5 py-1 text-sm font-black tabular-nums ${
+                className={`rounded-md border px-2 py-0.5 text-xs font-black tabular-nums sm:rounded-lg sm:px-2.5 sm:py-1 sm:text-sm ${
                   isCurrent
                     ? 'border-emerald-300/60 bg-emerald-400/10 text-emerald-200'
                     : 'border-white/15 bg-white/[0.04]'
@@ -274,24 +279,26 @@ function MatchCard({ bracket, match }: { bracket: KnockoutBracketData; match: Br
                 <span className={isCurrent ? '' : leftWon ? 'text-amber-300' : 'text-white/45'}>{view.left}</span>
                 <span className={isCurrent ? 'text-emerald-200/70' : 'text-white/30'}>:</span>
                 <span className={isCurrent ? '' : rightWon ? 'text-amber-300' : 'text-white/45'}>{view.right}</span>
-                {isCurrent ? <span className="ml-1 align-middle text-[10px]">●</span> : null}
+                {isCurrent ? <span className="ml-1 align-middle text-[9px] sm:text-[10px]">●</span> : null}
               </span>
             );
           })}
         </div>
       ) : null}
 
-      <div className="mt-3 flex items-center justify-between gap-3 border-t border-white/10 pt-2">
-        <span className="flex min-w-0 items-center gap-1.5 text-[11px] font-semibold">
-          <span className="shrink-0 text-white/40">本场裁判</span>
-          <span className="truncate font-black text-cyan-100">{refereeName || '待分配'}</span>
-        </span>
-        {footerNote ? (
-          <span className="min-w-0 truncate text-right text-[11px] font-semibold text-white/45">
-            {footerNote}
+      {refereeName || footerNote ? (
+        <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-white/10 pt-2">
+          <span className="flex min-w-0 items-center gap-1.5 text-[10px] font-semibold sm:text-[11px]">
+            <span className="shrink-0 text-white/38">本场裁判</span>
+            <span className="truncate font-black text-cyan-100/90">{refereeName || '待分配'}</span>
           </span>
-        ) : null}
-      </div>
+          {footerNote ? (
+            <span className="min-w-0 truncate text-right text-[10px] font-semibold text-white/42 sm:text-[11px]">
+              {footerNote}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
     </article>
   );
 }
@@ -309,14 +316,13 @@ function SideName({
 }) {
   return (
     <div className={`min-w-0 ${align === 'right' ? 'text-right' : 'text-left'}`}>
-      <p className="truncate text-lg font-black text-white">{name}</p>
+      <p className={`truncate text-[17px] font-black leading-tight sm:text-lg ${winner ? 'text-amber-200' : 'text-white'}`}>
+        {name}
+      </p>
       {players.length > 1 ? (
-        <p className="mt-0.5 truncate text-xs font-semibold text-white/48">{players.join(' / ')}</p>
-      ) : null}
-      {winner ? (
-        <span className="mt-1.5 inline-flex rounded-full bg-amber-300 px-2 py-0.5 text-[10px] font-black text-slate-950">
-          胜
-        </span>
+        <p className="mt-0.5 truncate text-[11px] font-semibold leading-tight text-white/45 sm:text-xs">
+          {players.join(' / ')}
+        </p>
       ) : null}
     </div>
   );
@@ -324,12 +330,12 @@ function SideName({
 
 function EmptyState({ brackets }: { brackets: KnockoutBracketData[] }) {
   return (
-    <div className="grid min-h-[360px] place-items-center rounded-lg border border-dashed border-white/16 bg-white/[0.05] p-8 text-center">
+    <div className="grid min-h-[260px] place-items-center rounded-xl border border-dashed border-white/16 bg-white/[0.05] p-6 text-center sm:min-h-[360px] sm:p-8">
       <div>
-        <h2 className="text-2xl font-black text-white">
+        <h2 className="text-xl font-black text-white sm:text-2xl">
           {brackets.length ? '请选择要直播的比赛' : '暂无可直播的对阵'}
         </h2>
-        <p className="mt-2 text-sm font-semibold text-white/52">
+        <p className="mx-auto mt-2 max-w-sm text-xs font-semibold leading-relaxed text-white/52 sm:text-sm">
           后台发布对阵后，这里会显示全部场次安排，并跟随裁判记分实时刷新。
         </p>
       </div>
@@ -482,28 +488,58 @@ export function LiveScreenClient({
     };
   }, [reload]);
 
-  const visibleMatches = useMemo(
+  const [filter, setFilter] = useState<MatchFilter>('ALL');
+
+  const allMatches = useMemo(
     () => (selected ? selected.matches.filter((match) => !isByeMatch(selected, match)) : []),
     [selected],
   );
 
-  const stats = useMemo(() => {
-    const matches = visibleMatches;
-    return {
-      total: matches.length,
-      live: matches.filter((match) => normalizeStatus(String(match.status)) === 'LIVE').length,
-      completed: matches.filter((match) => normalizeStatus(String(match.status)) === 'COMPLETED').length,
-      scheduled: matches.filter((match) => match.scheduledAt).length,
-    };
-  }, [visibleMatches]);
+  const counts = useMemo(() => {
+    let live = 0;
+    let completed = 0;
+    let pending = 0;
+    for (const match of allMatches) {
+      const status = normalizeStatus(String(match.status));
+      if (status === 'LIVE') live += 1;
+      else if (status === 'COMPLETED') completed += 1;
+      else if (status === 'PENDING') pending += 1;
+    }
+    return { total: allMatches.length, live, completed, pending };
+  }, [allMatches]);
+
+  const visibleMatches = useMemo(
+    () =>
+      filter === 'ALL'
+        ? allMatches
+        : allMatches.filter((match) => normalizeStatus(String(match.status)) === filter),
+    [allMatches, filter],
+  );
 
   const matchGroups = useMemo(() => groupMatches(visibleMatches), [visibleMatches]);
+
+  const filterOptions = useMemo<Array<{ key: MatchFilter; label: string; count: number }>>(
+    () => [
+      { key: 'ALL', label: '全部', count: counts.total },
+      { key: 'LIVE', label: '进行中', count: counts.live },
+      { key: 'PENDING', label: '待开始', count: counts.pending },
+      { key: 'COMPLETED', label: '已完成', count: counts.completed },
+    ],
+    [counts],
+  );
+
   const bracketHref = selected
     ? `/bracket/${encodeURIComponent(selected.id)}`
     : '/bracket';
+  const updatedText = updatedAt.toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
 
   return (
-    <main className="min-h-screen bg-[#06111f] text-white">
+    <main className="min-h-dvh bg-[#06111f] text-white">
       <div className="pointer-events-none fixed inset-0 bg-[linear-gradient(120deg,rgba(5,150,105,0.22),transparent_36%,rgba(14,165,233,0.18)_72%,rgba(251,191,36,0.16))]" />
       <div
         className="pointer-events-none fixed inset-0 opacity-[0.08]"
@@ -515,40 +551,44 @@ export function LiveScreenClient({
         }}
       />
 
-      <div className="relative mx-auto flex min-h-screen w-full max-w-[1920px] flex-col gap-4 px-5 py-5 lg:px-8">
-        <header className="flex flex-wrap items-center justify-between gap-4 border-b border-white/10 pb-4">
-          <div className="min-w-0">
-            <p className="text-xs font-black uppercase tracking-[0.18em] text-cyan-100">Live Score Wall</p>
-            <h1 className="mt-1 truncate text-3xl font-black leading-tight sm:text-5xl">直播大屏幕</h1>
-            <p className="mt-2 truncate text-sm font-semibold text-white/52">
-              选择比赛后展示全部场次安排，比分随裁判记分实时同步。
-            </p>
+      <div className="relative mx-auto flex min-h-dvh w-full max-w-[1920px] flex-col gap-3 px-4 pt-[calc(env(safe-area-inset-top)+1rem)] pb-[calc(env(safe-area-inset-bottom)+1.25rem)] sm:gap-4 sm:px-5 sm:py-5 lg:px-8">
+        <header className="border-b border-white/10 pb-3 sm:pb-4">
+          <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-[10px] font-black uppercase tracking-[0.2em] text-cyan-100/85 sm:text-xs sm:tracking-[0.18em]">
+                Live Score Wall
+              </p>
+              <h1 className="mt-1 text-3xl font-black leading-tight sm:text-4xl lg:text-5xl">直播大屏幕</h1>
+              <p className="mt-1.5 text-[11px] font-semibold leading-snug text-white/45 sm:mt-2 sm:text-sm sm:text-white/52">
+                选择比赛后展示全部场次安排，比分随裁判记分实时同步。
+              </p>
+            </div>
+            <nav className="flex w-full items-center gap-2 sm:w-auto">
+              <LivePill state={socketState} />
+              <Link
+                href={bracketHref}
+                className="tappable inline-flex h-10 flex-1 items-center justify-center rounded-lg border border-white/16 px-3 text-xs font-black text-white/85 transition hover:bg-white/10 sm:flex-none sm:px-4 sm:text-sm"
+              >
+                对阵表
+              </Link>
+              <Link
+                href="/"
+                className="tappable inline-flex h-10 flex-1 items-center justify-center rounded-lg bg-amber-300 px-3 text-xs font-black text-slate-950 transition hover:bg-amber-200 sm:flex-none sm:px-4 sm:text-sm"
+              >
+                返回首页
+              </Link>
+            </nav>
           </div>
-          <nav className="flex flex-wrap items-center gap-2">
-            <LivePill state={socketState} />
-            <Link
-              href={bracketHref}
-              className="inline-flex h-10 items-center rounded-lg border border-white/16 px-4 text-sm font-black text-white/82 transition hover:bg-white/10"
-            >
-              对阵表
-            </Link>
-            <Link
-              href="/"
-              className="inline-flex h-10 items-center rounded-lg bg-amber-300 px-4 text-sm font-black text-slate-950 transition hover:bg-amber-200"
-            >
-              返回首页
-            </Link>
-          </nav>
         </header>
 
-        <section className="grid gap-3 rounded-lg border border-white/10 bg-white/[0.07] p-4 lg:grid-cols-[1fr_auto] lg:items-center">
-          <div className="grid gap-3 sm:grid-cols-2">
+        <section className="rounded-xl border border-white/10 bg-white/[0.06] p-3 sm:p-4">
+          <div className="grid gap-2.5 sm:grid-cols-2 sm:gap-3">
             <label className="min-w-0">
-              <span className="mb-2 block text-xs font-black text-white/52">选择比赛</span>
+              <span className="mb-1.5 block text-[11px] font-black text-white/50">选择比赛</span>
               <select
                 value={effectiveTournamentId}
                 onChange={(event) => handleTournamentChange(event.target.value)}
-                className="h-12 w-full rounded-lg border border-white/14 bg-slate-950/72 px-4 text-sm font-black text-white outline-none transition focus:border-cyan-200"
+                className="h-11 w-full rounded-lg border border-white/14 bg-slate-950/72 px-3 text-sm font-black text-white outline-none transition focus:border-cyan-200 sm:h-12 sm:px-4"
               >
                 {tournaments.length ? (
                   tournaments.map((t) => (
@@ -562,11 +602,11 @@ export function LiveScreenClient({
               </select>
             </label>
             <label className="min-w-0">
-              <span className="mb-2 block text-xs font-black text-white/52">选择组别</span>
+              <span className="mb-1.5 block text-[11px] font-black text-white/50">选择组别</span>
               <select
                 value={effectiveEventId}
                 onChange={(event) => setSelectedId(event.target.value)}
-                className="h-12 w-full rounded-lg border border-white/14 bg-slate-950/72 px-4 text-sm font-black text-white outline-none transition focus:border-cyan-200"
+                className="h-11 w-full rounded-lg border border-white/14 bg-slate-950/72 px-3 text-sm font-black text-white outline-none transition focus:border-cyan-200 sm:h-12 sm:px-4"
               >
                 {events.length ? (
                   events.map((ev) => (
@@ -580,46 +620,74 @@ export function LiveScreenClient({
               </select>
             </label>
           </div>
-          <div className="grid grid-cols-4 gap-2 lg:min-w-[520px]">
-            {[
-              ['总场次', stats.total],
-              ['直播中', stats.live],
-              ['已完成', stats.completed],
-              ['已排程', stats.scheduled],
-            ].map(([label, value]) => (
-              <div key={label} className="rounded-lg bg-slate-950/48 px-3 py-2 text-center">
-                <p className="text-[11px] font-bold text-white/45">{label}</p>
-                <strong className="mt-1 block text-2xl font-black text-white">{value}</strong>
-              </div>
-            ))}
+
+          <div className="mt-3 flex gap-1.5 sm:mt-3.5 sm:max-w-[440px] sm:gap-2">
+            {filterOptions.map((option) => {
+              const active = filter === option.key;
+              return (
+                <button
+                  key={option.key}
+                  type="button"
+                  onClick={() => setFilter(option.key)}
+                  aria-pressed={active}
+                  className={`tappable flex min-h-[44px] flex-1 flex-col items-center justify-center gap-1 rounded-lg border transition ${
+                    active
+                      ? 'border-cyan-300/70 bg-cyan-300/15 text-cyan-50'
+                      : 'border-white/10 bg-slate-950/40 text-white/55 hover:border-white/25 hover:text-white/80'
+                  }`}
+                >
+                  <span className="text-[15px] font-black leading-none tabular-nums sm:text-lg">{option.count}</span>
+                  <span className="text-[10px] font-bold leading-none sm:text-[11px]">{option.label}</span>
+                </button>
+              );
+            })}
           </div>
         </section>
 
         {selected ? (
           <>
-            <section className="min-h-0 flex-1 rounded-lg border border-white/10 bg-slate-950/46 p-4">
-              <div className="mb-4 flex justify-end">
-                <p className="text-xs font-semibold text-white/42">
-                  更新 {updatedAt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}
-                </p>
+            <section className="min-h-0 flex-1 rounded-xl border border-white/10 bg-slate-950/40 p-3 sm:p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h2 className="text-[11px] font-black uppercase tracking-[0.16em] text-white/45">场次安排</h2>
+                <p className="text-[10px] font-semibold tabular-nums text-white/35 sm:text-[11px]">更新 {updatedText}</p>
               </div>
 
-              <div className="space-y-5">
-                {matchGroups.map((group) => (
-                  <section key={group.key}>
-                    <div className="mb-2 flex items-center gap-3">
-                      <h3 className="shrink-0 text-sm font-black text-cyan-100">{group.title}</h3>
-                      <span className="h-px flex-1 bg-white/10" />
-                      <span className="text-xs font-semibold text-white/38">{group.matches.length} 场</span>
-                    </div>
-                    <div className="grid gap-3 xl:grid-cols-2 2xl:grid-cols-3">
-                      {group.matches.map((match) => (
-                        <MatchCard key={match.id} bracket={selected} match={match} />
-                      ))}
-                    </div>
-                  </section>
-                ))}
-              </div>
+              {visibleMatches.length ? (
+                <div className="space-y-4 sm:space-y-5">
+                  {matchGroups.map((group) => (
+                    <section key={group.key}>
+                      <div className="mb-2 flex items-center gap-3">
+                        <h3 className="shrink-0 text-xs font-black text-cyan-100 sm:text-sm">{group.title}</h3>
+                        <span className="h-px flex-1 bg-white/10" />
+                        <span className="text-[10px] font-semibold text-white/38 sm:text-xs">
+                          {group.matches.length} 场
+                        </span>
+                      </div>
+                      <div className="grid gap-2 sm:gap-3 md:grid-cols-2 2xl:grid-cols-3">
+                        {group.matches.map((match) => (
+                          <MatchCard key={match.id} bracket={selected} match={match} />
+                        ))}
+                      </div>
+                    </section>
+                  ))}
+                </div>
+              ) : (
+                <div className="grid min-h-[180px] place-items-center rounded-lg border border-dashed border-white/12 p-6 text-center">
+                  <div>
+                    <p className="text-sm font-black text-white/75">当前筛选没有场次</p>
+                    <p className="mt-1 text-[11px] font-semibold text-white/40">
+                      切换筛选可查看该组别的全部安排。
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setFilter('ALL')}
+                      className="tappable mt-3 inline-flex h-9 items-center rounded-lg border border-white/16 px-3 text-xs font-black text-white/85 transition hover:bg-white/10"
+                    >
+                      查看全部 {counts.total} 场
+                    </button>
+                  </div>
+                </div>
+              )}
             </section>
 
             {selected.secondStage ? <SecondStageWall data={selected.secondStage} /> : null}

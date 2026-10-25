@@ -8,5 +8,6 @@ import { TeamCompetitionsModule } from '../team-competitions/team-competitions.m
   imports: [PrismaModule, TeamCompetitionsModule],
   controllers: [SchedulingController],
   providers: [SchedulingService],
+  exports: [SchedulingService],
 })
 export class SchedulingModule {}

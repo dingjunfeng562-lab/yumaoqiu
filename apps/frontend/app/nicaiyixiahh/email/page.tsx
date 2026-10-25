@@ -339,7 +339,7 @@ function TemplatesTab({ token }: { token: string }) {
   async function showPreview(template: TemplateItem) {
     try {
       const data = await apiFetch<{ name: string; subject: string; html: string }>(
-        `/nicaiyixiahh/email/templates/${template.key}/preview`,
+        `/admin/email/templates/${template.key}/preview`,
         { token },
       );
       setPreview(data);

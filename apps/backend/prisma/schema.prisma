@@ -571,13 +571,16 @@ model TournamentWatermark {
   tournament        Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
   logos             Json
   logoHeightPercent Int       @default(8)
+  portraitLogoHeightPercent Int?
   logoGapPercent    Int       @default(20)
+  portraitLogoGapPercent Int?
   position          String    @default("TOP_RIGHT") @db.VarChar(16)
   portraitPosition  String?   @db.VarChar(16)
   // 文字水印（可选）：text 为空表示不加文字水印。
   text              String?   @db.VarChar(100)
   textColor         String?   @db.VarChar(16)
   textSizePercent   Int?
+  portraitTextSizePercent Int?
   textFont          String?   @db.VarChar(32)
   textPosition      String?   @db.VarChar(16)
   textPortraitPosition String?   @db.VarChar(16)
@@ -616,12 +619,15 @@ model PhotoActivityWatermark {
   activity             PhotoActivity @relation(fields: [activityId], references: [id], onDelete: Cascade)
   logos                Json
   logoHeightPercent    Int           @default(8)
+  portraitLogoHeightPercent Int?
   logoGapPercent       Int           @default(20)
+  portraitLogoGapPercent Int?
   position             String        @default("TOP_RIGHT") @db.VarChar(16)
   portraitPosition     String?       @db.VarChar(16)
   text                 String?       @db.VarChar(100)
   textColor            String?       @db.VarChar(16)
   textSizePercent      Int?
+  portraitTextSizePercent Int?
   textFont             String?       @db.VarChar(32)
   textPosition         String?       @db.VarChar(16)
   textPortraitPosition String?       @db.VarChar(16)

@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ExportFilesService } from './export-files.service';
@@ -83,5 +83,46 @@ describe('ExportFilesService', () => {
     await service.refreshAll();
 
     expect(await service.list('t1')).toEqual([]);
+  });
+
+  it('强制导出时重新生成并删除上一版文件', async () => {
+    await service.getFresh('t1', 'schedule', true);
+    const [firstFile] = await storedFiles();
+
+    version = 2;
+    const file = await service.getFresh('t1', 'schedule', true);
+    const files = await storedFiles();
+
+    expect(exportsService.buildTournamentExport).toHaveBeenCalledTimes(2);
+    expect(file.content.toString()).toBe('v2');
+    expect(files).toHaveLength(1);
+    expect(files[0]).not.toBe(firstFile);
+  });
+
+  it('重建时只保留最新版并删除旧文件和孤立文件', async () => {
+    await service.getFresh('t1', 'schedule');
+    const dir = join(workDir, 'uploads', 'exports', 't1');
+    await writeFile(join(dir, 'orphan.xls'), 'orphan');
+
+    fingerprint = 'b';
+    version = 2;
+    const file = await service.getFresh('t1', 'schedule');
+
+    expect(file.content.toString()).toBe('v2');
+    const files = await storedFiles();
+    expect(files).toHaveLength(1);
+    expect(files).not.toContain('orphan.xls');
+  });
+
+  it('导出缓存目录不可写时直接按当前数据生成并返回', async () => {
+    const exportsRoot = join(workDir, 'uploads', 'exports');
+    await mkdir(exportsRoot, { recursive: true });
+    // 用同名文件占住赛事目录，模拟 mkdir/writeFile 被系统拒绝。
+    await writeFile(join(exportsRoot, 't1'), 'blocked');
+
+    const file = await service.getFresh('t1', 'schedule');
+
+    expect(file.content.toString()).toBe('v1');
+    expect(exportsService.buildTournamentExport).toHaveBeenCalledTimes(1);
   });
 });

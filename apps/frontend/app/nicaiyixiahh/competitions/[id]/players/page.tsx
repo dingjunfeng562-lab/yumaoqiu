@@ -5,7 +5,7 @@ import type { Key } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { Alert, Button, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography, message } from 'antd';
+import { Alert, Button, Card, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography, message } from 'antd';
 import { AuditOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, PlusOutlined, RollbackOutlined, StopOutlined, UserAddOutlined, UsergroupAddOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { importTeamRoster, parseTeamRoster, TeamRosterImportInput, type TeamImportCompetition } from '@/components/TeamRosterImport';
@@ -231,23 +231,6 @@ export default function AdminCompetitionPlayersPage() {
   const { data: session } = useSession();
   const access = useCurrentAccess();
   const token = session?.user?.accessToken as string | undefined;
-  const sessionRole = (session?.user as { role?: string } | undefined)?.role;
-  const [liveRole, setLiveRole] = useState<string | undefined>(sessionRole);
-  useEffect(() => {
-    if (!token) return;
-    let cancelled = false;
-    apiFetch<{ role?: string }>('/auth/me', { token })
-      .then((me) => {
-        if (!cancelled && me?.role) setLiveRole(me.role);
-      })
-      .catch(() => {
-        /* fall back to session role */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [token]);
-  const role = liveRole ?? sessionRole;
   // 参赛选手写操作由实时的选手管理权限控制。
   const canManage = access.can('PLAYERS');
   const canManageTeams = access.can('TEAMS');
@@ -363,15 +346,24 @@ export default function AdminCompetitionPlayersPage() {
   }, [token, id, query, canManageTeams]);
 
   useEffect(() => {
-    loadData();
+    const timer = window.setTimeout(() => {
+      void loadData();
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [loadData]);
 
   useEffect(() => {
-    setSelectedPlayerIds([]);
+    const timer = window.setTimeout(() => {
+      setSelectedPlayerIds([]);
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [eventName, search]);
 
   useEffect(() => {
-    if (!canManage) setSelectedPlayerIds([]);
+    const timer = window.setTimeout(() => {
+      if (!canManage) setSelectedPlayerIds([]);
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [canManage]);
 
   async function removePlayerRecord(record: Player) {
@@ -636,6 +628,8 @@ export default function AdminCompetitionPlayersPage() {
       title: '邮箱',
       dataIndex: 'email',
       key: 'email',
+      width: 170,
+      ellipsis: true,
       render: (value: string) => value || <Typography.Text type="secondary">临时录入</Typography.Text>,
     },
     {
@@ -664,7 +658,7 @@ export default function AdminCompetitionPlayersPage() {
     {
       title: '学号',
       key: 'studentId',
-      width: 150,
+      width: 120,
       render: (_: unknown, record: Player) => (
         <Space direction="vertical" size={0}>
           <Typography.Text>{record.studentId || '-'}</Typography.Text>
@@ -678,7 +672,7 @@ export default function AdminCompetitionPlayersPage() {
       title: '学校',
       dataIndex: 'school',
       key: 'school',
-      width: 180,
+      width: 140,
       render: (value: string | undefined, record: Player) => (
         <Space direction="vertical" size={0}>
           <Typography.Text>{value || '-'}</Typography.Text>
@@ -705,7 +699,7 @@ export default function AdminCompetitionPlayersPage() {
       title: '联系电话',
       dataIndex: 'phone',
       key: 'phone',
-      width: 140,
+      width: 120,
       render: (value: string | undefined, record: Player) => (
         <Space direction="vertical" size={0}>
           <Typography.Text>{value || '-'}</Typography.Text>
@@ -719,7 +713,7 @@ export default function AdminCompetitionPlayersPage() {
       title: '性别',
       dataIndex: 'genderLabel',
       key: 'genderLabel',
-      width: 70,
+      width: 55,
       render: (value: string | undefined, record: Player) => (
         <Space direction="vertical" size={0}>
           <Typography.Text>{value || '-'}</Typography.Text>
@@ -733,23 +727,26 @@ export default function AdminCompetitionPlayersPage() {
       title: '参赛项目',
       dataIndex: 'eventName',
       key: 'eventName',
+      width: 100,
       render: (value: string) => <Tag color="blue">{value}</Tag>,
     },
     {
       title: '报名时间',
       dataIndex: 'createdAt',
       key: 'createdAt',
+      width: 140,
       render: (value: string) => formatDateTime(value),
     },
     {
       title: '审核状态',
       key: 'status',
+      width: 90,
       render: (_: unknown, record: Player) => <Tag color="green">{record.statusLabel}</Tag>,
     },
     {
       title: '操作',
       key: 'actions',
-      width: 170,
+      width: 180,
       render: (_: unknown, record: Player) =>
         canManage ? (
           <Space>
@@ -866,9 +863,9 @@ export default function AdminCompetitionPlayersPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, marginBottom: 0, flexWrap: 'wrap' }}>
         <div>
-          <Typography.Title level={4} style={{ margin: 0 }}>
+          <Typography.Title level={3} style={{ margin: 0 }}>
             参赛选手
           </Typography.Title>
           <Typography.Text type="secondary">
@@ -950,14 +947,25 @@ export default function AdminCompetitionPlayersPage() {
           </Button>
         </Space>
       </div>
-      <Table
-        rowKey="id"
-        rowSelection={rowSelection}
-        columns={columns}
-        dataSource={players}
-        loading={loading}
-        pagination={{ pageSize: 20 }}
-      />
+      <Card
+        style={{ marginTop: 16 }}
+        title={<span style={{ fontSize: 14, fontWeight: 700 }}>参赛选手列表</span>}
+        extra={<Typography.Text type="secondary">共 {players.length} 人</Typography.Text>}
+        styles={{ body: { padding: 0 } }}
+      >
+        <Table
+          rowKey="id"
+          rowSelection={rowSelection}
+          columns={columns}
+          dataSource={players}
+          loading={loading}
+          pagination={{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }}
+          scroll={{ x: 1460, y: 'calc(100vh - 440px)' }}
+          tableLayout="fixed"
+          size="middle"
+          locale={{ emptyText: '暂无参赛选手' }}
+        />
+      </Card>
       <Modal
         title="从选手库选择参赛选手"
         open={libraryModalOpen}

@@ -15,9 +15,17 @@ type TextWatermarkOptions = {
   content?: string | null;
   color?: string | null;
   heightPercent?: number | null;
-  position?: WatermarkPosition | null;
+  position?: string | null;
   font?: string | null;
 };
+
+/**
+ * Watermark placement. Corners keep the legacy edge-margin behaviour; free
+ * positions are the watermark block's center as percentages of the image.
+ */
+type WatermarkAnchor =
+  | { kind: 'corner'; corner: WatermarkPosition }
+  | { kind: 'free'; x: number; y: number };
 
 export type TextFontType = 'HEITI' | 'SONGTI' | 'KAITI';
 export const TEXT_FONT_OPTIONS: TextFontType[] = ['HEITI', 'SONGTI', 'KAITI'];
@@ -30,10 +38,11 @@ export const TEXT_FONT_LABELS: Record<TextFontType, string> = {
 /**
  * Builds and applies the per-tournament logo watermark to uploaded photos.
  *
- * Layout (per spec):
- *  - logos scaled to 8% of the image height
- *  - multiple logos joined by a white "×" separator, 16px gaps
- *  - composited in the top-right corner, 24px from the top/right edges
+ * Layout:
+ *  - logo/text size is a percentage of the image's shorter edge (height for
+ *    landscape, width for portrait), so both orientations look consistent
+ *  - multiple elements are joined by the configured gap
+ *  - composited at a legacy corner (24px edge margin) or a free center position
  *  - overall 85% opacity
  *
  * 输出不做压缩：未配置 logo 时原文件字节原样直出；合成 logo 时必须重编码一次
@@ -42,7 +51,7 @@ export const TEXT_FONT_LABELS: Record<TextFontType, string> = {
  */
 @Injectable()
 export class WatermarkService {
-  /** Default Logo height as a percentage of the image height. */
+  /** Default Logo height as a percentage of the image's shorter edge. */
   static readonly DEFAULT_LOGO_HEIGHT_PERCENT = 8;
   static readonly MIN_LOGO_HEIGHT_PERCENT = 2;
   static readonly MAX_LOGO_HEIGHT_PERCENT = 80;
@@ -50,7 +59,7 @@ export class WatermarkService {
   static readonly DEFAULT_LOGO_GAP_PERCENT = 20;
   static readonly MIN_LOGO_GAP_PERCENT = 0;
   static readonly MAX_LOGO_GAP_PERCENT = 200;
-  /** Text watermark height as a percentage of the image height. */
+  /** Text watermark height as a percentage of the image's shorter edge. */
   static readonly DEFAULT_TEXT_SIZE_PERCENT = 6;
   static readonly MIN_TEXT_SIZE_PERCENT = 2;
   static readonly MAX_TEXT_SIZE_PERCENT = 80;
@@ -215,17 +224,17 @@ export class WatermarkService {
   }
 
   /**
-   * Horizontal strip of resized logos + optional text element, placed side by
-   * side with a gap and vertically centered. Returns null when nothing to draw.
+   * Horizontal strip of resized logos, placed side by side with a gap and
+   * vertically centered. Sizes are relative to the image's shorter edge, so
+   * portrait and landscape photos get the same visual watermark scale.
    */
-  private async buildWatermark(
+  private async buildLogos(
     logos: Buffer[],
-    imageHeight: number,
+    baseSize: number,
     heightPercent: number,
     gapPercent: number,
-    text?: { content: string; color?: string | null; heightPercent: number; font?: string | null },
   ): Promise<Buffer | null> {
-    const logoH = Math.max(1, Math.floor((imageHeight * heightPercent) / 100));
+    const logoH = Math.max(1, Math.floor((baseSize * heightPercent) / 100));
 
     const elements: Array<{ buffer: Buffer; width: number; height: number }> = [];
     for (const buf of logos) {
@@ -233,19 +242,12 @@ export class WatermarkService {
       const meta = await sharp(resized).metadata();
       elements.push({ buffer: resized, width: meta.width || 0, height: meta.height || logoH });
     }
-    if (text?.content?.trim()) {
-      const textH = Math.max(1, Math.floor((imageHeight * text.heightPercent) / 100));
-      const rendered = await this.renderText(text.content, textH, text.color, text.font);
-      if (rendered) elements.push(rendered);
-    }
 
     if (elements.length === 0) return null;
     if (elements.length === 1) return elements[0].buffer;
 
-    // Gap is a percentage of the logo height (or the first element's height when
-    // there are no logos, e.g. text-only watermark with several elements).
-    const refH = logos.length ? logoH : elements[0].height;
-    const gapPx = Math.round((refH * gapPercent) / 100);
+    // Gap is a percentage of the logo height.
+    const gapPx = Math.round((logoH * gapPercent) / 100);
     const stripH = Math.max(...elements.map((e) => e.height));
     const totalWidth = elements.reduce(
       (sum, e, i) => sum + e.width + (i > 0 ? gapPx : 0),
@@ -318,28 +320,65 @@ export class WatermarkService {
     return { left, top };
   }
 
-  private normalizePosition(position?: WatermarkPosition | null): WatermarkPosition {
-    return WATERMARK_POSITIONS.includes(position as WatermarkPosition)
-      ? (position as WatermarkPosition)
-      : WatermarkService.DEFAULT_POSITION;
+  private resolveFreeOffset(
+    xPercent: number,
+    yPercent: number,
+    imgW: number,
+    imgH: number,
+    wmW: number,
+    wmH: number,
+  ): { left: number; top: number } {
+    const left = Math.round((xPercent / 100) * imgW - wmW / 2);
+    const top = Math.round((yPercent / 100) * imgH - wmH / 2);
+    return {
+      left: Math.min(Math.max(0, left), Math.max(0, imgW - wmW)),
+      top: Math.min(Math.max(0, top), Math.max(0, imgH - wmH)),
+    };
+  }
+
+  /**
+   * Accept either a legacy corner name or a free "x,y" center (0–100).
+   * Anything else falls back to the default corner.
+   */
+  private parseAnchor(position?: string | null): WatermarkAnchor {
+    const value = (position ?? '').trim();
+    if (WATERMARK_POSITIONS.includes(value as WatermarkPosition)) {
+      return { kind: 'corner', corner: value as WatermarkPosition };
+    }
+    const match = /^(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$/.exec(value);
+    if (match) {
+      const clamp = (n: number) => Math.min(100, Math.max(0, n));
+      return { kind: 'free', x: clamp(Number(match[1])), y: clamp(Number(match[2])) };
+    }
+    return { kind: 'corner', corner: WatermarkService.DEFAULT_POSITION };
   }
 
   private async buildOverlay(
     watermark: Buffer,
     imgW: number,
     imgH: number,
-    position: WatermarkPosition,
+    anchor: WatermarkAnchor,
   ): Promise<sharp.OverlayOptions | null> {
     const fittedWatermark = await this.fitWatermarkToImage(watermark, imgW, imgH);
     if (!fittedWatermark) return null;
 
-    const { left, top } = this.resolveCornerOffset(
-      position,
-      imgW,
-      imgH,
-      fittedWatermark.width,
-      fittedWatermark.height,
-    );
+    const { left, top } =
+      anchor.kind === 'corner'
+        ? this.resolveCornerOffset(
+            anchor.corner,
+            imgW,
+            imgH,
+            fittedWatermark.width,
+            fittedWatermark.height,
+          )
+        : this.resolveFreeOffset(
+            anchor.x,
+            anchor.y,
+            imgW,
+            imgH,
+            fittedWatermark.width,
+            fittedWatermark.height,
+          );
 
     const transparentWm = await sharp(fittedWatermark.buffer)
       .composite([
@@ -366,7 +405,7 @@ export class WatermarkService {
     logos: Buffer[],
     logoHeightPercent?: number,
     logoGapPercent?: number,
-    position?: WatermarkPosition,
+    position?: string,
     text?: TextWatermarkOptions,
   ): Promise<{ buffer: Buffer; ext: '.jpg' | '.png' }> {
     const meta = await sharp(imageBuffer, this.INPUT_OPTS).metadata();
@@ -389,14 +428,19 @@ export class WatermarkService {
     if (logos.length === 0 && !hasText) {
       return passthrough();
     }
-    // Use post-orientation dimensions so the logo lands in the visually-correct
-    // corner and is sized against the displayed height.
+    // Use post-orientation dimensions so the watermark lands in the
+    // visually-correct place and is sized against the displayed image.
     const { width: imgW, height: imgH } = this.orientedSize(meta);
     const safeW = imgW || 1000;
     const safeH = imgH || 1000;
+    // Size the watermark from the shorter edge: height for landscape photos,
+    // width for portrait photos. Sizing portrait watermarks by their (much
+    // taller) height makes them look far too large next to the same setting on
+    // a landscape photo.
+    const baseSize = Math.min(safeW, safeH);
 
-    const pos = this.normalizePosition(position);
-    const textPos = this.normalizePosition(text?.position);
+    const logoAnchor = this.parseAnchor(position);
+    const textAnchor = this.parseAnchor(text?.position);
     const clampedText =
       hasText
         ? {
@@ -406,40 +450,44 @@ export class WatermarkService {
             font: text!.font ?? undefined,
           }
         : undefined;
+
     const overlays: sharp.OverlayOptions[] = [];
 
-    const combinedText = clampedText && textPos === pos ? clampedText : undefined;
-    const logoWatermark = await this.buildWatermark(
-      logos,
-      safeH,
-      this.clampPercent(logoHeightPercent),
-      this.clampGap(logoGapPercent),
-      combinedText,
-    );
-    // If every requested overlay fails to render, keep the original bytes.
-    if (logoWatermark) {
-      const overlay = await this.buildOverlay(logoWatermark, safeW, safeH, pos);
-      if (overlay) overlays.push(overlay);
-    }
-
-    if (clampedText && textPos !== pos) {
-      const textH = Math.max(1, Math.floor((safeH * clampedText.heightPercent) / 100));
-      const renderedText = await this.renderText(clampedText.content, textH, clampedText.color, clampedText.font);
-      if (renderedText) {
-        const overlay = await this.buildOverlay(renderedText.buffer, safeW, safeH, textPos);
+    if (logos.length > 0) {
+      const logoStrip = await this.buildLogos(
+        logos,
+        baseSize,
+        this.clampPercent(logoHeightPercent),
+        this.clampGap(logoGapPercent),
+      );
+      if (logoStrip) {
+        const overlay = await this.buildOverlay(logoStrip, safeW, safeH, logoAnchor);
         if (overlay) overlays.push(overlay);
       }
     }
 
+    if (clampedText) {
+      const textH = Math.max(1, Math.floor((baseSize * clampedText.heightPercent) / 100));
+      const renderedText = await this.renderText(
+        clampedText.content,
+        textH,
+        clampedText.color,
+        clampedText.font,
+      );
+      if (renderedText) {
+        const overlay = await this.buildOverlay(renderedText.buffer, safeW, safeH, textAnchor);
+        if (overlay) overlays.push(overlay);
+      }
+    }
+
+    // If no overlay could be rendered, keep the original bytes.
     if (overlays.length === 0) return passthrough();
 
     // Auto-orient first so the composite coordinates match the visual image
     // (`.rotate()` bakes the EXIF orientation into pixels), then composite the
     // watermark at full resolution. 合成必须重编码：JPEG 用质量 100 + 4:4:4
     // 无色度抽样（视觉无损），PNG 保持无损输出，分辨率不变。
-    const pipeline = sharp(imageBuffer, this.INPUT_OPTS)
-      .rotate()
-      .composite(overlays);
+    const pipeline = sharp(imageBuffer, this.INPUT_OPTS).rotate().composite(overlays);
     const buffer =
       ext === '.png'
         ? await pipeline.png().toBuffer()

@@ -28,7 +28,7 @@ export class ExportsController {
     @Param('kind') kind: string,
     @Res() res: Response,
   ) {
-    const file = await this.exportFilesService.getFresh(id, kind);
+    const file = await this.exportFilesService.getFresh(id, kind, true);
     this.sendFile(res, file);
   }
 

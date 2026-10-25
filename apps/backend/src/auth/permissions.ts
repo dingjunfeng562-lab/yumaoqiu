@@ -99,6 +99,8 @@ export function requiredPermissions(controller: string, action: string, kind?: s
     case 'UsageMetricsController': return [];
     // 直播管理（直播间、OBS 记分牌令牌、播放地址）仅限超级管理员。
     case 'BroadcastsController': return [];
+    // 裁判员对局管理（赛事级对阵、时间、比分、结束状态与修改）仅限超级管理员。
+    case 'MatchManagementController': return [];
     case 'CompetitionsController': return ['REGISTRATION'];
     default: return undefined;
   }

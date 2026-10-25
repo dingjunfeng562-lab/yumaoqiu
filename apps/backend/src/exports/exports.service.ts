@@ -4,7 +4,7 @@ import { Format, MatchStatus, RegistrationStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SECOND_STAGE_FORMAL_ROUND_NO_BASE } from '../common/second-stage-bracket';
 import { applyFinalRankings, teamStandings } from '../common/final-rankings';
-import { buildOrderbookWorkbook } from './orderbook-workbook';
+import { buildOrderbookWorkbook, teamCompetitionEvents } from './orderbook-workbook';
 
 const XLS_CONTENT_TYPE = 'application/vnd.ms-excel';
 const XLSX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -573,6 +573,27 @@ export class ExportsService {
               },
             },
           },
+          teamCompetitions: {
+            select: {
+              name: true,
+              groups: {
+                orderBy: { groupNo: 'asc' },
+                select: {
+                  id: true,
+                  groupName: true,
+                  teams: { select: { teamId: true } },
+                },
+              },
+              teams: {
+                select: {
+                  id: true,
+                  name: true,
+                  affiliation: true,
+                  finalRank: true,
+                },
+              },
+            },
+          },
         },
       }) as Promise<ExportTournament | null>;
     }
@@ -719,6 +740,45 @@ export class ExportsService {
     }) as Promise<ExportTournament | null>;
   }
 
+  private exportEventsWithTeams(tournament: ExportTournament): ExportEvent[] {
+    const teamEvents = teamCompetitionEvents(tournament);
+    return teamEvents.length ? [...tournament.events, ...teamEvents] : tournament.events;
+  }
+
+  private eventExportLabel(event: ExportEvent) {
+    return event.label ?? EVENT_TYPE_LABELS[event.type] ?? event.type;
+  }
+
+  private eventMatchLabel(event: ExportEvent, match: ExportMatch) {
+    const base = this.eventExportLabel(event);
+    return match.label ? `${base} · ${match.label}` : base;
+  }
+
+  private matchSideLabel(
+    match: ExportMatch,
+    side: 1 | 2,
+    registrationMap: Map<string, ExportRegistration>,
+  ) {
+    const snapshot = side === 1 ? match.side1Name : match.side2Name;
+    if (snapshot) return snapshot;
+    return this.sideName(
+      side === 1 ? match.side1Id : match.side2Id,
+      registrationMap,
+    );
+  }
+
+  private matchWinnerLabel(
+    match: ExportMatch,
+    registrationMap: Map<string, ExportRegistration>,
+  ) {
+    if (!match.winnerSide) return '未产生';
+    return this.matchSideLabel(
+      match,
+      match.winnerSide === 1 ? 1 : 2,
+      registrationMap,
+    );
+  }
+
   private buildWorksheets(tournament: ExportTournament, kind: ExportKind): Worksheet[] {
     if (kind === 'schedule') return [this.scheduleWorksheet(tournament)];
     if (kind === 'registrations') return [this.registrationsWorksheet(tournament)];
@@ -743,17 +803,17 @@ export class ExportsService {
     ];
     const venueMatchNoMap = this.venueSequentialMatchNoMap(tournament);
 
-    for (const event of tournament.events) {
+    for (const event of this.exportEventsWithTeams(tournament)) {
       const registrationMap = this.registrationMap(event.registrations);
       for (const match of event.matches) {
         rows.push([
           tournament.name,
-          EVENT_TYPE_LABELS[event.type] ?? event.type,
-          match.round,
-          this.exportMatchNo(match, venueMatchNoMap),
+          this.eventMatchLabel(event, match),
+          match.roundText ?? match.round,
+          match.matchNoText ?? this.exportMatchNo(match, venueMatchNoMap),
           this.formatDateTime(match.scheduledAt),
           match.venue?.name ?? '未分配',
-          `${this.sideName(match.side1Id, registrationMap)} VS ${this.sideName(match.side2Id, registrationMap)}`,
+          `${this.matchSideLabel(match, 1, registrationMap)} VS ${this.matchSideLabel(match, 2, registrationMap)}`,
           STATUS_LABELS[match.status] ?? match.status,
           match.referee?.username ?? '未分配',
           `${match.durationMinutes} 分钟`,
@@ -767,22 +827,21 @@ export class ExportsService {
 
   private resultsWorksheet(tournament: ExportTournament): Worksheet {
     const rows: CellValue[][] = [
-      ['赛事', '项目', '轮次', '场次', '对阵', '局分', '胜方', '状态', '场地', '更新时间'],
+      ['赛事', '项目', '轮次', '场次', '对阵', '局分', '团体比分', '胜方', '状态', '场地', '更新时间'],
     ];
 
-    for (const event of tournament.events) {
+    for (const event of this.exportEventsWithTeams(tournament)) {
       const registrationMap = this.registrationMap(event.registrations);
       for (const match of event.matches) {
         rows.push([
           tournament.name,
-          EVENT_TYPE_LABELS[event.type] ?? event.type,
-          match.round,
-          match.matchNo,
-          `${this.sideName(match.side1Id, registrationMap)} VS ${this.sideName(match.side2Id, registrationMap)}`,
+          this.eventMatchLabel(event, match),
+          match.roundText ?? match.round,
+          match.matchNoText ?? match.matchNo,
+          `${this.matchSideLabel(match, 1, registrationMap)} VS ${this.matchSideLabel(match, 2, registrationMap)}`,
           this.gamesText(match.games),
-          match.winnerSide
-            ? this.sideName(match.winnerSide === 1 ? match.side1Id : match.side2Id, registrationMap)
-            : '未产生',
+          match.scoreText ?? '',
+          this.matchWinnerLabel(match, registrationMap),
           STATUS_LABELS[match.status] ?? match.status,
           match.venue?.name ?? '未分配',
           this.formatDateTime(match.updatedAt),
@@ -790,7 +849,7 @@ export class ExportsService {
       }
     }
 
-    if (rows.length === 1) rows.push([tournament.name, '', '', '', '暂无成绩', '', '', '', '', '']);
+    if (rows.length === 1) rows.push([tournament.name, '', '', '', '暂无成绩', '', '', '', '', '', '']);
     return { name: '成绩明细', rows };
   }
 
@@ -878,6 +937,37 @@ export class ExportsService {
       }
     }
 
+    for (const competition of tournament.teamCompetitions ?? []) {
+      const groupByTeam = new Map<string, string>();
+      for (const group of competition.groups ?? []) {
+        for (const member of group.teams ?? []) {
+          groupByTeam.set(member.teamId, group.groupName);
+        }
+      }
+      for (const team of competition.teams) {
+        rows.push([
+          tournament.name,
+          `团体赛 · ${competition.name}`,
+          team.name,
+          team.affiliation,
+          team.name,
+          '',
+          '',
+          team.affiliation,
+          '',
+          '',
+          '',
+          '',
+          '',
+          '',
+          '否',
+          '',
+          groupByTeam.get(team.id) ?? '',
+          '',
+        ]);
+      }
+    }
+
     if (rows.length === 1) rows.push([tournament.name, '', '暂无报名', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']);
     return { name: '报名表', rows };
   }
@@ -887,15 +977,15 @@ export class ExportsService {
       ['赛事', '场地', '场次', '比赛时间', '项目', '组别', '轮次', '对阵', '状态'],
     ];
     const venueMatchNoMap = this.venueSequentialMatchNoMap(tournament);
-    const matchRows = tournament.events
+    const matchRows = this.exportEventsWithTeams(tournament)
       .flatMap((event) => {
         const registrationMap = this.registrationMap(event.registrations);
         return event.matches.map((match) => ({ event, match, registrationMap }));
       })
       .sort((a, b) =>
         this.bracketExportSort(a.match, b.match) ||
-        (EVENT_TYPE_LABELS[a.event.type] ?? a.event.type).localeCompare(
-          EVENT_TYPE_LABELS[b.event.type] ?? b.event.type,
+        this.eventExportLabel(a.event).localeCompare(
+          this.eventExportLabel(b.event),
           'zh-CN',
         ),
       );
@@ -904,12 +994,12 @@ export class ExportsService {
       rows.push([
         tournament.name,
         match.venue?.name ?? '未分配',
-        this.exportMatchNo(match, venueMatchNoMap),
+        match.matchNoText ?? this.exportMatchNo(match, venueMatchNoMap),
         this.formatDateTime(match.scheduledAt),
-        EVENT_TYPE_LABELS[event.type] ?? event.type,
+        this.eventMatchLabel(event, match),
         this.matchGroupLabel(match),
-        match.round,
-        `${this.sideName(match.side1Id, registrationMap, true)} VS ${this.sideName(match.side2Id, registrationMap, true)}`,
+        match.roundText ?? match.round,
+        `${this.matchSideLabel(match, 1, registrationMap)} VS ${this.matchSideLabel(match, 2, registrationMap)}`,
         STATUS_LABELS[match.status] ?? match.status,
       ]);
     }

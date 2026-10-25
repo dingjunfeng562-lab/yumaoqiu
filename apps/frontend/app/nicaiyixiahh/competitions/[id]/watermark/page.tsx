@@ -1,19 +1,27 @@
 'use client';
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from 'react';
 import { useParams, usePathname, useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import {
-  Alert,
   Button,
   Card,
+  Divider,
   Empty,
   Input,
-  InputNumber,
-  Radio,
+  Popconfirm,
+  Segmented,
   Slider,
   Space,
-  Spin,
+  Switch,
   Typography,
   Upload,
   message,
@@ -42,11 +50,9 @@ const DEFAULT_TEXT_SIZE = 6;
 const MIN_TEXT_SIZE = 2;
 const MAX_TEXT_SIZE = 80;
 const MAX_TEXT_LENGTH = 100;
-const WATERMARK_FONT_FAMILY =
-  "'Noto Sans CJK SC','Noto Sans SC','Source Han Sans SC','Microsoft YaHei','SimHei','PingFang SC','WenQuanYi Micro Hei','WenQuanYi Zen Hei',sans-serif";
-
 type WatermarkPosition = 'TOP_LEFT' | 'TOP_RIGHT' | 'BOTTOM_LEFT' | 'BOTTOM_RIGHT';
 type TextFontType = 'HEITI' | 'SONGTI' | 'KAITI';
+type Orientation = 'landscape' | 'portrait';
 const DEFAULT_POSITION: WatermarkPosition = 'TOP_RIGHT';
 const DEFAULT_TEXT_FONT: TextFontType = 'HEITI';
 const FONT_OPTIONS: Array<{ value: TextFontType; label: string; family: string; weight?: number }> = [
@@ -60,60 +66,142 @@ const POSITION_OPTIONS: Array<{ value: WatermarkPosition; label: string }> = [
   { value: 'BOTTOM_LEFT', label: '左下角' },
   { value: 'BOTTOM_RIGHT', label: '右下角' },
 ];
+const ORIENTATION_OPTIONS: Array<{ value: Orientation; label: string }> = [
+  { value: 'landscape', label: '横图' },
+  { value: 'portrait', label: '竖图' },
+];
+const ORIENTATION_LABEL: Record<Orientation, string> = {
+  landscape: '横图',
+  portrait: '竖图',
+};
+const FONT_SEGMENT_OPTIONS = FONT_OPTIONS.map((option) => ({
+  value: option.value,
+  label: (
+    <span style={{ fontFamily: option.family, fontWeight: option.weight ?? 400 }}>
+      {option.label}
+    </span>
+  ),
+}));
 
 type Logo = { order: number; path: string; filename?: string; url: string };
 type WatermarkConfig = {
   tournamentId: string;
   logos: Logo[];
   logoHeightPercent: number;
+  portraitLogoHeightPercent?: number;
   logoGapPercent: number;
-  position: WatermarkPosition;
-  portraitPosition: WatermarkPosition;
+  portraitLogoGapPercent?: number;
+  position: string;
+  portraitPosition: string;
   text: string;
   textColor: string;
   textSizePercent: number;
+  portraitTextSizePercent?: number;
   textFont: TextFontType;
-  textPosition: WatermarkPosition;
-  textPortraitPosition: WatermarkPosition;
+  textPosition?: string;
+  textPortraitPosition?: string;
   updatedAt: string | null;
 };
+/** Legacy corner placement, or a free center position in percentages. */
+type PositionState =
+  | { kind: 'corner'; corner: WatermarkPosition }
+  | { kind: 'free'; x: number; y: number };
+
+function positionLabel(value: WatermarkPosition) {
+  return POSITION_OPTIONS.find((option) => option.value === value)?.label ?? '';
+}
+
+function parsePosition(value?: string | null): PositionState {
+  const raw = (value ?? '').trim();
+  if (POSITION_OPTIONS.some((option) => option.value === raw)) {
+    return { kind: 'corner', corner: raw as WatermarkPosition };
+  }
+  const match = /^(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$/.exec(raw);
+  if (match) {
+    const clamp = (number: number) => Math.min(100, Math.max(0, number));
+    return { kind: 'free', x: clamp(Number(match[1])), y: clamp(Number(match[2])) };
+  }
+  return { kind: 'corner', corner: DEFAULT_POSITION };
+}
+
+function serializePosition(value: PositionState): string {
+  return value.kind === 'corner' ? value.corner : `${value.x.toFixed(1)},${value.y.toFixed(1)}`;
+}
+
+function samePosition(a: PositionState, b: PositionState): boolean {
+  if (a.kind === 'corner' && b.kind === 'corner') return a.corner === b.corner;
+  if (a.kind === 'free' && b.kind === 'free') {
+    return Math.abs(a.x - b.x) < 0.05 && Math.abs(a.y - b.y) < 0.05;
+  }
+  return false;
+}
 
 export default function WatermarkSettingsPage() {
   const params = useParams<{ id: string }>();
   const id = params?.id;
   const pathname = usePathname();
   const isActivity = pathname.startsWith('/nicaiyixiahh/photo-activities/');
-  const resourceBase = isActivity ? `/nicaiyixiahh/photo-activities/${id}` : `/nicaiyixiahh/tournaments/${id}`;
+  // Page routes live under /nicaiyixiahh, but the backend admin API is /admin.
+  const resourceBase = isActivity ? `/admin/photo-activities/${id}` : `/admin/tournaments/${id}`;
   const router = useRouter();
   const { data: session } = useSession();
   const token = session?.user?.accessToken as string | undefined;
 
   const [logos, setLogos] = useState<Logo[]>([]);
   const [logoPercent, setLogoPercent] = useState<number>(DEFAULT_LOGO_PERCENT);
+  const [portraitLogoPercent, setPortraitLogoPercent] = useState<number>(DEFAULT_LOGO_PERCENT);
   const [logoGap, setLogoGap] = useState<number>(DEFAULT_LOGO_GAP);
-  const [position, setPosition] = useState<WatermarkPosition>(DEFAULT_POSITION);
-  const [portraitPosition, setPortraitPosition] = useState<WatermarkPosition>(DEFAULT_POSITION);
+  const [portraitLogoGap, setPortraitLogoGap] = useState<number>(DEFAULT_LOGO_GAP);
+  const [landscapePosition, setLandscapePosition] = useState<PositionState>({
+    kind: 'corner',
+    corner: DEFAULT_POSITION,
+  });
+  const [portraitPosition, setPortraitPosition] = useState<PositionState>({
+    kind: 'corner',
+    corner: DEFAULT_POSITION,
+  });
+  const [landscapeTextPosition, setLandscapeTextPosition] = useState<PositionState>({
+    kind: 'corner',
+    corner: 'BOTTOM_LEFT',
+  });
+  const [portraitTextPosition, setPortraitTextPosition] = useState<PositionState>({
+    kind: 'corner',
+    corner: 'BOTTOM_LEFT',
+  });
   const [text, setText] = useState<string>('');
+  const [textEnabled, setTextEnabled] = useState(false);
   const [textColor, setTextColor] = useState<string>(DEFAULT_TEXT_COLOR);
   const [textSize, setTextSize] = useState<number>(DEFAULT_TEXT_SIZE);
+  const [portraitTextSize, setPortraitTextSize] = useState<number>(DEFAULT_TEXT_SIZE);
   const [textFont, setTextFont] = useState<TextFontType>(DEFAULT_TEXT_FONT);
-  const [textPosition, setTextPosition] = useState<WatermarkPosition>(DEFAULT_POSITION);
-  const [textPortraitPosition, setTextPortraitPosition] = useState<WatermarkPosition>(DEFAULT_POSITION);
+  const [orientation, setOrientation] = useState<Orientation>('landscape');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [dragging, setDragging] = useState<'logo' | 'text' | null>(null);
   const [dirty, setDirty] = useState(false);
 
-  // Measure the preview "photo" height so the logo size mirrors the real
-  // watermark (logo height = imageHeight * percent), not a fixed pixel size.
+  // One preview at a time. Its shorter edge drives the previewed watermark size,
+  // matching the backend rule (height for landscape, width for portrait).
   const previewRef = useRef<HTMLDivElement>(null);
-  const [previewBoxH, setPreviewBoxH] = useState(0);
+  const dragRef = useRef<{
+    target: 'logo' | 'text';
+    offsetX: number;
+    offsetY: number;
+    width: number;
+    height: number;
+    startX: number;
+    startY: number;
+    moved: boolean;
+  } | null>(null);
+  const [previewBase, setPreviewBase] = useState(0);
   useLayoutEffect(() => {
     const el = previewRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(() => setPreviewBoxH(el.clientHeight));
+    const measure = () => setPreviewBase(Math.min(el.clientWidth, el.clientHeight));
+    const ro = new ResizeObserver(measure);
     ro.observe(el);
-    setPreviewBoxH(el.clientHeight);
+    measure();
     return () => ro.disconnect();
   }, []);
 
@@ -124,21 +212,29 @@ export default function WatermarkSettingsPage() {
       const data = await apiFetch<WatermarkConfig>(`${resourceBase}/watermark`, { token });
       setLogos(data.logos);
       setLogoPercent(data.logoHeightPercent ?? DEFAULT_LOGO_PERCENT);
+      setPortraitLogoPercent(
+        data.portraitLogoHeightPercent ?? data.logoHeightPercent ?? DEFAULT_LOGO_PERCENT,
+      );
       setLogoGap(data.logoGapPercent ?? DEFAULT_LOGO_GAP);
-      setPosition(data.position ?? DEFAULT_POSITION);
-      setPortraitPosition(data.portraitPosition ?? data.position ?? DEFAULT_POSITION);
+      setPortraitLogoGap(
+        data.portraitLogoGapPercent ?? data.logoGapPercent ?? DEFAULT_LOGO_GAP,
+      );
+      setLandscapePosition(parsePosition(data.position));
+      setPortraitPosition(parsePosition(data.portraitPosition ?? data.position));
+      setLandscapeTextPosition(parsePosition(data.textPosition ?? data.position));
+      setPortraitTextPosition(
+        parsePosition(
+          data.textPortraitPosition ?? data.textPosition ?? data.portraitPosition ?? data.position,
+        ),
+      );
       setText(data.text ?? '');
+      setTextEnabled(Boolean(data.text?.trim()));
       setTextColor(data.textColor ?? DEFAULT_TEXT_COLOR);
       setTextSize(data.textSizePercent ?? DEFAULT_TEXT_SIZE);
-      setTextFont(data.textFont ?? DEFAULT_TEXT_FONT);
-      setTextPosition(data.textPosition ?? data.position ?? DEFAULT_POSITION);
-      setTextPortraitPosition(
-        data.textPortraitPosition ??
-          data.portraitPosition ??
-          data.textPosition ??
-          data.position ??
-          DEFAULT_POSITION,
+      setPortraitTextSize(
+        data.portraitTextSizePercent ?? data.textSizePercent ?? DEFAULT_TEXT_SIZE,
       );
+      setTextFont(data.textFont ?? DEFAULT_TEXT_FONT);
       setDirty(false);
     } catch (error) {
       message.error(error instanceof Error ? error.message : '水印配置加载失败');
@@ -148,8 +244,39 @@ export default function WatermarkSettingsPage() {
   }, [token, id, resourceBase]);
 
   useEffect(() => {
+    // Initial data fetch; the state updates come from the request lifecycle.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
   }, [load]);
+
+  function configMatches(data: WatermarkConfig) {
+    const savedText = data.text ?? '';
+    return (
+      logoPercent === (data.logoHeightPercent ?? DEFAULT_LOGO_PERCENT) &&
+      portraitLogoPercent ===
+        (data.portraitLogoHeightPercent ??
+          data.logoHeightPercent ??
+          DEFAULT_LOGO_PERCENT) &&
+      logoGap === (data.logoGapPercent ?? DEFAULT_LOGO_GAP) &&
+      portraitLogoGap ===
+        (data.portraitLogoGapPercent ?? data.logoGapPercent ?? DEFAULT_LOGO_GAP) &&
+      samePosition(landscapePosition, parsePosition(data.position)) &&
+      samePosition(portraitPosition, parsePosition(data.portraitPosition ?? data.position)) &&
+      samePosition(landscapeTextPosition, parsePosition(data.textPosition ?? data.position)) &&
+      samePosition(
+        portraitTextPosition,
+        parsePosition(
+          data.textPortraitPosition ?? data.textPosition ?? data.portraitPosition ?? data.position,
+        ),
+      ) &&
+      (textEnabled ? text.trim() : '') === savedText &&
+      textColor === (data.textColor ?? DEFAULT_TEXT_COLOR) &&
+      textSize === (data.textSizePercent ?? DEFAULT_TEXT_SIZE) &&
+      portraitTextSize ===
+        (data.portraitTextSizePercent ?? data.textSizePercent ?? DEFAULT_TEXT_SIZE) &&
+      textFont === (data.textFont ?? DEFAULT_TEXT_FONT)
+    );
+  }
 
   async function uploadLogo(file: File) {
     if (!token || !id) return;
@@ -180,24 +307,9 @@ export default function WatermarkSettingsPage() {
       }
       const data = (await res.json()) as WatermarkConfig;
       setLogos(data.logos);
-      // Keep any pending (unsaved) size change; only clear dirty if it matches.
-      setDirty(
-        logoPercent !== (data.logoHeightPercent ?? DEFAULT_LOGO_PERCENT) ||
-          logoGap !== (data.logoGapPercent ?? DEFAULT_LOGO_GAP) ||
-          position !== (data.position ?? DEFAULT_POSITION) ||
-          portraitPosition !== (data.portraitPosition ?? data.position ?? DEFAULT_POSITION) ||
-          text.trim() !== (data.text ?? '') ||
-          textColor !== (data.textColor ?? DEFAULT_TEXT_COLOR) ||
-          textSize !== (data.textSizePercent ?? DEFAULT_TEXT_SIZE) ||
-          textFont !== (data.textFont ?? DEFAULT_TEXT_FONT) ||
-          textPosition !== (data.textPosition ?? data.position ?? DEFAULT_POSITION) ||
-          textPortraitPosition !==
-            (data.textPortraitPosition ??
-              data.portraitPosition ??
-              data.textPosition ??
-              data.position ??
-              DEFAULT_POSITION),
-      );
+      // Uploading persists the logo list; keep the dirty flag only for the
+      // style changes that are still unsaved.
+      setDirty(!configMatches(data));
       message.success('Logo 已添加');
     } catch (error) {
       message.error(error instanceof Error ? error.message : '上传失败');
@@ -215,23 +327,7 @@ export default function WatermarkSettingsPage() {
         body: JSON.stringify({ path: logo.path }),
       });
       setLogos(data.logos);
-      setDirty(
-        logoPercent !== (data.logoHeightPercent ?? DEFAULT_LOGO_PERCENT) ||
-          logoGap !== (data.logoGapPercent ?? DEFAULT_LOGO_GAP) ||
-          position !== (data.position ?? DEFAULT_POSITION) ||
-          portraitPosition !== (data.portraitPosition ?? data.position ?? DEFAULT_POSITION) ||
-          text.trim() !== (data.text ?? '') ||
-          textColor !== (data.textColor ?? DEFAULT_TEXT_COLOR) ||
-          textSize !== (data.textSizePercent ?? DEFAULT_TEXT_SIZE) ||
-          textFont !== (data.textFont ?? DEFAULT_TEXT_FONT) ||
-          textPosition !== (data.textPosition ?? data.position ?? DEFAULT_POSITION) ||
-          textPortraitPosition !==
-            (data.textPortraitPosition ??
-              data.portraitPosition ??
-              data.textPosition ??
-              data.position ??
-              DEFAULT_POSITION),
-      );
+      setDirty(!configMatches(data));
       message.success('Logo 已删除');
     } catch (error) {
       message.error(error instanceof Error ? error.message : '删除失败');
@@ -259,34 +355,45 @@ export default function WatermarkSettingsPage() {
         body: JSON.stringify({
           logos: logos.map((l, i) => ({ order: i + 1, path: l.path, filename: l.filename })),
           logoHeightPercent: logoPercent,
+          portraitLogoHeightPercent: portraitLogoPercent,
           logoGapPercent: logoGap,
-          position,
-          portraitPosition,
-          text: text.trim(),
+          portraitLogoGapPercent: portraitLogoGap,
+          position: serializePosition(landscapePosition),
+          portraitPosition: serializePosition(portraitPosition),
+          textPosition: serializePosition(landscapeTextPosition),
+          textPortraitPosition: serializePosition(portraitTextPosition),
+          text: textEnabled ? text.trim() : '',
           textColor,
           textSizePercent: textSize,
+          portraitTextSizePercent: portraitTextSize,
           textFont,
-          textPosition,
-          textPortraitPosition,
         }),
       });
       setLogos(data.logos);
       setLogoPercent(data.logoHeightPercent ?? logoPercent);
+      setPortraitLogoPercent(
+        data.portraitLogoHeightPercent ?? data.logoHeightPercent ?? portraitLogoPercent,
+      );
       setLogoGap(data.logoGapPercent ?? logoGap);
-      setPosition(data.position ?? position);
-      setPortraitPosition(data.portraitPosition ?? data.position ?? portraitPosition);
+      setPortraitLogoGap(
+        data.portraitLogoGapPercent ?? data.logoGapPercent ?? portraitLogoGap,
+      );
+      setLandscapePosition(parsePosition(data.position));
+      setPortraitPosition(parsePosition(data.portraitPosition ?? data.position));
+      setLandscapeTextPosition(parsePosition(data.textPosition ?? data.position));
+      setPortraitTextPosition(
+        parsePosition(
+          data.textPortraitPosition ?? data.textPosition ?? data.portraitPosition ?? data.position,
+        ),
+      );
       setText(data.text ?? '');
+      setTextEnabled(Boolean(data.text?.trim()));
       setTextColor(data.textColor ?? DEFAULT_TEXT_COLOR);
       setTextSize(data.textSizePercent ?? DEFAULT_TEXT_SIZE);
-      setTextFont(data.textFont ?? DEFAULT_TEXT_FONT);
-      setTextPosition(data.textPosition ?? data.position ?? position);
-      setTextPortraitPosition(
-        data.textPortraitPosition ??
-          data.portraitPosition ??
-          data.textPosition ??
-          data.position ??
-          portraitPosition,
+      setPortraitTextSize(
+        data.portraitTextSizePercent ?? data.textSizePercent ?? DEFAULT_TEXT_SIZE,
       );
+      setTextFont(data.textFont ?? DEFAULT_TEXT_FONT);
       setDirty(false);
       message.success('水印设置已保存,将应用于后续上传的图片');
     } catch (error) {
@@ -296,26 +403,38 @@ export default function WatermarkSettingsPage() {
     }
   }
 
-  const previewLogos = useMemo(() => logos, [logos]);
-  // Logo height in preview px mirrors the real watermark: imageHeight * percent.
-  const previewLogoPx = Math.max(8, Math.round(((previewBoxH || 180) * logoPercent) / 100));
-  // Gap mirrors the real watermark: a percentage of the logo height.
-  const previewGap = Math.round((previewLogoPx * logoGap) / 100);
-  // Text height in preview px mirrors the real watermark: imageHeight * textSize%.
-  const previewTextPx = Math.max(8, Math.round(((previewBoxH || 180) * textSize) / 100));
+  const activePosition = orientation === 'landscape' ? landscapePosition : portraitPosition;
+  const activeTextPosition =
+    orientation === 'landscape' ? landscapeTextPosition : portraitTextPosition;
+  const activeLogoPercent = orientation === 'landscape' ? logoPercent : portraitLogoPercent;
+  const activeLogoGap = orientation === 'landscape' ? logoGap : portraitLogoGap;
+  const activeTextSize = orientation === 'landscape' ? textSize : portraitTextSize;
+  const orientationLabel = ORIENTATION_LABEL[orientation];
   const trimmedText = text.trim();
+  const previewText = textEnabled ? trimmedText : '';
 
-  function changePercent(value: number | null) {
-    if (value == null) return;
-    const clamped = Math.min(MAX_LOGO_PERCENT, Math.max(MIN_LOGO_PERCENT, Math.round(value)));
-    setLogoPercent(clamped);
+  /** Preview sizes mirror the real watermark, which is sized from the shorter edge. */
+  function previewMetrics() {
+    const baseSize = previewBase || (orientation === 'portrait' ? 260 : 320);
+    const logoPx = Math.max(8, Math.round((baseSize * activeLogoPercent) / 100));
+    return {
+      logoPx,
+      gapPx: Math.round((logoPx * activeLogoGap) / 100),
+      textPx: Math.max(8, Math.round((baseSize * activeTextSize) / 100)),
+    };
+  }
+
+  function changePercent(value: number) {
+    const next = Math.min(MAX_LOGO_PERCENT, Math.max(MIN_LOGO_PERCENT, Math.round(value)));
+    if (orientation === 'landscape') setLogoPercent(next);
+    else setPortraitLogoPercent(next);
     setDirty(true);
   }
 
-  function changeGap(value: number | null) {
-    if (value == null) return;
-    const clamped = Math.min(MAX_LOGO_GAP, Math.max(MIN_LOGO_GAP, Math.round(value)));
-    setLogoGap(clamped);
+  function changeGap(value: number) {
+    const next = Math.min(MAX_LOGO_GAP, Math.max(MIN_LOGO_GAP, Math.round(value)));
+    if (orientation === 'landscape') setLogoGap(next);
+    else setPortraitLogoGap(next);
     setDirty(true);
   }
 
@@ -329,10 +448,10 @@ export default function WatermarkSettingsPage() {
     setDirty(true);
   }
 
-  function changeTextSize(value: number | null) {
-    if (value == null) return;
-    const clamped = Math.min(MAX_TEXT_SIZE, Math.max(MIN_TEXT_SIZE, Math.round(value)));
-    setTextSize(clamped);
+  function changeTextSize(value: number) {
+    const next = Math.min(MAX_TEXT_SIZE, Math.max(MIN_TEXT_SIZE, Math.round(value)));
+    if (orientation === 'landscape') setTextSize(next);
+    else setPortraitTextSize(next);
     setDirty(true);
   }
 
@@ -341,27 +460,95 @@ export default function WatermarkSettingsPage() {
     setDirty(true);
   }
 
-  function changePosition(value: WatermarkPosition) {
-    setPosition(value);
+  function toggleText(enabled: boolean) {
+    setTextEnabled(enabled);
+    if (text.trim()) setDirty(true);
+  }
+
+  function updatePosition(target: 'logo' | 'text', next: PositionState) {
+    if (orientation === 'landscape') {
+      if (target === 'logo') setLandscapePosition(next);
+      else setLandscapeTextPosition(next);
+    } else if (target === 'logo') {
+      setPortraitPosition(next);
+    } else {
+      setPortraitTextPosition(next);
+    }
     setDirty(true);
   }
 
-  function changePortraitPosition(value: WatermarkPosition) {
-    setPortraitPosition(value);
-    setDirty(true);
+  function handlePointerDown(
+    event: ReactPointerEvent<HTMLDivElement>,
+    target: 'logo' | 'text',
+  ) {
+    const box = previewRef.current;
+    if (!box || event.button !== 0 || !event.isPrimary) return;
+    event.preventDefault();
+    const overlay = event.currentTarget;
+    const overlayRect = overlay.getBoundingClientRect();
+    dragRef.current = {
+      target,
+      offsetX: event.clientX - (overlayRect.left + overlayRect.width / 2),
+      offsetY: event.clientY - (overlayRect.top + overlayRect.height / 2),
+      width: overlay.offsetWidth,
+      height: overlay.offsetHeight,
+      startX: event.clientX,
+      startY: event.clientY,
+      moved: false,
+    };
+    try {
+      overlay.setPointerCapture(event.pointerId);
+    } catch {
+      /* pointer capture is best-effort */
+    }
+    setDragging(target);
   }
 
-  function changeTextPosition(value: WatermarkPosition) {
-    setTextPosition(value);
-    setDirty(true);
+  function handlePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = dragRef.current;
+    const box = previewRef.current;
+    if (!drag || !box) return;
+    event.preventDefault();
+    if (!drag.moved) {
+      if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 3) return;
+      drag.moved = true;
+    }
+    const rect = box.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const halfX = (drag.width / 2 / rect.width) * 100;
+    const halfY = (drag.height / 2 / rect.height) * 100;
+    const clampAxis = (value: number, half: number) => {
+      const low = Math.min(half, 100 - half);
+      const high = Math.max(half, 100 - half);
+      return Math.min(high, Math.max(low, value));
+    };
+    const x = ((event.clientX - drag.offsetX - rect.left) / rect.width) * 100;
+    const y = ((event.clientY - drag.offsetY - rect.top) / rect.height) * 100;
+    updatePosition(drag.target, {
+      kind: 'free',
+      x: Math.round(clampAxis(x, halfX) * 10) / 10,
+      y: Math.round(clampAxis(y, halfY) * 10) / 10,
+    });
   }
 
-  function changeTextPortraitPosition(value: WatermarkPosition) {
-    setTextPortraitPosition(value);
-    setDirty(true);
+  function handlePointerUp(event: ReactPointerEvent<HTMLDivElement>) {
+    dragRef.current = null;
+    setDragging(null);
+    try {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    } catch {
+      /* pointer capture is best-effort */
+    }
   }
 
-  // Preview corner placement (matches backend EDGE_MARGIN ratio, ~4% of edge).
+  function overlayPositionStyle(value: PositionState) {
+    if (value.kind === 'corner') return previewCornerFor(value.corner);
+    return { left: `${value.x}%`, top: `${value.y}%`, transform: 'translate(-50%, -50%)' };
+  }
+
+  // Preview corner placement (matches the backend edge margin, ~4% of the edge).
   const previewCornerOffset = '4%';
   function previewCornerFor(value: WatermarkPosition) {
     return {
@@ -372,40 +559,57 @@ export default function WatermarkSettingsPage() {
     } as const;
   }
 
-  function renderWatermarkOverlay(logoValue: WatermarkPosition, textValue: WatermarkPosition) {
-    const hasLogos = previewLogos.length > 0;
-    const hasText = Boolean(trimmedText);
-    const renderLogos = () =>
-      previewLogos.map((logo) => (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          key={logo.path}
-          src={`${API_ORIGIN}${logo.url}`}
-          alt={logo.filename ?? 'logo'}
-          style={{ height: previewLogoPx, objectFit: 'contain' }}
-        />
-      ));
-    const renderText = () => {
-      const fontOpt = FONT_OPTIONS.find((f) => f.value === textFont) ?? FONT_OPTIONS[0];
-      return (
-        <span
-          style={{
-            color: textColor,
-            fontSize: previewTextPx,
-            fontFamily: fontOpt.family,
-            fontWeight: fontOpt.weight ?? 400,
-            lineHeight: 1,
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {trimmedText}
-        </span>
-      );
-    };
+  function renderLayer(
+    target: 'logo' | 'text',
+    value: PositionState,
+    content: ReactNode,
+    gap?: number,
+  ) {
+    const active = dragging === target;
+    return (
+      <div
+        onPointerDown={(event) => handlePointerDown(event, target)}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        onDragStart={(event) => event.preventDefault()}
+        title={target === 'logo' ? '拖动 Logo 调整位置' : '拖动文字调整位置'}
+        style={{
+          position: 'absolute',
+          ...overlayPositionStyle(value),
+          display: target === 'logo' ? 'flex' : 'block',
+          alignItems: 'center',
+          gap,
+          opacity: 0.85,
+          cursor: active ? 'grabbing' : 'grab',
+          touchAction: 'none',
+          userSelect: 'none',
+          outline: active ? '2px dashed rgba(255,255,255,0.8)' : undefined,
+          outlineOffset: 4,
+          borderRadius: 4,
+        }}
+      >
+        {content}
+      </div>
+    );
+  }
+
+  function renderWatermarkOverlay() {
+    const { logoPx, gapPx, textPx } = previewMetrics();
+    const hasLogos = logos.length > 0;
+    const hasText = Boolean(previewText);
 
     if (!hasLogos && !hasText) {
       return (
-        <div style={{ position: 'absolute', ...previewCornerFor(logoValue) }}>
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
           <Typography.Text style={{ color: 'rgba(255,255,255,0.7)' }}>
             未配置水印
           </Typography.Text>
@@ -413,146 +617,189 @@ export default function WatermarkSettingsPage() {
       );
     }
 
-    if (hasLogos && hasText && logoValue === textValue) {
-      return (
-        <div
-          style={{
-            position: 'absolute',
-            ...previewCornerFor(logoValue),
-            display: 'flex',
-            alignItems: 'center',
-            gap: previewGap,
-            opacity: 0.85,
-          }}
-        >
-          {renderLogos()}
-          {renderText()}
-        </div>
-      );
-    }
+    const logoContent = logos.map((logo) => (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        key={logo.path}
+        src={`${API_ORIGIN}${logo.url}`}
+        alt={logo.filename ?? 'logo'}
+        draggable={false}
+        style={{ height: logoPx, objectFit: 'contain' }}
+      />
+    ));
+    const fontOption = FONT_OPTIONS.find((option) => option.value === textFont) ?? FONT_OPTIONS[0];
+    const textContent = (
+      <span
+        style={{
+          color: textColor,
+          fontSize: textPx,
+          fontFamily: fontOption.family,
+          fontWeight: fontOption.weight ?? 400,
+          lineHeight: 1,
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {previewText}
+      </span>
+    );
 
     return (
       <>
-        {hasLogos && (
-          <div
-            style={{
-              position: 'absolute',
-              ...previewCornerFor(logoValue),
-              display: 'flex',
-              alignItems: 'center',
-              gap: previewGap,
-              opacity: 0.85,
-            }}
-          >
-            {renderLogos()}
-          </div>
-        )}
-        {hasText && (
-          <div style={{ position: 'absolute', ...previewCornerFor(textValue), opacity: 0.85 }}>
-            {renderText()}
-          </div>
-        )}
+        {hasLogos && renderLayer('logo', activePosition, logoContent, gapPx)}
+        {hasText && renderLayer('text', activeTextPosition, textContent)}
       </>
     );
   }
 
-  function renderPreviewPhoto(
-    value: WatermarkPosition,
-    textValue: WatermarkPosition,
-    shape: 'landscape' | 'portrait',
-  ) {
-    const aspect = shape === 'portrait' ? '66%' : '100%';
-    const paddingTop = shape === 'portrait' ? '136%' : '60%';
+  function renderPreviewPhoto() {
+    const isPortrait = orientation === 'portrait';
     return (
       <div
-        ref={shape === 'landscape' ? previewRef : undefined}
+        ref={previewRef}
         style={{
           position: 'relative',
-          width: aspect,
-          maxWidth: shape === 'portrait' ? 240 : undefined,
-          margin: shape === 'portrait' ? '0 auto' : undefined,
-          paddingTop,
+          width: isPortrait ? '66%' : '100%',
+          maxWidth: isPortrait ? 260 : undefined,
+          margin: isPortrait ? '0 auto' : undefined,
+          aspectRatio: isPortrait ? '2 / 3' : '5 / 3',
           borderRadius: 8,
           overflow: 'hidden',
           background: 'linear-gradient(135deg, #1f6feb, #0a2a66)',
         }}
       >
-        {renderWatermarkOverlay(value, textValue)}
-        <Typography.Text
-          style={{
-            position: 'absolute',
-            color: 'rgba(255,255,255,0.65)',
-            fontSize: 12,
-            ...(value.startsWith('TOP_') ? { bottom: 12 } : { top: 12 }),
-            ...(value.endsWith('_LEFT') ? { right: 16 } : { left: 16 }),
-          }}
-        >
-          {shape === 'portrait' ? '竖图预览' : '横图预览'} - {POSITION_OPTIONS.find((o) => o.value === value)?.label ?? ''}
-        </Typography.Text>
+        {renderWatermarkOverlay()}
       </div>
     );
   }
 
+  function describePosition(value: PositionState) {
+    return value.kind === 'corner' ? positionLabel(value.corner) : '自定义位置';
+  }
+
+  const previewCaption = (() => {
+    const parts: string[] = [];
+    if (logos.length > 0) parts.push(`Logo ${describePosition(activePosition)}`);
+    if (previewText) parts.push(`文字 ${describePosition(activeTextPosition)}`);
+    if (parts.length === 0) return `${orientationLabel}预览`;
+    return `${orientationLabel}预览 · ${parts.join(' · ')} · 可拖动`;
+  })();
+
   return (
     <div>
-      <Space style={{ marginBottom: 16 }}>
-        <Button icon={<ArrowLeftOutlined />} onClick={() => router.push(isActivity ? '/nicaiyixiahh/photo-activities' : '/nicaiyixiahh/competitions')}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 4 }}>
+        <Button
+          icon={<ArrowLeftOutlined />}
+          onClick={() =>
+            router.push(isActivity ? '/nicaiyixiahh/photo-activities' : '/nicaiyixiahh/competitions')
+          }
+        >
           返回{isActivity ? '活动图片' : '赛事管理'}
         </Button>
         <Typography.Title level={4} style={{ margin: 0 }}>
           水印设置
         </Typography.Title>
-      </Space>
+      </div>
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        保存后只影响之后上传的照片,已上传的照片不会重新生成水印。
+      </Typography.Text>
 
-      <Alert
-        type="info"
-        showIcon
-        style={{ marginBottom: 16 }}
-        message={`第 1 个为${isActivity ? '活动' : '赛事'}主 Logo,其余为赞助商 Logo,多个 Logo 横向并排展示(间距可调)。最多 5 个,仅支持透明背景 PNG(< 5MB)。所有 Logo 都会经过图片 AI 审核。`}
-      />
-
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
-        <Card title="Logo 列表" style={{ flex: '1 1 420px', minWidth: 320 }} loading={loading}>
-          <Upload
-            accept="image/png"
-            showUploadList={false}
-            beforeUpload={(file) => {
-              void uploadLogo(file as File);
-              return false;
-            }}
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: 16,
+          alignItems: 'flex-start',
+          marginTop: 16,
+        }}
+      >
+        <Card
+          title="效果预览"
+          extra={
+            <Segmented
+              size="small"
+              value={orientation}
+              onChange={(value) => setOrientation(value as Orientation)}
+              options={ORIENTATION_OPTIONS}
+            />
+          }
+          style={{ flex: '1 1 380px', minWidth: 300 }}
+        >
+          <div style={{ maxWidth: 560, margin: '0 auto' }}>
+            {renderPreviewPhoto()}
+          </div>
+          <Typography.Text
+            type="secondary"
+            style={{ display: 'block', textAlign: 'center', marginTop: 10, fontSize: 12 }}
           >
-            <Button icon={<UploadOutlined />} loading={uploading} disabled={logos.length >= MAX_LOGOS}>
-              添加 Logo({logos.length}/{MAX_LOGOS})
-            </Button>
-          </Upload>
+            {previewCaption}
+          </Typography.Text>
+        </Card>
 
-          <div style={{ marginTop: 16 }}>
+        <Card title="水印配置" style={{ flex: '1 1 460px', minWidth: 320 }} loading={loading}>
+          <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 12, fontSize: 12 }}>
+            大小、位置都按当前预览的横图 / 竖图分别保存；拖动预览中的 Logo 和文字调整位置。
+          </Typography.Text>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+            <div>
+              <Typography.Text strong>Logo</Typography.Text>
+              <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                {logos.length}/{MAX_LOGOS} · 第 1 个为主 Logo
+              </Typography.Text>
+            </div>
+            <Upload
+              accept="image/png"
+              showUploadList={false}
+              beforeUpload={(file) => {
+                void uploadLogo(file as File);
+                return false;
+              }}
+            >
+              <Button
+                size="small"
+                icon={<UploadOutlined />}
+                loading={uploading}
+                disabled={logos.length >= MAX_LOGOS}
+              >
+                添加 Logo
+              </Button>
+            </Upload>
+          </div>
+          <Typography.Text type="secondary" style={{ display: 'block', marginTop: 2, fontSize: 12 }}>
+            仅支持透明背景 PNG(&lt; 5MB)
+          </Typography.Text>
+
+          <div style={{ marginTop: 12 }}>
             {logos.length === 0 ? (
-              <Empty description="暂无 Logo" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description="还没有 Logo"
+                style={{ margin: '16px 0' }}
+              />
             ) : (
-              <Space direction="vertical" style={{ width: '100%' }}>
+              <Space direction="vertical" size={8} style={{ width: '100%' }}>
                 {logos.map((logo, index) => (
                   <div
                     key={logo.path}
                     style={{
                       display: 'flex',
                       alignItems: 'center',
-                      gap: 12,
-                      padding: 8,
-                      border: '1px solid #eee',
+                      gap: 8,
+                      padding: '6px 8px',
+                      border: '1px solid #f0f0f0',
                       borderRadius: 8,
                     }}
                   >
                     <div
                       style={{
-                        width: 64,
-                        height: 48,
+                        width: 52,
+                        height: 40,
                         background:
                           'repeating-conic-gradient(#e9edf5 0% 25%, #fff 0% 50%) 50% / 12px 12px',
                         borderRadius: 4,
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
+                        flex: 'none',
                       }}
                     >
                       {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -563,14 +810,18 @@ export default function WatermarkSettingsPage() {
                       />
                     </div>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <Typography.Text strong>
+                      <Typography.Text strong style={{ fontSize: 13 }}>
                         {index === 0 ? `${isActivity ? '活动' : '赛事'}主 Logo` : `赞助商 Logo ${index}`}
                       </Typography.Text>
-                      <Typography.Paragraph type="secondary" ellipsis style={{ margin: 0, fontSize: 12 }}>
+                      <Typography.Text
+                        type="secondary"
+                        ellipsis
+                        style={{ display: 'block', fontSize: 12 }}
+                      >
                         {logo.filename ?? logo.path.split('/').pop()}
-                      </Typography.Paragraph>
+                      </Typography.Text>
                     </div>
-                    <Space>
+                    <Space size={4}>
                       <Button
                         size="small"
                         icon={<ArrowUpOutlined />}
@@ -583,12 +834,18 @@ export default function WatermarkSettingsPage() {
                         disabled={index === logos.length - 1}
                         onClick={() => move(index, 1)}
                       />
-                      <Button
-                        size="small"
-                        danger
-                        icon={<DeleteOutlined />}
-                        onClick={() => deleteLogo(logo)}
-                      />
+                      <Popconfirm
+                        title="删除这个 Logo？"
+                        okText="删除"
+                        cancelText="取消"
+                        onConfirm={() => deleteLogo(logo)}
+                      >
+                        <Button
+                          size="small"
+                          danger
+                          icon={<DeleteOutlined />}
+                        />
+                      </Popconfirm>
                     </Space>
                   </div>
                 ))}
@@ -596,98 +853,74 @@ export default function WatermarkSettingsPage() {
             )}
           </div>
 
-          <div style={{ marginTop: 16 }}>
-            <Button
-              type="primary"
-              icon={<SaveOutlined />}
-              loading={saving}
-              disabled={!dirty}
-              onClick={save}
-            >
-              保存设置
-            </Button>
-            {dirty && (
-              <Typography.Text type="warning" style={{ marginLeft: 12 }}>
-                顺序有改动,请保存
-              </Typography.Text>
-            )}
-          </div>
-        </Card>
-
-        <Card title="效果预览" style={{ flex: '1 1 420px', minWidth: 320 }}>
-          <div style={{ marginBottom: 16 }}>
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                marginBottom: 4,
-              }}
-            >
-              <Typography.Text strong>Logo 大小</Typography.Text>
-              <InputNumber
-                size="small"
+          {logos.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div>
+                  <Typography.Text>Logo 大小</Typography.Text>
+                  <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                    {orientationLabel}
+                  </Typography.Text>
+                </div>
+                <Typography.Text type="secondary">{activeLogoPercent}%</Typography.Text>
+              </div>
+              <Slider
                 min={MIN_LOGO_PERCENT}
                 max={MAX_LOGO_PERCENT}
-                value={logoPercent}
+                value={activeLogoPercent}
                 onChange={changePercent}
-                formatter={(v) => `${v}%`}
-                parser={(v) => Number((v ?? '').replace('%', ''))}
-                style={{ width: 88 }}
+                tooltip={{ formatter: (value) => `${value}%` }}
               />
-            </div>
-            <Slider
-              min={MIN_LOGO_PERCENT}
-              max={MAX_LOGO_PERCENT}
-              value={logoPercent}
-              onChange={changePercent}
-              tooltip={{ formatter: (v) => `${v}%` }}
-            />
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              Logo 高度 = 图片高度的 {logoPercent}%(下方预览实时模拟)
-            </Typography.Text>
 
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                margin: '16px 0 4px',
-              }}
-            >
-              <Typography.Text strong>Logo 间距</Typography.Text>
-              <InputNumber
-                size="small"
-                min={MIN_LOGO_GAP}
-                max={MAX_LOGO_GAP}
-                value={logoGap}
-                onChange={changeGap}
-                formatter={(v) => `${v}%`}
-                parser={(v) => Number((v ?? '').replace('%', ''))}
-                style={{ width: 88 }}
-              />
+              {logos.length > 1 && (
+                <>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      marginTop: 8,
+                    }}
+                  >
+                    <div>
+                      <Typography.Text>Logo 间距</Typography.Text>
+                      <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                        {orientationLabel}
+                      </Typography.Text>
+                    </div>
+                    <Typography.Text type="secondary">{activeLogoGap}%</Typography.Text>
+                  </div>
+                  <Slider
+                    min={MIN_LOGO_GAP}
+                    max={MAX_LOGO_GAP}
+                    value={activeLogoGap}
+                    onChange={changeGap}
+                    tooltip={{ formatter: (value) => `${value}%` }}
+                  />
+                </>
+              )}
             </div>
-            <Slider
-              min={MIN_LOGO_GAP}
-              max={MAX_LOGO_GAP}
-              value={logoGap}
-              onChange={changeGap}
-              tooltip={{ formatter: (v) => `${v}%` }}
-            />
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              多个 Logo 之间的间距 = Logo 高度的 {logoGap}%(仅在有 2 个及以上 Logo 时生效)
-            </Typography.Text>
+          )}
 
-            <div style={{ marginTop: 16 }}>
-              <Typography.Text strong style={{ display: 'block', marginBottom: 6 }}>
-                文字水印(可选)
+          <Divider style={{ margin: '20px 0 16px' }} />
+
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+            <div>
+              <Typography.Text strong>文字水印</Typography.Text>
+              <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                可选
               </Typography.Text>
+            </div>
+            <Switch checked={textEnabled} onChange={toggleText} />
+          </div>
+
+          {textEnabled && (
+            <div style={{ marginTop: 12 }}>
               <Input
                 value={text}
-                onChange={(e) => changeText(e.target.value)}
-                placeholder="留空表示不加文字,例如:第十届校园羽毛球赛"
+                onChange={(event) => changeText(event.target.value)}
+                placeholder="例如:第十届校园羽毛球赛"
                 maxLength={MAX_TEXT_LENGTH}
-                showCount
                 allowClear
               />
               <div
@@ -700,12 +933,19 @@ export default function WatermarkSettingsPage() {
                 }}
               >
                 <Space size={8}>
-                  <Typography.Text>颜色</Typography.Text>
+                  <Typography.Text style={{ fontSize: 13 }}>颜色</Typography.Text>
                   <input
                     type="color"
                     value={/^#[0-9a-fA-F]{6}$/.test(textColor) ? textColor : '#FFFFFF'}
-                    onChange={(e) => changeTextColor(e.target.value.toUpperCase())}
-                    style={{ width: 40, height: 28, border: '1px solid #d9d9d9', borderRadius: 4, padding: 0, cursor: 'pointer' }}
+                    onChange={(event) => changeTextColor(event.target.value.toUpperCase())}
+                    style={{
+                      width: 40,
+                      height: 28,
+                      border: '1px solid #d9d9d9',
+                      borderRadius: 4,
+                      padding: 0,
+                      cursor: 'pointer',
+                    }}
                     aria-label="文字颜色"
                   />
                   <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -713,137 +953,77 @@ export default function WatermarkSettingsPage() {
                   </Typography.Text>
                 </Space>
                 <Space size={8}>
-                  <Typography.Text>字体</Typography.Text>
-                  <Radio.Group
+                  <Typography.Text style={{ fontSize: 13 }}>字体</Typography.Text>
+                  <Segmented
                     size="small"
                     value={textFont}
-                    onChange={(e) => changeTextFont(e.target.value as TextFontType)}
-                    optionType="button"
-                    buttonStyle="solid"
-                  >
-                    {FONT_OPTIONS.map((opt) => (
-                      <Radio.Button key={opt.value} value={opt.value}>
-                        <span style={{ fontFamily: opt.family, fontWeight: opt.weight ?? 400 }}>
-                          {opt.label}
-                        </span>
-                      </Radio.Button>
-                    ))}
-                  </Radio.Group>
-                </Space>
-                <Space size={8}>
-                  <Typography.Text>大小</Typography.Text>
-                  <InputNumber
-                    size="small"
-                    min={MIN_TEXT_SIZE}
-                    max={MAX_TEXT_SIZE}
-                    value={textSize}
-                    onChange={changeTextSize}
-                    formatter={(v) => `${v}%`}
-                    parser={(v) => Number((v ?? '').replace('%', ''))}
-                    style={{ width: 88 }}
-                  />
-                </Space>
-                <Space size={8} wrap>
-                  <Typography.Text>横图位置</Typography.Text>
-                  <Radio.Group
-                    size="small"
-                    value={textPosition}
-                    onChange={(e) => changeTextPosition(e.target.value as WatermarkPosition)}
-                    optionType="button"
-                    buttonStyle="solid"
-                    options={POSITION_OPTIONS}
-                  />
-                </Space>
-                <Space size={8} wrap>
-                  <Typography.Text>竖图位置</Typography.Text>
-                  <Radio.Group
-                    size="small"
-                    value={textPortraitPosition}
-                    onChange={(e) =>
-                      changeTextPortraitPosition(e.target.value as WatermarkPosition)
-                    }
-                    optionType="button"
-                    buttonStyle="solid"
-                    options={POSITION_OPTIONS}
+                    onChange={(value) => changeTextFont(value as TextFontType)}
+                    options={FONT_SEGMENT_OPTIONS}
                   />
                 </Space>
               </div>
-              <Slider
-                min={MIN_TEXT_SIZE}
-                max={MAX_TEXT_SIZE}
-                value={textSize}
-                onChange={(v) => changeTextSize(v as number)}
-                tooltip={{ formatter: (v) => `${v}%` }}
-              />
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                文字高度 = 图片高度的 {textSize}%;位置可独立设置,与 Logo 选择同一角落时同条并排。支持黑体、宋体、楷体三种字体,可自定义颜色。
-              </Typography.Text>
-            </div>
 
-            <div style={{ marginTop: 16 }}>
-              <Typography.Text strong style={{ display: 'block', marginBottom: 6 }}>
-                横图水印位置
-              </Typography.Text>
-              <Radio.Group
-                value={position}
-                onChange={(e) => changePosition(e.target.value as WatermarkPosition)}
-                optionType="button"
-                buttonStyle="solid"
-                options={POSITION_OPTIONS}
-              />
-            </div>
-
-            <div style={{ marginTop: 16 }}>
-              <Typography.Text strong style={{ display: 'block', marginBottom: 6 }}>
-                竖图水印位置
-              </Typography.Text>
-              <Radio.Group
-                value={portraitPosition}
-                onChange={(e) => changePortraitPosition(e.target.value as WatermarkPosition)}
-                optionType="button"
-                buttonStyle="solid"
-                options={POSITION_OPTIONS}
-              />
-              <Typography.Text type="secondary" style={{ display: 'block', marginTop: 6, fontSize: 12 }}>
-                当图片高度大于宽度时使用这个位置。
-              </Typography.Text>
-            </div>
-          </div>
-
-          <div
-            ref={previewRef}
-            style={{
-              position: 'relative',
-              width: '100%',
-              paddingTop: '60%',
-              borderRadius: 8,
-              overflow: 'hidden',
-              background: 'linear-gradient(135deg, #1f6feb, #0a2a66)',
-            }}
-          >
-            {renderWatermarkOverlay(position, textPosition)}
-            {/* Caption hugs the opposite corner of the watermark so it never overlaps. */}
-            <Typography.Text
-              style={{
-                position: 'absolute',
-                color: 'rgba(255,255,255,0.65)',
-                fontSize: 12,
-                ...(position.startsWith('TOP_') ? { bottom: 12 } : { top: 12 }),
-                ...(position.endsWith('_LEFT') ? { right: 16 } : { left: 16 }),
-              }}
-            >
-              示例照片 —— Logo 显示在{POSITION_OPTIONS.find((o) => o.value === position)?.label ?? ''}
-            </Typography.Text>
-          </div>
-          <div style={{ marginTop: 12 }}>
-            {renderPreviewPhoto(portraitPosition, textPortraitPosition, 'portrait')}
-          </div>
-          {loading && (
-            <div style={{ textAlign: 'center', marginTop: 12 }}>
-              <Spin />
+              <div style={{ marginTop: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div>
+                    <Typography.Text>文字大小</Typography.Text>
+                    <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                      {orientationLabel}
+                    </Typography.Text>
+                  </div>
+                  <Typography.Text type="secondary">{activeTextSize}%</Typography.Text>
+                </div>
+                <Slider
+                  min={MIN_TEXT_SIZE}
+                  max={MAX_TEXT_SIZE}
+                  value={activeTextSize}
+                  onChange={changeTextSize}
+                  tooltip={{ formatter: (value) => `${value}%` }}
+                />
+              </div>
             </div>
           )}
         </Card>
+      </div>
+
+      <div
+        style={{
+          position: 'sticky',
+          bottom: 12,
+          zIndex: 10,
+          display: 'flex',
+          justifyContent: 'flex-end',
+          marginTop: 16,
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            padding: '8px 12px',
+            background: '#fff',
+            border: '1px solid #f0f0f0',
+            borderRadius: 999,
+            boxShadow: '0 6px 18px rgba(15, 23, 42, 0.12)',
+          }}
+        >
+          {dirty && (
+            <Typography.Text type="warning" style={{ fontSize: 12 }}>
+              有未保存的修改
+            </Typography.Text>
+          )}
+          <Button
+            type="primary"
+            size="small"
+            icon={<SaveOutlined />}
+            loading={saving}
+            disabled={!dirty}
+            onClick={save}
+          >
+            保存设置
+          </Button>
+        </div>
       </div>
     </div>
   );
