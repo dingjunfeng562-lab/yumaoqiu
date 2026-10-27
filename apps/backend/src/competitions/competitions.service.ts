@@ -112,11 +112,13 @@ const REGISTRATION_VIEW_INCLUDE = {
 } satisfies Prisma.RegistrationInclude;
 
 type NormalizedAdminBatchPlayer = {
+  social: boolean;
   name: string;
   gender: Gender;
-  studentId: string;
+  // 社会人员没有学号和学院班级。
+  studentId?: string;
   school: string;
-  className: string;
+  className?: string;
   contact: string;
   teamName?: string;
   partnerName?: string;
@@ -645,6 +647,8 @@ export class CompetitionsService {
     );
     this.ensureBatchStudentIds(players);
     await this.ensureNoExistingEventStudentIds(event.id, players);
+    this.ensureBatchSocialContacts(players);
+    await this.ensureNoExistingEventSocialContacts(event.id, players);
 
     // 预生成 id 后用两次 createMany 批量入库（选手 + 报名），而不是逐条 await。
     // 逐条创建会在一个交互式事务里堆叠数百次往返、轻易超过 Prisma 默认 5s 事务超时
@@ -682,8 +686,8 @@ export class CompetitionsService {
         player2Id: secondaryPlayerId,
         name: secondaryPlayerId && item.partnerName ? `${item.name} / ${item.partnerName}` : item.name,
         teamName: secondaryPlayerId ? item.teamName ?? null : null,
-        studentId: item.studentId,
-        className: item.className,
+        studentId: item.studentId ?? null,
+        className: item.className ?? null,
         phone: item.contact,
         gender: item.gender,
         eventName: EVENT_TYPE_LABELS[event.type],
@@ -720,6 +724,7 @@ export class CompetitionsService {
     // 复用批量录入的字段校验（单/双打必填项、性别合法性），单条按第 1 行处理。
     const player = this.normalizeAdminBatchPlayer(dto, 1, event.type);
     await this.ensureNoExistingEventStudentIds(event.id, [player]);
+    await this.ensureNoExistingEventSocialContacts(event.id, [player]);
 
     const isDouble = this.isDoubleEvent(event.type);
     const reviewedAt = new Date();
@@ -756,8 +761,8 @@ export class CompetitionsService {
           player2Id: secondaryId,
           name: secondaryId && player.partnerName ? `${player.name} / ${player.partnerName}` : player.name,
           teamName: secondaryId ? player.teamName ?? null : null,
-          studentId: player.studentId,
-          className: player.className,
+          studentId: player.studentId ?? null,
+          className: player.className ?? null,
           phone: player.contact,
           gender: player.gender,
           eventName: EVENT_TYPE_LABELS[event.type],
@@ -970,7 +975,11 @@ export class CompetitionsService {
     }
 
     const player = this.normalizeAdminBatchPlayer(dto, 1, targetEvent.type);
+    if (player.social && registration.competitionRegistrationId) {
+      throw new BadRequestException('选手自助报名的记录不能改为社会人员');
+    }
     await this.ensureNoExistingEventStudentIds(targetEvent.id, [player], registration.id);
+    await this.ensureNoExistingEventSocialContacts(targetEvent.id, [player], registration.id);
 
     const isDouble = this.isDoubleEvent(targetEvent.type);
 
@@ -1019,8 +1028,8 @@ export class CompetitionsService {
           player2Id: secondaryId,
           name: secondaryId && player.partnerName ? `${player.name} / ${player.partnerName}` : player.name,
           teamName: secondaryId ? player.teamName ?? null : null,
-          studentId: player.studentId,
-          className: player.className,
+          studentId: player.studentId ?? null,
+          className: player.className ?? null,
           phone: player.contact,
           gender: player.gender,
           eventName: EVENT_TYPE_LABELS[targetEvent.type],
@@ -1039,11 +1048,11 @@ export class CompetitionsService {
         await tx.competitionRegistration.update({
           where: { id: registration.competitionRegistrationId },
           data: {
-            studentId: player.studentId,
+            studentId: player.studentId ?? '',
             name: player.name,
             gender: player.gender,
             school: player.school,
-            className: player.className,
+            className: player.className ?? '',
             contact: player.contact,
           },
         });
@@ -1448,6 +1457,7 @@ export class CompetitionsService {
     rowNumber: number,
     eventType: EventType,
   ): NormalizedAdminBatchPlayer {
+    if (item.social) return this.normalizeSocialBatchPlayer(item, rowNumber, eventType);
     const name = this.requiredBatchField(item.name, rowNumber, '姓名');
     const gender = this.normalizeBatchGender(item.gender, rowNumber, '性别');
     const studentId = this.requiredBatchField(item.studentId, rowNumber, '学号');
@@ -1458,6 +1468,7 @@ export class CompetitionsService {
     if (!this.isDoubleEvent(eventType)) {
       this.ensureRegistrationGender(eventType, gender);
       return {
+        social: false,
         name,
         gender,
         studentId,
@@ -1483,6 +1494,7 @@ export class CompetitionsService {
     }
 
     return {
+      social: false,
       name,
       gender,
       studentId,
@@ -1497,6 +1509,101 @@ export class CompetitionsService {
       partnerClassName,
       partnerContact,
     };
+  }
+
+  // 社会人员：单位、姓名、性别、联系方式；双打再加队友姓名、性别、联系方式，
+  // 队友单位同主选手，不需要队伍名称。性别组合按项目校验（混双前后顺序不限）。
+  private normalizeSocialBatchPlayer(
+    item: AdminBatchCompetitionPlayerDto,
+    rowNumber: number,
+    eventType: EventType,
+  ): NormalizedAdminBatchPlayer {
+    const school = this.requiredBatchField(item.school, rowNumber, '单位');
+    const name = this.requiredBatchField(item.name, rowNumber, '姓名');
+    const gender = this.normalizeBatchGender(item.gender, rowNumber, '性别');
+    const contact = this.requiredBatchField(item.contact, rowNumber, '联系方式');
+    const base = { social: true, name, gender, school, contact };
+
+    if (!this.isDoubleEvent(eventType)) {
+      try {
+        this.ensureRegistrationGender(eventType, gender);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '性别填写有误';
+        throw new BadRequestException(`第 ${rowNumber} 行：${message}`);
+      }
+      return base;
+    }
+
+    const partnerName = this.requiredBatchField(item.partnerName, rowNumber, '队友姓名');
+    const partnerGender = this.normalizeBatchGender(item.partnerGender, rowNumber, '队友性别');
+    const partnerContact = this.requiredBatchField(item.partnerContact, rowNumber, '队友联系方式');
+    try {
+      this.ensureRegistrationGender(eventType, gender, partnerGender);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '双打性别填写有误';
+      throw new BadRequestException(`第 ${rowNumber} 行：${message}`);
+    }
+    return {
+      ...base,
+      teamName: item.teamName?.trim() || undefined,
+      partnerName,
+      partnerGender,
+      partnerSchool: item.partnerSchool?.trim() || school,
+      partnerContact,
+    };
+  }
+
+  // 社会人员没有学号，同一项目内按「姓名 + 联系方式」判重。
+  private socialPeople(player: NormalizedAdminBatchPlayer) {
+    if (!player.social) return [];
+    return [
+      { name: player.name, contact: player.contact },
+      ...(player.partnerName && player.partnerContact
+        ? [{ name: player.partnerName, contact: player.partnerContact }]
+        : []),
+    ];
+  }
+
+  private ensureBatchSocialContacts(players: NormalizedAdminBatchPlayer[]) {
+    const seen = new Map<string, number>();
+    players.forEach((player, index) => {
+      for (const person of this.socialPeople(player)) {
+        const key = `${person.name}\u0000${person.contact}`;
+        const existing = seen.get(key);
+        if (existing) {
+          throw new ConflictException(`第 ${index + 1} 行与第 ${existing} 行重复：${person.name}（${person.contact}）`);
+        }
+        seen.set(key, index + 1);
+      }
+    });
+  }
+
+  private async ensureNoExistingEventSocialContacts(
+    eventId: string,
+    players: NormalizedAdminBatchPlayer[],
+    excludeRegistrationId?: string,
+  ) {
+    const people = players.flatMap((player) => this.socialPeople(player));
+    if (!people.length) return;
+    const existing = await this.prisma.registration.findFirst({
+      where: {
+        eventId,
+        status: { not: RegistrationStatus.REMOVED },
+        ...(excludeRegistrationId ? { id: { not: excludeRegistrationId } } : {}),
+        OR: [
+          { player1: { OR: people } },
+          { player2: { OR: people } },
+        ],
+      },
+      select: { player1: { select: { name: true, contact: true } }, player2: { select: { name: true, contact: true } } },
+    });
+    if (!existing) return;
+    const hit = people.find((person) =>
+      [existing.player1, existing.player2].some(
+        (item) => item?.name === person.name && item?.contact === person.contact,
+      ),
+    );
+    throw new ConflictException(`${hit?.name ?? '该选手'}（${hit?.contact ?? ''}）已在该项目报名`);
   }
 
   private requiredBatchField(value: string | undefined, rowNumber: number, label: string) {
@@ -1522,7 +1629,7 @@ export class CompetitionsService {
     players.forEach((player, index) => {
       const rowLabel = `第 ${index + 1} 行`;
       const studentIds = [
-        { value: player.studentId, label: `${rowLabel}学号` },
+        ...(player.studentId ? [{ value: player.studentId, label: `${rowLabel}学号` }] : []),
         ...(player.partnerStudentId
           ? [{ value: player.partnerStudentId, label: `${rowLabel}搭档学号` }]
           : []),
@@ -1717,6 +1824,8 @@ export class CompetitionsService {
       partner,
       teamName: registration.teamName ?? null,
       isTemporary: registration.player1.isTemporary || Boolean(registration.player2?.isTemporary),
+      // 后台以社会人员方式录入：没有学号，也不是选手自助报名。
+      isSocial: !registration.studentId && !registration.competitionRegistrationId,
       studentId: registration.studentId ?? '',
       school,
       className,

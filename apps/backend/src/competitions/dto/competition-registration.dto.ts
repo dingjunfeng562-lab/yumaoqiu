@@ -1,5 +1,15 @@
 import { Type } from 'class-transformer';
-import { ArrayMaxSize, ArrayMinSize, IsArray, IsIn, IsOptional, IsString, MinLength, ValidateNested } from 'class-validator';
+import {
+  ArrayMaxSize,
+  ArrayMinSize,
+  IsArray,
+  IsBoolean,
+  IsIn,
+  IsOptional,
+  IsString,
+  MinLength,
+  ValidateNested,
+} from 'class-validator';
 
 export class CompetitionRegistrationEventItemDto {
   @IsString()
@@ -72,6 +82,11 @@ export class SubmitCompetitionRegistrationDto {
 }
 
 export class AdminBatchCompetitionPlayerDto {
+  // 社会人员：school 存「单位」，无学号/学院班级，双打无需队伍名称。
+  @IsOptional()
+  @IsBoolean()
+  social?: boolean;
+
   @IsString()
   @MinLength(1)
   name: string;
@@ -79,17 +94,18 @@ export class AdminBatchCompetitionPlayerDto {
   @IsIn(['MALE', 'FEMALE', '男', '女'])
   gender: 'MALE' | 'FEMALE' | '男' | '女';
 
+  // 学生必填由服务端按 social 校验。
+  @IsOptional()
   @IsString()
-  @MinLength(1)
-  studentId: string;
+  studentId?: string;
 
   @IsString()
   @MinLength(1)
   school: string;
 
+  @IsOptional()
   @IsString()
-  @MinLength(1)
-  className: string;
+  className?: string;
 
   @IsString()
   @MinLength(1)

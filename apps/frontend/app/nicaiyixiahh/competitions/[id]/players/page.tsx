@@ -5,10 +5,11 @@ import type { Key } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { Alert, Button, Card, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography, message } from 'antd';
-import { AuditOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, PlusOutlined, RollbackOutlined, StopOutlined, UserAddOutlined, UsergroupAddOutlined } from '@ant-design/icons';
+import { Alert, Button, Card, Checkbox, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography, message } from 'antd';
+import { AuditOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, PlusOutlined, RollbackOutlined, StopOutlined, TeamOutlined, UserAddOutlined, UsergroupAddOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { importTeamRoster, parseTeamRoster, TeamRosterImportInput, type TeamImportCompetition } from '@/components/TeamRosterImport';
+import SocialPlayerImportModal from '@/components/SocialPlayerImport';
 
 type CompetitionEventOption = {
   id: string;
@@ -32,6 +33,7 @@ type Player = {
   primaryName?: string;
   teamName?: string | null;
   isTemporary?: boolean;
+  isSocial?: boolean;
   partner?: {
     name: string;
     studentId?: string;
@@ -111,9 +113,9 @@ type PlayerFormValues = {
   eventId: string;
   name: string;
   gender: 'MALE' | 'FEMALE';
-  studentId: string;
+  studentId?: string;
   school: string;
-  className: string;
+  className?: string;
   contact: string;
   teamName?: string;
   partnerName?: string;
@@ -244,6 +246,9 @@ export default function AdminCompetitionPlayersPage() {
   const [batchEventId, setBatchEventId] = useState<string>();
   const [batchText, setBatchText] = useState('');
   const [batchSubmitting, setBatchSubmitting] = useState(false);
+  const [socialModalOpen, setSocialModalOpen] = useState(false);
+  // 手工新增/编辑表单是否按社会人员格式（单位、无学号/学院班级/队伍名称）。
+  const [formSocial, setFormSocial] = useState(false);
   const [libraryModalOpen, setLibraryModalOpen] = useState(false);
   const [libraryPlayers, setLibraryPlayers] = useState<LibraryPlayer[]>([]);
   const [libraryLoading, setLibraryLoading] = useState(false);
@@ -538,6 +543,7 @@ export default function AdminCompetitionPlayersPage() {
       return;
     }
     setEditingPlayer(null);
+    setFormSocial(false);
     const defaultEvent =
       competition.eventOptions.find((event) => event.label === eventName) ?? competition.eventOptions[0];
     form.resetFields();
@@ -547,6 +553,7 @@ export default function AdminCompetitionPlayersPage() {
 
   function openEditModal(record: Player) {
     setEditingPlayer(record);
+    setFormSocial(Boolean(record.isSocial));
     form.resetFields();
     form.setFieldsValue({
       eventId: record.eventId,
@@ -578,16 +585,30 @@ export default function AdminCompetitionPlayersPage() {
     const isDouble = Boolean(
       competition?.eventOptions?.find((event) => event.id === values.eventId)?.isDouble,
     );
-    const payload: Record<string, string | undefined> = {
-      eventId: values.eventId,
-      name: values.name.trim(),
-      gender: values.gender,
-      studentId: values.studentId.trim(),
-      school: values.school.trim(),
-      className: values.className.trim(),
-      contact: values.contact.trim(),
-    };
-    if (isDouble) {
+    const payload: Record<string, string | boolean | undefined> = formSocial
+      ? {
+          social: true,
+          eventId: values.eventId,
+          name: values.name.trim(),
+          gender: values.gender,
+          school: values.school.trim(),
+          contact: values.contact.trim(),
+        }
+      : {
+          eventId: values.eventId,
+          name: values.name.trim(),
+          gender: values.gender,
+          studentId: values.studentId?.trim(),
+          school: values.school.trim(),
+          className: values.className?.trim(),
+          contact: values.contact.trim(),
+        };
+    if (isDouble && formSocial) {
+      payload.teamName = values.teamName?.trim() || undefined;
+      payload.partnerName = values.partnerName?.trim();
+      payload.partnerGender = values.partnerGender;
+      payload.partnerContact = values.partnerContact?.trim();
+    } else if (isDouble) {
       payload.teamName = values.teamName?.trim();
       payload.partnerName = values.partnerName?.trim();
       payload.partnerGender = values.partnerGender;
@@ -645,7 +666,7 @@ export default function AdminCompetitionPlayersPage() {
             <Typography.Text type={record.teamName ? 'secondary' : undefined}>
               {record.primaryName || record.name}
             </Typography.Text>
-            {record.isTemporary ? <Tag color="orange">临时</Tag> : null}
+            {record.isSocial ? <Tag color="purple">社会</Tag> : record.isTemporary ? <Tag color="orange">临时</Tag> : null}
           </Space>
           {record.partner ? (
             <Typography.Text type="secondary">
@@ -669,7 +690,7 @@ export default function AdminCompetitionPlayersPage() {
       ),
     },
     {
-      title: '学校',
+      title: '学校/单位',
       dataIndex: 'school',
       key: 'school',
       width: 140,
@@ -916,6 +937,13 @@ export default function AdminCompetitionPlayersPage() {
               >
                 批量新增
               </Button>
+              <Button
+                icon={<TeamOutlined />}
+                onClick={() => setSocialModalOpen(true)}
+                disabled={!competition?.eventOptions?.length}
+              >
+                社会人员
+              </Button>
               <Popconfirm
                 title={`确认批量删除选中的 ${selectedPlayerIds.length} 条参赛记录？`}
                 description="删除后这些报名会从参赛选手列表中移除。"
@@ -1102,6 +1130,17 @@ export default function AdminCompetitionPlayersPage() {
           </>}
         </Space>
       </Modal>
+      {id ? (
+        <SocialPlayerImportModal
+          competitionId={id}
+          events={competition?.eventOptions ?? []}
+          defaultEventId={competition?.eventOptions?.find((event) => event.label === eventName)?.id}
+          open={socialModalOpen}
+          token={token}
+          onClose={() => setSocialModalOpen(false)}
+          onImported={loadData}
+        />
+      ) : null}
       <Modal
         title={editingPlayer ? '编辑参赛选手' : '新增参赛选手'}
         open={formModalOpen}
@@ -1120,6 +1159,13 @@ export default function AdminCompetitionPlayersPage() {
           >
             <Select options={eventOptions} placeholder="选择参赛项目" />
           </Form.Item>
+          {editingPlayer ? null : (
+            <Form.Item style={{ marginBottom: 12 }}>
+              <Checkbox checked={formSocial} onChange={(e) => setFormSocial(e.target.checked)}>
+                社会人员（填写单位，无需学号、学院班级）
+              </Checkbox>
+            </Form.Item>
+          )}
           <Typography.Text strong>{formIsDouble ? '队员一' : '选手信息'}</Typography.Text>
           <div
             style={{
@@ -1135,15 +1181,23 @@ export default function AdminCompetitionPlayersPage() {
             <Form.Item label="性别" name="gender" rules={[{ required: true, message: '请选择性别' }]}>
               <Select options={GENDER_OPTIONS} placeholder="性别" />
             </Form.Item>
-            <Form.Item label="学号" name="studentId" rules={[{ required: true, message: '请填写学号' }]}>
-              <Input placeholder="学号" />
+            {formSocial ? null : (
+              <Form.Item label="学号" name="studentId" rules={[{ required: true, message: '请填写学号' }]}>
+                <Input placeholder="学号" />
+              </Form.Item>
+            )}
+            <Form.Item
+              label={formSocial ? '单位' : '学校'}
+              name="school"
+              rules={[{ required: true, message: formSocial ? '请填写单位' : '请填写学校' }]}
+            >
+              <Input placeholder={formSocial ? '单位' : '学校'} />
             </Form.Item>
-            <Form.Item label="学校" name="school" rules={[{ required: true, message: '请填写学校' }]}>
-              <Input placeholder="学校" />
-            </Form.Item>
-            <Form.Item label="学院班级" name="className" rules={[{ required: true, message: '请填写学院班级' }]}>
-              <Input placeholder="学院班级" />
-            </Form.Item>
+            {formSocial ? null : (
+              <Form.Item label="学院班级" name="className" rules={[{ required: true, message: '请填写学院班级' }]}>
+                <Input placeholder="学院班级" />
+              </Form.Item>
+            )}
             <Form.Item label="联系方式" name="contact" rules={[{ required: true, message: '请填写联系方式' }]}>
               <Input placeholder="联系方式" />
             </Form.Item>
@@ -1151,13 +1205,13 @@ export default function AdminCompetitionPlayersPage() {
           {formIsDouble ? (
             <>
               <Form.Item
-                label="队伍名称"
+                label={formSocial ? '队伍名称（选填）' : '队伍名称'}
                 name="teamName"
-                rules={[{ required: true, message: '请填写队伍名称' }]}
+                rules={[{ required: !formSocial, message: '请填写队伍名称' }]}
               >
                 <Input placeholder="队伍名称" />
               </Form.Item>
-              <Typography.Text strong>队员二（搭档）</Typography.Text>
+              <Typography.Text strong>{formSocial ? '队友（单位同上）' : '队员二（搭档）'}</Typography.Text>
               <div
                 style={{
                   display: 'grid',
@@ -1180,27 +1234,31 @@ export default function AdminCompetitionPlayersPage() {
                 >
                   <Select options={GENDER_OPTIONS} placeholder="搭档性别" />
                 </Form.Item>
-                <Form.Item
-                  label="搭档学号"
-                  name="partnerStudentId"
-                  rules={[{ required: true, message: '请填写搭档学号' }]}
-                >
-                  <Input placeholder="搭档学号" />
-                </Form.Item>
-                <Form.Item
-                  label="搭档学校"
-                  name="partnerSchool"
-                  rules={[{ required: true, message: '请填写搭档学校' }]}
-                >
-                  <Input placeholder="搭档学校" />
-                </Form.Item>
-                <Form.Item
-                  label="搭档学院班级"
-                  name="partnerClassName"
-                  rules={[{ required: true, message: '请填写搭档学院班级' }]}
-                >
-                  <Input placeholder="搭档学院班级" />
-                </Form.Item>
+                {formSocial ? null : (
+                  <>
+                    <Form.Item
+                      label="搭档学号"
+                      name="partnerStudentId"
+                      rules={[{ required: true, message: '请填写搭档学号' }]}
+                    >
+                      <Input placeholder="搭档学号" />
+                    </Form.Item>
+                    <Form.Item
+                      label="搭档学校"
+                      name="partnerSchool"
+                      rules={[{ required: true, message: '请填写搭档学校' }]}
+                    >
+                      <Input placeholder="搭档学校" />
+                    </Form.Item>
+                    <Form.Item
+                      label="搭档学院班级"
+                      name="partnerClassName"
+                      rules={[{ required: true, message: '请填写搭档学院班级' }]}
+                    >
+                      <Input placeholder="搭档学院班级" />
+                    </Form.Item>
+                  </>
+                )}
                 <Form.Item
                   label="搭档联系方式"
                   name="partnerContact"
