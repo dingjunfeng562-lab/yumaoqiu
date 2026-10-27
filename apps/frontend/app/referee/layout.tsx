@@ -5,9 +5,8 @@ export const metadata: Metadata = {
   title: '裁判端 · 羽动云赛',
 };
 
-// Hint capable browsers (Android Chrome, in-app webviews) that the referee
-// console should default to landscape. iOS Safari ignores this — the runtime
-// gate in RefereeLandscapeGate covers that case.
+// Landscape is locked when a match is opened (TournamentCourts) and released by
+// RefereeLandscapeGate once the referee leaves the match page.
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,

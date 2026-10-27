@@ -1,167 +1,91 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
+import { usePathname } from 'next/navigation';
+import { isMobileReferee, lockLandscape, releaseLandscape } from '@/components/referee/orientation';
 
-// Phones held in portrait have very little room for the scoring layout, so we
-// surface an opt-in switch that lets the referee pick the orientation they
-// prefer. We never force landscape — both modes stay supported.
-const MOBILE_MAX_WIDTH = 820;
-
-type OrientationState = {
-  isMobile: boolean;
-  isPortrait: boolean;
-};
-
-function readOrientation(): OrientationState {
-  if (typeof window === 'undefined') {
-    return { isMobile: false, isPortrait: false };
-  }
-  const width = window.innerWidth;
-  const height = window.innerHeight;
-  const shortSide = Math.min(width, height);
-  const isMobile = shortSide <= MOBILE_MAX_WIDTH && (
-    'ontouchstart' in window || (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
-  );
-  return {
-    isMobile,
-    isPortrait: height > width,
+function subscribe(onChange: () => void) {
+  window.addEventListener('resize', onChange);
+  window.addEventListener('orientationchange', onChange);
+  return () => {
+    window.removeEventListener('resize', onChange);
+    window.removeEventListener('orientationchange', onChange);
   };
 }
 
-type ScreenOrientationWithLock = ScreenOrientation & {
-  lock?: (orientation: 'landscape' | 'portrait' | 'any' | 'natural' | 'landscape-primary' | 'landscape-secondary' | 'portrait-primary' | 'portrait-secondary') => Promise<void>;
-};
+const readPortraitMobile = () => isMobileReferee() && window.innerHeight > window.innerWidth;
 
-async function tryLock(target: 'landscape' | 'portrait') {
-  const orientation = window.screen.orientation as ScreenOrientationWithLock | undefined;
-  if (target === 'landscape') {
-    const docEl = document.documentElement as HTMLElement & {
-      webkitRequestFullscreen?: () => Promise<void>;
-    };
-    if (!document.fullscreenElement && docEl.requestFullscreen) {
-      await docEl.requestFullscreen();
-    } else if (!document.fullscreenElement && docEl.webkitRequestFullscreen) {
-      await docEl.webkitRequestFullscreen();
-    }
-    if (orientation?.lock) await orientation.lock('landscape');
-    return;
-  }
-
-  // Going back to portrait: drop the lock first, then leave fullscreen so the
-  // user isn't stuck in landscape after toggling off.
-  if (orientation?.unlock) orientation.unlock();
-  if (document.fullscreenElement && document.exitFullscreen) {
-    await document.exitFullscreen();
-  }
-}
-
+// Landscape is locked when the referee taps into a match (see TournamentCourts).
+// If the match page is still portrait — the lock was lost (e.g. a back swipe
+// left fullscreen) or the browser can't lock (iOS Safari, WeChat) — show a
+// small prompt at the top: tap it to retry the lock, or turn the phone by hand.
+// Leaving the match page releases the lock so the lists follow the device.
 export function RefereeLandscapeGate({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<OrientationState>(() => ({ isMobile: false, isPortrait: false }));
+  const pathname = usePathname();
+  const onMatchPage = pathname?.startsWith('/referee/matches/') ?? false;
+  const portraitMobile = useSyncExternalStore(subscribe, readPortraitMobile, () => false);
+  const [lockFailed, setLockFailed] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [hint, setHint] = useState('');
 
   useEffect(() => {
-    function handle() {
-      setState(readOrientation());
-    }
-    handle();
-    window.addEventListener('resize', handle);
-    window.addEventListener('orientationchange', handle);
-    return () => {
-      window.removeEventListener('resize', handle);
-      window.removeEventListener('orientationchange', handle);
-    };
-  }, []);
+    if (!onMatchPage) releaseLandscape();
+  }, [onMatchPage]);
 
-  const toggle = useCallback(async () => {
+  const showPrompt = onMatchPage && portraitMobile && !dismissed;
+
+  async function retry() {
+    if (busy || lockFailed) return;
     setBusy(true);
-    setHint('');
-    try {
-      await tryLock(state.isPortrait ? 'landscape' : 'portrait');
-    } catch (error) {
-      setHint(
-        error instanceof Error && error.message
-          ? `自动旋转失败：${error.message}。请手动旋转设备。`
-          : '自动旋转失败，请手动旋转设备。',
-      );
-    } finally {
-      setBusy(false);
-    }
-  }, [state.isPortrait]);
+    const ok = await lockLandscape();
+    setBusy(false);
+    if (!ok) setLockFailed(true);
+  }
 
   return (
     <>
       {children}
-      {state.isMobile ? (
+      {showPrompt ? (
         <div
+          role="status"
           style={{
             position: 'fixed',
-            right: 16,
-            bottom: 'calc(16px + env(safe-area-inset-bottom))',
+            top: 'calc(8px + env(safe-area-inset-top))',
+            left: '50%',
+            transform: 'translateX(-50%)',
             zIndex: 9998,
             display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'flex-end',
-            gap: 6,
-            pointerEvents: 'none',
+            alignItems: 'center',
+            gap: 4,
+            maxWidth: 'calc(100vw - 24px)',
+            borderRadius: 18,
+            background: 'rgba(15,23,42,0.86)',
+            color: '#fff',
+            fontSize: 13,
+            fontWeight: 700,
+            boxShadow: '0 10px 20px rgba(15,23,42,0.28)',
+            // Fade in late so the brief portrait moment while the lock from
+            // the match list is rotating the screen doesn't flash the prompt.
+            animation: 'referee-rotate-hint 0.2s ease 0.8s both',
           }}
         >
+          <style>{'@keyframes referee-rotate-hint{from{opacity:0}to{opacity:1}}'}</style>
           <button
             type="button"
-            onClick={toggle}
-            disabled={busy}
-            aria-label={state.isPortrait ? '切换到横屏' : '切换到竖屏'}
-            style={{
-              pointerEvents: 'auto',
-              height: 44,
-              padding: '0 14px',
-              borderRadius: 22,
-              border: '1px solid rgba(255,255,255,0.18)',
-              background: 'rgba(15,23,42,0.82)',
-              color: '#fff',
-              fontSize: 13,
-              fontWeight: 800,
-              boxShadow: '0 12px 24px rgba(15,23,42,0.32)',
-              cursor: busy ? 'wait' : 'pointer',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 8,
-              backdropFilter: 'blur(6px)',
-            }}
+            onClick={() => void retry()}
+            disabled={busy || lockFailed}
+            style={{ padding: '8px 4px 8px 14px', background: 'none', border: 0, color: 'inherit', font: 'inherit', cursor: lockFailed ? 'default' : 'pointer' }}
           >
-            <span
-              aria-hidden
-              style={{
-                display: 'inline-block',
-                width: 18,
-                height: 12,
-                borderRadius: 2,
-                border: '2px solid currentColor',
-                transform: state.isPortrait ? 'rotate(0deg)' : 'rotate(90deg)',
-                transition: 'transform 0.25s ease',
-              }}
-            />
-            {busy ? '切换中…' : state.isPortrait ? '切换到横屏' : '切换到竖屏'}
+            {lockFailed ? '无法自动横屏，请将手机横过来' : busy ? '切换中…' : '点此切换横屏'}
           </button>
-          {hint ? (
-            <span
-              role="status"
-              style={{
-                pointerEvents: 'auto',
-                maxWidth: 220,
-                padding: '6px 10px',
-                borderRadius: 8,
-                background: 'rgba(251,191,36,0.95)',
-                color: '#451a03',
-                fontSize: 11,
-                fontWeight: 700,
-                lineHeight: 1.4,
-                boxShadow: '0 10px 20px rgba(15,23,42,0.18)',
-              }}
-            >
-              {hint}
-            </span>
-          ) : null}
+          <button
+            type="button"
+            aria-label="关闭提示"
+            onClick={() => setDismissed(true)}
+            style={{ padding: '8px 12px 8px 6px', background: 'none', border: 0, color: 'rgba(255,255,255,0.7)', fontSize: 16, lineHeight: 1, cursor: 'pointer' }}
+          >
+            ×
+          </button>
         </div>
       ) : null}
     </>

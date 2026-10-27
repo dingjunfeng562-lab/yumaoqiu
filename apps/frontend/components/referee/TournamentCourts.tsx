@@ -9,6 +9,7 @@ import { Alert, Button, Empty, Spin, Tag } from 'antd';
 import { ReloadOutlined, ScanOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { roundCn } from '@/lib/round';
+import { lockLandscape, releaseLandscape } from './orientation';
 import { io } from 'socket.io-client';
 
 const SOCKET_BASE = process.env.NEXT_PUBLIC_API_URL!.replace(/\/api$/, '');
@@ -133,6 +134,8 @@ export default function TournamentCourts({ tournamentId, initialCourt }: { tourn
 
   async function enterMatch(match: CourtMatch) {
     if (!token || claimingRef.current) return;
+    // Must run before the first await so the browser still sees the tap.
+    void lockLandscape();
     claimingRef.current = true;
     setClaiming(match.id);
     setError('');
@@ -140,6 +143,7 @@ export default function TournamentCourts({ tournamentId, initialCourt }: { tourn
       await apiFetch(`${base}/courts/${encodeURIComponent(courtId)}/matches/${encodeURIComponent(match.id)}/claim`, { method: 'POST', token, redirectOnForbidden: false });
       router.push(`/referee/matches/${encodeURIComponent(match.id)}`);
     } catch (err) {
+      releaseLandscape();
       await loadMatches();
       setError(err instanceof Error ? err.message : '进入比赛失败');
     } finally {
