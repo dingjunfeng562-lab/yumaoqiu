@@ -559,7 +559,7 @@ export class AuthService {
       data: {
         code,
         role: dto.role,
-        maxUses: dto.maxUses,
+        maxUses: 1,
         expiresAt,
         remark: dto.remark?.trim() || null,
         createdById: actor.id,

@@ -95,11 +95,13 @@ export class CreateInviteCodeDto {
   @IsIn(['ADMIN', 'REFEREE', 'PLAYER', 'PHOTOGRAPHER'])
   role: 'ADMIN' | 'REFEREE' | 'PLAYER' | 'PHOTOGRAPHER';
 
+  // 一人一码：每个邀请码只能注册一个账号，传入其它值直接拒绝。
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  @Max(2147483647)
-  maxUses: number;
+  @Max(1, { message: '每个邀请码只能注册一个账号' })
+  maxUses?: number;
 
   @IsOptional()
   @IsString()

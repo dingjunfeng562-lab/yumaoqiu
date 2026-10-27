@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useSession } from 'next-auth/react';
-import { Button, Card, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Typography, message } from 'antd';
+import { Button, Card, Form, Input, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Typography, message } from 'antd';
 import { DeleteOutlined, PlusOutlined, ReloadOutlined, CopyOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { useCurrentRole } from '@/lib/use-current-role';
@@ -25,7 +25,6 @@ type InviteCodeItem = {
 
 type CreateInviteCodePayload = {
   role: InviteRole;
-  maxUses: number;
   expiresAt?: string;
   remark?: string;
 };
@@ -205,12 +204,12 @@ export default function InviteCodesPage() {
       </Card>
 
       <Modal title="生成邀请码" open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} destroyOnHidden>
-        <Form form={form} layout="vertical" onFinish={createInviteCode} initialValues={{ role: 'PLAYER', maxUses: 1 }}>
+        <Form form={form} layout="vertical" onFinish={createInviteCode} initialValues={{ role: 'PLAYER' }}>
           <Form.Item
             name="role"
             label="角色"
             rules={[{ required: true }]}
-            extra="选手账号不限总量；裁判和图片员在注册成功时扣除共享名额。"
+            extra="一人一码：每个邀请码只能注册一个账号。选手账号不限总量；裁判和图片员在注册成功时扣除共享名额。"
           >
             <Select
               options={[
@@ -220,9 +219,6 @@ export default function InviteCodesPage() {
                 { value: 'PHOTOGRAPHER', label: '图片上传员' },
               ].filter((item) => role === 'ROOT' || item.value !== 'ADMIN')}
             />
-          </Form.Item>
-          <Form.Item name="maxUses" label="最大使用次数" rules={[{ required: true, message: '请输入最大使用次数' }]}>
-            <InputNumber min={1} precision={0} style={{ width: '100%' }} />
           </Form.Item>
           <Form.Item name="expiresAt" label="有效期（可选）">
             <Input placeholder="例如 2026-12-31T23:59:59.000Z" />
