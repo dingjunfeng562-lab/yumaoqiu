@@ -32,7 +32,9 @@ export function deriveTournamentStatusByTime(
 }
 
 // The tournament status stored in the database is the single source of truth
-// across admin, public, and big-screen views. Time-based auto-advance was
+// across admin, public, and big-screen views. It follows the timeline through
+// TournamentStatusScheduler (advances when a time boundary is crossed) and is
+// recomputed when the dates are edited. Time-based auto-advance was
 // previously merged in here, but it competed with the administrative override on
 // 赛事配置 — a manual change wouldn't propagate to the public side when the
 // time-derived status outranked it. Use deriveTournamentStatusByTime directly

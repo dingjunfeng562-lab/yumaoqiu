@@ -22,6 +22,7 @@ import { CreateTournamentDto, UpdateTournamentDto } from './dto/tournament.dto';
 import { sanitizeAnnouncementContent } from '../announcements/announcement-content';
 import { ScreenSettingsDto } from './dto/screen-settings.dto';
 import { AuthActor, tournamentScope } from '../auth/admin-scope';
+import { deriveTournamentStatusByTime } from './tournament-status';
 
 export type AuthUser = {
   id: string;
@@ -90,6 +91,8 @@ export class TournamentsService {
       const tournament = await tx.tournament.create({
         data: {
           ...(this.toTournamentData(dto) as Prisma.TournamentUncheckedCreateInput),
+          // 未显式指定状态时按报名/比赛时间算出初始状态，避免报名已开始却显示「报名未开始」。
+          ...(dto.status ? {} : { status: this.statusFromTiming(dto) }),
           edition,
           // Auto-approve when the super admin creates it; otherwise the new
           // tournament is queued for review and stays hidden until approval.
@@ -204,10 +207,20 @@ export class TournamentsService {
         });
       }
 
+      // 时间真的变了且没有显式指定状态时，按新时间重算状态（延长报名后会回到「报名中」）。
+      // 编辑表单每次都会带上全部时间，所以要和库里的值比较，只改简介不应重算状态。
+      const differs = (value: string | undefined, stored: Date | null) =>
+        value !== undefined && new Date(value).getTime() !== (stored?.getTime() ?? NaN);
+      const timingChanged =
+        differs(dto.startDate, current.startDate) ||
+        differs(dto.endDate, current.endDate) ||
+        differs(dto.registrationStartDate, current.registrationStartDate) ||
+        differs(dto.registrationEndDate, current.registrationEndDate);
       await tx.tournament.update({
         where: { id },
         data: {
           ...(this.toTournamentData(dto) as Prisma.TournamentUncheckedUpdateInput),
+          ...(timingChanged && dto.status === undefined ? { status: this.statusFromTiming(dto, current) } : {}),
           ...(dto.showOnHome && isApproved ? { isPublished: true } : {}),
           ...(dto.showOnHome && !isApproved ? { showOnHome: false } : {}),
         },
@@ -253,6 +266,20 @@ export class TournamentsService {
   async remove(id: string) {
     await this.findOne(id);
     return this.prisma.tournament.delete({ where: { id } });
+  }
+
+  private statusFromTiming(dto: CreateTournamentDto | UpdateTournamentDto, current?: TournamentDetail) {
+    const pick = (value: string | null | undefined, fallback: Date | null | undefined) =>
+      value ? new Date(value) : value === null ? null : fallback ?? null;
+    const startDate = pick(dto.startDate, current?.startDate);
+    const endDate = pick(dto.endDate, current?.endDate);
+    if (!startDate || !endDate) return current?.status ?? TournamentStatus.REGISTRATION_NOT_STARTED;
+    return deriveTournamentStatusByTime({
+      startDate,
+      endDate,
+      registrationStartDate: pick(dto.registrationStartDate, current?.registrationStartDate),
+      registrationEndDate: pick(dto.registrationEndDate, current?.registrationEndDate),
+    });
   }
 
   private toTournamentData(dto: CreateTournamentDto | UpdateTournamentDto) {
