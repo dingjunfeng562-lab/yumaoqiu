@@ -616,11 +616,18 @@ export class AuthService {
     if (!user) {
       throw new NotFoundException('用户不存在');
     }
-    return this.prisma.$transaction(async (tx) => {
-      await tx.inviteCode.updateMany({ where: { createdById: id }, data: { isEnabled: false } });
-      // Never decrement staffInviteUsed: it measures lifetime consumption.
-      return tx.user.delete({ where: { id } });
-    });
+    const blocked = await this.userDeletionBlockers([id]);
+    const reasons = blocked.get(id);
+    if (reasons) {
+      throw new ConflictException(`该账号有${reasons.join('、')}，这些是审计记录，不能删除账号，请改为封禁。`);
+    }
+    return this.deleteOrExplain(() =>
+      this.prisma.$transaction(async (tx) => {
+        await tx.inviteCode.updateMany({ where: { createdById: id }, data: { isEnabled: false } });
+        // Never decrement staffInviteUsed: it measures lifetime consumption.
+        return tx.user.delete({ where: { id } });
+      }),
+    );
   }
 
   async deleteUsers(ids: string[], actor: AuthActor) {
@@ -636,17 +643,68 @@ export class AuthService {
 
     const users = await this.prisma.user.findMany({
       where: { id: { in: uniqueIds } },
-      select: { id: true },
+      select: { id: true, username: true },
     });
     if (users.length !== uniqueIds.length) {
       throw new NotFoundException('部分账号不存在，请刷新后重试');
     }
+    const blocked = await this.userDeletionBlockers(uniqueIds);
+    if (blocked.size) {
+      const names = users.filter((user) => blocked.has(user.id)).map((user) => user.username);
+      throw new ConflictException(
+        `以下账号有抽签、照片等审计记录，不能删除，请改为封禁或取消勾选后再删：${names.join('、')}`,
+      );
+    }
 
-    const result = await this.prisma.$transaction(async (tx) => {
-      await tx.inviteCode.updateMany({ where: { createdById: { in: uniqueIds } }, data: { isEnabled: false } });
-      return tx.user.deleteMany({ where: { id: { in: uniqueIds } } });
-    });
+    const result = await this.deleteOrExplain(() =>
+      this.prisma.$transaction(async (tx) => {
+        await tx.inviteCode.updateMany({ where: { createdById: { in: uniqueIds } }, data: { isEnabled: false } });
+        return tx.user.deleteMany({ where: { id: { in: uniqueIds } } });
+      }),
+    );
     return { deleted: result.count };
+  }
+
+  // 这些表对 User 是 RESTRICT 外键（抽签/照片的审计记录），有记录时数据库拒绝删除账号。
+  // 删除前先查出来给出可读原因，而不是让外键错误变成 500。
+  private async userDeletionBlockers(ids: string[]) {
+    const where = { in: ids };
+    const count = { _all: true } as const;
+    const sources = await Promise.all([
+      this.prisma.drawOperationLog.groupBy({ by: ['operatorId'], where: { operatorId: where }, _count: count })
+        .then((rows) => rows.map((r) => ['抽签操作记录', r.operatorId, r._count._all] as const)),
+      this.prisma.drawSeedSetting.groupBy({ by: ['createdBy'], where: { createdBy: where }, _count: count })
+        .then((rows) => rows.map((r) => ['种子设置记录', r.createdBy, r._count._all] as const)),
+      this.prisma.drawRedrawRequest.groupBy({ by: ['requesterId'], where: { requesterId: where }, _count: count })
+        .then((rows) => rows.map((r) => ['重抽申请', r.requesterId, r._count._all] as const)),
+      this.prisma.drawRedrawRequest.groupBy({ by: ['decidedById'], where: { decidedById: where }, _count: count })
+        .then((rows) => rows.map((r) => ['重抽审批', r.decidedById, r._count._all] as const)),
+      this.prisma.teamDrawClearRequest.groupBy({ by: ['requesterId'], where: { requesterId: where }, _count: count })
+        .then((rows) => rows.map((r) => ['团体签表清空申请', r.requesterId, r._count._all] as const)),
+      this.prisma.teamDrawClearRequest.groupBy({ by: ['decidedById'], where: { decidedById: where }, _count: count })
+        .then((rows) => rows.map((r) => ['团体签表清空审批', r.decidedById, r._count._all] as const)),
+      this.prisma.photo.groupBy({ by: ['uploaderId'], where: { uploaderId: where }, _count: count })
+        .then((rows) => rows.map((r) => ['上传的照片', r.uploaderId, r._count._all] as const)),
+      this.prisma.photoOperationLog.groupBy({ by: ['operatorId'], where: { operatorId: where }, _count: count })
+        .then((rows) => rows.map((r) => ['照片操作记录', r.operatorId, r._count._all] as const)),
+    ]);
+    const blockers = new Map<string, string[]>();
+    for (const [label, userId, n] of sources.flat()) {
+      if (!userId || !n) continue;
+      blockers.set(userId, [...(blockers.get(userId) ?? []), `${n} 条${label}`]);
+    }
+    return blockers;
+  }
+
+  private async deleteOrExplain<T>(run: () => Promise<T>) {
+    try {
+      return await run();
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003') {
+        throw new ConflictException('该账号仍被其他数据引用，不能删除，请改为封禁');
+      }
+      throw error;
+    }
   }
 
   private async createManagedUser(role: Role, usernameInput: string, emailInput: string, password: string, actor: AuthActor) {
