@@ -1,4 +1,5 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreatePlayerDto, UpdatePlayerDto } from './dto/player.dto';
 import { AuthActor, playerScope } from '../auth/admin-scope';
@@ -60,6 +61,26 @@ export class PlayersService {
 
   async remove(id: string) {
     await this.findOne(id);
-    return this.prisma.player.delete({ where: { id } });
+    // 报名和团体出场名单对选手是 RESTRICT 外键，直接删会报 500；先给出可操作的提示。
+    // 不级联删除报名，以免破坏签表和比赛记录。
+    const [registrations, lineups] = await Promise.all([
+      this.prisma.registration.count({ where: { OR: [{ player1Id: id }, { player2Id: id }] } }),
+      this.prisma.teamLineup.count({ where: { OR: [{ player1Id: id }, { player2Id: id }] } }),
+    ]);
+    if (registrations || lineups) {
+      const parts = [
+        registrations ? `${registrations} 条报名记录` : '',
+        lineups ? `${lineups} 条团体赛出场记录` : '',
+      ].filter(Boolean);
+      throw new ConflictException(`该选手还有${parts.join('、')}，不能删除。请先在赛事的参赛选手中移除相关报名。`);
+    }
+    try {
+      return await this.prisma.player.delete({ where: { id } });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003') {
+        throw new ConflictException('该选手仍被其他数据引用，不能删除');
+      }
+      throw error;
+    }
   }
 }
