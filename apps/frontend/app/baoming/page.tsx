@@ -103,7 +103,7 @@ export default function BaomingPage() {
                       )
                     }
                   >
-                    {info.loginRequired ? '登录后填写学校报名' : '填写社会组报名'}
+                    {info.entrantType === 'SCHOOL' ? '填写学校报名' : '填写社会组报名'}
                   </Button>
                 </Space>
               }

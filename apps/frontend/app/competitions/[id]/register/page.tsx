@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import { PortalFeaturePage } from '@/components/home/PortalFeaturePage';
@@ -297,8 +297,7 @@ function SchoolRegisterPage({
 }) {
   const params = useParams<{ id: string }>();
   const id = params?.id;
-  const router = useRouter();
-  const { data: session, status } = useSession();
+  const { data: session } = useSession();
   const token = session?.user?.accessToken;
   const [competition, setCompetition] = useState<Competition | null>(null);
   const [existing, setExisting] = useState<ExistingRegistration | null>(null);
@@ -310,29 +309,25 @@ function SchoolRegisterPage({
   const [step, setStep] = useState<'events' | 'details'>('events');
 
   useEffect(() => {
-    if (status === 'unauthenticated') {
-      const current = `${window.location.pathname}${window.location.search}`;
-      router.replace(`/login?redirect=${encodeURIComponent(current)}`);
-    }
-  }, [router, status]);
-
-  useEffect(() => {
-    if (!id || !token) return;
+    if (!id) return;
     let alive = true;
     async function loadData() {
       setLoading(true);
       setError('');
       try {
+        // 未登录时走游客通道：不查询「我的报名」，只加载赛事信息。
         const [competitionRes, registrationRes] = await Promise.all([
           fetch(`${API_BASE}/competitions/${id}`, { cache: 'no-store' }),
-          fetch(`${API_BASE}/competitions/${id}/registration/me`, {
-            cache: 'no-store',
-            headers: { Authorization: `Bearer ${token}` },
-          }),
+          token
+            ? fetch(`${API_BASE}/competitions/${id}/registration/me`, {
+                cache: 'no-store',
+                headers: { Authorization: `Bearer ${token}` },
+              })
+            : Promise.resolve(null),
         ]);
         if (!competitionRes.ok) throw new Error('赛事信息加载失败');
         const competitionData = (await parseJsonSafe<Competition>(competitionRes)) as Competition;
-        const registrationData = registrationRes.ok
+        const registrationData = registrationRes?.ok
           ? await parseJsonSafe<ExistingRegistration>(registrationRes)
           : null;
         if (!alive) return;
@@ -455,7 +450,7 @@ function SchoolRegisterPage({
 
   async function submitRegistration(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!id || !token) return;
+    if (!id) return;
     setSubmitting(true);
     setMessage('');
     setError('');
@@ -483,12 +478,15 @@ function SchoolRegisterPage({
           teamName: item.teamName || undefined,
         })),
       };
-      const res = await fetch(`${API_BASE}/competitions/${id}/register`, {
+      // 已登录：绑定账号提交；未登录：走游客通道，凭报名码提交（不关联账号）。
+      const endpoint = token
+        ? `${API_BASE}/competitions/${id}/register`
+        : `${API_BASE}/competitions/${id}/public-register`;
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch(endpoint, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
+        headers,
         body: JSON.stringify(payload),
       });
       const data = await res.json().catch(() => ({}));

@@ -265,7 +265,7 @@ export class CompetitionsService {
       registrationEndTime: tournament.registrationEndDate?.toISOString() ?? null,
       entrantType,
       entrantTypeLabel: entrantTypeLabel(entrantType),
-      loginRequired: entrantType === EntrantType.SCHOOL,
+      loginRequired: false,
       fieldRules: rules,
       events: tournament.events
         .filter((event) => event.entrantType === entrantType)
@@ -353,13 +353,10 @@ export class CompetitionsService {
   }
 
   /**
-   * 社会组游客报名：不要求登录，userId 为空，靠 guestToken 查询。
-   * 学校组仍然只能走 submitRegistration（必须登录）。
+   * 游客报名：学校组与社会组都可使用，凭报名码提交，不要求登录。
+   * userId 为空，靠 guestToken 查询结果；已登录用户仍走 submitRegistration 以绑定账号。
    */
   async publicRegister(competitionId: string, dto: PublicCompetitionRegistrationDto) {
-    if (this.normalizeEntrantType(dto.entrantType) !== EntrantType.SOCIAL) {
-      throw new ForbiddenException('该入口只支持社会组报名');
-    }
     const competition = await this.findCompetition(competitionId, false);
     this.ensureRegistrationWindow(competition);
     const result = await this.saveRegistration(competition, null, dto);
@@ -2130,7 +2127,7 @@ export class CompetitionsService {
           label: entrantTypeLabel(EntrantType.SCHOOL),
           enabled: competition.allowSchoolRegistration
             && competition.events.some((event) => event.entrantType === EntrantType.SCHOOL),
-          loginRequired: true,
+          loginRequired: false,
         },
         {
           entrantType: EntrantType.SOCIAL,
