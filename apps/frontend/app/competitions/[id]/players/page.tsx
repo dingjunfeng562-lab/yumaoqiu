@@ -23,6 +23,8 @@ type EventOption = {
   type: EventType;
   label: string;
   isDouble: boolean;
+  entrantType?: 'SCHOOL' | 'SOCIAL';
+  groupLabel?: string | null;
 };
 
 type Competition = {
@@ -52,8 +54,10 @@ type Player = {
   className?: string;
   phone?: string;
   genderLabel?: string;
+  eventId?: string;
   eventType?: string;
   eventName: string;
+  entrantType?: 'SCHOOL' | 'SOCIAL';
   createdAt: string;
   statusLabel: string;
 };
@@ -62,6 +66,7 @@ const DOUBLES_TYPES = new Set(['MENS_DOUBLES', 'WOMENS_DOUBLES', 'MIXED_DOUBLES'
 
 type PlayersResponse = {
   players: Player[];
+  eventGroups?: Array<{ eventId: string; label: string; players: Player[] }>;
   groups: Record<EventGroupKey, Player[]>;
 };
 
@@ -92,7 +97,8 @@ function buildVisibleGroups(competition: Competition | null, data: PlayersRespon
         return {
           id: option.id,
           title: option.label || group.fallbackTitle,
-          players: data?.groups[group.key] ?? [],
+          players: data?.eventGroups?.find((item) => item.eventId === option.id)?.players
+            ?? (data?.players ?? []).filter((player) => player.eventId === option.id),
         };
       })
       .filter((group): group is VisiblePlayerGroup => Boolean(group));

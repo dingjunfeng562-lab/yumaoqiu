@@ -5,8 +5,10 @@ import {
   IsArray,
   IsBoolean,
   IsIn,
+  IsInt,
   IsOptional,
   IsString,
+  Min,
   MinLength,
   ValidateNested,
 } from 'class-validator';
@@ -34,6 +36,14 @@ export class CompetitionRegistrationEventItemDto {
 
   @IsOptional()
   @IsString()
+  partnerCollege?: string;
+
+  @IsOptional()
+  @IsString()
+  partnerMajorGrade?: string;
+
+  @IsOptional()
+  @IsString()
   partnerClassName?: string;
 
   @IsOptional()
@@ -46,9 +56,27 @@ export class CompetitionRegistrationEventItemDto {
 }
 
 export class SubmitCompetitionRegistrationDto {
+  // 学校组/社会组；旧客户端不传时按学校组处理。
+  @IsOptional()
+  @IsIn(['SCHOOL', 'SOCIAL'])
+  entrantType?: 'SCHOOL' | 'SOCIAL';
+
+  // 赛事报名码；赛事配置了报名码时必填，服务端会再次校验。
+  @IsOptional()
   @IsString()
-  @MinLength(1)
-  studentId: string;
+  registrationCode?: string;
+
+  @IsOptional()
+  @IsString()
+  studentId?: string;
+
+  @IsOptional()
+  @IsString()
+  college?: string;
+
+  @IsOptional()
+  @IsString()
+  majorGrade?: string;
 
   @IsString()
   @MinLength(1)
@@ -58,7 +86,7 @@ export class SubmitCompetitionRegistrationDto {
   gender: 'MALE' | 'FEMALE' | '男' | '女';
 
   @IsString()
-  @MinLength(2, { message: '学校名称至少 2 个字符' })
+  @MinLength(1)
   school: string;
 
   @IsOptional()
@@ -71,21 +99,37 @@ export class SubmitCompetitionRegistrationDto {
 
   @IsOptional()
   @IsString()
+  guestEmail?: string;
+
+  @IsOptional()
+  @IsString()
   remark?: string;
 
   @IsArray()
   @ArrayMinSize(1)
-  @ArrayMaxSize(2)
+  @ArrayMaxSize(5)
   @ValidateNested({ each: true })
   @Type(() => CompetitionRegistrationEventItemDto)
   items: CompetitionRegistrationEventItemDto[];
 }
 
+export class PublicCompetitionRegistrationDto extends SubmitCompetitionRegistrationDto {}
+
 export class AdminBatchCompetitionPlayerDto {
-  // 社会人员：school 存「单位」，无学号/学院班级，双打无需队伍名称。
+  // 兼容旧导入：social=true 等同 entrantType=SOCIAL；新代码优先 entrantType。
   @IsOptional()
   @IsBoolean()
   social?: boolean;
+
+  @IsOptional()
+  @IsIn(['SCHOOL', 'SOCIAL'])
+  entrantType?: 'SCHOOL' | 'SOCIAL';
+
+  // Excel 行号，仅用于错误提示。
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  row?: number;
 
   @IsString()
   @MinLength(1)
@@ -94,10 +138,18 @@ export class AdminBatchCompetitionPlayerDto {
   @IsIn(['MALE', 'FEMALE', '男', '女'])
   gender: 'MALE' | 'FEMALE' | '男' | '女';
 
-  // 学生必填由服务端按 social 校验。
+  // 学生必填由服务端按赛事字段规则校验。
   @IsOptional()
   @IsString()
   studentId?: string;
+
+  @IsOptional()
+  @IsString()
+  college?: string;
+
+  @IsOptional()
+  @IsString()
+  majorGrade?: string;
 
   @IsString()
   @MinLength(1)
@@ -130,6 +182,14 @@ export class AdminBatchCompetitionPlayerDto {
   @IsOptional()
   @IsString()
   partnerSchool?: string;
+
+  @IsOptional()
+  @IsString()
+  partnerCollege?: string;
+
+  @IsOptional()
+  @IsString()
+  partnerMajorGrade?: string;
 
   @IsOptional()
   @IsString()

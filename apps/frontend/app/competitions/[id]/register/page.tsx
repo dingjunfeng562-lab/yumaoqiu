@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import { PortalFeaturePage } from '@/components/home/PortalFeaturePage';
+import SocialRegistrationForm, { type SocialCodeInfo } from '@/components/SocialRegistrationForm';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 
@@ -15,6 +16,8 @@ type EventOption = {
   type: EventType;
   label: string;
   isDouble: boolean;
+  entrantType?: 'SCHOOL' | 'SOCIAL';
+  groupLabel?: string | null;
 };
 
 const DOUBLE_EVENT_TYPES: ReadonlySet<EventType> = new Set([
@@ -53,6 +56,8 @@ type ExistingRegistration = {
   name: string;
   gender: 'MALE' | 'FEMALE';
   school?: string | null;
+  college?: string | null;
+  majorGrade?: string | null;
   className?: string | null;
   phone?: string;
   remark?: string;
@@ -85,6 +90,8 @@ type FormState = {
   name: string;
   gender: 'MALE' | 'FEMALE';
   school: string;
+  college: string;
+  majorGrade: string;
   className: string;
   contact: string;
   remark: string;
@@ -96,6 +103,8 @@ const initialForm: FormState = {
   name: '',
   gender: 'MALE',
   school: '',
+  college: '',
+  majorGrade: '',
   className: '',
   contact: '',
   remark: '',
@@ -154,7 +163,138 @@ function isPrimaryGenderAllowed(option: EventOption | undefined, gender: FormSta
   return genderOptionsForPrimary(option).some((item) => item.value === gender);
 }
 
+type RegistrationCodeInfo = {
+  tournamentId: string;
+  title: string;
+  startDate: string;
+  endDate: string;
+  location?: string | null;
+  registrationStatus?: string;
+  entrantType: 'SCHOOL' | 'SOCIAL';
+  entrantTypeLabel: string;
+  loginRequired: boolean;
+  fieldRules?: {
+    SCHOOL?: { studentId?: string; college?: string; majorGrade?: string };
+    SOCIAL?: { email?: string };
+  };
+  events: Array<{ id: string; type: string; label: string; isDouble: boolean }>;
+};
+
 export default function CompetitionRegisterPage() {
+  const params = useParams<{ id: string }>();
+  const id = params?.id;
+  const [code, setCode] = useState('');
+  const [codeInput, setCodeInput] = useState('');
+  const [info, setInfo] = useState<RegistrationCodeInfo | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [codeError, setCodeError] = useState('');
+
+  useEffect(() => {
+    const value = new URLSearchParams(window.location.search).get('code') ?? '';
+    if (value) {
+      setCode(value);
+      setCodeInput(value);
+    }
+  }, []);
+
+  async function verifyCode(value: string) {
+    const normalized = value.trim().toUpperCase();
+    if (!normalized) {
+      setCodeError('请输入报名码');
+      return;
+    }
+    setChecking(true);
+    setCodeError('');
+    setInfo(null);
+    try {
+      const response = await fetch(`${API_BASE}/competitions/registration-code/${encodeURIComponent(normalized)}`, {
+        cache: 'no-store',
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.message ?? '报名码无效');
+      setInfo(data as RegistrationCodeInfo);
+      setCode(normalized);
+    } catch (err) {
+      setCodeError(err instanceof Error ? err.message : '报名码校验失败');
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  useEffect(() => {
+    if (code) void verifyCode(code);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (!info) {
+    return (
+      <main className="mx-auto flex min-h-[70vh] max-w-xl items-center px-4">
+        <section className="w-full rounded-xl border border-blue-100 bg-white p-6 shadow-sm">
+          <p className="text-xs font-black uppercase tracking-[0.18em] text-blue-600">Registration Code</p>
+          <h1 className="mt-2 text-2xl font-black text-slate-950">输入赛事报名码</h1>
+          <p className="mt-2 text-sm font-semibold text-slate-500">
+            报名码由组委会提供；学生组码进入学校报名，社会组码进入社会报名。
+          </p>
+          <div className="mt-5 flex gap-2">
+            <input
+              className="h-11 min-w-0 flex-1 rounded-lg border border-blue-100 px-3 text-sm font-bold uppercase outline-none focus:border-blue-500"
+              value={codeInput}
+              onChange={(event) => setCodeInput(event.target.value.toUpperCase())}
+              placeholder="例如 YD7K2M9Q"
+              maxLength={16}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void verifyCode(codeInput);
+              }}
+            />
+            <button
+              type="button"
+              disabled={checking}
+              onClick={() => void verifyCode(codeInput)}
+              className="inline-flex h-11 items-center rounded-lg bg-blue-700 px-4 text-sm font-black text-white disabled:bg-slate-300"
+            >
+              {checking ? '校验中…' : '验证'}
+            </button>
+          </div>
+          {codeError ? (
+            <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-sm font-bold text-red-600">{codeError}</p>
+          ) : null}
+          {info ? null : (
+            <p className="mt-4 text-xs font-semibold text-slate-400">
+              赛事：{id ? `当前赛事 ${id}` : '请通过组委会分享的链接进入'}
+            </p>
+          )}
+        </section>
+      </main>
+    );
+  }
+
+  if (info.entrantType === 'SOCIAL') {
+    return (
+      <PortalFeaturePage
+        activeHref="/competitions"
+        eyebrow="Social Registration"
+        title={`${info.title} · 社会组报名`}
+        description="社会组免登录报名；提交后凭报名编号查询审核结果。"
+      >
+        <SocialRegistrationForm
+          competitionId={info.tournamentId}
+          registrationCode={code}
+          info={info as SocialCodeInfo}
+        />
+      </PortalFeaturePage>
+    );
+  }
+
+  return <SchoolRegisterPage registrationCode={code} codeInfo={info} />;
+}
+
+function SchoolRegisterPage({
+  registrationCode,
+  codeInfo,
+}: {
+  registrationCode: string;
+  codeInfo: RegistrationCodeInfo;
+}) {
   const params = useParams<{ id: string }>();
   const id = params?.id;
   const router = useRouter();
@@ -171,7 +311,8 @@ export default function CompetitionRegisterPage() {
 
   useEffect(() => {
     if (status === 'unauthenticated') {
-      router.replace('/login');
+      const current = `${window.location.pathname}${window.location.search}`;
+      router.replace(`/login?redirect=${encodeURIComponent(current)}`);
     }
   }, [router, status]);
 
@@ -204,6 +345,8 @@ export default function CompetitionRegisterPage() {
             name: registrationData.name,
             gender: registrationData.gender,
             school: registrationData.school ?? '',
+            college: registrationData.college ?? registrationData.className ?? '',
+            majorGrade: registrationData.majorGrade ?? '',
             className: registrationData.className ?? '',
             contact: registrationData.phone ?? '',
             remark: registrationData.remark ?? '',
@@ -233,7 +376,16 @@ export default function CompetitionRegisterPage() {
     };
   }, [id, token]);
 
-  const eventOptions = competition?.eventOptions ?? [];
+  const schoolFieldRules = codeInfo.fieldRules?.SCHOOL ?? {};
+  const studentIdHidden = schoolFieldRules.studentId === 'hidden';
+  const studentIdRequired = !studentIdHidden && schoolFieldRules.studentId !== 'optional';
+  const collegeHidden = schoolFieldRules.college === 'hidden';
+  const collegeRequired = !collegeHidden && schoolFieldRules.college !== 'optional';
+  const majorGradeHidden = schoolFieldRules.majorGrade === 'hidden';
+  const majorGradeRequired = !majorGradeHidden && schoolFieldRules.majorGrade === 'required';
+  const eventOptions = (competition?.eventOptions ?? []).filter(
+    (option) => !option.entrantType || option.entrantType === 'SCHOOL',
+  );
   const selectedEventIds = useMemo(() => form.items.map((item) => item.eventId).filter(Boolean), [form.items]);
   const existingLocked = existing?.status === 'pending';
   const existingApproved = existing?.status === 'approved';
@@ -309,11 +461,15 @@ export default function CompetitionRegisterPage() {
     setError('');
     try {
       const payload = {
-        studentId: form.studentId,
+        entrantType: 'SCHOOL',
+        registrationCode,
+        studentId: studentIdHidden ? undefined : form.studentId,
+        college: collegeHidden ? undefined : (form.college.trim() || form.className.trim() || undefined),
+        majorGrade: majorGradeHidden ? undefined : form.majorGrade.trim() || undefined,
         name: form.name,
         gender: form.gender,
         school: form.school.trim(),
-        className: form.className.trim() || undefined,
+        className: [form.college.trim() || form.className.trim(), form.majorGrade.trim()].filter(Boolean).join(' ') || undefined,
         contact: form.contact,
         remark: form.remark,
         items: form.items.map((item) => ({
@@ -478,13 +634,15 @@ export default function CompetitionRegisterPage() {
                         ))}
                       </select>
                     </Field>
-                    <Field label="学号">
-                      <input required disabled={existingLocked} value={form.studentId} onChange={(event) => updateField('studentId', event.target.value)} />
-                    </Field>
+                    {!studentIdHidden ? (
+                      <Field label={studentIdRequired ? '学号' : '学号（选填）'}>
+                        <input required={studentIdRequired} disabled={existingLocked} value={form.studentId} onChange={(event) => updateField('studentId', event.target.value)} />
+                      </Field>
+                    ) : null}
                     <Field label="学校">
                       <input
                         required
-                        minLength={2}
+                        minLength={1}
                         maxLength={120}
                         disabled={existingLocked}
                         value={form.school}
@@ -492,16 +650,30 @@ export default function CompetitionRegisterPage() {
                         placeholder="例如:武汉大学"
                       />
                     </Field>
-                    <Field label="学院班级">
-                      <input
-                        required
-                        maxLength={120}
-                        disabled={existingLocked}
-                        value={form.className}
-                        onChange={(event) => updateField('className', event.target.value)}
-                        placeholder="例如:健康产业学院社会体育2班"
-                      />
-                    </Field>
+                    {!collegeHidden ? (
+                      <Field label={collegeRequired ? '学院' : '学院（选填）'}>
+                        <input
+                          required={collegeRequired}
+                          maxLength={120}
+                          disabled={existingLocked}
+                          value={form.college}
+                          onChange={(event) => updateField('college', event.target.value)}
+                          placeholder="例如:健康产业学院"
+                        />
+                      </Field>
+                    ) : null}
+                    {!majorGradeHidden ? (
+                      <Field label={majorGradeRequired ? '年级专业' : '年级专业（选填）'}>
+                        <input
+                          required={majorGradeRequired}
+                          maxLength={120}
+                          disabled={existingLocked}
+                          value={form.majorGrade}
+                          onChange={(event) => updateField('majorGrade', event.target.value)}
+                          placeholder="例如:25级社会体育2班"
+                        />
+                      </Field>
+                    ) : null}
                     <Field label="联系方式">
                       <input required value={form.contact} onChange={(event) => updateField('contact', event.target.value)} />
                     </Field>
@@ -559,13 +731,15 @@ export default function CompetitionRegisterPage() {
                                 ))}
                               </select>
                             </Field>
-                            <Field label="学号">
-                              <input required disabled={existingLocked} value={form.studentId} onChange={(event) => updateField('studentId', event.target.value)} />
-                            </Field>
+                            {!studentIdHidden ? (
+                              <Field label={studentIdRequired ? '学号' : '学号（选填）'}>
+                                <input required={studentIdRequired} disabled={existingLocked} value={form.studentId} onChange={(event) => updateField('studentId', event.target.value)} />
+                              </Field>
+                            ) : null}
                             <Field label="学校">
                               <input
                                 required
-                                minLength={2}
+                                minLength={1}
                                 maxLength={120}
                                 disabled={existingLocked}
                                 value={form.school}
@@ -573,16 +747,30 @@ export default function CompetitionRegisterPage() {
                                 placeholder="例如:武汉大学"
                               />
                             </Field>
-                            <Field label="学院班级">
-                              <input
-                                required
-                                maxLength={120}
-                                disabled={existingLocked}
-                                value={form.className}
-                                onChange={(event) => updateField('className', event.target.value)}
-                                placeholder="例如:健康产业学院社会体育2班"
-                              />
-                            </Field>
+                            {!collegeHidden ? (
+                              <Field label={collegeRequired ? '学院' : '学院（选填）'}>
+                                <input
+                                  required={collegeRequired}
+                                  maxLength={120}
+                                  disabled={existingLocked}
+                                  value={form.college}
+                                  onChange={(event) => updateField('college', event.target.value)}
+                                  placeholder="例如:健康产业学院"
+                                />
+                              </Field>
+                            ) : null}
+                            {!majorGradeHidden ? (
+                              <Field label={majorGradeRequired ? '年级专业' : '年级专业（选填）'}>
+                                <input
+                                  required={majorGradeRequired}
+                                  maxLength={120}
+                                  disabled={existingLocked}
+                                  value={form.majorGrade}
+                                  onChange={(event) => updateField('majorGrade', event.target.value)}
+                                  placeholder="例如:25级社会体育2班"
+                                />
+                              </Field>
+                            ) : null}
                             <Field label="联系方式">
                               <input required value={form.contact} onChange={(event) => updateField('contact', event.target.value)} />
                             </Field>
@@ -607,15 +795,17 @@ export default function CompetitionRegisterPage() {
                                 ))}
                               </select>
                             </Field>
-                            <Field label="搭档学号">
-                              <input
-                                required
-                                disabled={existingLocked}
-                                value={item.partnerStudentId}
-                                onChange={(event) => updateItem(index, { partnerStudentId: event.target.value })}
-                                placeholder="请填写搭档学号"
-                              />
-                            </Field>
+                            {!studentIdHidden ? (
+                              <Field label={studentIdRequired ? '搭档学号' : '搭档学号（选填）'}>
+                                <input
+                                  required={studentIdRequired}
+                                  disabled={existingLocked}
+                                  value={item.partnerStudentId}
+                                  onChange={(event) => updateItem(index, { partnerStudentId: event.target.value })}
+                                  placeholder="请填写搭档学号"
+                                />
+                              </Field>
+                            ) : null}
                             <Field label="搭档学校">
                               <input
                                 required

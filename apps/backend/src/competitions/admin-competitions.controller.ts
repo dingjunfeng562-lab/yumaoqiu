@@ -58,17 +58,42 @@ export class AdminCompetitionsController {
   }
 
   @Get('competitions/:id/registrations')
-  listRegistrations(@Param('id') id: string, @Query('status') status?: string) {
-    return this.competitionsService.listAdminRegistrations(id, status);
+  listRegistrations(
+    @Param('id') id: string,
+    @Query('status') status?: string,
+    @Query('entrantType') entrantType?: string,
+  ) {
+    return this.competitionsService.listAdminRegistrations(id, status, entrantType);
   }
 
   @Get('competitions/:id/players')
   listPlayers(
     @Param('id') id: string,
-    @Query('eventName') eventName?: string,
+    @Query('eventId') eventId?: string,
+    @Query('entrantType') entrantType?: string,
     @Query('search') search?: string,
   ) {
-    return this.competitionsService.listAdminPlayers(id, eventName, search);
+    return this.competitionsService.listAdminPlayers(id, eventId, entrantType, search);
+  }
+
+  @Post('competitions/:id/registration-code/regenerate')
+  regenerateRegistrationCode(
+    @Param('id') id: string,
+    @Body() body: { entrantType?: string },
+  ) {
+    return this.competitionsService.regenerateRegistrationCode(id, body?.entrantType ?? 'SCHOOL');
+  }
+
+  @Patch('competitions/:id/registration-code')
+  setRegistrationCodeEnabled(
+    @Param('id') id: string,
+    @Body() body: { entrantType?: string; enabled?: boolean },
+  ) {
+    return this.competitionsService.setRegistrationCodeEnabled(
+      id,
+      body?.entrantType ?? 'SCHOOL',
+      body?.enabled !== false,
+    );
   }
 
   @Roles(Role.ADMIN)

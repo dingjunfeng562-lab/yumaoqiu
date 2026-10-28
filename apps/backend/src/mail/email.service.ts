@@ -426,7 +426,7 @@ export class EmailService {
     const seen = new Set<string>();
 
     for (const registration of registrations) {
-      const email = registration.user.email?.trim() ?? '';
+      const email = registration.user?.email?.trim() ?? '';
       const emailKey = email.toLowerCase();
       if (!email || !EMAIL_PATTERN.test(email)) {
         skipped += 1;

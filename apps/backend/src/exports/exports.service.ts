@@ -3,6 +3,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { Format, MatchStatus, RegistrationStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SECOND_STAGE_FORMAL_ROUND_NO_BASE } from '../common/second-stage-bracket';
+import * as ExcelJS from 'exceljs';
 import { applyFinalRankings, teamStandings } from '../common/final-rankings';
 import { buildOrderbookWorkbook, teamCompetitionEvents } from './orderbook-workbook';
 
@@ -20,8 +21,23 @@ const exportDateTimeFormatter = new Intl.DateTimeFormat('en-CA', {
   hourCycle: 'h23',
 });
 
-export type ExportKind = 'schedule' | 'results' | 'registrations' | 'bracket' | 'orderbook';
-export const EXPORT_KINDS: ExportKind[] = ['schedule', 'results', 'registrations', 'bracket', 'orderbook'];
+export type ExportKind =
+  | 'schedule'
+  | 'results'
+  | 'registrations'
+  | 'roster-student'
+  | 'roster-social'
+  | 'bracket'
+  | 'orderbook';
+export const EXPORT_KINDS: ExportKind[] = [
+  'schedule',
+  'results',
+  'registrations',
+  'roster-student',
+  'roster-social',
+  'bracket',
+  'orderbook',
+];
 type CellValue = string | number | boolean | null | undefined;
 type Worksheet = {
   name: string;
@@ -51,7 +67,16 @@ type ExportRegistration = {
   finalRank?: number | null;
   id: string;
   eventId: string;
+  entrantType?: string;
   studentId: string | null;
+  college?: string | null;
+  majorGrade?: string | null;
+  partnerStudentId?: string | null;
+  partnerSchool?: string | null;
+  partnerCollege?: string | null;
+  partnerMajorGrade?: string | null;
+  partnerClassName?: string | null;
+  partnerPhone?: string | null;
   createdAt: Date;
   className: string | null;
   groupName: string | null;
@@ -156,6 +181,8 @@ type ExportSecondStage = {
 
 type ExportEvent = {
   type: string;
+  entrantType?: string;
+  groupLabel?: string | null;
   format?: string;
   qualifiersPerGroup?: number | null;
   registrations: ExportRegistration[];
@@ -218,6 +245,7 @@ type ExportTeamMatch = {
 
 type ExportTeamCompetition = {
   name: string;
+  entrantType?: string;
   winThreshold?: number;
   format?: string | null;
   groupCount?: number | null;
@@ -256,6 +284,20 @@ const GENDER_LABELS: Record<string, string> = {
   FEMALE: '女',
 };
 
+const ENTRANT_LABELS: Record<string, string> = {
+  SCHOOL: '学生组',
+  SOCIAL: '社会组',
+};
+
+function eventExportLabel(event: { type: string; groupLabel?: string | null; label?: string | null }) {
+  const base = event.label ?? EVENT_TYPE_LABELS[event.type] ?? event.type;
+  return event.groupLabel ? `${event.groupLabel} · ${base}` : base;
+}
+
+function entrantExportLabel(value?: string | null) {
+  return value ? ENTRANT_LABELS[value] ?? value : '';
+}
+
 @Injectable()
 export class ExportsService {
   constructor(private prisma: PrismaService) {}
@@ -282,6 +324,9 @@ export class ExportsService {
   }
 
   async buildTournamentExport(tournament: ExportTournament, kind: ExportKind) {
+    if (kind === 'roster-student' || kind === 'roster-social') {
+      return this.buildRosterTemplate(tournament, kind);
+    }
     // 秩序册走高保真 .xlsx（含日程表、秩序表、各项目流程表）；其余沿用轻量 .xls。
     if (kind === 'orderbook') {
       return {
@@ -492,22 +537,33 @@ export class ExportsService {
       endDate: true,
     } as const;
 
-    if (kind === 'registrations') {
+    if (kind === 'registrations' || kind === 'roster-student' || kind === 'roster-social') {
       return this.prisma.tournament.findUnique({
         where: { id: tournamentId },
         select: {
           ...baseSelect,
           events: {
-            orderBy: { type: 'asc' },
+            orderBy: [{ entrantType: 'asc' }, { type: 'asc' }],
             select: {
               type: true,
+              entrantType: true,
+              groupLabel: true,
               registrations: {
                 where: { status: RegistrationStatus.APPROVED },
                 orderBy: [{ groupName: 'asc' }, { isSeed: 'desc' }, { seedRank: 'asc' }, { createdAt: 'asc' }],
                 select: {
                   id: true,
                   eventId: true,
+                  entrantType: true,
                   studentId: true,
+                  college: true,
+                  majorGrade: true,
+                  partnerStudentId: true,
+                  partnerSchool: true,
+                  partnerCollege: true,
+                  partnerMajorGrade: true,
+                  partnerClassName: true,
+                  partnerPhone: true,
                   createdAt: true,
                   className: true,
                   groupName: true,
@@ -538,6 +594,8 @@ export class ExportsService {
                         select: {
                           eventId: true,
                           partnerStudentId: true,
+                          partnerCollege: true,
+                          partnerMajorGrade: true,
                         },
                       },
                     },
@@ -576,6 +634,7 @@ export class ExportsService {
           teamCompetitions: {
             select: {
               name: true,
+              entrantType: true,
               groups: {
                 orderBy: { groupNo: 'asc' },
                 select: {
@@ -623,9 +682,11 @@ export class ExportsService {
           select: { id: true, name: true, sortOrder: true, isActive: true },
         },
         events: {
-          orderBy: { type: 'asc' },
+          orderBy: [{ entrantType: 'asc' }, { type: 'asc' }],
           select: {
             type: true,
+            entrantType: true,
+            groupLabel: true,
             format: true,
             qualifiersPerGroup: true,
             registrations: {
@@ -634,7 +695,16 @@ export class ExportsService {
               select: {
                 id: true,
                 eventId: true,
+                entrantType: true,
                 studentId: true,
+                college: true,
+                majorGrade: true,
+                partnerStudentId: true,
+                partnerSchool: true,
+                partnerCollege: true,
+                partnerMajorGrade: true,
+                partnerClassName: true,
+                partnerPhone: true,
                 createdAt: true,
                 className: true,
                 groupName: true,
@@ -665,6 +735,8 @@ export class ExportsService {
                       select: {
                         eventId: true,
                         partnerStudentId: true,
+                        partnerCollege: true,
+                        partnerMajorGrade: true,
                       },
                     },
                   },
@@ -746,7 +818,8 @@ export class ExportsService {
   }
 
   private eventExportLabel(event: ExportEvent) {
-    return event.label ?? EVENT_TYPE_LABELS[event.type] ?? event.type;
+    const base = event.label ?? EVENT_TYPE_LABELS[event.type] ?? event.type;
+    return event.groupLabel ? `${event.groupLabel} · ${base}` : base;
   }
 
   private eventMatchLabel(event: ExportEvent, match: ExportMatch) {
@@ -777,6 +850,121 @@ export class ExportsService {
       match.winnerSide === 1 ? 1 : 2,
       registrationMap,
     );
+  }
+
+  /**
+   * 导出可回导的名单模板：
+   * - 学生组 9 列，和社会/学生导入模板一致；
+   * - 社会组 6 列；
+   * - 双打按两行导出，并合并「单位」列，导入时可直接按合并单元格配对。
+   */
+  private async buildRosterTemplate(
+    tournament: ExportTournament,
+    kind: 'roster-student' | 'roster-social',
+  ) {
+    const isStudent = kind === 'roster-student';
+    const entrantType = isStudent ? 'SCHOOL' : 'SOCIAL';
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet(isStudent ? '学生组' : '社会组');
+    const headers = isStudent
+      ? ['序号', '姓名', '性别', '学号', '学院', '年级专业', '联系方式（电话号码）', '单位（学校/名字）', '项目']
+      : ['序号', '姓名', '性别', '联系方式（电话号码）', '单位（学校/名字）', '项目'];
+    sheet.addRow(headers);
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2563EB' } };
+    headerRow.alignment = { vertical: 'middle', horizontal: 'center' };
+
+    let seq = 0;
+    for (const event of tournament.events) {
+      if ((event.entrantType ?? 'SCHOOL') !== entrantType) continue;
+      const project = EVENT_TYPE_LABELS[event.type] ?? event.type;
+      for (const registration of event.registrations) {
+        const primary = registration.player1;
+        const unit = registration.competitionRegistration?.school?.trim()
+          || primary.affiliation
+          || '';
+        const college = registration.college?.trim()
+          || registration.className?.trim()
+          || '';
+        seq += 1;
+        const firstRow = sheet.rowCount + 1;
+        if (isStudent) {
+          sheet.addRow([
+            seq,
+            primary.name,
+            GENDER_LABELS[primary.gender] ?? primary.gender,
+            registration.studentId ?? '',
+            college,
+            registration.majorGrade ?? '',
+            primary.contact ?? '',
+            unit,
+            project,
+          ]);
+        } else {
+          sheet.addRow([
+            seq,
+            primary.name,
+            GENDER_LABELS[primary.gender] ?? primary.gender,
+            primary.contact ?? '',
+            unit,
+            project,
+          ]);
+        }
+
+        if (!registration.player2) continue;
+        seq += 1;
+        const partner = registration.player2;
+        const partnerUnit = registration.partnerSchool?.trim() || partner.affiliation || unit;
+        const partnerCollege = registration.partnerCollege?.trim()
+          || registration.partnerClassName?.trim()
+          || college;
+        const partnerContact = registration.partnerPhone?.trim() || partner.contact || '';
+        if (isStudent) {
+          sheet.addRow([
+            seq,
+            partner.name,
+            GENDER_LABELS[partner.gender] ?? partner.gender,
+            registration.partnerStudentId?.trim() || this.partnerStudentId(registration),
+            partnerCollege,
+            registration.partnerMajorGrade ?? '',
+            partnerContact,
+            partnerUnit,
+            project,
+          ]);
+        } else {
+          sheet.addRow([
+            seq,
+            partner.name,
+            GENDER_LABELS[partner.gender] ?? partner.gender,
+            partnerContact,
+            partnerUnit,
+            project,
+          ]);
+        }
+        // 导入器按「单位」列的合并区域配对双打；这里与官方模板保持一致。
+        const unitColumn = isStudent ? 8 : 5;
+        sheet.mergeCells(firstRow, unitColumn, sheet.rowCount, unitColumn);
+      }
+    }
+
+    sheet.columns.forEach((column, index) => {
+      const width = isStudent
+        ? [8, 14, 8, 16, 20, 18, 20, 22, 16][index]
+        : [8, 14, 8, 20, 22, 16][index];
+      if (width) column.width = width;
+    });
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    return {
+      filename: this.exportFilename(
+        tournament.name,
+        isStudent ? '学生组回导模板' : '社会组回导模板',
+        'xlsx',
+      ),
+      content: Buffer.from(buffer),
+      contentType: XLSX_CONTENT_TYPE,
+    };
   }
 
   private buildWorksheets(tournament: ExportTournament, kind: ExportKind): Worksheet[] {
@@ -862,7 +1050,7 @@ export class ExportsService {
       for (const row of this.eventStandings(event)) {
         rows.push([
           tournament.name,
-          EVENT_TYPE_LABELS[event.type] ?? event.type,
+          eventExportLabel(event),
           row.rank ?? '未设置',
           row.name,
           row.affiliation,
@@ -876,7 +1064,7 @@ export class ExportsService {
 
     for (const competition of tournament.teamCompetitions ?? []) {
       for (const row of teamStandings(competition)) {
-        rows.push([tournament.name, `团体赛 · ${competition.name}`, row.rank ?? '未设置', row.name, row.affiliation, row.played, row.wins, row.losses, row.gameDiff]);
+        rows.push([tournament.name, `${entrantExportLabel(competition.entrantType)}团体赛 · ${competition.name}`, row.rank ?? '未设置', row.name, row.affiliation, row.played, row.wins, row.losses, row.gameDiff]);
       }
     }
     if (rows.length === 1) rows.push([tournament.name, '', '', '暂无名次', '', '', '', '', '']);
@@ -911,23 +1099,23 @@ export class ExportsService {
       for (const registration of event.registrations) {
         const school =
           registration.competitionRegistration?.school ??
-          registration.className ??
           registration.player1.affiliation ??
+          registration.className ??
           '';
         rows.push([
           tournament.name,
-          EVENT_TYPE_LABELS[event.type] ?? event.type,
+          eventExportLabel(event),
           this.registrationName(registration),
           school,
           registration.player1.name,
           registration.studentId ?? '',
           GENDER_LABELS[registration.player1.gender] ?? registration.player1.gender,
-          registration.player1.affiliation,
+          this.registrationClassText(registration),
           registration.player1.contact ?? '',
           registration.player2?.name ?? '',
           registration.player2 ? this.partnerStudentId(registration) : '',
           registration.player2 ? (GENDER_LABELS[registration.player2.gender] ?? registration.player2.gender) : '',
-          registration.player2?.affiliation ?? '',
+          registration.player2 ? this.partnerClassText(registration) : '',
           registration.player2?.contact ?? '',
           registration.isSeed ? '是' : '否',
           registration.seedRank ?? '',
@@ -947,7 +1135,7 @@ export class ExportsService {
       for (const team of competition.teams) {
         rows.push([
           tournament.name,
-          `团体赛 · ${competition.name}`,
+          `${entrantExportLabel(competition.entrantType)}团体赛 · ${competition.name}`,
           team.name,
           team.affiliation,
           team.name,
@@ -968,7 +1156,9 @@ export class ExportsService {
       }
     }
 
-    if (rows.length === 1) rows.push([tournament.name, '', '暂无报名', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']);
+    if (rows.length === 1) {
+      rows.push([tournament.name, '', '暂无报名', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']);
+    }
     return { name: '报名表', rows };
   }
 
@@ -1068,6 +1258,8 @@ export class ExportsService {
     if (kind === 'results') return '成绩册';
     if (kind === 'bracket') return '对阵表';
     if (kind === 'orderbook') return '秩序册';
+    if (kind === 'roster-student') return '学生组回导模板';
+    if (kind === 'roster-social') return '社会组回导模板';
     return '报名表';
   }
 
@@ -1122,8 +1314,21 @@ export class ExportsService {
   private partnerStudentId(registration: ExportRegistration) {
     return (
       registration.competitionRegistration?.eventItems.find((item) => item.eventId === registration.eventId)
-        ?.partnerStudentId ?? ''
+        ?.partnerStudentId
+      ?? registration.partnerStudentId
+      ?? ''
     );
+  }
+
+  /** 沿用旧报名表的「院系/班级1」列：学校组把学院+年级专业拼进去，社会组留空。 */
+  private registrationClassText(registration: ExportRegistration) {
+    const combined = [registration.college, registration.majorGrade].filter(Boolean).join(' ');
+    return combined || registration.className || '';
+  }
+
+  private partnerClassText(registration: ExportRegistration) {
+    const combined = [registration.partnerCollege, registration.partnerMajorGrade].filter(Boolean).join(' ');
+    return combined || registration.partnerClassName || '';
   }
 
   private gamesText(games: ExportMatch['games']) {

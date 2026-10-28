@@ -1,7 +1,10 @@
 import { RolesGuard } from '../auth/roles.guard';
 import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
 import { CompetitionsService } from './competitions.service';
-import { SubmitCompetitionRegistrationDto } from './dto/competition-registration.dto';
+import {
+  PublicCompetitionRegistrationDto,
+  SubmitCompetitionRegistrationDto,
+} from './dto/competition-registration.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 type AuthRequest = {
@@ -27,9 +30,25 @@ export class CompetitionsController {
     return this.competitionsService.listMyRegistrations(req.user?.id ?? '');
   }
 
+  // 报名码校验也必须在 `:id` 之前，否则 registration-code 会被当成赛事 id。
+  @Get('registration-code/:code')
+  verifyRegistrationCode(@Param('code') code: string) {
+    return this.competitionsService.verifyRegistrationCode(code);
+  }
+
   @Get(':id')
   getCompetition(@Param('id') id: string) {
     return this.competitionsService.getPublicCompetition(id);
+  }
+
+  @Get(':id/public-registration/:token')
+  getPublicRegistration(@Param('id') id: string, @Param('token') token: string) {
+    return this.competitionsService.getPublicRegistration(id, token);
+  }
+
+  @Post(':id/public-register')
+  publicRegister(@Param('id') id: string, @Body() dto: PublicCompetitionRegistrationDto) {
+    return this.competitionsService.publicRegister(id, dto);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)

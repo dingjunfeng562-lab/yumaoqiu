@@ -13,9 +13,44 @@ import {
   Min,
   MinLength,
   ValidateIf,
+  ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { EventType, TournamentStatus, ScoringRule, ScoringMode } from '@prisma/client';
+
+export type RegistrationFieldState = 'required' | 'optional' | 'hidden';
+
+export class SchoolRegistrationFieldRulesDto {
+  @IsOptional()
+  @IsIn(['required', 'optional', 'hidden'])
+  studentId?: RegistrationFieldState;
+
+  @IsOptional()
+  @IsIn(['required', 'optional', 'hidden'])
+  college?: RegistrationFieldState;
+
+  @IsOptional()
+  @IsIn(['required', 'optional', 'hidden'])
+  majorGrade?: RegistrationFieldState;
+}
+
+export class SocialRegistrationFieldRulesDto {
+  @IsOptional()
+  @IsIn(['required', 'optional', 'hidden'])
+  email?: RegistrationFieldState;
+}
+
+export class RegistrationFieldRulesDto {
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => SchoolRegistrationFieldRulesDto)
+  SCHOOL?: SchoolRegistrationFieldRulesDto;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => SocialRegistrationFieldRulesDto)
+  SOCIAL?: SocialRegistrationFieldRulesDto;
+}
 
 export class CreateTournamentDto {
   @ValidateIf((_, value) => value !== undefined)
@@ -45,10 +80,21 @@ export class CreateTournamentDto {
   @IsDateString()
   endDate: string;
 
+  // 兼容旧客户端：只传 eventTypes 时等同学生组单项。
+  @IsOptional()
   @IsArray()
-  @ArrayMinSize(1)
   @IsEnum(EventType, { each: true })
-  eventTypes: EventType[];
+  eventTypes?: EventType[];
+
+  @IsOptional()
+  @IsArray()
+  @IsEnum(EventType, { each: true })
+  schoolEventTypes?: EventType[];
+
+  @IsOptional()
+  @IsArray()
+  @IsEnum(EventType, { each: true })
+  socialEventTypes?: EventType[];
 
   @IsBoolean()
   includeTeamCompetition: boolean;
@@ -93,6 +139,19 @@ export class CreateTournamentDto {
 
   @IsBoolean()
   needsRegistrationReview: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  allowSchoolRegistration?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  allowSocialRegistration?: boolean;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => RegistrationFieldRulesDto)
+  registrationFieldRules?: RegistrationFieldRulesDto;
 
   @IsArray()
   @ArrayMinSize(1)
@@ -201,6 +260,29 @@ export class UpdateTournamentDto {
   @ArrayMinSize(1)
   @IsEnum(EventType, { each: true })
   eventTypes?: EventType[];
+
+  @IsOptional()
+  @IsArray()
+  @IsEnum(EventType, { each: true })
+  schoolEventTypes?: EventType[];
+
+  @IsOptional()
+  @IsArray()
+  @IsEnum(EventType, { each: true })
+  socialEventTypes?: EventType[];
+
+  @IsOptional()
+  @IsBoolean()
+  allowSchoolRegistration?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  allowSocialRegistration?: boolean;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => RegistrationFieldRulesDto)
+  registrationFieldRules?: RegistrationFieldRulesDto;
 
   @IsOptional()
   @IsBoolean()

@@ -20,6 +20,8 @@ type RegistrationItem = {
   eventName: string;
   partnerName?: string | null;
   partnerStudentId?: string | null;
+  partnerCollege?: string | null;
+  partnerMajorGrade?: string | null;
   partnerClassName?: string | null;
   teamName?: string | null;
 };
@@ -27,9 +29,14 @@ type RegistrationItem = {
 type Registration = {
   id: string;
   email: string;
+  guest?: boolean;
+  entrantType?: 'SCHOOL' | 'SOCIAL';
+  entrantTypeLabel?: string;
   name: string;
   studentId: string;
   school?: string;
+  college?: string;
+  majorGrade?: string;
   phone: string;
   genderLabel: string;
   eventSummary: string;
@@ -75,6 +82,7 @@ export default function AdminCompetitionRegistrationsPage() {
   const [competition, setCompetition] = useState<Competition | null>(null);
   const [registrations, setRegistrations] = useState<Registration[]>([]);
   const [status, setStatus] = useState('pending');
+  const [entrantType, setEntrantType] = useState('all');
   const [loading, setLoading] = useState(false);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState('');
@@ -107,7 +115,10 @@ export default function AdminCompetitionRegistrationsPage() {
     try {
       const [competitionList, registrationData] = await Promise.all([
         apiFetch<Competition[]>('/admin/competitions', { token }),
-        apiFetch<Registration[]>(`/admin/competitions/${id}/registrations?status=${status}`, { token }),
+        apiFetch<Registration[]>(
+          `/admin/competitions/${id}/registrations?status=${status}${entrantType !== 'all' ? `&entrantType=${entrantType}` : ''}`,
+          { token },
+        ),
       ]);
       setCompetition(competitionList.find((item) => item.id === id) ?? null);
       setRegistrations(registrationData);
@@ -116,7 +127,7 @@ export default function AdminCompetitionRegistrationsPage() {
     } finally {
       setLoading(false);
     }
-  }, [token, id, status]);
+  }, [token, id, status, entrantType]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -162,16 +173,40 @@ export default function AdminCompetitionRegistrationsPage() {
   }
 
   const columns = [
+    {
+      title: '组别',
+      key: 'entrantType',
+      width: 84,
+      render: (_: unknown, record: Registration) => (
+        <Tag color={record.entrantType === 'SOCIAL' ? 'orange' : 'geekblue'}>
+          {record.entrantTypeLabel ?? (record.entrantType === 'SOCIAL' ? '社会组' : '学生组')}
+        </Tag>
+      ),
+    },
     { title: '邮箱', dataIndex: 'email', key: 'email', width: 190, ellipsis: true },
     { title: '姓名', dataIndex: 'name', key: 'name', width: 90 },
-    { title: '学号', dataIndex: 'studentId', key: 'studentId', width: 120 },
     {
-      title: '学校',
-      dataIndex: 'school',
+      title: '学号/单位',
+      key: 'studentId',
+      width: 130,
+      render: (_: unknown, record: Registration) =>
+        record.entrantType === 'SOCIAL' ? (record.school || '未填写') : (record.studentId || '未填写'),
+    },
+    {
+      title: '学校/学院',
       key: 'school',
-      width: 150,
+      width: 190,
       ellipsis: true,
-      render: (value?: string) => value || <Typography.Text type="secondary">未填写</Typography.Text>,
+      render: (_: unknown, record: Registration) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text>{record.school || '未填写'}</Typography.Text>
+          {record.entrantType !== 'SOCIAL' ? (
+            <Typography.Text type="secondary">
+              {[record.college, record.majorGrade].filter(Boolean).join(' / ') || '-'}
+            </Typography.Text>
+          ) : null}
+        </Space>
+      ),
     },
     { title: '联系方式', dataIndex: 'phone', key: 'phone', width: 130 },
     { title: '性别', dataIndex: 'genderLabel', key: 'genderLabel', width: 60 },
@@ -282,6 +317,16 @@ export default function AdminCompetitionRegistrationsPage() {
             onChange={setStatus}
             style={{ width: 140 }}
             options={STATUS_OPTIONS}
+          />
+          <Select
+            value={entrantType}
+            onChange={setEntrantType}
+            style={{ width: 130 }}
+            options={[
+              { value: 'all', label: '全部组别' },
+              { value: 'SCHOOL', label: '学生组' },
+              { value: 'SOCIAL', label: '社会组' },
+            ]}
           />
           <Tag color="orange">当前列表待审核：{pendingCount}</Tag>
           <Button

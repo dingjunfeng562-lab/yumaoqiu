@@ -29,6 +29,7 @@ type Tournament = {
 type TeamCompetition = {
   id: string;
   tournamentId: string;
+  entrantType?: 'SCHOOL' | 'SOCIAL';
   name: string;
   description?: string | null;
   format?: string;
@@ -86,6 +87,7 @@ export default function TeamCompetitionsPage() {
     form.resetFields();
     form.setFieldsValue({
       tournamentId: selectedTournamentId || tournaments[0]?.id,
+      entrantType: 'SCHOOL',
       ...teamDefaults,
     });
     setOpen(true);
@@ -149,6 +151,16 @@ export default function TeamCompetitionsPage() {
             ),
           },
           {
+            title: '组别',
+            key: 'entrantType',
+            width: 90,
+            render: (_, row: TeamCompetition) => (
+              <Tag color={row.entrantType === 'SOCIAL' ? 'orange' : 'geekblue'}>
+                {row.entrantType === 'SOCIAL' ? '社会组' : '学生组'}
+              </Tag>
+            ),
+          },
+          {
             title: '项目顺序',
             render: (_, row: TeamCompetition) => row.items.map((item) => TEAM_EVENT_OPTIONS.find(option => option.value === item.eventType)?.label ?? item.eventType).join(' → '),
           },
@@ -186,6 +198,14 @@ export default function TeamCompetitionsPage() {
         <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
           <Form.Item name="tournamentId" label="所属赛事" rules={[{ required: true, message: '请选择赛事' }]}>
             <Select options={tournaments.map((item) => ({ value: item.id, label: item.name }))} />
+          </Form.Item>
+          <Form.Item name="entrantType" label="组别" rules={[{ required: true }]} extra="一个赛事的学生组、社会组各可创建一条团体赛。">
+            <Select
+              options={[
+                { value: 'SCHOOL', label: '学生组' },
+                { value: 'SOCIAL', label: '社会组' },
+              ]}
+            />
           </Form.Item>
           <TeamCompetitionFields />
         </Form>

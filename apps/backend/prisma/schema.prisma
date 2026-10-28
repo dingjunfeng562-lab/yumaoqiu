@@ -39,6 +39,12 @@ enum EventType {
   MIXED_DOUBLES
 }
 
+// 报名身份 / 赛事分组：学生组、社会组各自独立的单项、团体赛、抽签、成绩。
+enum EntrantType {
+  SCHOOL
+  SOCIAL
+}
+
 enum Format {
   SINGLE_ELIMINATION
   GROUP_PLUS_KNOCKOUT
@@ -313,6 +319,18 @@ model Tournament {
   maxRegistrationEvents Int              @default(2)
   allowCrossEventRegistration Boolean    @default(true)
   needsRegistrationReview Boolean        @default(true)
+
+  // 分组报名：学生组/社会组各自一个报名码；码只用于进入报名页，不是身份认证。
+  allowSchoolRegistration         Boolean @default(true)
+  allowSocialRegistration         Boolean @default(true)
+  schoolRegistrationCode          String? @unique @db.VarChar(16)
+  socialRegistrationCode          String? @unique @db.VarChar(16)
+  schoolRegistrationCodeEnabled   Boolean @default(true)
+  socialRegistrationCodeEnabled   Boolean @default(true)
+  registrationCodeEnabled         Boolean @default(true)
+  /// 两组报名字段规则：{ SCHOOL: { studentId, college, majorGrade }, SOCIAL: { email } }
+  /// 值为 required / optional / hidden；为空时使用默认规则。
+  registrationFieldRules          Json?
   defaultMatchMinutes   Int              @default(45)
   breakMinutes          Int              @default(10)
   dailyStartTime        String           @default("09:00") @db.VarChar(5)
@@ -675,6 +693,10 @@ model Event {
   tournamentId       String
   tournament         Tournament         @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
   type               EventType
+  // 学生组/社会组：同一赛事可同时存在两条同类型 Event。
+  entrantType        EntrantType        @default(SCHOOL)
+  // 展示用组名："学生组" / "社会组"；旧赛事为 null，显示原项目名。
+  groupLabel         String?            @db.VarChar(24)
   format             Format
   rankingLimit       Int?
   scoringRule        ScoringRule
@@ -703,6 +725,9 @@ model Event {
   secondStage        SecondStage?
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
+
+  @@unique([tournamentId, entrantType, type])
+  @@index([tournamentId, entrantType])
 }
 
 model SecondStage {
@@ -799,13 +824,18 @@ model Registration {
   player2          Player?            @relation("registrationPlayer2", fields: [player2Id], references: [id])
   name             String?
   teamName         String?            @db.VarChar(120)
+  entrantType      EntrantType        @default(SCHOOL)
   studentId        String?
+  college          String?            @db.VarChar(120)
+  majorGrade       String?            @db.VarChar(120)
   className        String?
   phone            String?
   gender           Gender?
   eventName        String?
   partnerStudentId String?
   partnerSchool    String?            @db.VarChar(191)
+  partnerCollege   String?            @db.VarChar(120)
+  partnerMajorGrade String?           @db.VarChar(120)
   partnerClassName String?            @db.VarChar(120)
   partnerPhone     String?
   remark           String?            @db.Text
@@ -835,9 +865,16 @@ model CompetitionRegistration {
   id             String             @id @default(cuid())
   competitionId  String
   competition    Tournament         @relation(fields: [competitionId], references: [id], onDelete: Cascade)
-  userId         String
-  user           User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  studentId      String
+  // 学校组必须登录；社会组允许游客报名，userId 为空并用 guestToken 查询。
+  userId         String?
+  user           User?              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entrantType    EntrantType        @default(SCHOOL)
+  // 社会组没有学号；学生组是否必填由赛事 registrationFieldRules 决定。
+  studentId      String?
+  college        String?            @db.VarChar(120)
+  majorGrade     String?            @db.VarChar(120)
+  guestToken     String?            @unique @db.VarChar(64)
+  guestEmail     String?            @db.VarChar(191)
   name           String
   gender         Gender
   school         String?            @db.VarChar(191)
@@ -855,6 +892,7 @@ model CompetitionRegistration {
 
   @@unique([competitionId, userId])
   @@index([competitionId, status])
+  @@index([competitionId, entrantType, status])
   @@index([userId])
   @@index([studentId])
 }
@@ -869,6 +907,8 @@ model CompetitionRegistrationEventItem {
     partnerGender              Gender?
     partnerStudentId           String?
     partnerSchool              String?                 @db.VarChar(191)
+    partnerCollege             String?                 @db.VarChar(120)
+    partnerMajorGrade          String?                 @db.VarChar(120)
     partnerClassName           String?                 @db.VarChar(120)
     partnerContact             String?
     teamName                   String?                 @db.VarChar(120)
@@ -882,6 +922,8 @@ model TeamCompetition {
   id           String                @id @default(cuid())
   tournamentId String
   tournament   Tournament            @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  // 学生组/社会组各一条团体赛；旧数据默认学生组。
+  entrantType  EntrantType           @default(SCHOOL)
   name         String
   description  String?               @db.Text
   winThreshold Int                   @default(3)
@@ -914,6 +956,7 @@ model TeamCompetition {
   createdAt    DateTime              @default(now())
   updatedAt    DateTime              @updatedAt
 
+  @@unique([tournamentId, entrantType])
   @@index([tournamentId])
 }
 

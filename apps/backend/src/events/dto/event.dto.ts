@@ -1,6 +1,6 @@
 import { IsString, IsEnum, IsOptional, IsInt, Min, Max, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
-import { EventType, Format, ScoringRule, ScoringMode } from '@prisma/client';
+import { EntrantType, EventType, Format, ScoringRule, ScoringMode } from '@prisma/client';
 
 /**
  * 支持分阶段规则的键。
@@ -77,6 +77,10 @@ export class CreateEventDto {
   @IsEnum(EventType)
   type: EventType;
 
+  @IsOptional()
+  @IsEnum(EntrantType)
+  entrantType?: EntrantType;
+
   @IsEnum(Format)
   format: Format;
 
@@ -135,6 +139,10 @@ export class UpdateEventDto {
   @IsOptional()
   @IsEnum(EventType)
   type?: EventType;
+
+  @IsOptional()
+  @IsEnum(EntrantType)
+  entrantType?: EntrantType;
 
   @IsOptional()
   @IsEnum(Format)

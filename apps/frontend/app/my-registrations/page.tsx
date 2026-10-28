@@ -11,6 +11,10 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 type MyRegistration = {
   id: string;
   studentId: string;
+  entrantType?: 'SCHOOL' | 'SOCIAL';
+  entrantTypeLabel?: string;
+  college?: string;
+  majorGrade?: string;
   name: string;
   school?: string;
   contact?: string;
@@ -179,6 +183,9 @@ export default function MyRegistrationsPage() {
                       <span className={`inline-block rounded-full px-2.5 py-0.5 text-[11px] font-black ${meta.tone}`}>
                         {meta.label}
                       </span>
+                      <span className="ml-2 inline-block rounded-full bg-blue-50 px-2.5 py-0.5 text-[11px] font-black text-blue-700">
+                        {registration.entrantTypeLabel ?? (registration.entrantType === 'SOCIAL' ? '社会组' : '学生组')}
+                      </span>
                       <h2 className="mt-2 text-lg font-black text-slate-900 sm:text-xl">
                         {registration.competition.title}
                       </h2>
@@ -198,8 +205,12 @@ export default function MyRegistrationsPage() {
                   <dl className="grid gap-3 px-5 py-4 sm:grid-cols-2 lg:grid-cols-3">
                     <Fact label="姓名">{registration.name}</Fact>
                     <Fact label="性别">{registration.genderLabel}</Fact>
-                    <Fact label="学校">{registration.school || '未填写'}</Fact>
-                    <Fact label="学号">{registration.studentId}</Fact>
+                    <Fact label={registration.entrantType === 'SOCIAL' ? '单位' : '学校'}>{registration.school || '未填写'}</Fact>
+                    {registration.entrantType === 'SOCIAL' ? (
+                      <Fact label="学院/年级">{registration.college || '-'}</Fact>
+                    ) : (
+                      <Fact label="学号">{registration.studentId || '-'}</Fact>
+                    )}
                     <Fact label="联系方式">{registration.contact || '未填写'}</Fact>
                     <Fact label="提交时间">{formatDateTime(registration.createdAt)}</Fact>
                   </dl>

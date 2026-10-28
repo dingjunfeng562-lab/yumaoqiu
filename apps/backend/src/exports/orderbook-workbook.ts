@@ -137,7 +137,8 @@ function scheduleSortValueForMatch(match: ExportMatch) {
 }
 
 function eventLabel(event: ExportEvent) {
-  return event.label ?? EVENT_TYPE_LABELS[event.type] ?? event.type;
+  const base = event.label ?? EVENT_TYPE_LABELS[event.type] ?? event.type;
+  return event.groupLabel ? `${event.groupLabel} · ${base}` : base;
 }
 
 function orderVenueLabel(name: string) {

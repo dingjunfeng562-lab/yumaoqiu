@@ -10,11 +10,13 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  EntrantType,
   EventType,
   Format,
   Gender,
   MatchStatus,
   Prisma,
+  RegistrationStatus,
   Role,
   ScoringMode,
   ScoringRule,
@@ -166,6 +168,22 @@ export class TeamCompetitionsService {
 
   async create(dto: CreateTeamCompetitionDto) {
     await this.ensureTournament(dto.tournamentId);
+    const entrantType = dto.entrantType ?? EntrantType.SCHOOL;
+    const existing = await this.prisma.teamCompetition.findUnique({
+      where: {
+        tournamentId_entrantType: {
+          tournamentId: dto.tournamentId,
+          entrantType,
+        },
+      },
+    });
+    if (existing) {
+      throw new ConflictException(
+        entrantType === EntrantType.SCHOOL
+          ? '该赛事已有学生组团体赛'
+          : '该赛事已有社会组团体赛',
+      );
+    }
     const items = this.normalizeItems(dto.items);
     this.ensureWinThreshold(dto.winThreshold, items.length);
     this.validateScoring(dto);
@@ -173,6 +191,7 @@ export class TeamCompetitionsService {
     return this.prisma.teamCompetition.create({
       data: {
         tournamentId: dto.tournamentId,
+        entrantType,
         name: dto.name,
         description: dto.description,
         winThreshold: dto.winThreshold,
@@ -192,9 +211,9 @@ export class TeamCompetitionsService {
     });
   }
 
-  list(tournamentId?: string, actor?: AuthActor) {
+  list(tournamentId?: string, actor?: AuthActor, entrantType?: EntrantType) {
     return this.prisma.teamCompetition.findMany({
-      where: { tournamentId, tournament: tournamentScope(actor) },
+      where: { tournamentId, entrantType, tournament: tournamentScope(actor) },
       include: {
         tournament: true,
         items: { orderBy: { sortOrder: 'asc' } },
@@ -368,9 +387,25 @@ export class TeamCompetitionsService {
   }
 
   async availablePlayers(teamCompetitionId: string, actor: AuthActor) {
-    await this.ensureCompetition(teamCompetitionId);
+    const competition = await this.ensureCompetition(teamCompetitionId);
+    // 优先只返回该组报名选手；还没有报名数据时保留原来的全量选手库，避免旧流程突然空列表。
+    const registrations = await this.prisma.registration.findMany({
+      where: {
+        event: { tournamentId: competition.tournamentId },
+        entrantType: competition.entrantType,
+        status: { not: RegistrationStatus.REMOVED },
+      },
+      select: { player1Id: true, player2Id: true },
+    });
+    const playerIds = [...new Set(
+      registrations.flatMap((item) => [item.player1Id, item.player2Id]).filter(Boolean) as string[],
+    )];
     return this.prisma.player.findMany({
-      where: { ...playerScope(actor), isTemporary: false },
+      where: {
+        ...playerScope(actor),
+        isTemporary: false,
+        ...(playerIds.length ? { id: { in: playerIds } } : {}),
+      },
       select: { id: true, name: true, gender: true, affiliation: true },
       orderBy: { createdAt: 'desc' },
     });
@@ -1415,6 +1450,8 @@ export class TeamCompetitionsService {
       id: competition.id,
       tournamentId: competition.tournamentId,
       tournament: competition.tournament,
+      entrantType: competition.entrantType,
+      entrantTypeLabel: competition.entrantType === EntrantType.SOCIAL ? '社会组' : '学生组',
       name: competition.name,
       description: competition.description,
       winThreshold: competition.winThreshold,
@@ -1539,6 +1576,8 @@ export class TeamCompetitionsService {
       tournamentId: competition.tournamentId,
       tournamentName: competition.tournament.name,
       tournamentEdition: competition.tournament.edition,
+      entrantType: competition.entrantType,
+      entrantTypeLabel: competition.entrantType === EntrantType.SOCIAL ? '社会组' : '学生组',
       name: competition.name,
       description: competition.description,
       winThreshold: competition.winThreshold,

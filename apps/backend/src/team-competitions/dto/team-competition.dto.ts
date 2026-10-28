@@ -15,7 +15,7 @@ import {
   ValidateIf,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { EventType, Gender, ScoringMode, ScoringRule, TeamCompetitionFormat } from '@prisma/client';
+import { EntrantType, EventType, Gender, ScoringMode, ScoringRule, TeamCompetitionFormat } from '@prisma/client';
 
 // 团体赛赛制：SINGLE_ELIMINATION 单淘汰 / ROUND_ROBIN 单组循环 /
 // GROUP_ROUND_ROBIN 多组循环 / GROUP_PLUS_KNOCKOUT 小组+淘汰
@@ -85,6 +85,10 @@ export class CreateTeamCompetitionDto extends TeamScoringDto {
   @MinLength(1)
   tournamentId: string;
 
+  @IsOptional()
+  @IsEnum(EntrantType)
+  entrantType?: EntrantType;
+
   @IsString()
   @MinLength(1)
   name: string;
@@ -138,6 +142,10 @@ export class UpdateTeamCompetitionDto extends TeamScoringDto {
   @ValidateIf((_, value) => value !== undefined)
   @IsIn([0, 1, 2])
   maxPlayerAppearances?: 0 | 1 | 2;
+
+  @IsOptional()
+  @IsEnum(EntrantType)
+  entrantType?: EntrantType;
 
   /** 仅用于请求：把已取消、尚未开赛的剩余子项恢复为未开始，便于开启“打满所有子项”后补录。 */
   @IsOptional()

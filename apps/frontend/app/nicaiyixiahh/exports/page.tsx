@@ -33,6 +33,8 @@ const exportKinds = [
   { key: 'schedule', title: '赛程表', description: '按项目、场地、时间输出全部场次。' },
   { key: 'results', title: '成绩册', description: '输出比分、胜负和名次汇总。' },
   { key: 'registrations', title: '报名表', description: '输出选手信息、报名项目和分组种子。' },
+  { key: 'roster-student', title: '学生组回导模板', description: '按学生模板 9 列导出，可修改后直接再导入。' },
+  { key: 'roster-social', title: '社会组回导模板', description: '按社会模板 6 列导出，可修改后直接再导入。' },
   { key: 'bracket', title: '对阵表', description: '按场地排程输出对阵、时间与场地内场次。' },
   { key: 'orderbook', title: '秩序册', description: '按参考模板生成秩序表、分组表、小组赛、日程表、名次汇总、淘汰赛和流程表。' },
 ];
@@ -62,7 +64,7 @@ function fileNameFromDisposition(disposition: string | null, fallback: string) {
 function exportFallbackName(tournament: Tournament | null, kind: string) {
   const safeName = (tournament?.name ?? '赛事').trim().replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, ' ');
   const label = exportKinds.find((item) => item.key === kind)?.title ?? kind;
-  const ext = kind === 'orderbook' ? 'xlsx' : 'xls';
+  const ext = kind === 'orderbook' || kind.startsWith('roster-') ? 'xlsx' : 'xls';
   return `${safeName || '赛事'}-${dayjs().format('YYYYMMDD')}-${label}.${ext}`;
 }
 

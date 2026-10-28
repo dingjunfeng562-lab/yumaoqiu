@@ -17,12 +17,17 @@ type CompetitionEventOption = {
   type: string;
   label: string;
   isDouble: boolean;
+  entrantType?: 'SCHOOL' | 'SOCIAL';
+  groupLabel?: string | null;
 };
 
 type Competition = {
   id: string;
   title: string;
   eventOptions?: CompetitionEventOption[];
+  registrationFieldRules?: import('@/lib/excel-roster').RosterFieldRules | null;
+  maxRegistrationEvents?: number;
+  allowCrossEventRegistration?: boolean;
 };
 
 type Player = {
@@ -35,11 +40,17 @@ type Player = {
   teamName?: string | null;
   isTemporary?: boolean;
   isSocial?: boolean;
+  entrantType?: 'SCHOOL' | 'SOCIAL';
+  entrantTypeLabel?: string;
+  college?: string;
+  majorGrade?: string;
   partner?: {
     name: string;
     studentId?: string;
     genderLabel?: string;
     school?: string;
+    college?: string;
+    majorGrade?: string;
     className?: string;
     phone?: string;
   } | null;
@@ -240,7 +251,8 @@ export default function AdminCompetitionPlayersPage() {
   const [teamCompetitions, setTeamCompetitions] = useState<TeamImportCompetition[]>([]);
   const [competition, setCompetition] = useState<Competition | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
-  const [eventName, setEventName] = useState('all');
+  const [eventIdFilter, setEventIdFilter] = useState('all');
+  const [entrantTypeFilter, setEntrantTypeFilter] = useState('all');
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
   const [batchModalOpen, setBatchModalOpen] = useState(false);
@@ -269,11 +281,12 @@ export default function AdminCompetitionPlayersPage() {
 
   const query = useMemo(() => {
     const params = new URLSearchParams();
-    if (eventName !== 'all') params.set('eventName', eventName);
+    if (eventIdFilter !== 'all') params.set('eventId', eventIdFilter);
+    if (entrantTypeFilter !== 'all') params.set('entrantType', entrantTypeFilter);
     if (search.trim()) params.set('search', search.trim());
     const value = params.toString();
     return value ? `?${value}` : '';
-  }, [eventName, search]);
+  }, [eventIdFilter, entrantTypeFilter, search]);
 
   const eventOptions = useMemo(
     () =>
@@ -365,7 +378,7 @@ export default function AdminCompetitionPlayersPage() {
       setSelectedPlayerIds([]);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [eventName, search]);
+  }, [eventIdFilter, entrantTypeFilter, search]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -426,7 +439,7 @@ export default function AdminCompetitionPlayersPage() {
 
   function openBatchModal() {
     const defaultEvent =
-      competition?.eventOptions?.find((event) => event.label === eventName) ??
+      competition?.eventOptions?.find((event) => event.id === eventIdFilter) ??
       competition?.eventOptions?.[0];
     setBatchEventId(defaultEvent?.id ?? teamCompetitions[0]?.id);
     setBatchText('');
@@ -439,7 +452,7 @@ export default function AdminCompetitionPlayersPage() {
       return;
     }
     const defaultEvent =
-      competition.eventOptions.find((event) => event.label === eventName) ?? competition.eventOptions[0];
+      competition.eventOptions.find((event) => event.id === eventIdFilter) ?? competition.eventOptions[0];
     libraryForm.resetFields();
     libraryForm.setFieldsValue({ eventId: defaultEvent.id });
     setLibraryModalOpen(true);
@@ -548,7 +561,7 @@ export default function AdminCompetitionPlayersPage() {
     setEditingPlayer(null);
     setFormSocial(false);
     const defaultEvent =
-      competition.eventOptions.find((event) => event.label === eventName) ?? competition.eventOptions[0];
+      competition.eventOptions.find((event) => event.id === eventIdFilter) ?? competition.eventOptions[0];
     form.resetFields();
     form.setFieldsValue({ eventId: defaultEvent?.id, gender: 'MALE' });
     setFormModalOpen(true);
@@ -751,8 +764,33 @@ export default function AdminCompetitionPlayersPage() {
       title: '参赛项目',
       dataIndex: 'eventName',
       key: 'eventName',
-      width: 100,
+      width: 160,
       render: (value: string) => <Tag color="blue">{value}</Tag>,
+    },
+    {
+      title: '组别',
+      key: 'entrantType',
+      width: 80,
+      render: (_: unknown, record: Player) => (
+        <Tag color={record.entrantType === 'SOCIAL' || record.isSocial ? 'orange' : 'geekblue'}>
+          {record.entrantTypeLabel ?? (record.isSocial ? '社会组' : '学生组')}
+        </Tag>
+      ),
+    },
+    {
+      title: '学院/年级专业',
+      key: 'college',
+      width: 170,
+      render: (_: unknown, record: Player) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text>{[record.college, record.majorGrade].filter(Boolean).join(' / ') || record.className || '-'}</Typography.Text>
+          {record.partner ? (
+            <Typography.Text type="secondary">
+              {[record.partner.college, record.partner.majorGrade].filter(Boolean).join(' / ') || record.partner.className || '-'}
+            </Typography.Text>
+          ) : null}
+        </Space>
+      ),
     },
     {
       title: '报名时间',
@@ -898,16 +936,19 @@ export default function AdminCompetitionPlayersPage() {
         </div>
         <Space wrap>
           <Select
-            value={eventName}
-            onChange={setEventName}
-            style={{ width: 180 }}
+            value={eventIdFilter}
+            onChange={setEventIdFilter}
+            style={{ width: 220 }}
+            options={[{ value: 'all', label: '全部项目' }, ...eventOptions]}
+          />
+          <Select
+            value={entrantTypeFilter}
+            onChange={setEntrantTypeFilter}
+            style={{ width: 130 }}
             options={[
-              { value: 'all', label: '全部项目' },
-              { value: '男子单打', label: '男子单打' },
-              { value: '女子单打', label: '女子单打' },
-              { value: '男子双打', label: '男子双打' },
-              { value: '女子双打', label: '女子双打' },
-              { value: '混合双打', label: '混合双打' },
+              { value: 'all', label: '全部组别' },
+              { value: 'SCHOOL', label: '学生组' },
+              { value: 'SOCIAL', label: '社会组' },
             ]}
           />
           <Input.Search
@@ -1144,7 +1185,7 @@ export default function AdminCompetitionPlayersPage() {
         <SocialPlayerImportModal
           competitionId={id}
           events={competition?.eventOptions ?? []}
-          defaultEventId={competition?.eventOptions?.find((event) => event.label === eventName)?.id}
+          defaultEventId={competition?.eventOptions?.find((event) => event.id === eventIdFilter)?.id}
           open={socialModalOpen}
           token={token}
           onClose={() => setSocialModalOpen(false)}
@@ -1156,6 +1197,9 @@ export default function AdminCompetitionPlayersPage() {
           competitionId={id}
           events={competition?.eventOptions ?? []}
           existingPlayers={players}
+          fieldRules={competition?.registrationFieldRules ?? undefined}
+          maxEventsPerPerson={competition?.maxRegistrationEvents ?? 2}
+          allowCrossEvent={competition?.allowCrossEventRegistration ?? true}
           open={excelModalOpen}
           token={token}
           onClose={() => setExcelModalOpen(false)}

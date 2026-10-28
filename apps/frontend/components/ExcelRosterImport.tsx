@@ -5,11 +5,14 @@ import { Alert, Button, Modal, Space, Table, Tag, Typography, Upload, message } 
 import { DownloadOutlined, FileExcelOutlined, InboxOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import {
+  DEFAULT_ROSTER_FIELD_RULES,
+  entrantTypeLabel,
   parseRosterSheet,
   rosterImportGroups,
   rosterPeopleCount,
   type RosterEntry,
   type RosterEventOption,
+  type RosterFieldRules,
   type RosterGrid,
   type RosterMerge,
 } from '@/lib/excel-roster';
@@ -19,7 +22,8 @@ type ExistingPlayer = {
   name: string;
   primaryName?: string;
   phone: string;
-  partner?: { name: string; phone?: string } | null;
+  studentId?: string;
+  partner?: { name: string; phone?: string; studentId?: string } | null;
 };
 
 type ParseResult = {
@@ -30,7 +34,8 @@ type ParseResult = {
   messages: string[];
 };
 
-const TEMPLATE_URL = '/templates/yudongyun-roster-import.xls';
+const SCHOOL_TEMPLATE_URL = '/templates/yudongyun-roster-import-school.xls';
+const SOCIAL_TEMPLATE_URL = '/templates/yudongyun-roster-import-social.xls';
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
 const BATCH_LIMIT = 500;
 
@@ -46,23 +51,37 @@ function entryKey(eventId: string, name: string, phone: string) {
   return `${eventId}\u0000${name}\u0000${contactKey(phone)}`;
 }
 
+function studentKey(eventId: string, studentId: string) {
+  return `${eventId}\u0000SID\u0000${studentId}`;
+}
+
 function markExistingEntries(entries: RosterEntry[], players: ExistingPlayer[]) {
   const existing = new Set<string>();
+  const existingStudents = new Set<string>();
   for (const player of players) {
     if (!player.eventId) continue;
     const primaryName = player.primaryName ?? player.name;
     if (primaryName && player.phone) existing.add(entryKey(player.eventId, primaryName, player.phone));
+    if (player.studentId) existingStudents.add(studentKey(player.eventId, player.studentId));
     if (player.partner?.name && player.partner.phone) {
       existing.add(entryKey(player.eventId, player.partner.name, player.partner.phone));
     }
+    if (player.partner?.studentId) {
+      existingStudents.add(studentKey(player.eventId, player.partner.studentId));
+    }
   }
-  if (!existing.size) return;
+  if (!existing.size && !existingStudents.size) return;
   for (const entry of entries) {
     if (!entry.eventId) continue;
     for (const person of entry.people) {
-      if (!person.name || !person.contact) continue;
-      if (!existing.has(entryKey(entry.eventId, person.name, person.contact))) continue;
-      const text = `已在该项目报名：${person.name}（${person.contact}）`;
+      const byStudent = person.studentId
+        ? existingStudents.has(studentKey(entry.eventId, person.studentId))
+        : false;
+      const byContact = person.name && person.contact
+        ? existing.has(entryKey(entry.eventId, person.name, person.contact))
+        : false;
+      if (!byStudent && !byContact) continue;
+      const text = `已在该项目报名：${person.name}（${person.studentId || person.contact}）`;
       if (!entry.errors.includes(text)) entry.errors.push(text);
     }
   }
@@ -98,6 +117,9 @@ export default function ExcelRosterImportModal({
   competitionId,
   events,
   existingPlayers = [],
+  fieldRules = DEFAULT_ROSTER_FIELD_RULES,
+  maxEventsPerPerson = 2,
+  allowCrossEvent = true,
   open,
   token,
   onClose,
@@ -106,6 +128,9 @@ export default function ExcelRosterImportModal({
   competitionId: string;
   events: RosterEventOption[];
   existingPlayers?: ExistingPlayer[];
+  fieldRules?: RosterFieldRules;
+  maxEventsPerPerson?: number;
+  allowCrossEvent?: boolean;
   open: boolean;
   token?: string;
   onClose: () => void;
@@ -162,13 +187,24 @@ export default function ExcelRosterImportModal({
         const sheet = workbook.Sheets[sheetName] as unknown as Record<string, unknown> | undefined;
         if (!sheet || typeof sheet['!ref'] !== 'string') continue;
         const { grid, merges } = sheetToGrid(sheet, XLSX);
-        const parsed = parseRosterSheet({ sheet: sheetName, grid, merges, events });
+        const parsed = parseRosterSheet({
+          sheet: sheetName,
+          grid,
+          merges,
+          events,
+          fieldRules,
+          maxEventsPerPerson,
+          allowCrossEvent,
+        });
         if (parsed.headerRow === null) {
           problems.push(`${sheetName}：${parsed.messages[0] ?? '没有找到表头'}`);
           continue;
         }
+        if (parsed.messages.length) {
+          problems.push(...parsed.messages.map((text) => `${sheetName}：${text}`));
+        }
         headerRow = headerRow ?? parsed.headerRow;
-        sheets.push(sheetName);
+        sheets.push(parsed.kind ? `${sheetName}（${entrantTypeLabel(parsed.kind)}）` : sheetName);
         entries.push(...parsed.entries);
       }
 
@@ -227,7 +263,11 @@ export default function ExcelRosterImportModal({
           const response = await apiFetch<{ createdCount: number }>(`/admin/competitions/${competitionId}/players/batch`, {
             method: 'POST',
             token,
-            body: JSON.stringify({ eventId: group.eventId, players: chunk }),
+            body: JSON.stringify({
+              eventId: group.eventId,
+              entrantType: group.entrantType,
+              players: chunk,
+            }),
           });
           created += response.createdCount;
         } catch (error) {
@@ -236,7 +276,7 @@ export default function ExcelRosterImportModal({
       }
     }
     setImporting(false);
-    if (created) message.success(`已导入 ${created} 条参赛记录`);
+    if (created) message.success(`已导入 ${created} 条参赛记录${errorEntries.length ? `，跳过 ${errorEntries.length} 条待修正记录` : ''}`);
     if (failures.length) {
       message.error(`部分名单未导入：${[...new Set(failures)].join('；')}`);
       if (!created) return;
@@ -248,6 +288,8 @@ export default function ExcelRosterImportModal({
     close();
     await onImported();
   }
+
+  const fieldRuleText = `本赛事学生组：学号${fieldRules.SCHOOL.studentId === 'required' ? '必填' : fieldRules.SCHOOL.studentId === 'optional' ? '选填' : '不收集'}、学院${fieldRules.SCHOOL.college === 'required' ? '必填' : fieldRules.SCHOOL.college === 'optional' ? '选填' : '不收集'}、年级专业${fieldRules.SCHOOL.majorGrade === 'required' ? '必填' : fieldRules.SCHOOL.majorGrade === 'optional' ? '选填' : '不收集'}`;
 
   return (
     <Modal
@@ -261,22 +303,31 @@ export default function ExcelRosterImportModal({
       width={1180}
       onCancel={close}
       onOk={submit}
-      okText={importablePeople ? `导入 ${importablePeople} 人` : '导入'}
+      okText={
+        importablePeople
+          ? `导入 ${importablePeople} 人${errorEntries.length ? `（跳过 ${errorEntries.length} 条）` : ''}`
+          : '导入'
+      }
       cancelText="取消"
       confirmLoading={importing}
-      okButtonProps={{ disabled: !importablePeople || Boolean(errorEntries.length) }}
+      okButtonProps={{ disabled: !importablePeople }}
       destroyOnHidden
     >
       <Space orientation="vertical" size={12} style={{ width: '100%' }}>
         <Alert
           type="info"
           showIcon
-          title="上传「羽动云赛参赛人员批量导入模板」即可，系统会自动识别表头、项目列和双打配对"
-          description="支持 .xls / .xlsx。表头需包含：序号、姓名、性别、联系方式、单位、项目；示例行会自动跳过；双打把两人的「单位」单元格合并表示一对，没合并会提示。"
+          title="上传学生模板或社会模板均可，系统会按表头自动识别组别、项目列和双打配对"
+          description={`支持 .xls / .xlsx。学生模板 9 列（含学号/学院/年级专业），社会模板 6 列；示例行会自动跳过；双打把两人的「单位」单元格合并表示一对。${fieldRuleText}。`}
           action={
-            <Button size="small" icon={<DownloadOutlined />} href={TEMPLATE_URL} download="羽动云赛批量导入模板.xls">
-              下载模板
-            </Button>
+            <Space>
+              <Button size="small" icon={<DownloadOutlined />} href={SCHOOL_TEMPLATE_URL} download="羽动云赛报名批量导入学生模板.xls">
+                学生模板
+              </Button>
+              <Button size="small" icon={<DownloadOutlined />} href={SOCIAL_TEMPLATE_URL} download="羽动云赛报名批量导入社会模板.xls">
+                社会模板
+              </Button>
+            </Space>
           }
         />
         <Upload.Dragger
@@ -345,13 +396,23 @@ export default function ExcelRosterImportModal({
             rowKey="key"
             dataSource={entries}
             pagination={false}
-            scroll={{ x: 1080, y: 340 }}
+            scroll={{ x: 1360, y: 340 }}
             columns={[
               { title: '行', key: 'rows', width: 74, render: (_, entry) => entry.rows.join('、') },
               {
+                title: '组别',
+                key: 'entrantType',
+                width: 84,
+                render: (_, entry) => (
+                  <Tag color={entry.entrantType === 'SOCIAL' ? 'orange' : 'blue'}>
+                    {entrantTypeLabel(entry.entrantType)}
+                  </Tag>
+                ),
+              },
+              {
                 title: '项目',
                 key: 'project',
-                width: 168,
+                width: 200,
                 render: (_, entry) => (
                   <Space size={4}>
                     <Tag color={entry.eventId ? (entry.kind === 'DOUBLE' ? 'purple' : 'blue') : 'default'}>
@@ -373,6 +434,24 @@ export default function ExcelRosterImportModal({
                 key: 'gender',
                 width: 76,
                 render: (_, entry) => stack(entry.people.map((person) => genderLabel(person.gender))),
+              },
+              {
+                title: '学号',
+                key: 'studentId',
+                width: 130,
+                render: (_, entry) => stack(entry.people.map((person) => person.studentId ?? '')),
+              },
+              {
+                title: '学院',
+                key: 'college',
+                width: 150,
+                render: (_, entry) => stack(entry.people.map((person) => person.college ?? '')),
+              },
+              {
+                title: '年级专业',
+                key: 'majorGrade',
+                width: 150,
+                render: (_, entry) => stack(entry.people.map((person) => person.majorGrade ?? '')),
               },
               {
                 title: '联系方式',

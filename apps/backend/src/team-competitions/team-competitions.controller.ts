@@ -12,7 +12,7 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { Role } from '@prisma/client';
+import { EntrantType, Role } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
@@ -49,8 +49,12 @@ export class TeamCompetitionsController {
   }
 
   @Get()
-  list(@Req() req: { user: AuthActor }, @Query('tournamentId') tournamentId?: string) {
-    return this.teamCompetitionsService.list(tournamentId, req.user);
+  list(
+    @Req() req: { user: AuthActor },
+    @Query('tournamentId') tournamentId?: string,
+    @Query('entrantType') entrantType?: EntrantType,
+  ) {
+    return this.teamCompetitionsService.list(tournamentId, req.user, entrantType);
   }
 
   @Get(':id')

@@ -201,15 +201,26 @@ pnpm dev
 6. 裁判账号扫码进入赛事，按场地领取比赛并记分，大屏 `/live-screen` 实时同步。
 7. 在图片管理中配置水印并上传图片，或由摄影师账号上传。
 
-## 批量导入参赛名单
+## 分组报名与批量导入
 
-「赛事管理 → 参赛选手 → Excel 导入」上传官方模板，系统会自动识别表头、「项目」列和双打配对，导入前在弹窗下方显示逐条名单与错误提示。
+赛事分为**学生组 / 社会组**，两组各自独立的单项、抽签、成绩；社会组也可以单独建团体赛。赛事创建时同时生成学生组、社会组两个报名码，报名人先填报名码，码决定进入哪个组的报名表单。
 
-- 模板文件：[`apps/frontend/public/templates/yudongyun-roster-import.xls`](apps/frontend/public/templates/yudongyun-roster-import.xls)，也可在导入弹窗里点「下载模板」。
-- 列：序号、姓名、性别、联系方式、单位、项目（顺序可调整，按表头自动匹配）。
-- 项目填写男子单打 / 女子单打 / 男子双打 / 女子双打 / 混合双打，按项目自动归入赛事对应单项。
+- 学生组：必须登录；学号、学院、年级专业是否必填由赛事配置决定。
+- 社会组：免登录游客报名，提交后返回报名编号，凭编号查询审核状态。
+- 两个报名码各自可重新生成/停用；停用或重新生成后旧码、旧二维码立即失效。
+- 同一人只能在一个组报名；跨组按学号或“姓名 + 联系方式”查重。
+
+「赛事管理 → 参赛选手 → Excel 导入」支持两个官方模板，按**表头指纹**自动识别，不依赖文件名：
+
+- 学生模板：[`yudongyun-roster-import-school.xls`](apps/frontend/public/templates/yudongyun-roster-import-school.xls)，9 列：序号、姓名、性别、学号、学院、年级专业、联系方式、单位、项目。
+- 社会模板：[`yudongyun-roster-import-social.xls`](apps/frontend/public/templates/yudongyun-roster-import-social.xls)，6 列：序号、姓名、性别、联系方式、单位、项目。
+- 旧模板 [`yudongyun-roster-import.xls`](apps/frontend/public/templates/yudongyun-roster-import.xls) 继续可用，等同社会模板。
+- 出现学号/学院/年级专业列 → 学生组；都没有 → 社会组；学生模板缺学号列会提示。
+- 学生字段是否必填按赛事的 `registrationFieldRules` 校验；学号非必填时，导入可以不写学号。
 - 单打一行一人；双打把两名队员的「单位」单元格上下合并表示一对，未合并会提示。
-- 标题行、说明行和模板自带的示例行会自动跳过；导入按社会人员处理（无学号/学院班级），超过 500 条会自动分批提交。
+- 标题行、说明行和模板自带的示例行会自动跳过；超过 500 条自动分批提交。
+- **报名表导出保持原来的 18 列格式**，学校组/社会组合并在同一张表；新增字段并入原有的「学号」「院系/班级」列，社会组留空，不额外增加列。
+- 数据导出页另提供「学生组回导模板」「社会组回导模板」：分别按 9 列 / 6 列导出，双打按两行并合并单位列，修改后可直接再导入。
 
 ## 常用命令
 
@@ -243,7 +254,7 @@ pnpm lint
 |---|---|
 | 公开 | `/` 首页、`/competitions` 赛事列表、`/competitions/:id` 详情、`/competitions/:id/players` 选手、`/competitions/:id/brackets` 签表 |
 | 公开 | `/schedule` 赛程、`/bracket` 对阵、`/ranking` 排行、`/history` 历届、`/notice` 公告、`/photos` 图片、`/photos/:accessToken` 分享图片、`/live-screen` 大屏 |
-| 账号 | `/login`、`/signup`、`/account`、`/my-registrations`、`/competitions/:id/register` |
+| 账号 | `/login`、`/signup`、`/account`、`/my-registrations`、`/competitions/:id/register`、`/baoming` 报名码入口、`/competitions/:id/registration-status` 游客查询 |
 | 管理 | `/admin`、`/admin/users`、`/admin/invite-codes`、`/admin/approvals`、`/admin/tournaments`、`/admin/competitions`、`/admin/events`、`/admin/players`、`/admin/team-competitions` |
 | 管理 | `/admin/draws`、`/admin/scheduling`、`/admin/scoring`、`/admin/announcements`、`/admin/exports`、`/admin/email`、`/admin/ai-config`、`/admin/image-moderation` |
 | 管理（仅超级管理员） | `/nicaiyixiahh/match-management` 裁判员对局管理 |
@@ -300,6 +311,23 @@ cd apps/frontend && pnpm start         # 前端
 - 生产环境需配置正式的 `JWT_SECRET`、`NEXTAUTH_SECRET`、`FRONTEND_URL`/`CORS_ORIGIN`、`NEXT_PUBLIC_API_URL`。
 - 建议用 Nginx 直接发布带水印的公开图片与封面，减轻 Node 负载，参考 [apps/backend/nginx-photos.conf.example](apps/backend/nginx-photos.conf.example)。
 - `.env` 文件包含密钥，不要提交到版本库。
+
+### 学校/社会分组迁移
+
+新环境或尚未升级的数据库执行：
+
+```bash
+cd apps/backend
+pnpm exec prisma migrate deploy
+pnpm exec ts-node prisma/backfill-registration-codes.ts
+```
+
+本次迁移文件：[`apps/backend/prisma/migrations/20261029_school_social_groups/migration.sql`](apps/backend/prisma/migrations/20261029_school_social_groups/migration.sql)。
+
+- 迁移包含 `TeamCompetition.entrantType` 和 `(tournamentId, entrantType)` 唯一索引，一个赛事学生组/社会组各一条团体赛。
+- 执行前先按文件顶部 SQL 检查 `Event`、`TeamCompetition` 是否有重复；有重复先合并/清理，否则唯一索引会失败。
+- 本机开发库此前用 `prisma db push` 同步，结构已存在；不要在本机重复执行该迁移。
+- 迁移只加报名码列，不生成随机码，必须执行 `backfill-registration-codes.ts`。
 
 ## 许可证
 

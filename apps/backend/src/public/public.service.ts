@@ -718,7 +718,7 @@ export class PublicService {
         const teamEvents = tournament.teamCompetitions
           .filter((competition) => competition.isPublished && competition.teams.length > 0)
           .map((competition) => ({
-            id: competition.id, type: 'TEAM', typeLabel: `团体赛 · ${competition.name}`,
+            id: competition.id, type: 'TEAM', typeLabel: `${competition.entrantType === 'SOCIAL' ? '社会组' : '学生组'}团体赛 · ${competition.name}`,
             format: 'TEAM', registrations: competition.teams.length,
             matches: competition.teamMatches.length,
             completedMatches: competition.teamMatches.filter((match) => match.status === MatchStatus.COMPLETED).length,
