@@ -1,0 +1,44 @@
+# Build context exclusions for the monorepo image build.
+# NOTE: must NOT use a blanket "**/uploads" - apps/backend/src/uploads is a real
+# source module (NestJS UploadsModule). Only the runtime data dir is excluded.
+
+# --- runtime data / generated artefacts -------------------------------------
+# apps/backend/uploads is a symlink to /data/yumaoqiu/uploads (2.9G of user files)
+apps/backend/uploads
+**/node_modules
+**/.next
+**/.next.*
+**/dist
+**/dist.*
+
+# Stale incremental-compile state. If this leaks into the build context, tsc
+# thinks the sources are unchanged and emits .d.ts without the matching .js,
+# producing a runtime MODULE_NOT_FOUND.
+**/*.tsbuildinfo
+**/*.log
+**/.DS_Store
+
+# --- repo metadata ----------------------------------------------------------
+.git
+.gitignore
+.github
+.codex-work
+.snapshots
+docs
+output
+outputs
+
+# --- secrets: never bake env or keys into an image --------------------------
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+
+# --- not needed for the build ----------------------------------------------
+apps/backend/_check.xlsx
+apps/backend/db-check.cjs
+apps/backend/nginx-photos.conf.example
+apps/backend/test
+infra/docker/.env
+infra/docker/compose.yaml
+infra/livekit

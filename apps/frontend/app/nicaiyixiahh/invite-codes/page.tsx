@@ -258,14 +258,7 @@ export default function InviteCodesPage() {
               message={`当前邀请码余额：${balance} 次`}
               description="创建后立即从余额扣除填写的次数，注册时不再重复扣除。"
             />
-          ) : (
-            <Alert
-              type="info"
-              showIcon
-              style={{ marginBottom: 16 }}
-              message="超级管理员不受邀请码余额限制"
-            />
-          )}
+          ) : null}
           <Form.Item
             name="maxUses"
             label="使用次数"

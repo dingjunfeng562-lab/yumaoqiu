@@ -1,0 +1,56 @@
+# Side-by-side rollout for the yumaoqiu app tier.
+#
+# Host networking is deliberate: the app hard-codes `localhost` style URLs in
+# .env (DATABASE_URL, LIVEKIT_INTERNAL_URL) and nginx on the host proxies to
+# 127.0.0.1:<port>. With network_mode: host the containers reach MariaDB and
+# LiveKit exactly as the systemd units do, and the nginx upstream never changes.
+#
+# Ports are variables so the same file serves both the rehearsal and the cutover:
+#   rehearsal : BACKEND_PORT=14000 FRONTEND_PORT=13000  (systemd keeps 4000/3000)
+#   cutover   : BACKEND_PORT=4000  FRONTEND_PORT=3000   (systemd units stopped)
+name: yumaoqiu
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  backend:
+    image: yumaoqiu/backend:${TAG:-dev}
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
+      target: backend
+    network_mode: host
+    env_file:
+      - /opt/yumaoqiu/apps/backend/.env
+    environment:
+      NODE_ENV: production
+      PORT: "${BACKEND_PORT:-14000}"
+    volumes:
+      - /data/yumaoqiu/uploads:/app/apps/backend/uploads
+    restart: unless-stopped
+    logging: *default-logging
+
+  frontend:
+    image: yumaoqiu/frontend:${TAG:-dev}
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
+      target: frontend
+      args:
+        NEXT_PUBLIC_API_URL: https://ydysyumao.cn/api
+    network_mode: host
+    env_file:
+      - /opt/yumaoqiu/apps/frontend/.env
+    environment:
+      NODE_ENV: production
+      PORT: "${FRONTEND_PORT:-13000}"
+    command:
+      ["node", "node_modules/next/dist/bin/next", "start", "-p", "${FRONTEND_PORT:-13000}"]
+    depends_on:
+      - backend
+    restart: unless-stopped
+    logging: *default-logging
