@@ -1017,7 +1017,10 @@ export class PublicService {
     };
   }
 
-  private computePublicCourtDisplayState(events: Array<{ note: string | null; createdAt: Date }>): {
+  private computePublicCourtDisplayState(
+    events: Array<{ note: string | null; createdAt: Date }>,
+    currentGameNo = 1,
+  ): {
     side1CourtSide: CourtSide;
     side2CourtSide: CourtSide;
     swapCount: number;
@@ -1026,7 +1029,9 @@ export class PublicService {
       .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
       .filter((event) => this.decodePublicCourtSwapNote(event.note) !== null)
       .length;
-    const swapped = swapCount % 2 === 1;
+    // 每局结束双方换边，第 N 局的初始朝向 = 第 1 局翻转 (N-1) 次；局内换边来自显式事件。
+    const endChanges = Math.max(0, currentGameNo - 1);
+    const swapped = (swapCount + endChanges) % 2 === 1;
     return {
       side1CourtSide: swapped ? 'right' : 'left',
       side2CourtSide: swapped ? 'left' : 'right',
@@ -1050,9 +1055,9 @@ export class PublicService {
     return Number.isFinite(gameNo) ? gameNo : null;
   }
 
-  // Classify how a match ended so the bracket / live screen can distinguish
-  // 退赛 / 黑牌取消资格 / 普通弃权. The prefix lives in match.forfeitReason
-  // and is set by the scoring service when forfeitMatch is invoked.
+  // 区分一场比赛是如何结束的，让对阵图 / 大屏能分辨
+  // 退赛 / 黑牌取消资格 / 普通弃权。前缀存放在 match.forfeitReason 里，
+  // 由计分服务调用 forfeitMatch 时写入。
   private decodeForfeit(reason?: string | null): ForfeitDecode {
     if (reason?.startsWith(BLACK_CARD_NOTE_PREFIX)) {
       return {
@@ -1228,7 +1233,10 @@ export class PublicService {
       null;
     const pauseState = this.computePublicPauseState(match.events ?? [], match.finishedAt);
     const matchPaused = pauseState.paused;
-    const courtDisplayState = this.computePublicCourtDisplayState(match.events ?? []);
+    const courtDisplayState = this.computePublicCourtDisplayState(
+      match.events ?? [],
+      currentGame?.gameNo ?? 1,
+    );
     const forfeit = this.decodeForfeit(match.forfeitReason);
 
     return {

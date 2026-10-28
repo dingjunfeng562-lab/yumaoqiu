@@ -28,7 +28,18 @@ import { randomBytes } from 'node:crypto';
 type AuthUser = AuthActor;
 
 type PlayerIndex = 1 | 2;
+/**
+ * 发球区。始终以「该名选手面向球网时的左右手边」为准：
+ * 'right' = 本方右发球区，'left' = 本方左发球区。
+ * 因此发球方与接发方各自看到的左右是镜像的：发球方从右发球区发球时，
+ * 接发球员站的是他自己那一侧的右发球区（两个「右」互为对角）。
+ */
 type CourtSide = 'left' | 'right';
+/**
+ * 发球信息的来源。新一局开始时系统会按规则自动带出一个默认值，
+ * 裁判核对或手动改过之后才算正式确认。
+ */
+type ServeSource = 'system' | 'referee';
 
 type ServingState = {
   gameNo: number;
@@ -40,6 +51,7 @@ type ServingState = {
   receiverCourtSide: CourtSide | null;
   side1Positions: Record<CourtSide, PlayerIndex | null>;
   side2Positions: Record<CourtSide, PlayerIndex | null>;
+  source?: ServeSource;
 };
 
 type CourtDisplayState = {
@@ -52,10 +64,12 @@ type StartMatchOptions = {
   servingSide: 1 | 2;
   serverPlayerIndex: PlayerIndex;
   receiverPlayerIndex: PlayerIndex;
-  side1LeftPlayerIndex?: PlayerIndex;
-  side1RightPlayerIndex?: PlayerIndex;
-  side2LeftPlayerIndex?: PlayerIndex;
-  side2RightPlayerIndex?: PlayerIndex;
+};
+
+type SetGameServeOptions = {
+  gameNo: number;
+  serverPlayerIndex: PlayerIndex;
+  receiverPlayerIndex: PlayerIndex;
 };
 
 type MatchPauseState = {
@@ -222,7 +236,7 @@ export class ScoringService {
   }
 
   private requireReferee(user: AuthUser) {
-    // The general roles guard also admits ROOT; QR access is referee-only.
+    // 通用角色守卫也放行超级管理员，但扫码执裁只允许裁判账号。
     if (!hasPermission(user, 'REFEREE')) {
       throw new ForbiddenException('请使用裁判账号扫码进入赛事');
     }
@@ -304,7 +318,7 @@ export class ScoringService {
     if (match.status !== MatchStatus.PENDING) throw new ConflictException('只能接手尚未开始的比赛');
     if (!match.side1Id || !match.side2Id) throw new BadRequestException('对阵尚未确定，暂不能执裁');
 
-    // A conditional update prevents simultaneous scans from taking the same match.
+    // 用带条件的更新，避免两名裁判同时扫码抢到同一场比赛。
     const result = await this.prisma.match.updateMany({
       where: {
         ...scope,
@@ -405,11 +419,11 @@ export class ScoringService {
     const isTechnicalPauseGame = (gameNo: number) =>
       this.shouldUseTechnicalPauseInGame(gameNo, scoringRule, effectiveScoring);
     const pauseState = this.computePauseState(pauseEvents, match.finishedAt, isTechnicalPauseGame);
-    const courtDisplayState = this.computeCourtDisplayState(courtEvents);
+    const currentGame = match.games.find((game) => !game.winnerSide) ?? match.games.at(-1) ?? null;
+    const courtDisplayState = this.computeCourtDisplayState(courtEvents, currentGame?.gameNo ?? 1);
     const courtSwapRequired = this.computeCourtSwapRequired(courtEvents, (gameNo) =>
       this.shouldRequireCourtSwapInGame(gameNo, scoringRule, effectiveScoring),
     );
-    const currentGame = match.games.find((game) => !game.winnerSide) ?? match.games.at(-1) ?? null;
     const servingState = this.buildServingState(
       match.games,
       servingEvents,
@@ -501,16 +515,26 @@ export class ScoringService {
       throw new BadRequestException('请选择首发方、首位发球员和接发球员');
     }
 
-    const servingState = this.initialServingState(
-      1,
-      options.servingSide,
-      options.serverPlayerIndex,
-      null,
+    // 0:0 开局的站位完全由「谁发球、谁接发」决定：发球员站本方右发球区，
+    // 接发球员站自己那一侧的右发球区（两人互为对角），搭档各站另一侧。
+    // 因此不再单独接收左右站位参数，避免出现「0:0 从左区发球」这类非法初始态。
+    const playerCounts = await this.sidePlayerCounts(match);
+    const servingState = this.sanitizeServingState(
       {
-        side1Positions: this.startPositionsFromOptions(1, options),
-        side2Positions: this.startPositionsFromOptions(2, options),
-        receiverPlayerIndex: options.receiverPlayerIndex,
+        ...this.initialServingState(
+          1,
+          options.servingSide,
+          options.serverPlayerIndex,
+          null,
+          {
+            receiverPlayerIndex: options.receiverPlayerIndex,
+            forceServerRight: true,
+          },
+        ),
+        source: 'referee',
       },
+      playerCounts.side1,
+      playerCounts.side2,
     );
 
     await this.prisma.$transaction(async (tx) => {
@@ -541,6 +565,120 @@ export class ScoringService {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
 
     return this.getMatchState(matchId, user);
+  }
+
+  /**
+   * 裁判核对/修改「当前这一局」的发球与接发。
+   *
+   * 新一局开始时系统会按规则先带一个默认值（source='system'），裁判可以随时点开改；
+   * 改完写一条 source='referee' 的发球状态事件，之后每一分都基于它继续轮转。
+   * 发球方由上一局胜方决定、不可改，所以裁判只需要选发球员和接发球员，
+   * 两人的左右站位随之推导：发球员站本方发球区（该方比分偶数=右区、奇数=左区），
+   * 接发球员站他自己那一侧的同名发球区。
+   */
+  async setGameServe(matchId: string, user: AuthUser, options: SetGameServeOptions) {
+    await this.ensureMatchAccess(matchId, user);
+    const match = await this.ensurePlayableMatch(matchId);
+    if (match.status === MatchStatus.COMPLETED || match.status === MatchStatus.CANCELLED) {
+      throw new BadRequestException('场次已结束，不能修改发球设置');
+    }
+    if (match.status !== MatchStatus.LIVE) {
+      throw new BadRequestException('比赛尚未开始，请先确认开始比赛');
+    }
+    if (match.winnerSide !== null && match.winnerSide !== undefined) {
+      throw new BadRequestException('本场已决出胜方，请先确认结束比赛或撤销上一分');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await this.teamCompetitionsService.prepareScoring(tx, matchId, { expectedUpdatedAt: match.updatedAt });
+      const games = await tx.game.findMany({ where: { matchId }, orderBy: { gameNo: 'asc' } });
+      const currentGame = games.find((game) => !game.winnerSide) ?? games.at(-1);
+      if (!currentGame || currentGame.gameNo !== options.gameNo) {
+        throw new BadRequestException('只能修改当前这一局的发球设置，请刷新后重试');
+      }
+      const servingEvents = await tx.matchEvent.findMany({
+        where: { matchId, type: { in: [MatchEventType.SERVE_CHANGE, MatchEventType.POINT] } },
+        orderBy: { createdAt: 'asc' },
+      });
+      const playerCounts = await this.sidePlayerCounts(match);
+      const side1Count = playerCounts.side1;
+      const side2Count = playerCounts.side2;
+      const state = this.buildServingState(
+        games,
+        servingEvents,
+        currentGame.gameNo,
+        side1Count,
+        side2Count,
+      );
+      const servingSide = state.servingSide;
+      if (servingSide !== 1 && servingSide !== 2) {
+        throw new BadRequestException('当前局发球方尚未确定，请刷新后重试');
+      }
+      const receivingSide: 1 | 2 = servingSide === 1 ? 2 : 1;
+      if (options.serverPlayerIndex === 2 && (servingSide === 1 ? side1Count : side2Count) < 2) {
+        throw new BadRequestException('该方只有一名选手，发球员不能选 2 号位');
+      }
+      if (options.receiverPlayerIndex === 2 && (receivingSide === 1 ? side1Count : side2Count) < 2) {
+        throw new BadRequestException('该方只有一名选手，接发球员不能选 2 号位');
+      }
+
+      const score = servingSide === 1 ? currentGame.side1Score : currentGame.side2Score;
+      const serverCourtSide: CourtSide = score % 2 === 0 ? 'right' : 'left';
+      const serverPositions = this.pairPositions(options.serverPlayerIndex, serverCourtSide);
+      const receiverPositions = this.pairPositions(options.receiverPlayerIndex, serverCourtSide);
+      const nextState = this.sanitizeServingState(
+        {
+          gameNo: currentGame.gameNo,
+          servingSide,
+          serverPlayerIndex: options.serverPlayerIndex,
+          serverCourtSide,
+          receivingSide,
+          receiverPlayerIndex: options.receiverPlayerIndex,
+          receiverCourtSide: serverCourtSide,
+          side1Positions: servingSide === 1 ? serverPositions : receiverPositions,
+          side2Positions: servingSide === 2 ? serverPositions : receiverPositions,
+          source: 'referee',
+        },
+        side1Count,
+        side2Count,
+      );
+
+      await tx.game.update({ where: { id: currentGame.id }, data: { server: servingSide } });
+      await tx.matchEvent.create({
+        data: {
+          matchId,
+          type: MatchEventType.SERVE_CHANGE,
+          side: servingSide,
+          gameNo: currentGame.gameNo,
+          side1Score: currentGame.side1Score,
+          side2Score: currentGame.side2Score,
+          note: this.encodeServingState(nextState),
+        },
+      });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+
+    return this.getMatchState(matchId, user);
+  }
+
+  /** 指定某人在某个发球区后，该方另一人的站位。 */
+  private pairPositions(playerIndex: PlayerIndex, courtSide: CourtSide) {
+    const positions: Record<CourtSide, PlayerIndex | null> = { left: null, right: null };
+    positions[courtSide] = playerIndex;
+    positions[this.oppositeCourtSide(courtSide)] = playerIndex === 1 ? 2 : 1;
+    return positions;
+  }
+
+  /** 双方各有几名选手（单打=1，双打=2），用于清掉站位里不存在的 2 号位。 */
+  private async sidePlayerCounts(match: { side1Id?: string | null; side2Id?: string | null }) {
+    const sideMap = await this.resolveSideMap([match.side1Id ?? null, match.side2Id ?? null]);
+    return {
+      side1: this.sidePlayerCount(
+        match.side1Id ? this.registrationView(sideMap.get(match.side1Id)) : null,
+      ),
+      side2: this.sidePlayerCount(
+        match.side2Id ? this.registrationView(sideMap.get(match.side2Id)) : null,
+      ),
+    };
   }
 
   async addPoint(matchId: string, side: 1 | 2, user: AuthUser) {
@@ -691,10 +829,9 @@ export class ScoringService {
         matchScoring,
       );
       if (matchWinner) {
-        // Pending finish: stamp the deciding winner so the UI can prompt the
-        // referee to confirm, but keep status=LIVE and finishedAt=null. The
-        // match only flips to COMPLETED — and advances brackets / team
-        // aggregates — once the referee explicitly confirms via finishMatch().
+        // 待确认结束：先记下决胜方，让界面提示裁判确认，但保持 status=LIVE、
+        // finishedAt=null。只有裁判通过 finishMatch() 明确确认后，比赛才会
+        // 变成 COMPLETED，并推进对阵图 / 团体总分。
         await tx.match.update({
           where: { id: matchId },
           data: {
@@ -719,14 +856,24 @@ export class ScoringService {
           servingStateAfterPoint.servingSide === nextGameServer
             ? servingStateAfterPoint.serverPlayerIndex ?? 1
             : this.playerOnCourtSide(servingStateAfterPoint, nextGameServer, 'right') ?? 1;
-        const nextGameServingState = this.initialServingState(
-          nextGameNo,
-          nextGameServer,
-          nextServerPlayer,
-          servingStateAfterPoint,
-          { forceServerRight: true },
+        // 新一局先按规则带出一个默认发球/接发，裁判可在裁判端随时核对或改选
+        // （source='system' 表示还没被裁判确认，会一路带在状态和每一分的备注里）。
+        const playerCounts = await this.sidePlayerCounts(match);
+        const nextGameServingState = this.sanitizeServingState(
+          {
+            ...this.initialServingState(
+              nextGameNo,
+              nextGameServer,
+              nextServerPlayer,
+              servingStateAfterPoint,
+              { forceServerRight: true },
+            ),
+            source: 'system',
+          },
+          playerCounts.side1,
+          playerCounts.side2,
         );
-        // BWF flow: the previous game winner serves first in the next game.
+        // BWF 规则：上一局的胜方在下一局先发球。
         await tx.game.upsert({
           where: { matchId_gameNo: { matchId, gameNo: nextGameNo } },
           update: { server: nextGameServer },
@@ -831,24 +978,24 @@ export class ScoringService {
       const currentGame = games.find((game) => !game.winnerSide) ?? games.at(-1);
       if (!currentGame) throw new BadRequestException('暂无可交换场地的比赛局');
       const servingState = this.buildServingState(games, servingEvents, currentGame.gameNo, 2, 2);
-      const swappedServingState = this.swapServingStateCourtSides(servingState);
-
+      // 换边只改变两队各自占哪半场（由 courtDisplayState 负责展示），
+      // 「本方左/右发球区」是相对选手自己面向球网定义的，换边后不变，所以这里不翻转站位。
       await tx.matchEvent.create({
         data: {
           matchId,
           type: MatchEventType.SERVE_CHANGE,
-          side: swappedServingState.servingSide,
+          side: servingState.servingSide,
           gameNo: currentGame.gameNo,
           side1Score: currentGame.side1Score,
           side2Score: currentGame.side2Score,
-          note: this.encodeServingState(swappedServingState),
+          note: this.encodeServingState(servingState),
         },
       });
       await tx.matchEvent.create({
         data: {
           matchId,
           type: MatchEventType.SERVE_CHANGE,
-          side: swappedServingState.servingSide,
+          side: servingState.servingSide,
           gameNo: currentGame.gameNo,
           side1Score: currentGame.side1Score,
           side2Score: currentGame.side2Score,
@@ -870,7 +1017,7 @@ export class ScoringService {
           data: {
             matchId,
             type: MatchEventType.TIMEOUT,
-            side: swappedServingState.servingSide,
+            side: servingState.servingSide,
             gameNo: currentGame.gameNo,
             side1Score: currentGame.side1Score,
             side2Score: currentGame.side2Score,
@@ -909,6 +1056,16 @@ export class ScoringService {
           gameNo: { gt: lastPoint.gameNo },
           side1Score: 0,
           side2Score: 0,
+        },
+      });
+      // 撤销到上一局时，被取消那一局的发球状态、局间休息等事件也要一起作废，
+      // 否则重放历史事件会把已经取消的那一局的发球/接发人员带回来。
+      // 只清理系统自己写的事件，裁判在该局记的警告/牌类记录保留。
+      await tx.matchEvent.deleteMany({
+        where: {
+          matchId,
+          gameNo: { gt: lastPoint.gameNo },
+          type: { in: [MatchEventType.SERVE_CHANGE, MatchEventType.TIMEOUT] },
         },
       });
 
@@ -982,7 +1139,7 @@ export class ScoringService {
     await this.ensureMatchAccess(matchId, user);
     const match = await this.ensurePlayableMatch(matchId);
     if (match.status === MatchStatus.COMPLETED) {
-      // Idempotent: already confirmed; just return the state.
+      // 幂等：已经确认过，直接返回当前状态。
       return this.getMatchState(matchId, user);
     }
     if (match.status === MatchStatus.CANCELLED) {
@@ -1247,9 +1404,8 @@ export class ScoringService {
           note: this.encodeCardNote(cardType, playerIndex, cleanReason),
         },
       });
-      // Black card → opponent wins by forfeit. Tag the reason with a prefix so
-      // the public bracket / live screens can render "黑牌取消资格" instead of
-      // a plain "弃权" label (BWF rules treat the two distinctly).
+      // 黑牌 → 对手因弃权获胜。给原因加前缀，公开对阵图 / 大屏才能显示
+      // 「黑牌取消资格」而不是笼统的「弃权」（BWF 规则对两者有区分）。
       return this.forfeitMatch(
         matchId,
         penalizedSide,
@@ -1376,7 +1532,7 @@ export class ScoringService {
 
     await this.prisma.$transaction(async (tx) => {
       await this.teamCompetitionsService.prepareScoring(tx, matchId, { expectedUpdatedAt: match.updatedAt });
-      // Mark this match as cancelled. forfeitedSide = 0 sentinel = "both sides forfeited"
+      // 本场作废。forfeitedSide = 0 是哨兵值，表示双方都弃权。
       await tx.match.update({
         where: { id: matchId },
         data: {
@@ -1397,8 +1553,8 @@ export class ScoringService {
         },
       });
 
-      // Propagate the "bye" to the next round: clear the corresponding slot
-      // on the next match so the bracket renders it as a 轮空.
+      // 把「轮空」传递到下一轮：清空下一场对应的签位，
+      // 让对阵图把它显示成轮空。
       const secondStageSynced = await this.syncSecondStageFormalMatchCancellation(tx, match);
       if (match.eventId && !secondStageSynced) {
         await this.clearSingleEliminationAdvancement(tx, match);
@@ -1741,9 +1897,18 @@ export class ScoringService {
     });
   }
 
-  private computeCourtDisplayState(events: Array<{ note: string | null }>): CourtDisplayState {
+  /**
+   * 展示用的「哪一队在屏幕左侧」。
+   * 每局结束双方就要换边，所以第 N 局的初始左右是 (N-1) 次隐性换边，
+   * 决胜局 11 分的换边则来自显式的换边事件，两者叠加决定当前朝向。
+   */
+  private computeCourtDisplayState(
+    events: Array<{ note: string | null }>,
+    currentGameNo = 1,
+  ): CourtDisplayState {
     const swapCount = events.filter((event) => this.decodeCourtSwapNote(event.note) !== null).length;
-    const swapped = swapCount % 2 === 1;
+    const endChanges = Math.max(0, currentGameNo - 1);
+    const swapped = (swapCount + endChanges) % 2 === 1;
     return {
       side1CourtSide: swapped ? 'right' : 'left',
       side2CourtSide: swapped ? 'left' : 'right',
@@ -1841,27 +2006,6 @@ export class ScoringService {
     const { target, gamesToWin } = this.ruleConfig(rule, eventOverrides);
     if (gamesToWin === 1) return target === 31 && gameNo === 1;
     return gameNo === gamesToWin * 2 - 1;
-  }
-
-  private swapServingStateCourtSides(state: ServingState): ServingState {
-    const side1Positions = this.flipPositions(state.side1Positions);
-    const side2Positions = this.flipPositions(state.side2Positions);
-    const serverCourtSide = state.serverCourtSide ? this.oppositeCourtSide(state.serverCourtSide) : null;
-    const receiverCourtSide = state.receiverCourtSide ? this.oppositeCourtSide(state.receiverCourtSide) : null;
-    return {
-      ...state,
-      serverCourtSide,
-      receiverCourtSide,
-      side1Positions,
-      side2Positions,
-    };
-  }
-
-  private flipPositions(positions: Record<CourtSide, PlayerIndex | null>) {
-    return {
-      left: positions.right,
-      right: positions.left,
-    } as Record<CourtSide, PlayerIndex | null>;
   }
 
   private encodeFaultNote(faultType: string, playerIndex?: PlayerIndex) {
@@ -2021,27 +2165,19 @@ export class ScoringService {
     const serverCourtSide = this.courtSideOfPlayer(positions, serverPlayerIndex) ?? 'right';
     const receivingSide: 1 | 2 = servingSide === 1 ? 2 : 1;
     const receivingPositions = receivingSide === 1 ? side1Positions : side2Positions;
-    const receiverPlayerIndex =
-      options?.receiverPlayerIndex ??
-      this.playerOnCourtSide(
-        {
-          gameNo,
-          servingSide,
-          serverPlayerIndex,
-          serverCourtSide,
-          receivingSide,
-          receiverPlayerIndex: null,
-          receiverCourtSide: null,
-          side1Positions,
-          side2Positions,
-        },
-        receivingSide,
-        this.oppositeCourtSide(serverCourtSide),
-      ) ??
-      1;
-    const receiverCourtSide =
-      this.courtSideOfPlayer(receivingPositions, receiverPlayerIndex) ??
-      this.oppositeCourtSide(serverCourtSide);
+    // 规则：发球员从本方右（左）发球区发球时，接发球员站的是他自己那一侧的
+    // 右（左）发球区 —— 两个同名发球区互为对角。所以这里必须是「同名」而不是「另一侧」。
+    const receiverCourtSide = serverCourtSide;
+    if (options?.receiverPlayerIndex) {
+      // 裁判指定了接发球员时，把接发方整对摆到该站的发球区上，
+      // 保证「发球员/接发球员」与左右站位永远自洽。
+      receivingPositions[receiverCourtSide] = options.receiverPlayerIndex;
+      receivingPositions[this.oppositeCourtSide(receiverCourtSide)] =
+        options.receiverPlayerIndex === 1 ? 2 : 1;
+    }
+    const receiverSlot = receivingPositions[receiverCourtSide] ?? null;
+    const receiverFallbackCourt = this.oppositeCourtSide(receiverCourtSide);
+    const receiverPlayerIndex = receiverSlot ?? receivingPositions[receiverFallbackCourt] ?? 1;
     return {
       gameNo,
       servingSide,
@@ -2049,7 +2185,7 @@ export class ScoringService {
       serverCourtSide,
       receivingSide,
       receiverPlayerIndex,
-      receiverCourtSide,
+      receiverCourtSide: receiverSlot ? receiverCourtSide : receiverFallbackCourt,
       side1Positions,
       side2Positions,
     };
@@ -2093,9 +2229,18 @@ export class ScoringService {
 
     next.serverCourtSide = serverCourtSide;
     next.receivingSide = next.servingSide === 1 ? 2 : 1;
-    next.receiverCourtSide = this.oppositeCourtSide(serverCourtSide);
-    next.receiverPlayerIndex =
-      this.playerOnCourtSide(next, next.receivingSide, next.receiverCourtSide) ?? 1;
+    // 接发球员站本方同名发球区（与发球区互为对角）。
+    next.receiverCourtSide = serverCourtSide;
+    const receivingPositions = next.receivingSide === 1 ? next.side1Positions : next.side2Positions;
+    const receiverSlot = receivingPositions[serverCourtSide] ?? null;
+    if (receiverSlot) {
+      next.receiverPlayerIndex = receiverSlot;
+    } else {
+      // 单打：该方只有一个人，站位表里只填了一个区，退回按实际站位取值。
+      next.receiverCourtSide =
+        this.courtSideOfPlayer(receivingPositions, 1) ?? this.oppositeCourtSide(serverCourtSide);
+      next.receiverPlayerIndex = receivingPositions[next.receiverCourtSide] ?? 1;
+    }
     return next;
   }
 
@@ -2117,7 +2262,7 @@ export class ScoringService {
   private sanitizeServingState(state: ServingState, side1PlayerCount: number, side2PlayerCount: number) {
     const side1Positions = this.sanitizePositions(state.side1Positions, side1PlayerCount);
     const side2Positions = this.sanitizePositions(state.side2Positions, side2PlayerCount);
-    return {
+    const sanitized: ServingState = {
       ...state,
       serverPlayerIndex: state.serverPlayerIndex === 2 && this.sidePlayerCountForSide(state.servingSide, side1PlayerCount, side2PlayerCount) < 2
         ? 1
@@ -2128,6 +2273,20 @@ export class ScoringService {
       side1Positions,
       side2Positions,
     };
+    // 早期版本按「另一侧发球区」找接发球员，历史备注里存的是错的人。
+    // 只要接发方有人在同名发球区上，就以站位为准重算，让老场次读取时自动纠正。
+    if (
+      sanitized.serverCourtSide &&
+      (sanitized.receivingSide === 1 || sanitized.receivingSide === 2)
+    ) {
+      const receivingPositions = sanitized.receivingSide === 1 ? side1Positions : side2Positions;
+      const candidate = receivingPositions[sanitized.serverCourtSide] ?? null;
+      if (candidate) {
+        sanitized.receiverPlayerIndex = candidate;
+        sanitized.receiverCourtSide = sanitized.serverCourtSide;
+      }
+    }
+    return sanitized;
   }
 
   private sanitizePositions(positions: Record<CourtSide, PlayerIndex | null>, playerCount: number) {
@@ -2148,15 +2307,6 @@ export class ScoringService {
     return 0;
   }
 
-  private startPositionsFromOptions(side: 1 | 2, options: StartMatchOptions) {
-    const left = side === 1 ? options.side1LeftPlayerIndex : options.side2LeftPlayerIndex;
-    const right = side === 1 ? options.side1RightPlayerIndex : options.side2RightPlayerIndex;
-    if ((left === 1 || left === 2) && (right === 1 || right === 2) && left !== right) {
-      return { left, right } as Record<CourtSide, PlayerIndex>;
-    }
-    return { left: 2, right: 1 } as Record<CourtSide, PlayerIndex>;
-  }
-
   private validSide(value?: number | null): 1 | 2 | null {
     return value === 1 || value === 2 ? value : null;
   }
@@ -2175,6 +2325,7 @@ export class ScoringService {
       this.encodePlayerValue(state.side1Positions.right),
       this.encodePlayerValue(state.side2Positions.left),
       this.encodePlayerValue(state.side2Positions.right),
+      this.encodeServeSourceValue(state.source),
     ].join('|');
   }
 
@@ -2194,6 +2345,7 @@ export class ScoringService {
         side1RightText,
         side2LeftText,
         side2RightText,
+        sourceText,
       ] = note.split('|');
       return {
         gameNo: Number(gameNoText) || 1,
@@ -2211,6 +2363,7 @@ export class ScoringService {
           left: this.decodePlayerValue(side2LeftText),
           right: this.decodePlayerValue(side2RightText),
         },
+        source: this.decodeServeSourceValue(sourceText),
       };
     }
     try {
@@ -2241,6 +2394,7 @@ export class ScoringService {
         receiverCourtSide,
         side1Positions: this.normalizePositions(state.side1Positions),
         side2Positions: this.normalizePositions(state.side2Positions),
+        source: state.source === 'system' ? 'system' : 'referee',
       };
     } catch {
       return null;
@@ -2269,6 +2423,15 @@ export class ScoringService {
 
   private decodeCourtSideValue(value?: string): CourtSide | null {
     return value === 'l' ? 'left' : value === 'r' ? 'right' : null;
+  }
+
+  private encodeServeSourceValue(value?: ServeSource | null) {
+    return value === 'system' ? 'sys' : value === 'referee' ? 'ref' : '0';
+  }
+
+  /** 老备注没有第 13 段，一律按「裁判已确认」处理，避免历史场次全部弹出核对提示。 */
+  private decodeServeSourceValue(value?: string): ServeSource {
+    return value === 'sys' ? 'system' : 'referee';
   }
 
   private normalizePositions(value?: Partial<Record<CourtSide, unknown>>) {
@@ -2454,8 +2617,8 @@ export class ScoringService {
     if (event?.format !== Format.GROUP_PLUS_KNOCKOUT_STD) return;
 
     const existingKnockout = await tx.match.findMany({ where: { eventId, roundNo: { gte: 1 } } });
-    // Cleared results retain an empty skeleton. Refill its original records
-    // after the groups finish again; populated knockout trees remain untouched.
+    // 清空成绩后保留空的淘汰赛骨架。等小组赛重新打完后，
+    // 再把原来的记录填回去；已经有数据的淘汰赛树保持不动。
     if (existingKnockout.some(match => match.side1Id || match.side2Id || match.status !== MatchStatus.PENDING)) return;
 
     const groupMatches = await tx.match.findMany({

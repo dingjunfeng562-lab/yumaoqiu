@@ -44,8 +44,7 @@ export function effectivePermissions(user: PermissionUser): PermissionKey[] {
   const permissions = !Array.isArray(user.permissions)
     ? [...DEFAULT_PERMISSIONS[user.role]]
     : user.permissions.filter((value): value is PermissionKey => typeof value === 'string' && PERMISSION_KEYS.includes(value));
-  // Invite management is a role boundary, not a permission that can promote
-  // players, referees or photographers into account issuers.
+  // 邀请码管理属于角色边界，不能靠权限把选手、裁判或图片员变成发码人。
   if (user.role === Role.ADMIN) {
     return permissions.includes('INVITES') ? permissions : [...permissions, 'INVITES'];
   }
@@ -55,7 +54,7 @@ export function hasPermission(user: PermissionUser, ...keys: PermissionKey[]) {
   return user.role === Role.ROOT || keys.some((key) => effectivePermissions(user).includes(key));
 }
 
-// An empty set means ROOT-only. Unknown controllers retain their role guards.
+// 空集合表示仅超级管理员可用。未列出的控制器仍走各自的角色守卫。
 export function requiredPermissions(controller: string, action: string, kind?: string): PermissionKey[] | undefined {
   const tournamentRead: PermissionKey[] = ['TOURNAMENTS', 'TOURNAMENT_ADMIN', 'PLAYERS', 'ORDERBOOK', 'DATA_EXPORT', 'EVENTS', 'TEAMS', 'DRAWS', 'SCHEDULING', 'SCORING', 'PHOTOS', 'EMAIL', 'DASHBOARD'];
   switch (controller) {
@@ -67,6 +66,9 @@ export function requiredPermissions(controller: string, action: string, kind?: s
     case 'TournamentsController':
       if (['findAll', 'findOne'].includes(action)) return tournamentRead;
       if (['create', 'uploadCover', 'update'].includes(action)) return ['TOURNAMENTS'];
+      // 管理员可以删除自己创建的赛事（RolesGuard 会再校验归属），
+      // 超级管理员不受赛事归属限制。
+      if (action === 'remove') return ['TOURNAMENTS', 'TOURNAMENT_ADMIN'];
       // 大屏设置属于赛事编辑：能编辑赛事的人就能排布自己的大屏，赛事管理员同样可以调整。
       if (['getScreenSettings', 'updateScreenSettings'].includes(action)) return ['TOURNAMENTS', 'TOURNAMENT_ADMIN'];
       return ['TOURNAMENT_ADMIN'];
@@ -95,7 +97,7 @@ export function requiredPermissions(controller: string, action: string, kind?: s
     case 'AiConfigController': return ['AI_CONFIG'];
     case 'ImageModerationController': return ['IMAGE_MODERATION'];
     case 'AdminEmailController': return ['EMAIL'];
-    // AI chat usage is platform-wide, so only ROOT may see it.
+    // AI 对话用量是全平台数据，只有超级管理员能看。
     case 'UsageMetricsController': return [];
     // 直播管理（直播间、OBS 记分牌令牌、播放地址）仅限超级管理员。
     case 'BroadcastsController': return [];

@@ -288,7 +288,7 @@ export default function AdminDashboard() {
             {row.name}
           </Typography.Text>
           <div style={{ marginTop: 2, color: '#94a3b8', fontSize: 11 }}>
-            第 {row.edition} 届 · {formatDate(row.startDate)} 至 {formatDate(row.endDate)}
+            {formatDate(row.startDate)} 至 {formatDate(row.endDate)}
           </div>
         </div>
       ),

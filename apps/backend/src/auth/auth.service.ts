@@ -77,8 +77,8 @@ export class AuthService {
 
     try {
       const user = await this.prisma.$transaction(async (tx) => {
-        // Invite ownership is durable: registering through an ADMIN invite
-        // creates a managed account and atomically consumes the shared quota.
+        // 邀请码的归属关系是永久的：通过管理员邀请码注册的账号会挂在该管理员名下。
+        // 新邀请码在创建时已按使用次数预扣余额；历史的管理员邀请码仍在这里扣 1 次。
         const issuer = inviteCode.createdById
           ? await tx.user.findUnique({ where: { id: inviteCode.createdById } })
           : null;
@@ -92,8 +92,13 @@ export class AuthService {
           throw new ForbiddenException('管理员不能发放此角色的邀请码');
         }
         const managerId = issuer && issuer.role !== Role.ROOT ? issuer.id : null;
-        const staffQuotaCharged = Boolean(managerId && STAFF_ROLES.includes(inviteCode.role));
-        if (staffQuotaCharged) await this.consumeStaffQuota(tx, managerId!);
+        const staffQuotaCharged = Boolean(
+          managerId && (inviteCode.quotaCharged || STAFF_ROLES.includes(inviteCode.role)),
+        );
+        // 新邀请码在创建时已预扣余额；只有历史邀请码仍需在注册时扣除。
+        if (managerId && !inviteCode.quotaCharged && STAFF_ROLES.includes(inviteCode.role)) {
+          await this.consumeStaffQuota(tx, managerId);
+        }
         const updatedInviteCode = await tx.inviteCode.updateMany({
           where: {
             id: inviteCode.id,
@@ -382,8 +387,7 @@ export class AuthService {
   async updateUserStatus(userId: string, dto: UpdateUserStatusDto, actor: AuthActor) {
     await this.requireManageableUser(userId, actor);
     const requesterId = actor.id;
-    // Disabling now invalidates the target's active sessions immediately, so a
-    // super admin must not be able to lock themselves out of the console.
+    // 停用会立刻让目标账号已登录的会话失效，所以超级管理员不能把自己锁在后台之外。
     if (dto.status === UserStatus.DISABLED && requesterId && requesterId === userId) {
       throw new BadRequestException('不能禁用自己的账号');
     }
@@ -407,11 +411,9 @@ export class AuthService {
   }
 
   /**
-   * Super admin (ROOT) changes any user's role/permission category. Any role
-   * is assignable, including promoting another account to ROOT. A ROOT account
-   * cannot change its own role — that would risk locking the platform out of
-   * its highest privilege; demote yourself only by promoting someone else first
-   * and having them do it.
+   * 超级管理员（ROOT）修改任意用户的角色/权限分类，任何角色都可以指定，
+   * 包括把别的账号提升为 ROOT。ROOT 不能修改自己的角色——那样可能让平台
+   * 失去最高权限；确实要降级自己时，先提升另一个账号，再让对方来操作。
    */
   async updateUserRole(userId: string, role: Role, requesterId?: string) {
     if (requesterId && requesterId === userId) {
@@ -425,12 +427,12 @@ export class AuthService {
       return this.serializeUser(user);
     }
     const updated = await this.prisma.$transaction(async (tx) => {
-      // Lock the account so simultaneous promotions cannot double-charge it.
+      // 先锁住该账号，避免并发提升角色时重复扣除余额。
       await tx.$queryRaw`SELECT id FROM User WHERE id = ${userId} FOR UPDATE`;
       const current = await tx.user.findUniqueOrThrow({ where: { id: userId } });
       const charge = Boolean(current.managerId && !current.staffQuotaCharged && STAFF_ROLES.includes(role));
       if (charge) await this.consumeStaffQuota(tx, current.managerId!);
-      // Existing privileged invitations cannot survive a role change.
+      // 角色变更后，该账号此前发出的特权邀请码一律作废。
       await tx.inviteCode.updateMany({ where: { createdById: userId }, data: { isEnabled: false } });
       return tx.user.update({
         where: { id: userId },
@@ -441,9 +443,9 @@ export class AuthService {
   }
 
   /**
-   * Self-service rename. Every user may change their display name (which is
-   * the globally-unique `username`) up to {@link RENAME_LIMIT_PER_YEAR} times
-   * inside a rolling 365-day window anchored at the first rename of the window.
+   * 用户自助改名。每个用户都可以修改自己的显示名（即全局唯一的 `username`），
+   * 上限为 {@link RENAME_LIMIT_PER_YEAR} 次；计费窗口从本窗口第一次改名起
+   * 滚动计算 365 天。
    */
   async renameSelf(userId: string, nameInput: string) {
     const name = this.normalizeUsername(nameInput);
@@ -467,8 +469,8 @@ export class AuthService {
       );
     }
 
-    // First rename in a fresh window starts the clock; subsequent renames keep
-    // the same anchor so all three are counted against the same 365 days.
+    // 新窗口的第一次改名开始计时；后续改名沿用同一锚点，
+    // 保证所有改名都算在同一个 365 天里。
     const windowStart = quota.windowStart ?? now;
 
     try {
@@ -487,8 +489,8 @@ export class AuthService {
   }
 
   /**
-   * Super-admin rename of any account. Does NOT consume the user's own quota
-   * and is not bound by the per-year limit.
+   * 超级管理员修改任意账号的显示名。不占用用户自己的改名次数，
+   * 也不受每年次数限制。
    */
   async renameUser(userId: string, nameInput: string, actor: AuthActor) {
     await this.requireManageableUser(userId, actor);
@@ -535,8 +537,8 @@ export class AuthService {
       ...this.serializeUser(user),
       inviteCode: user.inviteCode?.code ?? null,
       registrationStatus: user.competitionRegistrations[0]?.status ?? null,
-      // Total matches assigned to this user as referee (includes pending,
-      // live, completed and cancelled — gives an at-a-glance workload view).
+      // 该用户作为裁判执裁过的场次总数（含待开始、进行中、已结束和已取消），
+      // 便于一眼看出工作量。
       refereedMatchesCount: user._count.matches,
       managerId: user.managerId,
       staffInviteLimit: user.staffInviteLimit,
@@ -550,20 +552,27 @@ export class AuthService {
     this.assertInviteManager(actor);
     this.assertCreatableRole(dto.role, actor);
     const code = await this.generateUniqueInviteCode();
+    const maxUses = dto.maxUses ?? 1;
     const expiresAt = dto.expiresAt ? new Date(dto.expiresAt) : null;
     if (expiresAt && Number.isNaN(expiresAt.getTime())) {
       throw new BadRequestException('有效期格式不正确');
     }
 
-    return this.prisma.inviteCode.create({
-      data: {
-        code,
-        role: dto.role,
-        maxUses: 1,
-        expiresAt,
-        remark: dto.remark?.trim() || null,
-        createdById: actor.id,
-      },
+    return this.prisma.$transaction(async (tx) => {
+      // 超级管理员不受余额限制；其他发放人按填写的使用次数预扣余额。
+      const quotaCharged = actor.role !== Role.ROOT;
+      if (quotaCharged) await this.reserveInviteQuota(tx, actor.id, maxUses);
+      return tx.inviteCode.create({
+        data: {
+          code,
+          role: dto.role,
+          maxUses,
+          quotaCharged,
+          expiresAt,
+          remark: dto.remark?.trim() || null,
+          createdById: actor.id,
+        },
+      });
     });
   }
 
@@ -624,7 +633,8 @@ export class AuthService {
     return this.deleteOrExplain(() =>
       this.prisma.$transaction(async (tx) => {
         await tx.inviteCode.updateMany({ where: { createdById: id }, data: { isEnabled: false } });
-        // Never decrement staffInviteUsed: it measures lifetime consumption.
+        // 不要回退 staffInviteUsed：它记录的是已消耗和已预扣的额度，
+        // 删除账号不应把余额还回来。
         return tx.user.delete({ where: { id } });
       }),
     );
@@ -760,6 +770,27 @@ export class AuthService {
     throw new ForbiddenException('无权管理此邀请码');
   }
 
+  /**
+   * `staffInviteUsed` 同时记录「直接创建的账号」和「邀请码预扣的额度」。
+   * 锁定发放人所在行，可以让「查余额 → 预扣」在并发创建邀请码时保持原子。
+   */
+  private async reserveInviteQuota(tx: Prisma.TransactionClient, managerId: string, amount: number) {
+    const [manager] = await tx.$queryRaw<
+      Array<{ staffInviteLimit: number; staffInviteUsed: number; role: Role; status: UserStatus }>
+    >`SELECT staffInviteLimit, staffInviteUsed, role, status FROM User WHERE id = ${managerId} FOR UPDATE`;
+    if (!manager || manager.role === Role.ROOT || manager.status !== UserStatus.ACTIVE) {
+      throw new ForbiddenException('当前账号不可发放邀请码');
+    }
+    const remaining = Math.max(0, Number(manager.staffInviteLimit) - Number(manager.staffInviteUsed));
+    if (amount > remaining) {
+      throw new BadRequestException(`使用次数不能大于余额（当前余额 ${remaining} 次）`);
+    }
+    await tx.user.update({
+      where: { id: managerId },
+      data: { staffInviteUsed: { increment: amount } },
+    });
+  }
+
   private async consumeStaffQuota(tx: Prisma.TransactionClient, managerId: string) {
     const updated = await tx.user.updateMany({
       where: {
@@ -773,7 +804,7 @@ export class AuthService {
       if (!manager || manager.role === Role.ROOT || manager.status !== UserStatus.ACTIVE) {
         throw new ForbiddenException('管理员已停用或角色已变更');
       }
-      throw new BadRequestException('裁判和图片员的共享名额已用尽，请联系超级管理员分配');
+      throw new BadRequestException('邀请码余额已用尽，请联系超级管理员分配');
     }
   }
 
@@ -789,12 +820,12 @@ export class AuthService {
 
   async updateInviteQuota(id: string, limit: number, actor: AuthActor) {
     if (actor.role !== Role.ROOT) throw new ForbiddenException();
-    // The conditional UPDATE also serializes with concurrent registrations.
+    // 带条件的 UPDATE 会和并发的额度预扣互斥。
     const updated = await this.prisma.user.updateMany({
       where: { id, role: { not: Role.ROOT }, staffInviteUsed: { lte: limit } },
       data: { staffInviteLimit: limit },
     });
-    if (!updated.count) throw new BadRequestException('只能给非超级管理员账号分配名额，且总额度不能低于已使用数量');
+    if (!updated.count) throw new BadRequestException('只能给非超级管理员账号分配邀请码余额，且总额度不能低于已占用数量');
     const user = await this.prisma.user.findUniqueOrThrow({ where: { id } });
     return { limit: user.staffInviteLimit, used: user.staffInviteUsed, remaining: user.staffInviteLimit - user.staffInviteUsed };
   }
@@ -915,9 +946,8 @@ export class AuthService {
   }
 
   /**
-   * Compute the current rename quota for a user. The stored window is treated
-   * as expired (and the count reset) once 365 days have elapsed since it
-   * started, so a fresh year of renames opens automatically.
+   * 计算用户当前的改名额度。距窗口开始满 365 天后视为过期并清零，
+   * 这样新的一年会自动重新开始计数。
    */
   private getRenameQuota(
     user: { nameChangeCount?: number | null; nameChangeWindowStart?: Date | null },

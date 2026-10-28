@@ -1,5 +1,5 @@
-// Build first: pnpm --filter backend build:prod
-// Uses disposable local database fixtures; always cleans them up. No email is sent.
+// 先构建：pnpm --filter backend build:prod
+// 使用一次性的本地数据库夹具，结束后总会清理；不会真的发送邮件。
 require('dotenv/config');
 require('reflect-metadata');
 const assert = require('node:assert/strict');
@@ -97,7 +97,7 @@ async function main() {
     await request(adminA, 'GET', `/events/${tb.events[0].id}`, undefined, 404);
     assert((await request(adminA, 'GET', '/events')).every((event) => event.tournamentId === ta.id));
     await request(adminA, 'GET', `/exports/tournaments/${tb.id}/orderbook`, undefined, 404);
-    // DATA_EXPORT is part of the administrator default set.
+    // DATA_EXPORT 属于管理员的默认权限集。
     await request(adminA, 'GET', `/exports/tournaments/${ta.id}/results`);
     const orderbook = await request(adminA, 'GET', `/exports/tournaments/${ta.id}/orderbook`);
     assert(Buffer.isBuffer(orderbook) && orderbook.subarray(0, 2).toString() === 'PK', 'Real XLSX export must succeed');
@@ -105,7 +105,7 @@ async function main() {
     for (const path of ['/admin/ai-config', '/admin/announcements', '/admin/image-moderation', '/admin/email/settings', '/usage-metrics/summary']) {
       await request(adminA, 'GET', path, undefined, 403);
     }
-    // Dashboard: admins see only their own tournaments' photo stats; AI usage is ROOT-only.
+    // 仪表盘：管理员只能看到自己赛事下的图片统计；AI 用量仅超级管理员可见。
     await db.photo.create({ data: { tournamentId: tb.id, uploaderId: adminB.id, category: 'MATCH', originalPath: 'qa', fullPath: 'qa', thumbnailPath: 'qa', fileSize: 1, width: 1, height: 1 } });
     assert.deepEqual((await request(adminA, 'GET', '/admin/photos/tournaments')).map((t) => t.id), []);
     assert.deepEqual((await request(adminB, 'GET', '/admin/photos/tournaments')).map((t) => t.id), [tb.id]);
@@ -145,69 +145,76 @@ async function main() {
     await request(adminA, 'PATCH', `/players/${playerB.id}`, { name: 'denied' }, 404);
     await request(adminA, 'POST', `/admin/competitions/${ta.id}/players/from-library`, { eventId: ta.events[0].id, player1Id: playerB.id }, 404);
 
-    const createInvite = (actor, role, maxUses = 5) => request(actor, 'POST', '/auth/invite-codes', { role, maxUses }, 201);
-    const refereeInvite = await createInvite(adminA, 'REFEREE');
-    const photoInvite = await createInvite(adminA, 'PHOTOGRAPHER');
-    const playerInvite = await createInvite(adminA, 'PLAYER', 100);
-    const otherInvite = await createInvite(adminB, 'REFEREE');
+    const createInvite = (actor, role, maxUses = 1) => request(actor, 'POST', '/auth/invite-codes', { role, maxUses }, 201);
+    const refereeInvite = await createInvite(adminA, 'REFEREE', 2);
+    const photoInvite = await createInvite(adminA, 'PHOTOGRAPHER', 1);
+    // 创建邀请码时立即按使用次数占用余额。
+    await request(adminA, 'POST', '/auth/invite-codes', { role: 'PLAYER', maxUses: 18 }, 400);
+    const playerInvite = await createInvite(adminA, 'PLAYER', 1);
+    const otherInvite = await createInvite(adminB, 'REFEREE', 1);
     await request(restrictedPlayer, 'PATCH', `/auth/invite-codes/${refereeInvite.id}`, { isEnabled: false }, 403);
     await request(restrictedPlayer, 'DELETE', `/auth/invite-codes/${refereeInvite.id}`, undefined, 403);
-    assert.equal((await request(adminA, 'GET', '/auth/invite-quota')).used, 0, 'Unused invitations do not reserve quota');
+    assert.equal((await request(adminA, 'GET', '/auth/invite-quota')).used, 4, 'Creating invites reserves quota');
     assert((await request(adminA, 'GET', '/auth/invite-codes')).every((i) => i.createdById === adminA.id));
     await request(adminA, 'DELETE', `/auth/invite-codes/${otherInvite.id}`, undefined, 403);
     await request(adminA, 'PATCH', `/auth/invite-codes/${otherInvite.id}`, { isEnabled: false }, 403);
-    await request(rootPeer, 'PATCH', `/auth/users/${adminA.id}/invite-quota`, { limit: 2 });
+    await request(rootPeer, 'PATCH', `/auth/users/${adminA.id}/invite-quota`, { limit: 3 }, 400);
+    await request(rootPeer, 'PATCH', `/auth/users/${adminA.id}/invite-quota`, { limit: 6 });
     const register = (invite, info = credentials(), status = 201) => request(null, 'POST', '/auth/register', { inviteCode: invite.code, ...info }, status);
     const staff1 = (await register(refereeInvite)).user;
+    const staff1b = (await register(refereeInvite)).user;
     const staff2 = (await register(photoInvite)).user;
-    assert.equal((await request(adminA, 'GET', '/auth/invite-quota')).used, 2);
+    assert.equal((await request(adminA, 'GET', '/auth/invite-quota')).used, 4, 'Using prepaid invites does not charge again');
     await register(refereeInvite, credentials(), 400);
     const freePlayer = (await register(playerInvite)).user;
-    assert.equal((await request(adminA, 'GET', '/auth/invite-quota')).used, 2);
+    assert.equal((await request(adminA, 'GET', '/auth/invite-quota')).used, 4);
     await request(adminA, 'POST', '/auth/users/player', credentials(), 201);
-    await request(adminA, 'POST', '/auth/users/referee', credentials(), 400);
     await request(adminB, 'PATCH', `/auth/users/${staff1.id}/status`, { status: 'DISABLED' }, 403);
     await request(adminB, 'POST', `/auth/users/${staff1.id}/reset-password`, {}, 403);
     await request(adminB, 'DELETE', `/auth/users/${staff1.id}`, undefined, 403);
     await request(adminB, 'DELETE', '/auth/users', { ids: [staff1.id] }, 403);
     await request(adminA, 'DELETE', `/auth/users/${staff1.id}`);
-    await request(adminA, 'DELETE', '/auth/users', { ids: [staff2.id] });
-    assert.equal((await request(adminA, 'GET', '/auth/invite-quota')).used, 2, 'Deleting accounts must not restore quota');
+    await request(adminA, 'DELETE', '/auth/users', { ids: [staff1b.id, staff2.id] });
+    assert.equal((await request(adminA, 'GET', '/auth/invite-quota')).used, 4, 'Deleting accounts must not restore quota');
     await request(adminA, 'DELETE', `/auth/invite-codes/${refereeInvite.id}`);
-    assert.equal((await request(adminA, 'GET', '/auth/invite-quota')).used, 2, 'Deleting consumed invites must not restore quota');
-    await request(rootPeer, 'PATCH', `/auth/users/${adminA.id}/invite-quota`, { limit: 1 }, 400);
-    await request(rootPeer, 'PATCH', `/auth/users/${adminA.id}/invite-quota`, { limit: 3 });
+    assert.equal((await request(adminA, 'GET', '/auth/invite-quota')).used, 4, 'Deleting used invites must not restore quota');
+    await request(rootPeer, 'PATCH', `/auth/users/${adminA.id}/invite-quota`, { limit: 3 }, 400);
+    await request(rootPeer, 'PATCH', `/auth/users/${adminA.id}/invite-quota`, { limit: 5 });
     const direct = await request(adminA, 'POST', '/auth/users/photographer', credentials(), 201);
-    assert.equal((await request(adminA, 'GET', '/auth/invite-quota')).used, 3, 'Direct account creation must consume quota');
+    assert.equal((await request(adminA, 'GET', '/auth/invite-quota')).used, 5, 'Direct account creation must consume quota');
     await request(adminA, 'DELETE', `/auth/users/${direct.id}`);
-    await request(rootPeer, 'PATCH', `/auth/users/${adminA.id}/invite-quota`, { limit: 4 });
-    // One remaining place, two concurrent registrations using different codes.
-    const raceInvite = await createInvite(adminA, 'REFEREE');
-    const race = await Promise.all([raceInvite, photoInvite].map(async (invite) => {
-      const res = await fetch(`${base}/auth/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ inviteCode: invite.code, ...credentials() }) });
+    await request(adminA, 'POST', '/auth/users/referee', credentials(), 400);
+    await request(rootPeer, 'PATCH', `/auth/users/${adminA.id}/invite-quota`, { limit: 6 });
+    // 只剩 1 次余额，同时发起两个创建邀请码请求。
+    const race = await Promise.all([0, 1].map(async () => {
+      const res = await fetch(`${base}/auth/invite-codes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token(adminA)}` },
+        body: JSON.stringify({ role: 'PLAYER', maxUses: 1 }),
+      });
       return res.status;
     }));
-    assert.deepEqual(race.sort(), [201, 400], 'Concurrent registrations must not overspend the final place'); checks++;
-    assert.equal((await request(adminA, 'GET', '/auth/invite-quota')).used, 4);
-    // Failed account creation rolls the quota increment back.
-    await request(rootPeer, 'PATCH', `/auth/users/${adminA.id}/invite-quota`, { limit: 5 });
-    const singleUse = await createInvite(adminA, 'REFEREE', 1);
-    await db.inviteCode.update({ where: { id: singleUse.id }, data: { isEnabled: false } });
-    await register(singleUse, credentials(), 400);
-    assert.equal((await request(adminA, 'GET', '/auth/invite-quota')).used, 4);
+    assert.deepEqual(race.sort(), [201, 400], 'Concurrent invite creation must not overspend the final place'); checks++;
+    assert.equal((await request(adminA, 'GET', '/auth/invite-quota')).used, 6);
+    await request(adminA, 'POST', '/auth/invite-codes', { role: 'PLAYER', maxUses: 1 }, 400);
+    await request(rootPeer, 'PATCH', `/auth/users/${adminA.id}/invite-quota`, { limit: 7 });
+    const directPlayer = await request(adminA, 'POST', '/auth/users/player', credentials(), 201);
+    assert.equal((await request(adminA, 'GET', '/auth/invite-quota')).used, 6, 'Direct player creation is free');
+    await request(root, 'PATCH', `/auth/users/${directPlayer.id}/role`, { role: 'REFEREE' });
+    assert.equal((await request(adminA, 'GET', '/auth/invite-quota')).used, 7, 'Promoting a free player must consume quota');
     await request(root, 'PATCH', `/auth/users/${freePlayer.id}/permissions`, { permissions: ['AI_CONFIG'] });
     await request(root, 'PATCH', `/auth/users/${freePlayer.id}/role`, { role: 'REFEREE' });
     const resetPermissions = await request(root, 'GET', `/auth/users/${freePlayer.id}/permissions`);
     assert.equal(resetPermissions.customized, false, 'Changing role restores role defaults');
     assert.deepEqual(resetPermissions.permissions, ['REFEREE']);
-    assert.equal((await request(adminA, 'GET', '/auth/invite-quota')).used, 5, 'Promotion cannot create free staff');
+    assert.equal((await request(adminA, 'GET', '/auth/invite-quota')).used, 7, 'A prepaid player account is not charged again');
     await request(root, 'PATCH', `/auth/users/${freePlayer.id}/role`, { role: 'PLAYER' });
     await request(root, 'PATCH', `/auth/users/${freePlayer.id}/role`, { role: 'PHOTOGRAPHER' });
-    assert.equal((await request(adminA, 'GET', '/auth/invite-quota')).used, 5, 'A charged account is not charged twice');
+    assert.equal((await request(adminA, 'GET', '/auth/invite-quota')).used, 7, 'A charged account is not charged twice');
     const managed = await request(adminA, 'GET', '/auth/users');
     assert(managed.every((u) => u.managerId === adminA.id && ['PLAYER', 'REFEREE', 'PHOTOGRAPHER'].includes(u.role)));
     assert((await request(rootPeer, 'GET', '/auth/users')).some((u) => u.id === root.id));
-    // Remaining public roles see both administrators' published tournaments too.
+    // 其余公开角色也能看到两位管理员已发布的赛事。
     const player = await request(adminA, 'POST', '/auth/users/player', credentials(), 201);
     const photographer = await request(rootPeer, 'POST', '/auth/users/photographer', credentials(), 201);
     for (const actor of [player, photographer, { ...freePlayer, role: 'PHOTOGRAPHER' }]) {

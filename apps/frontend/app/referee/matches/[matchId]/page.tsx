@@ -19,6 +19,7 @@ import {
   PlayCircleOutlined,
   ReloadOutlined,
   StopOutlined,
+  SwapOutlined,
   TrophyOutlined,
   UndoOutlined,
   WarningOutlined,
@@ -66,6 +67,8 @@ type ServingState = {
   receiverCourtSide?: CourtSide | null;
   side1Positions?: Record<CourtSide, PlayerIndex | null>;
   side2Positions?: Record<CourtSide, PlayerIndex | null>;
+  /** system = 新一局系统自动带出的默认值，还没被裁判核对；referee = 裁判已确认。 */
+  source?: 'system' | 'referee' | null;
 };
 
 type CourtDisplayState = {
@@ -77,11 +80,6 @@ type CourtDisplayState = {
 type CourtSwapRequired = {
   required: boolean;
   gameNo: number | null;
-};
-
-type StartCourtPositions = {
-  side1: Record<CourtSide, PlayerIndex | null>;
-  side2: Record<CourtSide, PlayerIndex | null>;
 };
 
 type MatchEventLog = {
@@ -221,46 +219,16 @@ function isDoublesSide(side?: MatchSide | null) {
   return sidePlayers(side).length > 1;
 }
 
-function positionLabel(side: 1 | 2, playerIndex: number, servingState?: ServingState | null) {
-  const positions = side === 1 ? servingState?.side1Positions : servingState?.side2Positions;
-  if (positions?.left === playerIndex) return '左侧';
-  if (positions?.right === playerIndex) return '右侧';
-  if (servingState?.servingSide === side && servingState.serverPlayerIndex === playerIndex) {
-    return servingState.serverCourtSide === 'left' ? '左侧' : '右侧';
-  }
-  return null;
+function courtSideLabel(courtSide?: CourtSide | null) {
+  return courtSide === 'left' ? '左发球区' : '右发球区';
 }
 
-function defaultPositionsForSide(side?: MatchSide | null): Record<CourtSide, PlayerIndex | null> {
-  const players = sidePlayers(side);
-  return players.length > 1 ? { left: 2, right: 1 } : { left: null, right: 1 };
-}
-
-function defaultStartPositions(score: ScoreState): StartCourtPositions {
-  return {
-    side1: defaultPositionsForSide(score.side1),
-    side2: defaultPositionsForSide(score.side2),
-  };
-}
-
-function courtSideForStartPlayer(positions: Record<CourtSide, PlayerIndex | null>, playerIndex: number) {
-  if (positions.left === playerIndex) return 'left';
-  if (positions.right === playerIndex) return 'right';
-  return null;
-}
-
-function updateStartCourtPosition(
-  positions: StartCourtPositions,
-  side: 1 | 2,
-  playerIndex: PlayerIndex,
-  courtSide: CourtSide,
-): StartCourtPositions {
-  const sideKey = side === 1 ? 'side1' : 'side2';
-  const current = { ...positions[sideKey] };
-  const opposite = courtSide === 'left' ? 'right' : 'left';
-  current[courtSide] = playerIndex;
-  current[opposite] = playerIndex === 1 ? 2 : 1;
-  return { ...positions, [sideKey]: current };
+function playerNameByIndex(
+  side: MatchSide | null | undefined,
+  playerIndex: PlayerIndex | null | undefined,
+) {
+  if (!playerIndex) return '';
+  return sidePlayers(side).find((player) => player.index === playerIndex)?.name ?? `选手 ${playerIndex}`;
 }
 
 function MatchClock({
@@ -467,10 +435,9 @@ export default function RefereeScoringPage() {
   const [startServingSide, setStartServingSide] = useState<1 | 2 | null>(null);
   const [startServerPlayerIndex, setStartServerPlayerIndex] = useState<PlayerIndex | null>(null);
   const [startReceiverPlayerIndex, setStartReceiverPlayerIndex] = useState<PlayerIndex | null>(null);
-  const [startPositions, setStartPositions] = useState<StartCourtPositions>({
-    side1: { left: 2, right: 1 },
-    side2: { left: 2, right: 1 },
-  });
+  const [gameServeOpen, setGameServeOpen] = useState(false);
+  const [gameServeServer, setGameServeServer] = useState<PlayerIndex | null>(null);
+  const [gameServeReceiver, setGameServeReceiver] = useState<PlayerIndex | null>(null);
   const [pendingRefereeAction, setPendingRefereeAction] = useState<PendingRefereeAction>(null);
 
   const applyScore = useCallback((nextScore: ScoreState) => {
@@ -526,11 +493,30 @@ export default function RefereeScoringPage() {
   }
 
   function openStartConfirm() {
-    setStartPositions(defaultStartPositions(score!));
     setStartServingSide(null);
     setStartServerPlayerIndex(null);
     setStartReceiverPlayerIndex(null);
     setStartConfirmOpen(true);
+  }
+
+  /**
+   * 打开「本局发球设置」。方案 B：新一局的默认发球/接发由系统先带出来，
+   * 裁判核对或改选后写回；单打没有可选空间（一方只有一个人），不弹这个窗口。
+   */
+  function openGameServe() {
+    if (!score) return;
+    const state = score.servingState;
+    setGameServeServer(
+      state?.serverPlayerIndex === 1 || state?.serverPlayerIndex === 2
+        ? state.serverPlayerIndex
+        : null,
+    );
+    setGameServeReceiver(
+      state?.receiverPlayerIndex === 1 || state?.receiverPlayerIndex === 2
+        ? state.receiverPlayerIndex
+        : null,
+    );
+    setGameServeOpen(true);
   }
 
   useEffect(() => {
@@ -557,6 +543,31 @@ export default function RefereeScoringPage() {
       setFinishConfirmOpen(true);
     }
   }, [score?.pendingFinish, score?.winnerSide]);
+
+  // 新一局 0:0 且发球信息还是系统默认值时，主动弹出一次「发球设置」。
+  // 方案 B：不拦记分，取消后照常开打，之后随时可以从裁判操作里再打开。
+  const servePromptedForRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!score || score.status !== 'LIVE') return;
+    const state = score.servingState;
+    if (state?.source !== 'system') return;
+    if (currentSideScore(score, 1) !== 0 || currentSideScore(score, 2) !== 0) return;
+    if (!isDoublesSide(score.side1) && !isDoublesSide(score.side2)) return;
+    const gameNo = currentGameNo(score);
+    if (servePromptedForRef.current === gameNo) return;
+    servePromptedForRef.current = gameNo;
+    setGameServeServer(
+      state.serverPlayerIndex === 1 || state.serverPlayerIndex === 2
+        ? state.serverPlayerIndex
+        : null,
+    );
+    setGameServeReceiver(
+      state.receiverPlayerIndex === 1 || state.receiverPlayerIndex === 2
+        ? state.receiverPlayerIndex
+        : null,
+    );
+    setGameServeOpen(true);
+  }, [score]);
 
   useEffect(() => {
     if (!matchId) return;
@@ -634,6 +645,19 @@ export default function RefereeScoringPage() {
   const rightDisplaySide = displaySide(rightSideNo);
   const hasPointEvent = score.events.some((event) => event.type === 'POINT');
   const recentEvents = score.events.slice(0, 10);
+  const doublesMatch = isDoublesSide(score.side1) || isDoublesSide(score.side2);
+  const servingSideNo = score.servingState?.servingSide === 1 || score.servingState?.servingSide === 2
+    ? score.servingState.servingSide
+    : null;
+  const receivingSideNo = servingSideNo === 1 ? 2 : servingSideNo === 2 ? 1 : null;
+  const serveNeedsCheck = doublesMatch
+    && score.status === 'LIVE'
+    && score.servingState?.source === 'system';
+  const serveCheckText = serveNeedsCheck
+    ? `第 ${currentGameNo(score)} 局发球信息是系统按规则自动带出的默认值：`
+      + `${playerNameByIndex(servingSideNo === 1 ? score.side1 : score.side2, score.servingState?.serverPlayerIndex)} 发球，`
+      + `${playerNameByIndex(receivingSideNo === 1 ? score.side1 : score.side2, score.servingState?.receiverPlayerIndex)} 接发。`
+    : '';
   const scoringLocked = score.status !== 'LIVE' || Boolean(score.matchPaused) || Boolean(score.courtSwapRequired?.required) || Boolean(score.pendingFinish) || busyAction !== '';
   const scoreLockedReason =
     score.status === 'PENDING'
@@ -696,6 +720,21 @@ export default function RefereeScoringPage() {
               className="rounded-2xl border-orange-200 bg-orange-50/90"
               message="需要交换场地"
               description="决胜局 11 分换边已触发。请先点击右侧裁判操作中的“交换场地”，完成后系统会进入 60 秒技术暂停。"
+            />
+          ) : null}
+
+          {serveNeedsCheck ? (
+            <Alert
+              type="warning"
+              showIcon
+              className="referee-serve-check rounded-2xl border-amber-200 bg-amber-50/90"
+              message="本局发球 / 接发为系统默认，请核对"
+              description={serveCheckText}
+              action={
+                <Button type="primary" size="small" onClick={openGameServe}>
+                  核对发球设置
+                </Button>
+              }
             />
           ) : null}
 
@@ -786,8 +825,11 @@ export default function RefereeScoringPage() {
                   matchStatus={score.status}
                   matchPaused={Boolean(score.matchPaused)}
                   courtSwapRequired={Boolean(score.courtSwapRequired?.required)}
+                  canSetGameServe={doublesMatch}
+                  serveCheckPending={serveNeedsCheck}
                   onPauseToggle={() => postAction(score.matchPaused ? `/matches/${matchId}/resume` : `/matches/${matchId}/pause`)}
                   onSwapCourt={() => postAction(`/matches/${matchId}/swap-court`)}
+                  onOpenGameServe={openGameServe}
                   onOpenSideAction={setPendingRefereeAction}
                   onOpenForfeit={() => setForfeitChooserOpen(true)}
                   onOpenRetire={() => setRetireChooserOpen(true)}
@@ -913,7 +955,6 @@ export default function RefereeScoringPage() {
         servingSide={startServingSide}
         serverPlayerIndex={startServerPlayerIndex}
         receiverPlayerIndex={startReceiverPlayerIndex}
-        startPositions={startPositions}
         onServingSideChange={(side) => {
           setStartServingSide(side);
           const players = sidePlayers(side === 1 ? score.side1 : score.side2);
@@ -923,9 +964,6 @@ export default function RefereeScoringPage() {
         }}
         onServerPlayerChange={setStartServerPlayerIndex}
         onReceiverPlayerChange={setStartReceiverPlayerIndex}
-        onPositionChange={(side, playerIndex, courtSide) =>
-          setStartPositions((current) => updateStartCourtPosition(current, side, playerIndex, courtSide))
-        }
         onCancel={() => setStartConfirmOpen(false)}
         onConfirm={async () => {
           if (!startServingSide || !startServerPlayerIndex || !startReceiverPlayerIndex) {
@@ -936,12 +974,32 @@ export default function RefereeScoringPage() {
             servingSide: startServingSide,
             serverPlayerIndex: startServerPlayerIndex,
             receiverPlayerIndex: startReceiverPlayerIndex,
-            side1LeftPlayerIndex: startPositions.side1.left,
-            side1RightPlayerIndex: startPositions.side1.right,
-            side2LeftPlayerIndex: startPositions.side2.left,
-            side2RightPlayerIndex: startPositions.side2.right,
           });
           setStartConfirmOpen(false);
+        }}
+      />
+
+      <GameServeModal
+        open={gameServeOpen}
+        score={score}
+        matchId={matchId}
+        busyAction={busyAction}
+        serverPlayerIndex={gameServeServer}
+        receiverPlayerIndex={gameServeReceiver}
+        onServerPlayerChange={setGameServeServer}
+        onReceiverPlayerChange={setGameServeReceiver}
+        onCancel={() => setGameServeOpen(false)}
+        onConfirm={async () => {
+          if (!gameServeServer || !gameServeReceiver) {
+            message.warning('请先选择本局的发球员和接发球员');
+            return;
+          }
+          await postAction(`/matches/${matchId}/game-serve`, {
+            gameNo: currentGameNo(score),
+            serverPlayerIndex: gameServeServer,
+            receiverPlayerIndex: gameServeReceiver,
+          });
+          setGameServeOpen(false);
         }}
       />
 
@@ -1164,26 +1222,35 @@ function SideScoreCard({
             {displayName}
           </h2>
           {doubles ? (
-            <div className="grid gap-1.5 sm:mt-2">
-              {players.map((player) => {
-                const label = positionLabel(side, player.index, servingState);
-                const isServer = activeServerPlayer === player.index;
-                const isReceiver = activeReceiverPlayer === player.index;
+            <div className="mt-1 grid grid-cols-2 gap-1.5 sm:mt-2">
+              {(['right', 'left'] as const).map((courtSide) => {
+                const positions = side === 1 ? servingState?.side1Positions : servingState?.side2Positions;
+                const playerIndex = positions?.[courtSide] ?? null;
+                const player = playerIndex ? players.find((item) => item.index === playerIndex) : null;
+                const isServer = Boolean(playerIndex) && activeServerPlayer === playerIndex;
+                const isReceiver = Boolean(playerIndex) && activeReceiverPlayer === playerIndex;
                 return (
                   <div
-                    key={player.id}
-                    className={`flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-sm font-black sm:text-xs ${
+                    key={courtSide}
+                    className={`rounded-lg px-2 py-1.5 ${
                       isServer
-                        ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100'
+                        ? 'bg-emerald-50 ring-1 ring-emerald-200'
                         : isReceiver
-                          ? 'bg-orange-50 text-orange-700 ring-1 ring-orange-100'
-                      : 'bg-slate-50 text-slate-600'
+                          ? 'bg-orange-50 ring-1 ring-orange-200'
+                          : 'bg-slate-50'
                     }`}
                   >
-                    <span className="truncate text-base sm:text-sm">{player.name}</span>
-                    <span className="shrink-0 text-xs">
-                      {isServer ? `发球 · ${label ?? ''}` : isReceiver ? `接发 · ${label ?? ''}` : label ?? '待位'}
-                    </span>
+                    <p className={`text-[10px] font-black leading-tight ${
+                      isServer ? 'text-emerald-600' : isReceiver ? 'text-orange-600' : 'text-slate-400'
+                    }`}>
+                      {courtSideLabel(courtSide)}
+                      {isServer ? ' · 发球' : isReceiver ? ' · 接发' : ''}
+                    </p>
+                    <p className={`truncate text-sm font-black leading-tight ${
+                      isServer ? 'text-emerald-700' : isReceiver ? 'text-orange-700' : 'text-slate-600'
+                    }`}>
+                      {player?.name ?? '待定'}
+                    </p>
                   </div>
                 );
               })}
@@ -1191,7 +1258,7 @@ function SideScoreCard({
           ) : (
             <p className="mt-2 truncate text-sm font-bold text-[#64748B]">
               {server && servingState?.serverCourtSide
-                ? `发球站位：${servingState.serverCourtSide === 'left' ? '左侧' : '右侧'}`
+                ? `发球站位：${courtSideLabel(servingState.serverCourtSide)}`
                 : `级别：${affiliation}`}
             </p>
           )}
@@ -1348,8 +1415,11 @@ function RefereeActionCard({
   matchStatus,
   matchPaused,
   courtSwapRequired,
+  canSetGameServe,
+  serveCheckPending,
   onPauseToggle,
   onSwapCourt,
+  onOpenGameServe,
   onOpenSideAction,
   onOpenForfeit,
   onOpenRetire,
@@ -1361,8 +1431,11 @@ function RefereeActionCard({
   matchStatus: ScoreState['status'];
   matchPaused: boolean;
   courtSwapRequired: boolean;
+  canSetGameServe: boolean;
+  serveCheckPending: boolean;
   onPauseToggle: () => void;
   onSwapCourt: () => void;
+  onOpenGameServe: () => void;
   onOpenSideAction: (action: Exclude<PendingRefereeAction, null>) => void;
   onOpenForfeit: () => void;
   onOpenRetire: () => void;
@@ -1370,6 +1443,16 @@ function RefereeActionCard({
 }) {
   const matchEnded = matchStatus === 'COMPLETED' || matchStatus === 'CANCELLED';
   const pauseActionPath = `/matches/${matchId}/${matchPaused ? 'resume' : 'pause'}`;
+  const serveAction = {
+    label: '发球设置',
+    icon: <SwapOutlined />,
+    className: serveCheckPending
+      ? 'border-amber-300 text-amber-700 hover:!border-amber-500 hover:!bg-amber-50'
+      : 'border-slate-200 text-slate-700 hover:!border-slate-400 hover:!bg-slate-50',
+    onClick: onOpenGameServe,
+    loading: false,
+    pauseToggle: true,
+  };
   const actions = [
     {
       label: matchPaused ? '恢复比赛' : '比赛暂停',
@@ -1502,7 +1585,7 @@ function RefereeActionCard({
       </div>
 
       <div className="referee-action-grid mt-5 grid grid-cols-2 gap-2 sm:gap-3">
-        {actions.map((action) => (
+        {(canSetGameServe ? [serveAction, ...actions] : actions).map((action) => (
           <Button
             key={action.label}
             icon={action.icon}
@@ -1593,11 +1676,9 @@ function StartMatchConfirmModal({
   servingSide,
   serverPlayerIndex,
   receiverPlayerIndex,
-  startPositions,
   onServingSideChange,
   onServerPlayerChange,
   onReceiverPlayerChange,
-  onPositionChange,
   onCancel,
   onConfirm,
 }: {
@@ -1608,19 +1689,15 @@ function StartMatchConfirmModal({
   servingSide: 1 | 2 | null;
   serverPlayerIndex: PlayerIndex | null;
   receiverPlayerIndex: PlayerIndex | null;
-  startPositions: StartCourtPositions;
   onServingSideChange: (side: 1 | 2) => void;
   onServerPlayerChange: (playerIndex: PlayerIndex) => void;
   onReceiverPlayerChange: (playerIndex: PlayerIndex) => void;
-  onPositionChange: (side: 1 | 2, playerIndex: PlayerIndex, courtSide: CourtSide) => void;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
   const selectedSide = servingSide === 1 ? score.side1 : servingSide === 2 ? score.side2 : null;
   const receivingSide = servingSide === 1 ? 2 : servingSide === 2 ? 1 : null;
   const selectedReceivingSide = receivingSide === 1 ? score.side1 : receivingSide === 2 ? score.side2 : null;
-  const serverCandidates = sidePlayers(selectedSide);
-  const receiverCandidates = sidePlayers(selectedReceivingSide);
 
   return (
     <Modal
@@ -1640,7 +1717,7 @@ function StartMatchConfirmModal({
           type="info"
           showIcon
           message="请确认双方选手是否到齐"
-          description="确认双方到齐后，请设置左右站位、首位发球员和接发球员。"
+          description="确认双方到齐后，请选择首发方、首位发球员和接发球员。0:0 开局两人都在各自右发球区，站位由这两项自动排定。"
         />
         <div className="grid gap-2 text-sm font-semibold text-slate-700">
           <div className="rounded-xl border border-blue-100 bg-blue-50/60 px-4 py-3">
@@ -1653,24 +1730,6 @@ function StartMatchConfirmModal({
             <strong className="text-[#0F172A]">{sideDisplayName(score.side2)}</strong>
             {isDoublesSide(score.side2) ? <p className="mt-1 text-xs text-slate-500">{sidePlayers(score.side2).map((player) => player.name).join(' / ')}</p> : null}
           </div>
-        </div>
-        <div className="grid gap-3">
-          <StartPositionPicker
-            title={sideDisplayName(score.side1)}
-            tone="blue"
-            side={1}
-            matchSide={score.side1}
-            positions={startPositions.side1}
-            onChange={onPositionChange}
-          />
-          <StartPositionPicker
-            title={sideDisplayName(score.side2)}
-            tone="red"
-            side={2}
-            matchSide={score.side2}
-            positions={startPositions.side2}
-            onChange={onPositionChange}
-          />
         </div>
         <div>
           <p className="mb-2 text-sm font-black text-slate-700">首发方</p>
@@ -1692,37 +1751,41 @@ function StartMatchConfirmModal({
         {servingSide ? (
           <div>
             <p className="mb-2 text-sm font-black text-slate-700">首位发球员</p>
-            <div className="grid gap-2">
-              {serverCandidates.map((player) => (
-                <Button
-                  key={player.id}
-                  className={`!h-11 !rounded-xl !font-black ${
-                    serverPlayerIndex === player.index ? '!border-emerald-500 !bg-emerald-50 !text-emerald-700' : ''
-                  }`}
-                  onClick={() => onServerPlayerChange(player.index === 2 ? 2 : 1)}
-                >
-                  {player.name}
-                </Button>
-              ))}
-            </div>
+            <PickPlayerButtons
+              candidates={sidePlayers(selectedSide)}
+              selectedIndex={serverPlayerIndex}
+              tone="emerald"
+              onPick={onServerPlayerChange}
+            />
           </div>
         ) : null}
         {receivingSide ? (
           <div>
             <p className="mb-2 text-sm font-black text-slate-700">接发球员</p>
-            <div className="grid gap-2">
-              {receiverCandidates.map((player) => (
-                <Button
-                  key={player.id}
-                  className={`!h-11 !rounded-xl !font-black ${
-                    receiverPlayerIndex === player.index ? '!border-orange-500 !bg-orange-50 !text-orange-700' : ''
-                  }`}
-                  onClick={() => onReceiverPlayerChange(player.index === 2 ? 2 : 1)}
-                >
-                  {player.name}
-                </Button>
-              ))}
-            </div>
+            <PickPlayerButtons
+              candidates={sidePlayers(selectedReceivingSide)}
+              selectedIndex={receiverPlayerIndex}
+              tone="orange"
+              onPick={onReceiverPlayerChange}
+            />
+          </div>
+        ) : null}
+        {servingSide && serverPlayerIndex && receiverPlayerIndex ? (
+          <div className="grid gap-2 sm:grid-cols-2">
+            <ServePositionPreview
+              title="发球方站位"
+              players={sidePlayers(selectedSide)}
+              playerIndex={serverPlayerIndex}
+              courtSide="right"
+              role="server"
+            />
+            <ServePositionPreview
+              title="接发方站位"
+              players={sidePlayers(selectedReceivingSide)}
+              playerIndex={receiverPlayerIndex}
+              courtSide="right"
+              role="receiver"
+            />
           </div>
         ) : null}
         <p className="text-xs font-bold text-slate-500">
@@ -1733,55 +1796,180 @@ function StartMatchConfirmModal({
   );
 }
 
-function StartPositionPicker({
+function ServePositionPreview({
   title,
-  tone,
-  side,
-  matchSide,
-  positions,
-  onChange,
+  players,
+  playerIndex,
+  courtSide,
+  role,
 }: {
   title: string;
-  tone: 'blue' | 'red';
-  side: 1 | 2;
-  matchSide?: MatchSide | null;
-  positions: Record<CourtSide, PlayerIndex | null>;
-  onChange: (side: 1 | 2, playerIndex: PlayerIndex, courtSide: CourtSide) => void;
+  players: SidePlayer[];
+  playerIndex: PlayerIndex | null;
+  courtSide: CourtSide;
+  role: 'server' | 'receiver';
 }) {
-  const players = sidePlayers(matchSide);
-  const selectedTone =
-    tone === 'blue'
-      ? '!border-blue-500 !bg-blue-50 !text-blue-700'
-      : '!border-red-500 !bg-red-50 !text-red-700';
+  const selected = players.find((player) => player.index === playerIndex) ?? null;
+  const partner = selected ? players.find((player) => player.index !== selected.index) ?? null : null;
+  const otherSide: CourtSide = courtSide === 'right' ? 'left' : 'right';
+  const tone = role === 'server' ? 'text-emerald-700' : 'text-orange-700';
+  return (
+    <div className="rounded-xl border border-slate-100 bg-white px-3 py-2">
+      <p className="text-[11px] font-black text-slate-500">{title}</p>
+      <p className="mt-1 flex items-baseline gap-1 text-sm font-black">
+        <span className={selected ? tone : 'text-slate-400'}>{selected?.name ?? '待选择'}</span>
+        <span className="text-[11px] font-bold text-slate-400">{courtSideLabel(courtSide)}</span>
+      </p>
+      {partner ? (
+        <p className="mt-0.5 flex items-baseline gap-1 text-xs font-bold text-slate-500">
+          <span>{partner.name}</span>
+          <span className="text-[11px] font-bold text-slate-400">{courtSideLabel(otherSide)}</span>
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function PickPlayerButtons({
+  candidates,
+  selectedIndex,
+  tone,
+  onPick,
+}: {
+  candidates: SidePlayer[];
+  selectedIndex: PlayerIndex | null;
+  tone: 'emerald' | 'orange';
+  onPick: (playerIndex: PlayerIndex) => void;
+}) {
+  const activeClass = tone === 'emerald'
+    ? '!border-emerald-500 !bg-emerald-50 !text-emerald-700'
+    : '!border-orange-500 !bg-orange-50 !text-orange-700';
+  return (
+    <div className="grid gap-2">
+      {candidates.map((player) => (
+        <Button
+          key={player.id}
+          className={`!h-11 !rounded-xl !font-black ${selectedIndex === player.index ? activeClass : ''}`}
+          onClick={() => onPick(player.index === 2 ? 2 : 1)}
+        >
+          {player.name}
+        </Button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * 「本局发球设置」。新一局由系统按规则先带出默认的发球员/接发球员，
+ * 裁判核对或改选后写回（source 从 system 变为 referee）；发球方由上一局胜方决定，只展示不可改。
+ */
+function GameServeModal({
+  open,
+  score,
+  matchId,
+  busyAction,
+  serverPlayerIndex,
+  receiverPlayerIndex,
+  onServerPlayerChange,
+  onReceiverPlayerChange,
+  onCancel,
+  onConfirm,
+}: {
+  open: boolean;
+  score: ScoreState;
+  matchId: string;
+  busyAction: string;
+  serverPlayerIndex: PlayerIndex | null;
+  receiverPlayerIndex: PlayerIndex | null;
+  onServerPlayerChange: (playerIndex: PlayerIndex) => void;
+  onReceiverPlayerChange: (playerIndex: PlayerIndex) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const state = score.servingState;
+  const servingSide = state?.servingSide === 1 || state?.servingSide === 2 ? state.servingSide : null;
+  const receivingSide: 1 | 2 | null = servingSide === 1 ? 2 : servingSide === 2 ? 1 : null;
+  const servingMatchSide = servingSide === 1 ? score.side1 : servingSide === 2 ? score.side2 : null;
+  const receivingMatchSide = receivingSide === 1 ? score.side1 : receivingSide === 2 ? score.side2 : null;
+  // 发球员必须站在「本方比分奇偶」对应的发球区：偶数右区、奇数左区；接发球员站同名区。
+  const servingScore = servingSide === 1 || servingSide === 2 ? currentSideScore(score, servingSide) : 0;
+  const serverCourtSide: CourtSide = servingScore % 2 === 0 ? 'right' : 'left';
+  const gameNo = currentGameNo(score);
+  const serverName = playerNameByIndex(servingMatchSide, serverPlayerIndex);
+  const receiverName = playerNameByIndex(receivingMatchSide, receiverPlayerIndex);
+  const isSystemDefault = state?.source === 'system';
 
   return (
-    <div className="rounded-xl border border-slate-100 bg-slate-50/70 p-3">
-      <p className="text-sm font-black text-slate-700">{title} 站位</p>
-      <div className="mt-2 grid gap-2">
-        {players.map((player) => {
-          const selected = courtSideForStartPlayer(positions, player.index);
-          return (
-            <div key={player.id} className="grid grid-cols-[minmax(0,1fr)_72px_72px] items-center gap-2">
-              <span className="truncate text-xs font-black text-slate-600">{player.name}</span>
-              <Button
-                size="small"
-                className={`!rounded-lg !font-black ${selected === 'left' ? selectedTone : ''}`}
-                onClick={() => onChange(side, player.index === 2 ? 2 : 1, 'left')}
-              >
-                左边
-              </Button>
-              <Button
-                size="small"
-                className={`!rounded-lg !font-black ${selected === 'right' ? selectedTone : ''}`}
-                onClick={() => onChange(side, player.index === 2 ? 2 : 1, 'right')}
-              >
-                右边
-              </Button>
-            </div>
-          );
-        })}
+    <Modal
+      open={open}
+      title={`第 ${gameNo} 局 · 发球设置`}
+      okText="保存发球设置"
+      cancelText="取消"
+      okButtonProps={{
+        loading: busyAction === `/matches/${matchId}/game-serve`,
+        disabled: !servingSide || !serverPlayerIndex || !receiverPlayerIndex,
+      }}
+      onCancel={onCancel}
+      onOk={onConfirm}
+    >
+      <div className="space-y-3">
+        <Alert
+          type={isSystemDefault ? 'warning' : 'info'}
+          showIcon
+          message={isSystemDefault ? '当前是本局系统默认值，请核对' : '修改本局发球员与接发球员'}
+          description={`发球方由上一局胜方决定，不能更改。本局比分 ${currentSideScore(score, 1)} : ${currentSideScore(score, 2)}，`
+            + `发球员站${courtSideLabel(serverCourtSide)}，接发球员站他自己那一侧的${courtSideLabel(serverCourtSide)}。`}
+        />
+        <div className="rounded-xl border border-slate-100 bg-slate-50/70 px-4 py-3">
+          <span className="text-xs font-bold text-slate-500">发球方</span>
+          <p className="mt-1 text-sm font-black text-[#0F172A]">
+            {sideDisplayName(servingMatchSide)}
+            <span className="ml-2 text-xs font-bold text-slate-400">上一局胜方</span>
+          </p>
+        </div>
+        <div>
+          <p className="mb-2 text-sm font-black text-slate-700">发球员</p>
+          <PickPlayerButtons
+            candidates={sidePlayers(servingMatchSide)}
+            selectedIndex={serverPlayerIndex}
+            tone="emerald"
+            onPick={onServerPlayerChange}
+          />
+        </div>
+        <div>
+          <p className="mb-2 text-sm font-black text-slate-700">接发球员</p>
+          <PickPlayerButtons
+            candidates={sidePlayers(receivingMatchSide)}
+            selectedIndex={receiverPlayerIndex}
+            tone="orange"
+            onPick={onReceiverPlayerChange}
+          />
+        </div>
+        {servingSide ? (
+          <div className="grid gap-2 sm:grid-cols-2">
+            <ServePositionPreview
+              title="发球方站位"
+              players={sidePlayers(servingMatchSide)}
+              playerIndex={serverPlayerIndex}
+              courtSide={serverCourtSide}
+              role="server"
+            />
+            <ServePositionPreview
+              title="接发方站位"
+              players={sidePlayers(receivingMatchSide)}
+              playerIndex={receiverPlayerIndex}
+              courtSide={serverCourtSide}
+              role="receiver"
+            />
+          </div>
+        ) : null}
+        <p className="text-xs font-bold text-slate-500">
+          {serverName && receiverName
+            ? `保存后本局从「${serverName} 发球 → ${receiverName} 接发」继续计分。`
+            : '请选择本局的发球员和接发球员。'}
+        </p>
       </div>
-    </div>
+    </Modal>
   );
 }
 

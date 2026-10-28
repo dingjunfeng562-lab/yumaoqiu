@@ -36,3 +36,14 @@ apps/backend/uploads/exports/
 
 # local Android build artifacts
 outputs/camera-android/*.apk
+
+# 本地临时工作目录与个人脚本（不随仓库上传）
+/.build-tmp/
+/.tmp/
+/.ssh-tmp/
+/.ssh-tools/
+/.ssh_helper/
+/outputs/
+/clean-c-drive.ps1
+# 本地界面截图（可能含账号信息，不入库）
+/docs/*-preview.png

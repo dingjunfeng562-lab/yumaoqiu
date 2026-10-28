@@ -188,8 +188,8 @@ export default function TournamentsPage() {
   const token = session?.user?.accessToken as string | undefined;
   const sessionRole = (session?.user as { role?: string } | undefined)?.role;
 
-  // Pull live access from /auth/me so role and personal permission changes take
-  // effect immediately even if the cached session JWT still shows ADMIN.
+  // 从 /auth/me 拉取最新的角色与权限，这样即使缓存的会话 JWT 还写着 ADMIN，
+  // 角色和权限变更也能立刻生效。
   const [liveRole, setLiveRole] = useState<string | undefined>(sessionRole);
   useEffect(() => {
     if (!token) return;
@@ -199,7 +199,7 @@ export default function TournamentsPage() {
         if (!cancelled && me?.role) setLiveRole(me.role);
       })
       .catch(() => {
-        /* fall back to session role */
+        /* 拉取失败时退回会话里的角色 */
       });
     return () => {
       cancelled = true;
@@ -209,6 +209,7 @@ export default function TournamentsPage() {
   const role = liveRole ?? sessionRole;
   const isRoot = access.can('TOURNAMENT_ADMIN');
   const isSuperAdmin = access.can('TOURNAMENT_ADMIN');
+  const currentUserId = session?.user?.id;
 
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
   const [loading, setLoading] = useState(false);
@@ -696,11 +697,17 @@ export default function TournamentsPage() {
               <Button icon={<UndoOutlined />} size="small">恢复赛事</Button>
             </Popconfirm>
           )}
-          {isSuperAdmin && <Popconfirm title="确认删除？此操作不可恢复" onConfirm={() => handleDelete(record.id)}>
-            <Button icon={<DeleteOutlined />} size="small" danger>
-              删除
-            </Button>
-          </Popconfirm>}
+          {isSuperAdmin || (currentUserId && record.submittedById === currentUserId) ? (
+            <Popconfirm
+              title={isSuperAdmin ? '确认删除？此操作不可恢复' : '确认删除你创建的赛事？删除后不可恢复'}
+              description="赛事的单项、报名、抽签、比赛和图片数据会一并删除。"
+              onConfirm={() => handleDelete(record.id)}
+            >
+              <Button icon={<DeleteOutlined />} size="small" danger>
+                删除
+              </Button>
+            </Popconfirm>
+          ) : null}
         </Space>
       ),
     },
@@ -716,7 +723,7 @@ export default function TournamentsPage() {
             赛事配置
           </Typography.Title>
           <Typography.Text type="secondary">
-            创建赛事,新建后须由<strong>超级管理员</strong>审核通过,赛事才会向公众发布。
+            创建赛事,新建后须由<strong>超级管理员</strong>审核通过,赛事才会向公众发布。管理员可删除自己创建的赛事。
           </Typography.Text>
         </div>
         <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>

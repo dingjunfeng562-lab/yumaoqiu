@@ -95,12 +95,12 @@ export class CreateInviteCodeDto {
   @IsIn(['ADMIN', 'REFEREE', 'PLAYER', 'PHOTOGRAPHER'])
   role: 'ADMIN' | 'REFEREE' | 'PLAYER' | 'PHOTOGRAPHER';
 
-  // 一人一码：每个邀请码只能注册一个账号，传入其它值直接拒绝。
+  // 使用次数由发放人的邀请码余额限制，具体校验在 AuthService 内完成。
   @IsOptional()
   @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  @Max(1, { message: '每个邀请码只能注册一个账号' })
+  @IsInt({ message: '使用次数必须为整数' })
+  @Min(1, { message: '使用次数至少为 1' })
+  @Max(2147483647, { message: '使用次数过大' })
   maxUses?: number;
 
   @IsOptional()

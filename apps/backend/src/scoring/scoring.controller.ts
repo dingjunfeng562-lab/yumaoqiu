@@ -14,6 +14,7 @@ import {
   PauseMatchDto,
   RetireMatchDto,
   ScorePointDto,
+  SetGameServeDto,
   StartMatchDto,
 } from './dto/scoring.dto';
 import { ScoringGateway } from './scoring.gateway';
@@ -103,6 +104,18 @@ export class ScoringController {
   @Post('matches/:id/start')
   async startMatch(@Param('id') id: string, @Body() dto: StartMatchDto, @Req() req: RequestWithUser) {
     const state = await this.scoringService.startMatch(id, req.user, dto);
+    this.scoringGateway.emitMatchState(id, state);
+    return state;
+  }
+
+  @Roles(Role.ADMIN, Role.REFEREE)
+  @Post('matches/:id/game-serve')
+  async setGameServe(
+    @Param('id') id: string,
+    @Body() dto: SetGameServeDto,
+    @Req() req: RequestWithUser,
+  ) {
+    const state = await this.scoringService.setGameServe(id, req.user, dto);
     this.scoringGateway.emitMatchState(id, state);
     return state;
   }

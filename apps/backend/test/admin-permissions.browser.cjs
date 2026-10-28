@@ -22,8 +22,8 @@ exports.browserChecks = async ({ base, token, adminA, rootPeer, root, ta, tb, re
       role: user.role, status: 'ACTIVE', accessToken: token(user), accessTokenExpiresAt: Date.now() + 3600000,
     } });
     await context.addCookies([{ name: cookie, value: session, url: origin, httpOnly: true, sameSite: 'Lax' }]);
-    // Only transport is redirected; every API response comes from the real
-    // application and local database used by the smoke suite.
+    // 只把请求地址转发到测试服务；所有接口响应仍来自真实的应用程序
+    // 和冒烟测试使用的本地数据库。
     await context.route(`${env.NEXT_PUBLIC_API_URL}/**`, async (route) => {
       const target = route.request().url().replace(env.NEXT_PUBLIC_API_URL, base);
       const response = await route.fetch({ url: target });
@@ -59,8 +59,8 @@ exports.browserChecks = async ({ base, token, adminA, rootPeer, root, ta, tb, re
     for (const item of ['用户管理', '邀请码管理', '选手管理']) assert(menu.includes(item));
     await adminPage.screenshot({ path: path.join(output, 'admin-tournaments.png'), fullPage: true });
     await adminPage.goto(`${origin}/admin/invite-codes`);
-    await adminPage.getByText('裁判 / 图片员共享名额', { exact: true }).waitFor();
-    await adminPage.getByText(/累计已使用 5/).waitFor();
+    await adminPage.getByText('邀请码余额', { exact: true }).waitFor();
+    await adminPage.getByText(/已占用 7/).waitFor();
     await adminPage.screenshot({ path: path.join(output, 'admin-quota.png'), fullPage: true });
     await adminPage.goto(`${origin}/admin/exports`);
     await adminPage.getByRole('button', { name: '导出 秩序册' }).waitFor();
@@ -74,7 +74,7 @@ exports.browserChecks = async ({ base, token, adminA, rootPeer, root, ta, tb, re
     const rootPage = await makePage(rootPeer);
     await rootPage.goto(`${origin}/admin/users`);
     const row = rootPage.getByRole('row').filter({ hasText: adminA.username });
-    await row.getByRole('button', { name: '分配名额' }).click();
+    await row.getByRole('button', { name: '分配余额' }).click();
     const dialog = rootPage.getByRole('dialog');
     await dialog.getByRole('spinbutton').fill('7');
     const quotaSaved = superPage.waitForResponse((res) => res.url().includes('/invite-quota') && res.request().method() === 'PATCH');

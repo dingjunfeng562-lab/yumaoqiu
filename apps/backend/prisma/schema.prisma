@@ -171,19 +171,21 @@ enum EmailLogStatus {
 }
 
 model InviteCode {
-  id          String   @id @default(cuid())
-  code        String   @unique
-  role        Role
-  maxUses     Int
-  usedUses    Int      @default(0)
-  expiresAt   DateTime?
-  isEnabled   Boolean  @default(true)
-  remark      String?  @db.VarChar(255)
-  users       User[]
-  createdById String?
-  createdBy   User?    @relation("IssuedInvites", fields: [createdById], references: [id], onDelete: SetNull)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id           String   @id @default(cuid())
+  code         String   @unique
+  role         Role
+  maxUses      Int
+  usedUses     Int      @default(0)
+  // 创建邀请码时已按 maxUses 从发放人余额预扣；历史邀请码为 false，注册成功时才扣。
+  quotaCharged Boolean  @default(false)
+  expiresAt    DateTime?
+  isEnabled    Boolean  @default(true)
+  remark       String?  @db.VarChar(255)
+  users        User[]
+  createdById  String?
+  createdBy    User?    @relation("IssuedInvites", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   @@index([role])
   @@index([createdById])
@@ -885,7 +887,7 @@ model TeamCompetition {
   winThreshold Int                   @default(3)
   malePlayerCount Int?
   femalePlayerCount Int?
-  // 0: unlimited; 1: no overlap; 2: at most two events per encounter.
+  // 0：不限制；1：不能兼项；2：同一场比赛最多参加两个单项。
   maxPlayerAppearances Int @default(2)
   playAllMatches Boolean @default(false)
   scoringRule ScoringRule @default(TWENTYONE_BO3)

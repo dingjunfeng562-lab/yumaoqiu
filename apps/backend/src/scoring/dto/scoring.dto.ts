@@ -61,22 +61,20 @@ export class StartMatchDto {
 
   @IsIn([1, 2])
   receiverPlayerIndex: 1 | 2;
+}
 
-  @IsOptional()
-  @IsIn([1, 2])
-  side1LeftPlayerIndex?: 1 | 2;
+/** 裁判在「当前这一局」核对/修改发球员与接发球员（发球方由上一局胜方决定，不可改）。 */
+export class SetGameServeDto {
+  @IsInt()
+  @Min(1)
+  @Max(9)
+  gameNo: number;
 
-  @IsOptional()
   @IsIn([1, 2])
-  side1RightPlayerIndex?: 1 | 2;
+  serverPlayerIndex: 1 | 2;
 
-  @IsOptional()
   @IsIn([1, 2])
-  side2LeftPlayerIndex?: 1 | 2;
-
-  @IsOptional()
-  @IsIn([1, 2])
-  side2RightPlayerIndex?: 1 | 2;
+  receiverPlayerIndex: 1 | 2;
 }
 
 export class LogMatchEventDto {

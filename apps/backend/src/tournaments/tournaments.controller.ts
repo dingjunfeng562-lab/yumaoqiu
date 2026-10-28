@@ -121,7 +121,7 @@ export class TournamentsController {
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.tournamentsService.remove(id);
+  remove(@Param('id') id: string, @Req() req: AuthedRequest) {
+    return this.tournamentsService.remove(id, req.user);
   }
 }

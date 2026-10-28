@@ -542,7 +542,7 @@ export default function MatchManagementPage() {
               value={selectedTournamentId || undefined}
               options={tournaments.map((item) => ({
                 value: item.id,
-                label: `${item.name}${item.edition ? ` · 第 ${item.edition} 届` : ''}`,
+                label: item.name,
               }))}
               onChange={handleTournamentChange}
               loading={tournamentsLoading}

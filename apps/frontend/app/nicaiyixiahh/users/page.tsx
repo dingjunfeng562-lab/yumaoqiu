@@ -219,7 +219,7 @@ export default function AdminUsersPage() {
         items.push({
           key: 'quota',
           icon: <TeamOutlined />,
-          label: '分配名额',
+          label: '分配余额',
         });
       }
     }
@@ -267,7 +267,7 @@ export default function AdminUsersPage() {
     setQuotaSaving(true);
     try {
       await apiFetch(`/auth/users/${quotaTarget.id}/invite-quota`, { method: 'PATCH', token, body: JSON.stringify({ limit: quotaLimit }) });
-      message.success('邀请码总额度已更新');
+      message.success('邀请码余额已更新');
       setQuotaTarget(null);
       await loadUsers();
     } catch (error) { message.error(error instanceof Error ? error.message : '更新额度失败'); }
@@ -547,11 +547,11 @@ export default function AdminUsersPage() {
       ),
     },
     {
-      title: '裁判 / 图片员名额',
+      title: '邀请码占用',
       key: 'staffQuota',
-      width: 110,
+      width: 120,
       render: (_: unknown, row: UserItem) => {
-        if (row.role === 'ROOT' || row.role === 'PLAYER') return '—';
+        if (row.role !== 'ADMIN') return '—';
         const used = row.staffInviteUsed ?? 0;
         const limit = row.staffInviteLimit ?? 20;
         return (
@@ -683,8 +683,8 @@ export default function AdminUsersPage() {
       {role !== 'ROOT' && ownQuota ? (
         <Card
           size="small"
-          title="裁判 / 图片员共享名额"
-          extra={<Tag color="blue">剩余 {ownQuota.remaining ?? '—'}</Tag>}
+          title="邀请码余额"
+          extra={<Tag color="blue">余额 {ownQuota.remaining ?? '—'}</Tag>}
         >
           <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
             <div>
@@ -692,11 +692,11 @@ export default function AdminUsersPage() {
               <div style={{ fontSize: 20, fontWeight: 800, lineHeight: 1.2 }}>{ownQuota.limit ?? '—'}</div>
             </div>
             <div>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>累计已使用</Typography.Text>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>已占用</Typography.Text>
               <div style={{ fontSize: 20, fontWeight: 800, lineHeight: 1.2 }}>{ownQuota.used}</div>
             </div>
             <div>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>剩余</Typography.Text>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>余额</Typography.Text>
               <div style={{ fontSize: 20, fontWeight: 800, lineHeight: 1.2, color: '#2563eb' }}>
                 {ownQuota.remaining ?? '—'}
               </div>
@@ -709,7 +709,7 @@ export default function AdminUsersPage() {
             style={{ marginTop: 12 }}
           />
           <Typography.Text type="secondary" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
-            注册或直接创建账号时扣除，删除不返还。选手账号不占额度。
+            创建邀请码时按使用次数预扣余额，注册不再重复扣除；直接创建裁判/图片员账号占用 1 次。删除不返还。
           </Typography.Text>
         </Card>
       ) : null}
@@ -747,7 +747,7 @@ export default function AdminUsersPage() {
       </Card>
 
       <Modal title={permissionTarget ? `功能权限：${permissionTarget.username}` : '功能权限'} open={!!permissionTarget} onCancel={() => setPermissionTarget(null)} onOk={savePermissions} confirmLoading={permissionSaving} width={760} okText="保存权限">
-        <Typography.Paragraph type="secondary">自定义功能不会扩大赛事归属范围，也不会重置裁判和图片员的累计名额。邀请码权限由角色固定：仅管理员和超级管理员拥有；修改角色会恢复角色默认权限。</Typography.Paragraph>
+        <Typography.Paragraph type="secondary">自定义功能不会扩大赛事归属范围，也不会重置邀请码余额。邀请码权限由角色固定：仅管理员和超级管理员拥有；修改角色会恢复角色默认权限。</Typography.Paragraph>
         <Space style={{ marginBottom: 16 }}>
           <Switch checked={customPermissions} onChange={(checked) => { setCustomPermissions(checked); if (!checked && permissionTarget) setSelectedPermissions(permissionDefaults[permissionTarget.role] ?? []); }} />
           <Typography.Text>{customPermissions ? '自定义功能' : '使用角色默认权限'}</Typography.Text>
@@ -763,13 +763,13 @@ export default function AdminUsersPage() {
           </div>)}
         </Checkbox.Group>
       </Modal>
-      <Modal title={quotaTarget ? `分配名额：${quotaTarget.username}` : '分配名额'} open={!!quotaTarget} onCancel={() => setQuotaTarget(null)} onOk={saveQuota} confirmLoading={quotaSaving}>
-        <Typography.Paragraph>裁判和图片员共用总额度，默认 20。已累计使用 {quotaTarget?.staffInviteUsed ?? 0} 个，删除账号不会返还。</Typography.Paragraph>
+      <Modal title={quotaTarget ? `分配余额：${quotaTarget.username}` : '分配余额'} open={!!quotaTarget} onCancel={() => setQuotaTarget(null)} onOk={saveQuota} confirmLoading={quotaSaving}>
+        <Typography.Paragraph>邀请码余额默认 20。当前已占用 {quotaTarget?.staffInviteUsed ?? 0} 次，删除账号或邀请码不会返还。总额度不能低于已占用数量。</Typography.Paragraph>
         <InputNumber aria-label="邀请码总额度" min={quotaTarget?.staffInviteUsed ?? 0} max={2147483647} precision={0} value={quotaLimit} onChange={(value) => setQuotaLimit(value ?? 0)} style={{ width: '100%' }} />
       </Modal>
       <Modal title="新建账号" open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} destroyOnHidden>
         <Form form={form} layout="vertical" onFinish={createUser} initialValues={{ role: 'REFEREE' }}>
-          <Form.Item name="role" label="角色" rules={[{ required: true }]} extra="管理员只能创建自己的选手、裁判和图片员账号。裁判和图片员共用名额，删除不返还。">
+          <Form.Item name="role" label="角色" rules={[{ required: true }]} extra="管理员只能创建自己的选手、裁判和图片员账号。直接创建裁判/图片员账号会占用邀请码余额，删除不返还。">
             <Select
               options={[
                 { value: 'ROOT', label: '超级管理员 · 查看全部并分配管理员名额' },

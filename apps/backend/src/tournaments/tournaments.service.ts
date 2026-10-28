@@ -81,8 +81,8 @@ export class TournamentsService {
     this.validateTournamentInput(dto);
     const superAdmin = isSuperAdmin(user);
     return this.prisma.$transaction(async (tx) => {
-      // showOnHome is reserved for already-approved tournaments — a brand-new
-      // pending submission shouldn't take over the home feature card.
+      // showOnHome 只留给已审核通过的赛事——新建后还在待审核的赛事
+      // 不应该抢走首页推荐位。
       if (dto.showOnHome && superAdmin) {
         await tx.tournament.updateMany({ data: { showOnHome: false } });
       }
@@ -94,8 +94,8 @@ export class TournamentsService {
           // 未显式指定状态时按报名/比赛时间算出初始状态，避免报名已开始却显示「报名未开始」。
           ...(dto.status ? {} : { status: this.statusFromTiming(dto) }),
           edition,
-          // Auto-approve when the super admin creates it; otherwise the new
-          // tournament is queued for review and stays hidden until approval.
+          // 超级管理员创建时直接审核通过；其他人新建的赛事进入待审核，
+          // 审核通过前不对外显示。
           approvalStatus: superAdmin
             ? TournamentApprovalStatus.APPROVED
             : TournamentApprovalStatus.PENDING,
@@ -187,9 +187,8 @@ export class TournamentsService {
     if (dto.status !== undefined && !isSuperAdmin(user)) {
       throw new ForbiddenException('仅超级管理员可修改赛事状态');
     }
-    // showOnHome is super-admin-only (same as create) — silently keep the
-    // current value for other roles instead of letting an ADMIN edit take
-    // over the home feature card.
+    // showOnHome 和创建一样仅限超级管理员——其他角色编辑时直接忽略该字段，
+    // 避免管理员把首页推荐位改掉。
     if (!isSuperAdmin(user)) {
       delete dto.showOnHome;
     }
@@ -197,7 +196,7 @@ export class TournamentsService {
     const current = await this.findOne(id);
     this.validateTournamentInput(dto, current);
 
-    // Only an APPROVED tournament can be published / shown on home.
+    // 只有审核通过的赛事才能发布 / 上首页。
     const isApproved = current.approvalStatus === TournamentApprovalStatus.APPROVED;
     return this.prisma.$transaction(async (tx) => {
       if (dto.showOnHome && isApproved) {
@@ -263,8 +262,14 @@ export class TournamentsService {
     });
   }
 
-  async remove(id: string) {
-    await this.findOne(id);
+  async remove(id: string, user?: AuthUser) {
+    const tournament = await this.findOne(id);
+    // 超级管理员可以删除任意赛事；普通管理员只能删除自己创建的赛事。
+    // RolesGuard 已按 submittedById 过滤过一遍，这里再做一次归属校验，
+    // 避免服务被其他入口直接调用时越权。
+    if (!isSuperAdmin(user) && tournament.submittedById !== user?.id) {
+      throw new ForbiddenException('只能删除自己创建的赛事');
+    }
     return this.prisma.tournament.delete({ where: { id } });
   }
 
@@ -540,10 +545,8 @@ export class TournamentsService {
     if (new Set(items).size !== items.length) throw new BadRequestException(message);
   }
 
-  // Admin endpoints surface the raw stored status so the administrator's manual
-  // override in 赛事配置 takes effect immediately — public-facing callers
-  // apply effectiveTournamentStatus() themselves where time-based auto-advance
-  // is desired.
+  // 管理端接口返回数据库里存的原始状态，管理员的「赛事配置」手动改动能立即生效；
+  // 需要按时间自动推进的公开页面，由调用方自己套 effectiveTournamentStatus()。
   private withEffectiveStatus<T extends {
     status: TournamentStatus;
     registrationStartDate: Date | null;

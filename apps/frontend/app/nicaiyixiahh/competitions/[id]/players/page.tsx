@@ -6,10 +6,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { Alert, Button, Card, Checkbox, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography, message } from 'antd';
-import { AuditOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, PlusOutlined, RollbackOutlined, StopOutlined, TeamOutlined, UserAddOutlined, UsergroupAddOutlined } from '@ant-design/icons';
+import { AuditOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, FileExcelOutlined, PlusOutlined, RollbackOutlined, StopOutlined, TeamOutlined, UserAddOutlined, UsergroupAddOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { importTeamRoster, parseTeamRoster, TeamRosterImportInput, type TeamImportCompetition } from '@/components/TeamRosterImport';
 import SocialPlayerImportModal from '@/components/SocialPlayerImport';
+import ExcelRosterImportModal from '@/components/ExcelRosterImport';
 
 type CompetitionEventOption = {
   id: string;
@@ -247,6 +248,8 @@ export default function AdminCompetitionPlayersPage() {
   const [batchText, setBatchText] = useState('');
   const [batchSubmitting, setBatchSubmitting] = useState(false);
   const [socialModalOpen, setSocialModalOpen] = useState(false);
+  // Excel 模板批量导入（.xls/.xlsx）：自动识别项目与双打配对。
+  const [excelModalOpen, setExcelModalOpen] = useState(false);
   // 手工新增/编辑表单是否按社会人员格式（单位、无学号/学院班级/队伍名称）。
   const [formSocial, setFormSocial] = useState(false);
   const [libraryModalOpen, setLibraryModalOpen] = useState(false);
@@ -944,6 +947,13 @@ export default function AdminCompetitionPlayersPage() {
               >
                 社会人员
               </Button>
+              <Button
+                icon={<FileExcelOutlined />}
+                onClick={() => setExcelModalOpen(true)}
+                disabled={!competition?.eventOptions?.length}
+              >
+                Excel 导入
+              </Button>
               <Popconfirm
                 title={`确认批量删除选中的 ${selectedPlayerIds.length} 条参赛记录？`}
                 description="删除后这些报名会从参赛选手列表中移除。"
@@ -1138,6 +1148,17 @@ export default function AdminCompetitionPlayersPage() {
           open={socialModalOpen}
           token={token}
           onClose={() => setSocialModalOpen(false)}
+          onImported={loadData}
+        />
+      ) : null}
+      {id ? (
+        <ExcelRosterImportModal
+          competitionId={id}
+          events={competition?.eventOptions ?? []}
+          existingPlayers={players}
+          open={excelModalOpen}
+          token={token}
+          onClose={() => setExcelModalOpen(false)}
           onImported={loadData}
         />
       ) : null}

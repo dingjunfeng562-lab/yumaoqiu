@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useSession } from 'next-auth/react';
-import { Button, Card, Form, Input, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Typography, message } from 'antd';
+import { Alert, Button, Card, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Typography, message } from 'antd';
 import { DeleteOutlined, PlusOutlined, ReloadOutlined, CopyOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { useCurrentRole } from '@/lib/use-current-role';
@@ -25,6 +25,7 @@ type InviteCodeItem = {
 
 type CreateInviteCodePayload = {
   role: InviteRole;
+  maxUses: number;
   expiresAt?: string;
   remark?: string;
 };
@@ -54,8 +55,20 @@ export default function InviteCodesPage() {
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
   const [form] = Form.useForm();
+  const watchedMaxUses = Form.useWatch('maxUses', form) as number | null | undefined;
+  const balance = role === 'ROOT' ? null : quota?.remaining ?? null;
+  const validUses =
+    balance !== null &&
+    watchedMaxUses !== null &&
+    watchedMaxUses !== undefined &&
+    watchedMaxUses >= 1 &&
+    watchedMaxUses <= balance;
+  const nextBalance = validUses ? balance - (watchedMaxUses ?? 0) : null;
+  const noBalance = balance === 0;
+  const quotaReady = role === 'ROOT' || quota !== undefined;
+  const createDisabled = !quotaReady || noBalance;
 
-  async function loadInviteCodes() {
+  const loadInviteCodes = useCallback(async () => {
     if (!token) return;
     setLoading(true);
     try {
@@ -70,11 +83,14 @@ export default function InviteCodesPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [token]);
 
   useEffect(() => {
-    loadInviteCodes();
-  }, [token]);
+    const timer = window.setTimeout(() => {
+      void loadInviteCodes();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadInviteCodes]);
 
   async function createInviteCode(values: CreateInviteCodePayload) {
     if (!token) return;
@@ -84,7 +100,7 @@ export default function InviteCodesPage() {
         token,
         body: JSON.stringify(values),
       });
-      message.success('邀请码已生成');
+      message.success(`邀请码已生成，已占用 ${values.maxUses} 次余额`);
       setOpen(false);
       form.resetFields();
       await loadInviteCodes();
@@ -139,14 +155,28 @@ export default function InviteCodesPage() {
         </div>
         <Space>
           <Button icon={<ReloadOutlined />} onClick={loadInviteCodes} loading={loading}>刷新</Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>生成邀请码</Button>
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={() => setOpen(true)}
+            disabled={createDisabled}
+            title={
+              noBalance
+                ? '邀请码余额不足，请联系超级管理员分配'
+                : !quotaReady
+                  ? '正在加载邀请码余额'
+                  : undefined
+            }
+          >
+            生成邀请码
+          </Button>
         </Space>
       </div>
 
-      {role !== 'ROOT' && quota && <Card size="small" title="裁判 / 图片员共享名额">
-        <Typography.Text strong>总额度 {quota.limit} · 累计已使用 {quota.used} · 剩余 {quota.remaining}</Typography.Text>
+      {role !== 'ROOT' && quota && <Card size="small" title="邀请码余额">
+        <Typography.Text strong>总额度 {quota.limit} · 已占用 {quota.used} · 余额 {quota.remaining}</Typography.Text>
         <Typography.Paragraph type="secondary" style={{ margin: '8px 0 0' }}>
-          注册成功或直接创建账号后扣除名额，未使用的邀请码不占额度。删除账号或邀请码不返还名额，选手账号不占额度。额度不足时可联系超级管理员分配。
+          所有角色的邀请码都从这份余额扣除：创建时按填写的使用次数占用，注册时不再重复扣除。删除邀请码或账号不返还余额。直接创建裁判/图片员账号仍占用 1 次。余额不足时可联系超级管理员分配。
         </Typography.Paragraph>
       </Card>}
       <Card>
@@ -163,7 +193,7 @@ export default function InviteCodesPage() {
               render: (role: InviteRole) => <Tag color={roleColors[role]}>{roleLabels[role]}</Tag>,
             },
             {
-              title: '已用/总数',
+              title: '已注册/次数',
               key: 'usage',
               render: (_, row: InviteCodeItem) => `${row.usedUses}/${row.maxUses}`,
             },
@@ -193,7 +223,7 @@ export default function InviteCodesPage() {
                 <Space wrap>
                   <Button icon={<CopyOutlined />} onClick={() => copyCode(row.code)}>复制</Button>
                   <Switch disabled={!canManage(row)} checked={row.isEnabled} checkedChildren="启用" unCheckedChildren="禁用" onChange={(checked) => updateStatus(row, checked)} />
-                  <Popconfirm title="确认删除该邀请码？已使用的账号名额不会返还。" disabled={!canManage(row)} onConfirm={() => deleteInviteCode(row.id)}>
+                  <Popconfirm title="确认删除该邀请码？创建时占用的余额不会返还。" disabled={!canManage(row)} onConfirm={() => deleteInviteCode(row.id)}>
                     <Button disabled={!canManage(row)} danger icon={<DeleteOutlined />}>删除</Button>
                   </Popconfirm>
                 </Space>
@@ -204,12 +234,12 @@ export default function InviteCodesPage() {
       </Card>
 
       <Modal title="生成邀请码" open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} destroyOnHidden>
-        <Form form={form} layout="vertical" onFinish={createInviteCode} initialValues={{ role: 'PLAYER' }}>
+        <Form form={form} layout="vertical" onFinish={createInviteCode} initialValues={{ role: 'PLAYER', maxUses: 1 }}>
           <Form.Item
             name="role"
             label="角色"
             rules={[{ required: true }]}
-            extra="一人一码：每个邀请码只能注册一个账号。选手账号不限总量；裁判和图片员在注册成功时扣除共享名额。"
+            extra="注册角色由邀请码决定；所有角色的邀请码都会占用发放人的余额。"
           >
             <Select
               options={[
@@ -218,6 +248,50 @@ export default function InviteCodesPage() {
                 { value: 'ADMIN', label: '管理员' },
                 { value: 'PHOTOGRAPHER', label: '图片上传员' },
               ].filter((item) => role === 'ROOT' || item.value !== 'ADMIN')}
+            />
+          </Form.Item>
+          {balance !== null ? (
+            <Alert
+              type={balance > 0 ? 'info' : 'warning'}
+              showIcon
+              style={{ marginBottom: 16 }}
+              message={`当前邀请码余额：${balance} 次`}
+              description="创建后立即从余额扣除填写的次数，注册时不再重复扣除。"
+            />
+          ) : (
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message="超级管理员不受邀请码余额限制"
+            />
+          )}
+          <Form.Item
+            name="maxUses"
+            label="使用次数"
+            rules={[
+              { required: true, message: '请输入使用次数' },
+              {
+                validator: (_, value) => {
+                  if (value === undefined || value === null) return Promise.resolve();
+                  if (value < 1) return Promise.reject(new Error('使用次数至少为 1'));
+                  if (balance !== null && value > balance) {
+                    return Promise.reject(new Error(`不能大于当前余额（${balance} 次）`));
+                  }
+                  return Promise.resolve();
+                },
+              },
+            ]}
+            extra={
+              balance !== null
+                ? `最多可填写 ${balance} 次${nextBalance !== null ? `，创建后余额变为 ${nextBalance} 次` : ''}`
+                : '该邀请码最多可注册的账号数'
+            }
+          >
+            <InputNumber
+              min={1}
+              precision={0}
+              style={{ width: '100%' }}
             />
           </Form.Item>
           <Form.Item name="expiresAt" label="有效期（可选）">
