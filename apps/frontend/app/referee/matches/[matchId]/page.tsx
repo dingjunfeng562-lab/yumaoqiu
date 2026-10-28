@@ -524,12 +524,11 @@ export default function RefereeScoringPage() {
     loadScore();
   }, [token, matchId]);
 
-  // Auto-prompt the referee to confirm finishing the match once the score
-  // crosses the deciding threshold. The backend now keeps status=LIVE with
-  // winnerSide stamped (pendingFinish=true) so we can ask before commit.
-  // The ref tracks which winnerSide we have already prompted for so a cancel
-  // does not re-pop the modal on every websocket tick, and an undo (which
-  // clears winnerSide on the server) properly re-arms the prompt.
+  // 比分越过决胜阈值后，自动弹窗请裁判确认结束比赛。
+  // 后端此时保持 status=LIVE 并写入 winnerSide（pendingFinish=true），
+  // 让我们可以在真正提交前先询问裁判。这里记录已经提示过的 winnerSide，
+  // 避免裁判点「取消」后每次 websocket 推送都重复弹窗；
+  // 撤销（服务端会清空 winnerSide）后又会重新允许提示。
   const finishPromptedForRef = useRef<number | null>(null);
   useEffect(() => {
     const pending = Boolean(score?.pendingFinish);
