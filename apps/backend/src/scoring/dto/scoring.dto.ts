@@ -26,6 +26,22 @@ export class ScorePointDto {
   side: 1 | 2;
 }
 
+export class StartWarmupDto {
+  /** 赛前练球时长（秒），默认 3 分钟，裁判可在 1–5 分钟之间调整。 */
+  @Type(() => Number)
+  @IsInt()
+  @Min(60)
+  @Max(300)
+  seconds: number;
+}
+
+export class UndoPointDto {
+  /** 裁判点某一方的「-1」时带上，后端校验最近一分确实是这一方得的。 */
+  @IsOptional()
+  @IsIn([1, 2])
+  side?: 1 | 2;
+}
+
 export class AssignRefereeDto {
   @IsString()
   refereeId: string;

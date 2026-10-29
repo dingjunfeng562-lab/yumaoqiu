@@ -57,6 +57,8 @@ const COURT_SWAP_REQUIRED_NOTE_PREFIX = 'COURT_SWAP_REQUIRED:';
 const RETIRE_NOTE_PREFIX = 'RETIRE:';
 const BLACK_CARD_NOTE_PREFIX = 'BLACK_CARD:';
 const INTERVAL_REST_NOTE_PREFIX = 'INTERVAL_REST:';
+// 赛前练球只给裁判端看，前台的最近事件里不显示。
+const WARMUP_NOTE_PREFIX = 'WARMUP:';
 
 type ForfeitKind = 'normal' | 'retire' | 'black_card';
 
@@ -858,6 +860,7 @@ export class PublicService {
         latestEvents: match.events
           ?.filter((event: any) => this.decodePublicMatchPauseNote(event.note) !== 'END')
           .filter((event: any) => !this.isPublicCourtEvent(event))
+          .filter((event: any) => !event.note?.startsWith(WARMUP_NOTE_PREFIX))
           .slice(0, 3)
           .map((event: any) => this.publicMatchEventView(event, match, registrationMap)) ?? [],
         score: match.forfeitedSide

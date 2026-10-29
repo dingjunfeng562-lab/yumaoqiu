@@ -660,31 +660,38 @@ export class CompetitionsService {
       orderBy: [{ createdAt: 'desc' }],
     });
 
-    return competitions.map((competition) => ({
-      ...this.toCompetitionView(competition, true),
-      // 报名码只给后台列表，公开接口不返回。
-      schoolRegistrationCode: competition.schoolRegistrationCode,
-      socialRegistrationCode: competition.socialRegistrationCode,
-      schoolRegistrationCodeEnabled: competition.schoolRegistrationCodeEnabled,
-      socialRegistrationCodeEnabled: competition.socialRegistrationCodeEnabled,
-      registrationCodeEnabled: competition.registrationCodeEnabled,
-      isArchived: competition.isArchived,
-      isPublished: competition.isPublished,
-      approvalStatus: competition.approvalStatus,
-      rejectReason: competition.rejectReason,
-      photoAccessEnabled: Boolean(competition.photoAccessToken),
-      counts: {
-        all: competition.competitionRegistrations.length,
-        pending: competition.competitionRegistrations.filter((item) => item.status === RegistrationStatus.PENDING)
-          .length,
-        approved: competition.competitionRegistrations.filter((item) => item.status === RegistrationStatus.APPROVED)
-          .length,
-        rejected: competition.competitionRegistrations.filter((item) => item.status === RegistrationStatus.REJECTED)
-          .length,
-        removed: competition.competitionRegistrations.filter((item) => item.status === RegistrationStatus.REMOVED)
-          .length,
-      },
-    }));
+    return competitions.map((competition) => {
+      // 管理员在「参赛选手」里手工新增、批量导入、Excel 导入、选手库加入的报名不经过
+      // 审核队列，直接以已通过状态落库（competitionRegistrationId 为空）。它们和线上报名
+      // 一样属于「已通过」，必须一起统计，否则赛事管理里的「通过」会与报名审核列表、
+      // 参赛选手人数对不上。
+      const adminApproved = this.countAdminApprovedEntries(competition);
+      const countByStatus = (target: RegistrationStatus) =>
+        competition.competitionRegistrations.filter((item) => item.status === target).length;
+
+      return {
+        ...this.toCompetitionView(competition, true),
+        // 报名码只给后台列表，公开接口不返回。
+        schoolRegistrationCode: competition.schoolRegistrationCode,
+        socialRegistrationCode: competition.socialRegistrationCode,
+        schoolRegistrationCodeEnabled: competition.schoolRegistrationCodeEnabled,
+        socialRegistrationCodeEnabled: competition.socialRegistrationCodeEnabled,
+        registrationCodeEnabled: competition.registrationCodeEnabled,
+        isArchived: competition.isArchived,
+        isPublished: competition.isPublished,
+        approvalStatus: competition.approvalStatus,
+        rejectReason: competition.rejectReason,
+        photoAccessEnabled: Boolean(competition.photoAccessToken),
+        counts: {
+          // all = 报名审核页「全部」的条数 = 线上报名 + 管理员录入的已通过报名。
+          all: competition.competitionRegistrations.length + adminApproved,
+          pending: countByStatus(RegistrationStatus.PENDING),
+          approved: countByStatus(RegistrationStatus.APPROVED) + adminApproved,
+          rejected: countByStatus(RegistrationStatus.REJECTED),
+          removed: countByStatus(RegistrationStatus.REMOVED),
+        },
+      };
+    });
   }
 
   async publishCompetition(id: string) {
@@ -793,9 +800,110 @@ export class CompetitionsService {
       orderBy: [{ createdAt: 'desc' }],
     });
 
-    return registrations
-      .sort((a, b) => this.statusPriority(a.status) - this.statusPriority(b.status))
-      .map((registration) => this.toCompetitionRegistrationView(registration));
+    const onlineRows = registrations.map((registration) => this.toCompetitionRegistrationView(registration));
+
+    // 管理员录入/批量导入的报名本来就不需要审核，但它们是「已通过」的一部分。
+    // 只有当前筛选包含已通过时才需要合并，保证列表条数与赛事管理里的「通过」一致。
+    const toAdminRow = (entry: RegistrationWithRelations) => this.toAdminEntryReviewView(entry);
+    const adminRows: Array<ReturnType<typeof toAdminRow>> = [];
+    if (!normalizedStatus || normalizedStatus === RegistrationStatus.APPROVED) {
+      const adminEntries = await this.listAdminEntryRegistrations(competitionId, normalizedEntrantType);
+      adminRows.push(...adminEntries.map(toAdminRow));
+    }
+
+    const rows: Array<(typeof onlineRows)[number] | ReturnType<typeof toAdminRow>> = [
+      ...onlineRows,
+      ...adminRows,
+    ];
+    return rows.sort((a, b) => {
+      const byStatus = this.statusPriority(a.statusRaw) - this.statusPriority(b.statusRaw);
+      if (byStatus !== 0) return byStatus;
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
+  }
+
+  /** 管理员在参赛选手页新增/导入的已通过报名（不属于任何线上报名申请）。 */
+  private listAdminEntryRegistrations(competitionId: string, entrantType?: EntrantType) {
+    return this.prisma.registration.findMany({
+      where: {
+        competitionRegistrationId: null,
+        status: RegistrationStatus.APPROVED,
+        event: { tournamentId: competitionId },
+        ...(entrantType ? { entrantType } : {}),
+      },
+      include: REGISTRATION_VIEW_INCLUDE,
+      orderBy: [{ createdAt: 'desc' }],
+    });
+  }
+
+  /** 把管理员录入的报名适配成报名审核列表的一行，标注来源便于前端区分。 */
+  private toAdminEntryReviewView(registration: RegistrationWithRelations) {
+    const view = this.toRegistrationView(registration);
+    return {
+      id: view.id,
+      competitionId: view.competitionId,
+      userId: null,
+      guest: false,
+      email: '',
+      entrantType: view.entrantType,
+      entrantTypeLabel: view.entrantTypeLabel,
+      studentId: view.studentId,
+      college: view.college,
+      majorGrade: view.majorGrade,
+      name: view.primaryName,
+      gender: view.gender,
+      genderLabel: view.genderLabel,
+      school: view.school,
+      className: view.className,
+      contact: view.phone,
+      phone: view.phone,
+      remark: view.remark,
+      items: view.partner
+        ? [
+            {
+              id: view.id,
+              eventId: view.eventId,
+              eventType: view.eventType,
+              eventName: view.eventName,
+              partnerName: view.partner.name,
+              partnerGender: view.partner.gender,
+              partnerGenderLabel: view.partner.genderLabel,
+              partnerStudentId: view.partner.studentId || null,
+              partnerSchool: view.partner.school || null,
+              partnerCollege: view.partner.college || null,
+              partnerMajorGrade: view.partner.majorGrade || null,
+              partnerClassName: view.partner.className || null,
+              partnerContact: view.partner.phone || null,
+              teamName: view.teamName,
+            },
+          ]
+        : [],
+      eventNames: [view.eventName],
+      eventSummary: view.eventName,
+      status: view.status,
+      statusRaw: view.statusRaw,
+      statusLabel: view.statusLabel,
+      createdAt: view.createdAt,
+      reviewedAt: view.reviewedAt,
+      reviewedBy: view.reviewedBy,
+      rejectReason: view.rejectReason,
+      // 该行由管理员直接录入，报名审核页不提供通过/驳回操作，去「参赛选手」页维护。
+      source: 'ADMIN' as const,
+    };
+  }
+
+  /** 统计管理员直接录入（未经审核队列）且已通过的报名记录。 */
+  private countAdminApprovedEntries(competition: CompetitionWithRelations) {
+    return competition.events.reduce(
+      (total, event) =>
+        total +
+        event.registrations.filter(
+          (item) =>
+            item.competitionRegistrationId === null &&
+            item.status === RegistrationStatus.APPROVED,
+        ).length,
+      0,
+    );
   }
 
   async listAdminPlayers(
@@ -2087,9 +2195,11 @@ export class CompetitionsService {
 
   private toCompetitionView(competition: CompetitionWithRelations, detailed = false) {
     const status = effectiveTournamentStatus(competition);
-    const approvedCount = competition.competitionRegistrations.filter(
-      (item) => item.status === RegistrationStatus.APPROVED,
-    ).length;
+    // 前台「已通过审核」名单里包含管理员录入/导入的选手，计数口径必须一致。
+    const approvedCount =
+      competition.competitionRegistrations.filter(
+        (item) => item.status === RegistrationStatus.APPROVED,
+      ).length + this.countAdminApprovedEntries(competition);
     const events = this.projectLabels(competition);
     const fieldRules = normalizeRegistrationFieldRules(competition.registrationFieldRules);
 
@@ -2195,6 +2305,8 @@ export class CompetitionsService {
       reviewedAt: registration.reviewedAt?.toISOString() ?? null,
       reviewedBy: registration.reviewedById,
       rejectReason: registration.rejectReason,
+      // ONLINE：正常线上报名；ADMIN：管理员在参赛选手页直接录入/导入，无需审核。
+      source: 'ONLINE' as const,
     };
   }
 

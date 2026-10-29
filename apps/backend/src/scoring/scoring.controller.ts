@@ -16,6 +16,8 @@ import {
   ScorePointDto,
   SetGameServeDto,
   StartMatchDto,
+  StartWarmupDto,
+  UndoPointDto,
 } from './dto/scoring.dto';
 import { ScoringGateway } from './scoring.gateway';
 import { ScoringService } from './scoring.service';
@@ -134,8 +136,12 @@ export class ScoringController {
 
   @Roles(Role.ADMIN, Role.REFEREE)
   @Post('matches/:id/undo')
-  async undoLastPoint(@Param('id') id: string, @Req() req: RequestWithUser) {
-    const state = await this.scoringService.undoLastPoint(id, req.user);
+  async undoLastPoint(
+    @Param('id') id: string,
+    @Body() dto: UndoPointDto,
+    @Req() req: RequestWithUser,
+  ) {
+    const state = await this.scoringService.undoLastPoint(id, req.user, dto.side);
     this.scoringGateway.emitMatchState(id, state);
     return state;
   }
@@ -160,6 +166,22 @@ export class ScoringController {
   @Post('matches/:id/resume')
   async resumeMatch(@Param('id') id: string, @Req() req: RequestWithUser) {
     const state = await this.scoringService.resumeMatch(id, req.user);
+    this.scoringGateway.emitMatchState(id, state);
+    return state;
+  }
+
+  @Roles(Role.ADMIN, Role.REFEREE)
+  @Post('matches/:id/warmup')
+  async startWarmup(@Param('id') id: string, @Body() dto: StartWarmupDto, @Req() req: RequestWithUser) {
+    const state = await this.scoringService.startWarmup(id, req.user, dto.seconds);
+    this.scoringGateway.emitMatchState(id, state);
+    return state;
+  }
+
+  @Roles(Role.ADMIN, Role.REFEREE)
+  @Post('matches/:id/warmup-end')
+  async endWarmup(@Param('id') id: string, @Req() req: RequestWithUser) {
+    const state = await this.scoringService.endWarmup(id, req.user);
     this.scoringGateway.emitMatchState(id, state);
     return state;
   }

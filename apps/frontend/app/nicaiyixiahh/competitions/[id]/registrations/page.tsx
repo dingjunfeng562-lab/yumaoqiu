@@ -46,6 +46,9 @@ type Registration = {
   statusLabel: string;
   reviewedAt?: string | null;
   rejectReason?: string | null;
+  // ONLINE：正常线上报名；ADMIN：管理员在「参赛选手」页新增/批量导入/Excel 导入的报名，
+  // 无需审核，直接算作已通过，在赛事管理的「通过」计数里同样计入。
+  source?: 'ONLINE' | 'ADMIN';
 };
 
 const STATUS_OPTIONS = [
@@ -183,7 +186,20 @@ export default function AdminCompetitionRegistrationsPage() {
         </Tag>
       ),
     },
-    { title: '邮箱', dataIndex: 'email', key: 'email', width: 190, ellipsis: true },
+    {
+      title: '邮箱',
+      key: 'email',
+      width: 190,
+      ellipsis: true,
+      render: (_: unknown, record: Registration) =>
+        record.email ? (
+          record.email
+        ) : record.source === 'ADMIN' ? (
+          <Tag color="purple">管理员录入</Tag>
+        ) : (
+          <Typography.Text type="secondary">未填写</Typography.Text>
+        ),
+    },
     { title: '姓名', dataIndex: 'name', key: 'name', width: 90 },
     {
       title: '学号/单位',
@@ -257,7 +273,11 @@ export default function AdminCompetitionRegistrationsPage() {
       key: 'actions',
       width: 180,
       render: (_: unknown, record: Registration) =>
-        canManage ? (
+        record.source === 'ADMIN' ? (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            管理员录入，无需审核
+          </Typography.Text>
+        ) : canManage ? (
           <Space>
             <Popconfirm
               title="确认通过该报名？"

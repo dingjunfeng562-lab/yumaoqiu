@@ -2,7 +2,8 @@
 // referee console switches to landscape when a match is opened. Browsers only
 // allow fullscreen (a prerequisite for orientation.lock) inside a user gesture,
 // so lockLandscape must be called synchronously from the click handler, before
-// any await. iOS Safari has no orientation.lock; it simply stays as-is.
+// any await. iOS Safari has no orientation.lock; there RefereeLandscapeGate
+// rotates the match page with CSS instead.
 const MOBILE_MAX_WIDTH = 820;
 
 type ScreenOrientationWithLock = ScreenOrientation & {
@@ -16,6 +17,12 @@ function isMobile() {
 
 export function isMobileReferee() {
   return typeof window !== 'undefined' && isMobile();
+}
+
+// iOS Safari and most in-app browsers have no orientation.lock at all.
+export function canLockLandscape() {
+  if (typeof window === 'undefined') return false;
+  return typeof (window.screen.orientation as ScreenOrientationWithLock | undefined)?.lock === 'function';
 }
 
 // Resolves true once the screen is locked to landscape. On failure it leaves

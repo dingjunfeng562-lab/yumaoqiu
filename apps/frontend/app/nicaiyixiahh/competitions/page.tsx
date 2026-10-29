@@ -70,8 +70,20 @@ function competitionPath(record: Competition, suffix: string) {
 
 function CountMetric({ label, value, color }: { label: string; value: number; color: string }) {
   return (
-    <div style={{ minWidth: 26 }}>
-      <div style={{ color, fontSize: 16, fontWeight: 700, lineHeight: 1.1 }}>{value}</div>
+    <div style={{ minWidth: 30, textAlign: 'center' }}>
+      <div
+        style={{
+          color,
+          fontSize: 15,
+          fontWeight: 700,
+          lineHeight: 1.1,
+          // 批量导入后「通过」可能是三四位数，等宽数字 + 不换行，避免撑破列宽。
+          fontVariantNumeric: 'tabular-nums',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {value}
+      </div>
       <div style={{ marginTop: 2, color: '#94a3b8', fontSize: 10, fontWeight: 600 }}>{label}</div>
     </div>
   );
@@ -358,9 +370,9 @@ export default function AdminCompetitionsPage() {
     {
       title: '报名审核',
       key: 'counts',
-      width: 140,
+      width: 170,
       render: (_: unknown, record: Competition) => (
-        <div style={{ display: 'flex', gap: 10 }}>
+        <div style={{ display: 'flex', gap: 8 }}>
           <CountMetric
             label="待审"
             value={record.counts.pending}
@@ -455,7 +467,7 @@ export default function AdminCompetitionsPage() {
           dataSource={competitions}
           loading={loading}
           pagination={{ pageSize: 10, showSizeChanger: false, hideOnSinglePage: true }}
-          scroll={{ x: 1100 }}
+          scroll={{ x: 1130 }}
           tableLayout="fixed"
           size="middle"
           locale={{ emptyText: '暂无赛事' }}

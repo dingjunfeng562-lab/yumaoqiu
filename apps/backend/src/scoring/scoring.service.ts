@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import {
   Format,
+  Gender,
   MatchEventType,
   MatchStatus,
   Prisma,
@@ -81,6 +82,11 @@ type MatchPauseState = {
   pauseReason: string | null;
 };
 
+type WarmupState = {
+  startedAt: Date;
+  seconds: number;
+};
+
 type SecondStageEntrant = {
   id: string | null;
   name: string | null;
@@ -100,6 +106,7 @@ export type MatchSideView = {
     index: number;
     name: string;
     affiliation: string | null;
+    gender: Gender | null;
   }>;
 };
 
@@ -148,6 +155,8 @@ const SIDE_REQUIRED_EVENT_TYPES = new Set<MatchEventType>([
 const MATCH_PAUSE_NOTE_PREFIX = 'MATCH_PAUSE:';
 const TECHNICAL_PAUSE_NOTE_PREFIX = 'TECHNICAL_PAUSE:';
 const INTERVAL_REST_NOTE_PREFIX = 'INTERVAL_REST:';
+// 赛前练球记在 TIMEOUT 事件上（WARMUP:START:<秒> / WARMUP:END），暂停计算不认这个前缀，不影响比赛计时。
+const WARMUP_NOTE_PREFIX = 'WARMUP:';
 const FAULT_NOTE_PREFIX = 'BADMINTON_FAULT:';
 const CARD_NOTE_PREFIX = 'BADMINTON_CARD:';
 const COURT_SWAP_NOTE_PREFIX = 'COURT_SWAP:';
@@ -431,6 +440,13 @@ export class ScoringService {
       this.sidePlayerCount(side1View),
       this.sidePlayerCount(side2View),
     );
+    // 裁判端某一方的「-1」只能撤掉这一方刚得的那一分，所以要告诉前端最近一分是谁得的。
+    const lastPoint = [...servingEvents].reverse().find(
+      (event) => event.type === MatchEventType.POINT && !event.undoneAt,
+    );
+    const warmup = match.status === MatchStatus.PENDING
+      ? this.computeWarmupState(pauseEvents, match.startedAt)
+      : null;
 
     return {
       id: match.id,
@@ -480,8 +496,12 @@ export class ScoringService {
       games: match.games,
       currentGame,
       servingState,
+      lastPointSide: this.validSide(lastPoint?.side),
+      warmup,
       events: match.events,
       updatedAt: match.updatedAt,
+      // 裁判端用它校准手机时钟，局间休息和练球倒计时都按服务器时间算。
+      serverNow: new Date(),
     };
   }
 
@@ -943,6 +963,49 @@ export class ScoringService {
     return this.getMatchState(matchId, user);
   }
 
+  /** 赛前练球倒计时。再次开始会按新的时长重新计时。 */
+  async startWarmup(matchId: string, user: AuthUser, seconds: number) {
+    await this.ensureMatchAccess(matchId, user);
+    const match = await this.ensurePlayableMatch(matchId);
+    if (match.status !== MatchStatus.PENDING) {
+      throw new BadRequestException('比赛已开始，不能再开始练球');
+    }
+
+    await this.prisma.matchEvent.create({
+      data: {
+        matchId,
+        type: MatchEventType.TIMEOUT,
+        note: this.encodeWarmupNote('START', seconds),
+      },
+    });
+    return this.getMatchState(matchId, user);
+  }
+
+  async endWarmup(matchId: string, user: AuthUser) {
+    await this.ensureMatchAccess(matchId, user);
+    const match = await this.ensurePlayableMatch(matchId);
+    if (match.status !== MatchStatus.PENDING) {
+      return this.getMatchState(matchId, user);
+    }
+    const events = await this.prisma.matchEvent.findMany({
+      where: { matchId, type: MatchEventType.TIMEOUT },
+      orderBy: { createdAt: 'asc' },
+      select: { note: true, createdAt: true },
+    });
+    if (!this.computeWarmupState(events, match.startedAt)) {
+      return this.getMatchState(matchId, user);
+    }
+
+    await this.prisma.matchEvent.create({
+      data: {
+        matchId,
+        type: MatchEventType.TIMEOUT,
+        note: this.encodeWarmupNote('END'),
+      },
+    });
+    return this.getMatchState(matchId, user);
+  }
+
   async swapCourt(matchId: string, user: AuthUser) {
     await this.ensureMatchAccess(matchId, user);
     const match = await this.ensurePlayableMatch(matchId);
@@ -1030,7 +1093,11 @@ export class ScoringService {
     return this.getMatchState(matchId, user);
   }
 
-  async undoLastPoint(matchId: string, user: AuthUser) {
+  /**
+   * 撤销最近一分。传了 side 表示裁判点的是该方的「-1」：最近一分必须是这一方得的，
+   * 否则拒绝，避免界面状态落后时把对方的分减掉。
+   */
+  async undoLastPoint(matchId: string, user: AuthUser, side?: 1 | 2) {
     await this.ensureMatchAccess(matchId, user);
     const match = await this.ensurePlayableMatch(matchId);
     if (match.status === MatchStatus.COMPLETED || match.status === MatchStatus.CANCELLED) {
@@ -1048,6 +1115,9 @@ export class ScoringService {
       });
       if (!lastPoint?.gameNo || !lastPoint.side) {
         throw new BadRequestException('暂无可撤销的得分');
+      }
+      if (side && lastPoint.side !== side) {
+        throw new BadRequestException('最近一分不是该方得分，不能减分');
       }
 
       await tx.game.deleteMany({
@@ -1824,6 +1894,33 @@ export class ScoringService {
     return `${INTERVAL_REST_NOTE_PREFIX}${action}:${gameNo}`;
   }
 
+  private encodeWarmupNote(action: 'START' | 'END', seconds?: number) {
+    return action === 'START' ? `${WARMUP_NOTE_PREFIX}START:${seconds}` : `${WARMUP_NOTE_PREFIX}END`;
+  }
+
+  /**
+   * 当前是否在练球：最后一条练球开始之后没有结束记录。
+   * 比赛开始过（startedAt）之前记的练球属于上一次，场次被重置回未开始时不再显示。
+   */
+  private computeWarmupState(
+    events: Array<{ note: string | null; createdAt: Date }>,
+    startedAt?: Date | null,
+  ): WarmupState | null {
+    let warmup: WarmupState | null = null;
+    for (const event of events) {
+      if (!event.note?.startsWith(WARMUP_NOTE_PREFIX)) continue;
+      if (startedAt && event.createdAt.getTime() < startedAt.getTime()) continue;
+      const [, action, secondsText] = event.note.split(':');
+      const seconds = Number(secondsText);
+      if (action === 'START' && Number.isFinite(seconds) && seconds > 0) {
+        warmup = { startedAt: event.createdAt, seconds };
+      } else if (action === 'END') {
+        warmup = null;
+      }
+    }
+    return warmup;
+  }
+
   private decodeMatchPauseNote(note?: string | null): {
     action: 'START' | 'END';
     kind: 'manual' | 'technical' | 'interval';
@@ -1877,6 +1974,10 @@ export class ScoringService {
     return this.shouldUseTechnicalPauseInGame(gameNo, rule, eventOverrides);
   }
 
+  /**
+   * 每局领先方先到 11 分时间歇 60 秒（决胜局在 11 分换边后进入）。
+   * 每局打到 11 分或更少就结束的自定义局制没有这个间歇。
+   */
   private shouldUseTechnicalPauseInGame(
     gameNo: number,
     rule: ScoringRule,
@@ -1886,8 +1987,8 @@ export class ScoringService {
       customGamesToWin?: number | null;
     } | null,
   ) {
-    const { target, gamesToWin } = this.ruleConfig(rule, eventOverrides);
-    return gamesToWin === 1 && target === 31 && gameNo === 1;
+    const { target } = this.ruleConfig(rule, eventOverrides);
+    return target > 11;
   }
 
   private hasTechnicalPauseForGame(events: Array<{ note: string | null }>, gameNo: number) {
@@ -3447,6 +3548,7 @@ export class ScoringService {
                 id: registration.player1.id,
                 name: registration.player1.name,
                 affiliation: registration.player1.affiliation,
+                gender: registration.player1.gender,
               }
             : null,
           registration.player2
@@ -3454,6 +3556,7 @@ export class ScoringService {
                 id: registration.player2.id,
                 name: registration.player2.name,
                 affiliation: registration.player2.affiliation,
+                gender: registration.player2.gender,
               }
             : null,
         ].filter(Boolean);
@@ -3473,6 +3576,7 @@ export class ScoringService {
         index: index + 1,
         name: player.name,
           affiliation: player.affiliation ?? null,
+        gender: player.gender ?? null,
       })),
       affiliation,
     };

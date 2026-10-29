@@ -1,29 +1,28 @@
 'use client';
 import { useCurrentAccess } from '@/lib/use-current-role';
 
+import Image from 'next/image';
 import Link from 'next/link';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useParams } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { Alert, Button, Input, Modal, Spin, message } from 'antd';
+import { Alert, Button, Drawer, Input, Modal, Spin, message } from 'antd';
 import {
   ArrowLeftOutlined,
   CloseCircleOutlined,
-  ClockCircleOutlined,
-  EnvironmentOutlined,
   ExclamationCircleOutlined,
   FieldTimeOutlined,
+  FlagOutlined,
+  LoadingOutlined,
   MedicineBoxOutlined,
+  MenuOutlined,
   PauseCircleOutlined,
-  PlayCircleFilled,
   PlayCircleOutlined,
   ReloadOutlined,
-  StopOutlined,
   SwapOutlined,
-  TrophyOutlined,
+  SyncOutlined,
   UndoOutlined,
   WarningOutlined,
-  WifiOutlined,
 } from '@ant-design/icons';
 import { io, type Socket } from 'socket.io-client';
 import { apiFetch } from '@/lib/api';
@@ -48,6 +47,7 @@ type SidePlayer = {
   index: number;
   name: string;
   affiliation?: string | null;
+  gender?: 'MALE' | 'FEMALE' | null;
 };
 
 type MatchSide = {
@@ -90,6 +90,7 @@ type MatchEventLog = {
   side1Score?: number | null;
   side2Score?: number | null;
   note?: string | null;
+  undoneAt?: string | null;
   createdAt: string;
 };
 
@@ -130,7 +131,7 @@ type ScoreState = {
     customGamePoint?: number | null;
     customGameCap?: number | null;
     customGamesToWin?: number | null;
-    tournament: { id: string; name: string; edition: number };
+    tournament: { id: string; name: string; edition: number } | null;
   };
   venue?: { id: string; name: string } | null;
   scheduledAt?: string | null;
@@ -149,17 +150,25 @@ type ScoreState = {
   games: GameScore[];
   currentGame?: GameScore | null;
   servingState?: ServingState | null;
+  /** 最近一笔有效得分是哪一方的，决定哪一方的「-1」可用。 */
+  lastPointSide?: 1 | 2 | null;
+  /** 未开始的场次正在赛前练球时有值。 */
+  warmup?: { startedAt: string; seconds: number } | null;
+  /** 服务器当前时间，用来校准手机时钟，倒计时按服务器时间算。 */
+  serverNow?: string | null;
   courtDisplayState?: CourtDisplayState | null;
   courtSwapRequired?: CourtSwapRequired | null;
   events: MatchEventLog[];
   updatedAt?: string | null;
 };
 
-const statusMeta: Record<ScoreState['status'], { label: string; color: string; tone: string }> = {
-  PENDING: { label: '未开始', color: 'default', tone: 'bg-slate-100 text-slate-700' },
-  LIVE: { label: '进行中', color: 'green', tone: 'bg-emerald-100 text-emerald-700' },
-  COMPLETED: { label: '已结束', color: 'blue', tone: 'bg-blue-100 text-blue-700' },
-  CANCELLED: { label: '已取消', color: 'red', tone: 'bg-red-100 text-red-700' },
+type SocketStatus = '连接中' | '已连接' | '已断开';
+
+const statusLabels: Record<ScoreState['status'], string> = {
+  PENDING: '未开始',
+  LIVE: '进行中',
+  COMPLETED: '已结束',
+  CANCELLED: '已取消',
 };
 
 const eventLabels: Record<string, string> = {
@@ -219,6 +228,15 @@ function isDoublesSide(side?: MatchSide | null) {
   return sidePlayers(side).length > 1;
 }
 
+/** side1 固定叫 A 方、side2 叫 B 方，交换场地后跟着人走，不跟左右走。 */
+function sideLetter(side: 1 | 2) {
+  return side === 1 ? 'A' : 'B';
+}
+
+function genderLabel(gender?: SidePlayer['gender']) {
+  return gender === 'MALE' ? '男' : gender === 'FEMALE' ? '女' : null;
+}
+
 function courtSideLabel(courtSide?: CourtSide | null) {
   return courtSide === 'left' ? '左发球区' : '右发球区';
 }
@@ -231,20 +249,33 @@ function playerNameByIndex(
   return sidePlayers(side).find((player) => player.index === playerIndex)?.name ?? `选手 ${playerIndex}`;
 }
 
+function courtListHref(score: ScoreState) {
+  return score.venue && score.event.tournament
+    ? `/referee/tournaments/${encodeURIComponent(score.event.tournament.id)}/courts/${encodeURIComponent(score.venue.id)}`
+    : '/referee/my-matches';
+}
+
+/** 老版本后端没有 lastPointSide 时，从最近的事件里找最后一笔没被撤销的得分。 */
+function lastPointSideOf(score: ScoreState): 1 | 2 | null {
+  if (score.lastPointSide !== undefined) return score.lastPointSide;
+  const side = score.events.find((event) => event.type === 'POINT' && !event.undoneAt)?.side;
+  return side === 1 || side === 2 ? side : null;
+}
+
 function MatchClock({
   startedAt,
   finishedAt,
   status,
   matchPaused = false,
   actualDurationSeconds,
-  compact = false,
+  className,
 }: {
   startedAt?: string | null;
   finishedAt?: string | null;
   status: ScoreState['status'];
   matchPaused?: boolean;
   actualDurationSeconds?: number | null;
-  compact?: boolean;
+  className?: string;
 }) {
   const [now, setNow] = useState(() => Date.now());
   const [baseReceivedAt, setBaseReceivedAt] = useState(() => Date.now());
@@ -275,23 +306,13 @@ function MatchClock({
   }
   const mm = Math.floor(seconds / 60).toString().padStart(2, '0');
   const ss = (seconds % 60).toString().padStart(2, '0');
-  const label = finishedAt ? '比赛用时' : matchPaused ? '比赛暂停' : '正在计时';
+  const label = finishedAt ? '比赛用时' : matchPaused ? '比赛暂停，计时已停止' : '比赛计时';
   return (
-    <p
-      className={
-        compact
-          ? 'inline-flex items-center gap-2 text-sm font-black tracking-wider text-white sm:text-base'
-          : 'mt-1 inline-flex items-center gap-1 text-xs font-black tracking-wider text-emerald-700 sm:text-sm'
-      }
-    >
+    <span className={className} title={label}>
       <FieldTimeOutlined />
-      {label} {mm}:{ss}{finishedAt ? '（已结束）' : matchPaused ? '（已停止）' : ''}
-    </p>
+      <span className="tabular-nums">{mm}:{ss}</span>
+    </span>
   );
-}
-
-function sideAffiliation(side?: { affiliation: string } | null) {
-  return side?.affiliation || '级别待定';
 }
 
 function formatDateTime(value?: string | null) {
@@ -335,6 +356,10 @@ function recordItems(score: ScoreState) {
 }
 
 function eventDescription(event: MatchEventLog, side1Name?: string, side2Name?: string) {
+  if (event.note?.startsWith('WARMUP:')) {
+    const [, action, secondsText] = event.note.split(':');
+    return action === 'START' ? `开始赛前练球 · ${Number(secondsText) / 60} 分钟` : '结束赛前练球';
+  }
   const pauseAction = event.note?.startsWith('MATCH_PAUSE:START') || event.note?.startsWith('TECHNICAL_PAUSE:START')
     || event.note?.startsWith('INTERVAL_REST:START')
     ? 'START'
@@ -392,24 +417,98 @@ function decodeRetireReason(reason?: string | null) {
   return reason.slice('RETIRE:'.length).trim() || '伤退/退赛';
 }
 
-function pauseAlertText(score?: ScoreState | null) {
+const DEFAULT_WARMUP_MINUTES = 3;
+const MIN_WARMUP_MINUTES = 1;
+const MAX_WARMUP_MINUTES = 5;
+
+/** seconds 是规定的间歇时长，用来倒计时；手动暂停没有规定时长，改为显示已暂停多久。 */
+function pauseAlertText(score?: ScoreState | null): { message: string; description: string; seconds: number | null } {
   if (score?.pauseKind === 'technical') {
     return {
-      message: '11 分技术暂停',
-      description: '前台已同步显示技术暂停，比赛计时已停止。暂停结束后点击“恢复比赛”继续计分。',
+      message: '11 分间歇',
+      description: '比赛计时已停止。到时提醒双方回场，点「恢复比赛」继续计分。',
+      seconds: 60,
     };
   }
   if (score?.pauseKind === 'interval') {
     return {
-      message: '局间休息 120 秒',
-      description: '上一局已结束，系统已自动进入 120 秒局间休息并停止比赛计时。休息结束后点击“恢复比赛”开始下一局。',
+      message: `局间休息 · 第 ${score ? currentGameNo(score) : 2} 局前`,
+      description: '比赛计时已停止。到时提醒双方回场，点「恢复比赛」开始下一局。',
+      seconds: 120,
     };
   }
   return {
     message: score?.pauseReason ? `比赛暂停：${score.pauseReason}` : '比赛暂停中',
-    description: '前台已同步显示比赛暂停，计时已停止。点击裁判操作中的恢复比赛后继续计分。',
+    description: '比赛计时已停止，前台同步显示暂停。点「恢复比赛」继续计分。',
+    seconds: null,
   };
 }
+
+/** 菜单里点了之后要先选「哪一方」的裁判操作，key 对应 ConsoleMenuItem.key。 */
+const MENU_REFEREE_ACTIONS: Record<string, Exclude<PendingRefereeAction, null>> = {
+  warning: { type: 'WARNING', label: '警告' },
+  yellow: { action: 'card', cardType: 'yellow', label: '黄牌' },
+  red: { action: 'card', cardType: 'red', label: '红牌' },
+  black: { action: 'card', cardType: 'black', label: '黑牌取消资格' },
+  serveFault: { action: 'fault', faultType: '发球违例', label: '发球违例' },
+  receiveFault: { action: 'fault', faultType: '接发违例', label: '接发违例' },
+  netFault: { action: 'fault', faultType: '触网违例', label: '触网违例' },
+  timeout: { type: 'TIMEOUT', label: '普通暂停' },
+  medical: { type: 'MEDICAL_TIMEOUT', label: '医疗暂停' },
+};
+
+const FAULT_TONE = 'border-violet-200 bg-violet-50 text-violet-700';
+
+const PENALTY_MENU: ConsoleMenuSection[] = [
+  {
+    title: '警告与判罚牌',
+    columns: 4,
+    items: [
+      { key: 'warning', label: '警告', icon: <WarningOutlined />, tone: 'border-orange-200 bg-orange-50 text-orange-700' },
+      { key: 'yellow', label: '黄牌', icon: <CardIcon color="#FACC15" />, tone: 'border-yellow-300 bg-yellow-50 text-yellow-800' },
+      { key: 'red', label: '红牌', icon: <CardIcon color="#EF4444" />, tone: 'border-red-200 bg-red-50 text-red-700' },
+      { key: 'black', label: '黑牌', description: '取消资格', icon: <CardIcon color="#111827" />, tone: 'border-slate-300 bg-slate-50 text-slate-800' },
+    ],
+  },
+  {
+    title: '违例',
+    columns: 3,
+    items: [
+      { key: 'serveFault', label: '发球违例', icon: <ExclamationCircleOutlined />, tone: FAULT_TONE },
+      { key: 'receiveFault', label: '接发违例', icon: <ExclamationCircleOutlined />, tone: FAULT_TONE },
+      { key: 'netFault', label: '触网违例', icon: <ExclamationCircleOutlined />, tone: FAULT_TONE },
+    ],
+  },
+];
+
+const PAUSE_MENU: ConsoleMenuSection[] = [
+  {
+    columns: 3,
+    items: [
+      {
+        key: 'pause',
+        label: '暂停比赛',
+        description: '停止计时，前台同步显示',
+        icon: <PauseCircleOutlined />,
+        tone: 'border-amber-200 bg-amber-50 text-amber-800',
+      },
+      {
+        key: 'timeout',
+        label: '普通暂停',
+        description: '选择一方并记录',
+        icon: <FieldTimeOutlined />,
+        tone: 'border-sky-200 bg-sky-50 text-sky-700',
+      },
+      {
+        key: 'medical',
+        label: '医疗暂停',
+        description: '选择一方并记录',
+        icon: <MedicineBoxOutlined />,
+        tone: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+      },
+    ],
+  },
+];
 
 export default function RefereeScoringPage() {
   const params = useParams<{ matchId: string }>();
@@ -418,12 +517,13 @@ export default function RefereeScoringPage() {
   const access = useCurrentAccess();
   const canReferee = access.ready && access.can('REFEREE');
   const token = session?.user?.accessToken;
+  const [messageApi, messageHolder] = message.useMessage();
   const [score, setScore] = useState<ScoreState | null>(null);
   const [accessRevoked, setAccessRevoked] = useState(false);
   const newestScoreAt = useRef(0);
   const [loading, setLoading] = useState(false);
   const [busyAction, setBusyAction] = useState('');
-  const [socketStatus, setSocketStatus] = useState<'连接中' | '已连接' | '已断开'>('连接中');
+  const [socketStatus, setSocketStatus] = useState<SocketStatus>('连接中');
   const [forfeitTarget, setForfeitTarget] = useState<1 | 2 | 'both' | null>(null);
   const [forfeitReason, setForfeitReason] = useState('选手未到场弃权');
   const [forfeitChooserOpen, setForfeitChooserOpen] = useState(false);
@@ -439,17 +539,21 @@ export default function RefereeScoringPage() {
   const [gameServeServer, setGameServeServer] = useState<PlayerIndex | null>(null);
   const [gameServeReceiver, setGameServeReceiver] = useState<PlayerIndex | null>(null);
   const [pendingRefereeAction, setPendingRefereeAction] = useState<PendingRefereeAction>(null);
+  const [consoleMenu, setConsoleMenu] = useState<'penalty' | 'pause' | 'finish' | null>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [warmupMinutes, setWarmupMinutes] = useState(DEFAULT_WARMUP_MINUTES);
+  // 服务器时间减手机时间。倒计时用「手机时间 + 偏差」，手机时钟不准也不会差。
+  const [clockOffset, setClockOffset] = useState(0);
 
   const applyScore = useCallback((nextScore: ScoreState) => {
+    const serverNow = Date.parse(nextScore.serverNow ?? '');
+    if (serverNow) setClockOffset(serverNow - Date.now());
     const at = Date.parse(nextScore.updatedAt ?? '') || 0;
     if (at < newestScoreAt.current) return;
     newestScoreAt.current = at;
     setScore(nextScore);
   }, []);
   const noLongerAssigned = access.ready && !!score && !access.can('SCORING') && score.referee?.id !== session?.user?.id;
-
-  const currentGame = score ? currentGameOf(score) : null;
-  const disabled = !score || score.status === 'COMPLETED' || score.status === 'CANCELLED' || busyAction !== '';
 
   const winnerName = useMemo(() => {
     if (!score?.winnerSide) return '';
@@ -467,15 +571,16 @@ export default function RefereeScoringPage() {
       setAccessRevoked(false);
     } catch (error) {
       if ((error as { status?: number }).status === 403) setAccessRevoked(true);
-      message.error(error instanceof Error ? error.message : '加载比分失败');
+      messageApi.error(error instanceof Error ? error.message : '加载比分失败');
     } finally {
       setLoading(false);
     }
   }
 
-  async function postAction(path: string, body?: Record<string, unknown>) {
+  /** busyKey 用来区分同一个接口的不同按钮（比如 A、B 两方的 +1），默认就是接口路径。 */
+  async function postAction(path: string, body?: Record<string, unknown>, busyKey = path) {
     if (!token || !matchId) return;
-    setBusyAction(path);
+    setBusyAction(busyKey);
     try {
       const data = await apiFetch<ScoreState>(path, {
         method: 'POST',
@@ -486,7 +591,7 @@ export default function RefereeScoringPage() {
       applyScore(data);
     } catch (error) {
       if ((error as { status?: number }).status === 403) setAccessRevoked(true);
-      message.error(error instanceof Error ? error.message : '操作失败');
+      messageApi.error(error instanceof Error ? error.message : '操作失败');
     } finally {
       setBusyAction('');
     }
@@ -544,7 +649,7 @@ export default function RefereeScoringPage() {
   }, [score?.pendingFinish, score?.winnerSide]);
 
   // 新一局 0:0 且发球信息还是系统默认值时，主动弹出一次「发球设置」。
-  // 方案 B：不拦记分，取消后照常开打，之后随时可以从裁判操作里再打开。
+  // 方案 B：不拦记分，取消后照常开打，之后随时可以从「更多」或球场上的提示里再打开。
   const servePromptedForRef = useRef<number | null>(null);
   useEffect(() => {
     if (!score || score.status !== 'LIVE') return;
@@ -589,20 +694,22 @@ export default function RefereeScoringPage() {
     };
   }, [matchId, token, applyScore]);
 
+  // 横屏兜底（RefereeLandscapeGate 用 CSS 旋转）时，视口高度要用它给的变量。
+  const viewportHeight = { height: 'var(--referee-viewport-height, 100dvh)' };
+
   if (accessRevoked || noLongerAssigned) {
-    const back = score?.venue && score.event.tournament
-      ? `/referee/tournaments/${encodeURIComponent(score.event.tournament.id)}/courts/${encodeURIComponent(score.venue.id)}`
-      : '/referee/my-matches';
-    return <main className="grid min-h-screen place-items-center bg-slate-50 p-6">
+    const back = score ? courtListHref(score) : '/referee/my-matches';
+    return <main className="grid place-items-center bg-slate-50 p-6" style={viewportHeight}>
       <Alert type="info" showIcon title="本场执裁已解除，请重新接手"
         description="比赛成绩已清除或裁判安排已调整。请返回场次列表，重新接手后再开始记分。"
         action={<Button type="primary" href={back}>返回场次列表</Button>} />
     </main>;
   }
 
-  if (sessionStatus === 'loading' || loading || !score) {
+  // 只在第一次拿到比分前整页转圈；之后刷新、断线重连都保留当前界面。
+  if (sessionStatus === 'loading' || !score) {
     return (
-      <div className="grid min-h-screen place-items-center bg-[#07152F] text-white">
+      <div className="grid place-items-center bg-[#F4F6F0]" style={viewportHeight}>
         <Spin />
       </div>
     );
@@ -610,13 +717,13 @@ export default function RefereeScoringPage() {
 
   if (!token || !canReferee) {
     return (
-      <main className="grid min-h-screen place-items-center bg-[#07152F] px-5 text-white">
-        <div className="max-w-md rounded-2xl border border-white/10 bg-white/10 p-6 text-center shadow-2xl backdrop-blur">
-          <h1 className="text-2xl font-black">裁判记分</h1>
-          <p className="mt-3 text-sm text-blue-100">请使用裁判账号登录后操作比分。</p>
+      <main className="grid place-items-center bg-[#F4F6F0] px-5" style={viewportHeight}>
+        <div className="max-w-md rounded-2xl border border-[#DDE5DA] bg-white p-6 text-center shadow-xl">
+          <h1 className="text-2xl font-black text-[#0B3B2C]">裁判记分</h1>
+          <p className="mt-3 text-sm text-[#5D6B63]">请使用裁判账号登录后操作比分。</p>
           <Link
             href={`/login?redirect=${encodeURIComponent(`/referee/matches/${matchId}`)}`}
-            className="mt-6 inline-flex h-11 items-center rounded-xl bg-blue-500 px-6 font-black transition hover:bg-blue-400 active:scale-[0.98]"
+            className="mt-6 inline-flex h-11 items-center rounded-xl bg-[#0E7A4F] px-6 font-black text-white transition hover:bg-[#0B6A44] active:scale-[0.98]"
           >
             去登录
           </Link>
@@ -625,25 +732,8 @@ export default function RefereeScoringPage() {
     );
   }
 
-  const side1Score = currentSideScore(score, 1);
-  const side2Score = currentSideScore(score, 2);
   const leftSideNo: 1 | 2 = score.courtDisplayState?.side1CourtSide === 'right' ? 2 : 1;
   const rightSideNo: 1 | 2 = leftSideNo === 1 ? 2 : 1;
-  const displaySide = (side: 1 | 2) => ({
-    side,
-    accent: side === 1 ? 'blue' as const : 'red' as const,
-    matchSide: side === 1 ? score.side1 : score.side2,
-    name: side === 1 ? sideName(score.side1) : sideName(score.side2),
-    affiliation: side === 1 ? sideAffiliation(score.side1) : sideAffiliation(score.side2),
-    score: side === 1 ? side1Score : side2Score,
-    gamesWon: side === 1 ? score.side1Games : score.side2Games,
-    server: currentGame?.server === side,
-    winner: score.winnerSide === side,
-  });
-  const leftDisplaySide = displaySide(leftSideNo);
-  const rightDisplaySide = displaySide(rightSideNo);
-  const hasPointEvent = score.events.some((event) => event.type === 'POINT');
-  const recentEvents = score.events.slice(0, 10);
   const doublesMatch = isDoublesSide(score.side1) || isDoublesSide(score.side2);
   const servingSideNo = score.servingState?.servingSide === 1 || score.servingState?.servingSide === 2
     ? score.servingState.servingSide
@@ -653,201 +743,332 @@ export default function RefereeScoringPage() {
     && score.status === 'LIVE'
     && score.servingState?.source === 'system';
   const serveCheckText = serveNeedsCheck
-    ? `第 ${currentGameNo(score)} 局发球信息是系统按规则自动带出的默认值：`
+    ? `第 ${currentGameNo(score)} 局发球为系统默认：`
       + `${playerNameByIndex(servingSideNo === 1 ? score.side1 : score.side2, score.servingState?.serverPlayerIndex)} 发球，`
-      + `${playerNameByIndex(receivingSideNo === 1 ? score.side1 : score.side2, score.servingState?.receiverPlayerIndex)} 接发。`
+      + `${playerNameByIndex(receivingSideNo === 1 ? score.side1 : score.side2, score.servingState?.receiverPlayerIndex)} 接发，请核对`
     : '';
-  const scoringLocked = score.status !== 'LIVE' || Boolean(score.matchPaused) || Boolean(score.courtSwapRequired?.required) || Boolean(score.pendingFinish) || busyAction !== '';
-  const scoreLockedReason =
-    score.status === 'PENDING'
-      ? '请先点击开始比赛'
-      : score.status === 'COMPLETED' || score.status === 'CANCELLED'
-        ? '比赛已结束，计分已锁定'
+
+  const live = score.status === 'LIVE';
+  const matchEnded = score.status === 'COMPLETED' || score.status === 'CANCELLED';
+  const paused = live && Boolean(score.matchPaused);
+  const busy = busyAction !== '';
+  const courtSwapRequired = live && Boolean(score.courtSwapRequired?.required);
+  const scoringLocked = !live || paused || courtSwapRequired || Boolean(score.pendingFinish) || busy;
+  // 撤销不受「待确认结束」和「需换边」限制：这两种情况下正是要用它改回最后一分。
+  const lastPointSide = lastPointSideOf(score);
+  const undoLocked = !live || paused || busy || lastPointSide === null;
+  const canMinus = (side: 1 | 2) => !undoLocked && lastPointSide === side && currentSideScore(score, side) > 0;
+  const backHref = courtListHref(score);
+  const undoPath = `/matches/${matchId}/undo`;
+  const swapPath = `/matches/${matchId}/swap-court`;
+  const pausePath = `/matches/${matchId}/pause`;
+  const resumePath = `/matches/${matchId}/resume`;
+  const finishPath = `/matches/${matchId}/finish`;
+  const forfeitedName = score.forfeitedSide === 1 ? sideName(score.side1) : score.forfeitedSide === 2 ? sideName(score.side2) : '';
+
+  const warmupPath = `/matches/${matchId}/warmup`;
+  const warmupEndPath = `/matches/${matchId}/warmup-end`;
+  const startAction: CourtOverlayAction = { label: '开始比赛', icon: <PlayCircleOutlined />, run: 'start', disabled: busy };
+
+  const courtOverlay: CourtOverlay | null = score.status === 'PENDING'
+    ? score.warmup
+      ? {
+          tone: 'green',
+          title: '赛前练球',
+          timer: { startedAt: score.warmup.startedAt, seconds: score.warmup.seconds, warningHint: '请双方准备开始比赛' },
+          description: '练球结束后点「开始比赛」，选首发方和发球员。',
+          actions: [
+            { label: '结束练球', run: 'warmup-end', loading: busyAction === warmupEndPath, disabled: busy, secondary: true },
+            startAction,
+          ],
+        }
+      : {
+          tone: 'green',
+          title: '比赛未开始',
+          description: '双方到齐后可先练球再开始比赛；选手未到场请在「结束比赛」里做弃权处理。',
+          warmupPicker: true,
+          actions: [
+            { label: '开始练球', icon: <FieldTimeOutlined />, run: 'warmup', loading: busyAction === warmupPath, disabled: busy, secondary: true },
+            startAction,
+          ],
+        }
+    : score.status === 'COMPLETED'
+      ? {
+          tone: 'green',
+          title: winnerName ? `本场已结束 · 胜方：${winnerName}` : '本场已结束',
+          description: score.forfeitedSide
+            ? `${forfeitedName} ${retireReasonText !== null ? '退赛' : '弃权'}：${retireReasonText ?? score.forfeitReason ?? '选手未到场弃权'}`
+            : '计分已锁定。',
+          actions: [{ label: '返回场次列表', icon: <ArrowLeftOutlined />, href: backHref }],
+        }
+      : score.status === 'CANCELLED'
+        ? {
+            tone: 'red',
+            title: '本场已取消',
+            description: score.forfeitReason || '计分已锁定。',
+            actions: [{ label: '返回场次列表', icon: <ArrowLeftOutlined />, href: backHref }],
+          }
         : score.pendingFinish
-          ? '比分已决出胜方,请在弹窗中确认结束比赛'
-          : score.matchPaused
-            ? '比赛暂停中，请恢复后继续计分'
-            : score.courtSwapRequired?.required
-              ? '请先交换场地，再继续计分'
-              : '';
+          ? {
+              tone: 'green',
+              title: `比分已决出胜方：${winnerName || `${sideLetter(score.winnerSide === 2 ? 2 : 1)}方`}`,
+              description: '确认后本场正式结束；如需改最后一分，请点「撤销」或该方的「-1」。',
+              actions: [{
+                label: '确认结束比赛',
+                icon: <FlagOutlined />,
+                run: 'finish',
+                loading: busyAction === finishPath,
+                disabled: busy,
+              }],
+            }
+          : courtSwapRequired
+            ? {
+                tone: 'amber',
+                title: '决胜局 11 分，请交换场地',
+                description: '交换后自动进入 60 秒间歇。',
+                actions: [{
+                  label: '交换场地',
+                  icon: <SyncOutlined />,
+                  run: 'swap',
+                  loading: busyAction === swapPath,
+                  disabled: busy,
+                }],
+              }
+            : paused
+              ? {
+                  tone: 'amber',
+                  title: pauseAlert.message,
+                  timer: score.pausedAt ? { startedAt: score.pausedAt, seconds: pauseAlert.seconds } : undefined,
+                  description: pauseAlert.description,
+                  actions: [{
+                    label: '恢复比赛',
+                    icon: <PlayCircleOutlined />,
+                    run: 'resume',
+                    loading: busyAction === resumePath,
+                    disabled: busy,
+                  }],
+                }
+              : null;
+
+  function runOverlayAction(run: CourtOverlayRun) {
+    if (run === 'start') openStartConfirm();
+    else if (run === 'finish') setFinishConfirmOpen(true);
+    else if (run === 'swap') void postAction(swapPath);
+    else if (run === 'warmup') void postAction(warmupPath, { seconds: warmupMinutes * 60 });
+    else if (run === 'warmup-end') void postAction(warmupEndPath);
+    else void postAction(resumePath);
+  }
+
+  const serveNotice = serveNeedsCheck && !courtOverlay ? (
+    <div className="absolute left-1/2 top-[0.35em] z-10 flex max-w-[92%] -translate-x-1/2 items-center gap-[0.5em] rounded-full bg-[#FFF6D5] py-[0.2em] pl-[0.9em] pr-[0.25em] text-[0.8em] font-black text-[#7A5200] shadow-[0_6px_14px_rgba(0,0,0,0.18)]">
+      <span className="truncate">{serveCheckText}</span>
+      <button
+        type="button"
+        onClick={openGameServe}
+        className="shrink-0 rounded-full bg-[#E8A400] px-[0.9em] py-[0.2em] text-white transition active:scale-95"
+      >
+        核对
+      </button>
+    </div>
+  ) : null;
+
+  const finishMenu: ConsoleMenuSection[] = [
+    {
+      columns: 3,
+      items: [
+        {
+          key: 'finish',
+          label: '确认结束',
+          description: score.pendingFinish ? `胜方：${winnerName || '—'}` : '比分尚未决出胜方',
+          icon: <FlagOutlined />,
+          tone: 'border-emerald-200 bg-emerald-50 text-emerald-800',
+          disabled: !score.pendingFinish,
+        },
+        {
+          key: 'forfeit',
+          label: '弃权处理',
+          description: '未到场 / 双方弃权',
+          icon: <CloseCircleOutlined />,
+          tone: 'border-red-200 bg-red-50 text-red-700',
+        },
+        {
+          key: 'retire',
+          label: '伤退 / 退赛',
+          description: '对方判胜',
+          icon: <MedicineBoxOutlined />,
+          tone: 'border-rose-200 bg-rose-50 text-rose-700',
+        },
+      ],
+    },
+  ];
+  const menus = {
+    penalty: { title: '警告 / 判罚', sections: PENALTY_MENU },
+    pause: { title: '暂停', sections: PAUSE_MENU },
+    finish: { title: '结束比赛', sections: finishMenu },
+  } as const;
+
+  function selectMenuItem(key: string) {
+    setConsoleMenu(null);
+    const refereeAction = MENU_REFEREE_ACTIONS[key];
+    if (refereeAction) setPendingRefereeAction(refereeAction);
+    else if (key === 'pause') void postAction(pausePath);
+    else if (key === 'finish') setFinishConfirmOpen(true);
+    else if (key === 'forfeit') setForfeitChooserOpen(true);
+    else if (key === 'retire') setRetireChooserOpen(true);
+  }
+
+  const pointPair = (side: 1 | 2) => (
+    <div className="mx-auto grid w-full max-w-[28em] grid-cols-2 gap-[0.9em]">
+      <PointButton
+        kind="plus"
+        side={side}
+        disabled={scoringLocked}
+        loading={busyAction === `point-${side}`}
+        onClick={() => void postAction(`/matches/${matchId}/point`, { side }, `point-${side}`)}
+      />
+      <PointButton
+        kind="minus"
+        side={side}
+        disabled={!canMinus(side)}
+        loading={busyAction === `undo-${side}`}
+        onClick={() => void postAction(undoPath, { side }, `undo-${side}`)}
+      />
+    </div>
+  );
 
   return (
-    <main className={`referee-scoring-page min-h-screen overflow-x-hidden bg-[linear-gradient(180deg,#F5F8FC_0%,#EEF5FF_54%,#FFFFFF_100%)] text-slate-950 ${
-      score.status === 'LIVE' ? 'referee-live-compact' : ''
-    }`}>
-      <MatchTimerStrip score={score} />
-      <div className="referee-score-layout w-full px-3 py-3 sm:px-5 sm:py-4 xl:px-8 2xl:px-10">
-        <div className="referee-score-shell mx-auto flex w-full max-w-[1920px] flex-col gap-4 sm:gap-5">
-          <TopMatchBar
-            score={score}
-            socketStatus={socketStatus}
-            onRefresh={loadScore}
-            refreshLoading={loading}
+    <div
+      className="w-full touch-manipulation overflow-hidden bg-[#F4F6F0] text-[#0B3B2C] select-none"
+      style={{ ...viewportHeight, containerType: 'size' }}
+    >
+      {messageHolder}
+      <main
+        className="flex h-full flex-col"
+        style={{
+          // 字号跟着可用高度走：手机横屏约 12–14px，平板和电脑最大 22px，其余尺寸都用 em。
+          fontSize: 'clamp(12px, min(3.4cqh, 1.9cqw), 22px)',
+          paddingLeft: 'var(--referee-safe-left, env(safe-area-inset-left))',
+          paddingRight: 'var(--referee-safe-right, env(safe-area-inset-right))',
+        }}
+      >
+        <ConsoleHeader score={score} socketStatus={socketStatus} onOpenMore={() => setMoreOpen(true)} />
+        <ScoreStrip score={score} leftSide={leftSideNo} rightSide={rightSideNo} />
+        <CourtBoard
+          score={score}
+          leftSide={leftSideNo}
+          rightSide={rightSideNo}
+          overlay={courtOverlay}
+          clockOffset={clockOffset}
+          warmupMinutes={warmupMinutes}
+          onWarmupMinutesChange={setWarmupMinutes}
+          onOverlayAction={runOverlayAction}
+          notice={serveNotice}
+        />
+
+        <section className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-[1.2em] px-[1.2em] py-[0.55em]">
+          {pointPair(leftSideNo)}
+          <span aria-hidden className="h-[2.6em] w-px bg-[#D3DACF]" />
+          {pointPair(rightSideNo)}
+        </section>
+
+        <nav
+          aria-label="裁判操作"
+          className="grid shrink-0 grid-cols-5 gap-[0.75em] border-t border-[#E3E8DF] bg-[#FAFBF7] px-[1.2em] pt-[0.55em]"
+          style={{ paddingBottom: 'max(0.55em, var(--referee-safe-bottom, env(safe-area-inset-bottom)))' }}
+        >
+          <ToolButton
+            tone="mint"
+            icon={<UndoOutlined />}
+            label="撤销"
+            title="撤销最近一分"
+            disabled={undoLocked}
+            loading={busyAction === undoPath}
+            onClick={() => void postAction(undoPath)}
           />
+          <ToolButton
+            tone="mint"
+            icon={<SyncOutlined />}
+            label="交换场地"
+            attention={courtSwapRequired}
+            disabled={!live || busy}
+            loading={busyAction === swapPath}
+            onClick={() => void postAction(swapPath)}
+          />
+          <ToolButton
+            tone="amber"
+            icon={<CardIcon color="#FACC15" />}
+            label="警告/判罚"
+            disabled={matchEnded || busy}
+            onClick={() => setConsoleMenu('penalty')}
+          />
+          <ToolButton
+            tone="mint"
+            icon={paused ? <PlayCircleOutlined /> : <PauseCircleOutlined />}
+            label={paused ? '恢复比赛' : '暂停比赛'}
+            attention={paused}
+            disabled={!live || busy}
+            loading={busyAction === pausePath || busyAction === resumePath}
+            onClick={() => {
+              if (paused) void postAction(resumePath);
+              else setConsoleMenu('pause');
+            }}
+          />
+          <ToolButton
+            tone="red"
+            icon={<FlagOutlined />}
+            label="结束比赛"
+            attention={Boolean(score.pendingFinish)}
+            disabled={matchEnded || busy}
+            onClick={() => setConsoleMenu('finish')}
+          />
+        </nav>
+      </main>
 
-          {score.status === 'COMPLETED' && score.forfeitedSide ? (
-            <Alert
-              type="warning"
-              showIcon
-              className="rounded-2xl border-amber-200 bg-amber-50/80"
-              message={`选手 ${score.forfeitedSide} ${retireReasonText !== null ? '退赛' : '弃权'}，胜方：${winnerName}`}
-              description={retireReasonText ?? score.forfeitReason ?? '选手未到场弃权'}
-            />
-          ) : score.status === 'COMPLETED' ? (
-            <Alert
-              type="success"
-              showIcon
-              className="rounded-2xl border-emerald-200 bg-emerald-50/80"
-              message={`本场已结束，胜方：${winnerName}`}
-            />
-          ) : null}
+      <ConsoleMenuModal
+        open={consoleMenu !== null}
+        title={consoleMenu ? menus[consoleMenu].title : ''}
+        sections={consoleMenu ? menus[consoleMenu].sections : []}
+        onSelect={selectMenuItem}
+        onClose={() => setConsoleMenu(null)}
+      />
 
-          {score.matchPaused ? (
-            <Alert
-              type="warning"
-              showIcon
-              className="rounded-2xl border-amber-200 bg-amber-50/90"
-              message={pauseAlert.message}
-              description={pauseAlert.description}
-            />
-          ) : null}
-
-          {score.courtSwapRequired?.required ? (
-            <Alert
-              type="warning"
-              showIcon
-              className="rounded-2xl border-orange-200 bg-orange-50/90"
-              message="需要交换场地"
-              description="决胜局 11 分换边已触发。请先点击右侧裁判操作中的“交换场地”，完成后系统会进入 60 秒技术暂停。"
-            />
-          ) : null}
-
-          {serveNeedsCheck ? (
-            <Alert
-              type="warning"
-              showIcon
-              className="referee-serve-check rounded-2xl border-amber-200 bg-amber-50/90"
-              message="本局发球 / 接发为系统默认，请核对"
-              description={serveCheckText}
-              action={
-                <Button type="primary" size="small" onClick={openGameServe}>
-                  核对发球设置
-                </Button>
-              }
-            />
-          ) : null}
-
-          {score.pendingFinish ? (
-            <Alert
-              type="success"
-              showIcon
-              className="rounded-2xl border-emerald-200 bg-emerald-50/90"
-              message={`比分已决出胜方:${winnerName || `选手 ${score.winnerSide ?? ''}`}`}
-              description="请在弹窗中确认结束比赛;如需撤回最后一分,可使用「撤销上一分」。"
-              action={
-                <Button
-                  type="primary"
-                  size="small"
-                  onClick={() => setFinishConfirmOpen(true)}
-                  loading={busyAction === `/matches/${matchId}/finish`}
-                >
-                  确认结束比赛
-                </Button>
-              }
-            />
-          ) : null}
-
-          <div className="referee-main-grid grid min-w-0 grid-cols-1 gap-4 sm:gap-5 xl:grid-cols-[minmax(0,1fr)_360px] 2xl:grid-cols-[minmax(0,1fr)_400px]">
-            <div className="min-w-0 space-y-4 sm:space-y-5">
-              <section className="referee-scoreboard-row grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.72fr)_minmax(0,1fr)]">
-                <div className="referee-left-card order-2 min-w-0 sm:order-2 lg:order-1">
-                  <SideScoreCard
-                    side={leftDisplaySide.side}
-                    accent={leftDisplaySide.accent}
-                    matchSide={leftDisplaySide.matchSide}
-                    name={leftDisplaySide.name}
-                    affiliation={leftDisplaySide.affiliation}
-                    score={leftDisplaySide.score}
-                    gamesWon={leftDisplaySide.gamesWon}
-                    server={leftDisplaySide.server}
-                    servingState={score.servingState}
-                    winner={leftDisplaySide.winner}
-                    disabled={scoringLocked}
-                    lockedReason={scoreLockedReason}
-                    loading={busyAction === `/matches/${matchId}/point-${leftDisplaySide.side}`}
-                    onPoint={() => postAction(`/matches/${matchId}/point`, { side: leftDisplaySide.side })}
-                    onUndo={() => postAction(`/matches/${matchId}/undo`)}
-                    undoDisabled={scoringLocked || !hasPointEvent}
-                    undoLoading={busyAction === `/matches/${matchId}/undo`}
-                  />
-                </div>
-
-                <div className="referee-center-card-slot order-1 min-w-0 sm:col-span-2 lg:order-2 lg:col-span-1">
-                  <CenterScoreboard
-                    score={score}
-                    leftScore={leftDisplaySide.score}
-                    rightScore={rightDisplaySide.score}
-                    onStart={openStartConfirm}
-                    startDisabled={score.status !== 'PENDING' || Boolean(busyAction)}
-                  />
-                </div>
-
-                <div className="referee-right-card order-3 min-w-0 lg:order-3">
-                  <SideScoreCard
-                    side={rightDisplaySide.side}
-                    accent={rightDisplaySide.accent}
-                    matchSide={rightDisplaySide.matchSide}
-                    name={rightDisplaySide.name}
-                    affiliation={rightDisplaySide.affiliation}
-                    score={rightDisplaySide.score}
-                    gamesWon={rightDisplaySide.gamesWon}
-                    server={rightDisplaySide.server}
-                    servingState={score.servingState}
-                    winner={rightDisplaySide.winner}
-                    disabled={scoringLocked}
-                    lockedReason={scoreLockedReason}
-                    loading={busyAction === `/matches/${matchId}/point-${rightDisplaySide.side}`}
-                    onPoint={() => postAction(`/matches/${matchId}/point`, { side: rightDisplaySide.side })}
-                    onUndo={() => postAction(`/matches/${matchId}/undo`)}
-                    undoDisabled={scoringLocked || !hasPointEvent}
-                    undoLoading={busyAction === `/matches/${matchId}/undo`}
-                  />
-                </div>
-              </section>
-
-              <section className="grid min-w-0 grid-cols-1 gap-4 sm:gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(360px,0.9fr)]">
-                <GameRecordCard score={score} />
-                <RefereeActionCard
-                  matchId={matchId}
-                  busyAction={busyAction}
-                  disabled={disabled}
-                  matchStatus={score.status}
-                  matchPaused={Boolean(score.matchPaused)}
-                  courtSwapRequired={Boolean(score.courtSwapRequired?.required)}
-                  canSetGameServe={doublesMatch}
-                  serveCheckPending={serveNeedsCheck}
-                  onPauseToggle={() => postAction(score.matchPaused ? `/matches/${matchId}/resume` : `/matches/${matchId}/pause`)}
-                  onSwapCourt={() => postAction(`/matches/${matchId}/swap-court`)}
-                  onOpenGameServe={openGameServe}
-                  onOpenSideAction={setPendingRefereeAction}
-                  onOpenForfeit={() => setForfeitChooserOpen(true)}
-                  onOpenRetire={() => setRetireChooserOpen(true)}
-                  onOpenFinish={() => setFinishConfirmOpen(true)}
-                />
-              </section>
-            </div>
-
-            <aside className="min-w-0 space-y-5">
-              <MatchInfoPanel
-                score={score}
-                side1Score={side1Score}
-                side2Score={side2Score}
-              />
-              <EventLogPanel events={recentEvents} score={score} />
-            </aside>
+      <Drawer open={moreOpen} onClose={() => setMoreOpen(false)} title="比赛详情" placement="right" size={360}>
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-2">
+            <Link
+              href={backHref}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white text-sm font-black text-slate-700 transition active:scale-[0.98]"
+            >
+              <ArrowLeftOutlined />
+              返回场次
+            </Link>
+            <Button
+              icon={<ReloadOutlined />}
+              loading={loading}
+              onClick={() => void loadScore()}
+              className="!h-10 !rounded-xl !font-black"
+            >
+              刷新比分
+            </Button>
+            {doublesMatch ? (
+              <Button
+                icon={<SwapOutlined />}
+                disabled={!live || busy}
+                onClick={() => {
+                  setMoreOpen(false);
+                  openGameServe();
+                }}
+                className={`col-span-2 !h-10 !rounded-xl !font-black ${serveNeedsCheck ? '!border-amber-300 !text-amber-700' : ''}`}
+              >
+                本局发球设置{serveNeedsCheck ? '（待核对）' : ''}
+              </Button>
+            ) : null}
           </div>
+          <MatchInfoPanel score={score} socketStatus={socketStatus} />
+          <GameRecordCard score={score} />
+          <EventLogPanel events={score.events.slice(0, 10)} score={score} />
         </div>
-      </div>
+      </Drawer>
 
       <ForfeitChooserModal
         open={forfeitChooserOpen}
@@ -966,7 +1187,7 @@ export default function RefereeScoringPage() {
         onCancel={() => setStartConfirmOpen(false)}
         onConfirm={async () => {
           if (!startServingSide || !startServerPlayerIndex || !startReceiverPlayerIndex) {
-            message.warning('请先选择首发方、首位发球员和接发球员');
+            messageApi.warning('请先选择首发方、首位发球员和接发球员');
             return;
           }
           await postAction(`/matches/${matchId}/start`, {
@@ -990,7 +1211,7 @@ export default function RefereeScoringPage() {
         onCancel={() => setGameServeOpen(false)}
         onConfirm={async () => {
           if (!gameServeServer || !gameServeReceiver) {
-            message.warning('请先选择本局的发球员和接发球员');
+            messageApi.warning('请先选择本局的发球员和接发球员');
             return;
           }
           await postAction(`/matches/${matchId}/game-serve`, {
@@ -1007,10 +1228,10 @@ export default function RefereeScoringPage() {
         title="确认结束比赛"
         okText="确认结束"
         cancelText="再看看"
-        okButtonProps={{ danger: true, loading: busyAction === `/matches/${matchId}/finish` }}
+        okButtonProps={{ danger: true, loading: busyAction === finishPath }}
         onCancel={() => setFinishConfirmOpen(false)}
         onOk={async () => {
-          await postAction(`/matches/${matchId}/finish`);
+          await postAction(finishPath);
           setFinishConfirmOpen(false);
         }}
       >
@@ -1021,345 +1242,613 @@ export default function RefereeScoringPage() {
           <Alert
             type="info"
             showIcon
-            message="如需修改本场最后一分,请点击「再看看」后使用「撤销上一分」回退,再继续比赛。"
+            title="如需修改本场最后一分,请点击「再看看」后使用「撤销」或该方的「-1」回退,再继续比赛。"
           />
         </div>
       </Modal>
-    </main>
+    </div>
   );
 }
 
-function MatchTimerStrip({ score }: { score: ScoreState }) {
-  if (!score.startedAt) return null;
-
-  const isFinished = score.status === 'COMPLETED' || score.status === 'CANCELLED' || Boolean(score.finishedAt);
-  const isPaused = score.status === 'LIVE' && Boolean(score.matchPaused);
+function ConsoleHeader({
+  score,
+  socketStatus,
+  onOpenMore,
+}: {
+  score: ScoreState;
+  socketStatus: SocketStatus;
+  onOpenMore: () => void;
+}) {
+  const paused = score.status === 'LIVE' && Boolean(score.matchPaused);
+  const syncTone = socketStatus === '已连接' ? 'bg-emerald-500' : socketStatus === '连接中' ? 'bg-sky-500' : 'bg-red-500';
 
   return (
-    <div className={`sticky top-0 z-30 w-full px-3 py-2 shadow-lg sm:px-5 ${
-      isFinished ? 'bg-slate-900' : isPaused ? 'bg-amber-600' : 'bg-emerald-600'
-    }`}>
-      <div className="mx-auto flex max-w-[1920px] items-center justify-between gap-3">
+    <header className="flex shrink-0 items-center justify-between gap-[1em] border-b border-[#E3E8DF] bg-[#FAFBF7] px-[1.2em] py-[0.45em]">
+      <div className="flex min-w-0 items-center gap-[0.7em]">
+        <Image
+          src="/logo-mark.png"
+          alt="羽动云赛"
+          width={256}
+          height={256}
+          priority
+          className="h-[2.2em] w-[2.2em] shrink-0 object-contain"
+        />
+        <span className="shrink-0 text-[1.3em] font-black tracking-wide text-[#0B3B2C]">羽动云赛</span>
+        <span aria-hidden className="h-[1.2em] w-px shrink-0 bg-[#C8D0C5]" />
+        <span className="shrink-0 text-[1.05em] font-bold text-[#56665D]">裁判端</span>
+      </div>
+
+      <div className="flex min-w-0 items-center gap-[0.8em]">
+        <span className="truncate text-[1.05em] font-black text-[#0B3B2C]">
+          {score.event.typeLabel} · {score.venue?.name ?? '未排场地'}
+        </span>
+        <span aria-hidden className="h-[1.2em] w-px shrink-0 bg-[#C8D0C5]" />
         <MatchClock
           startedAt={score.startedAt}
           finishedAt={score.finishedAt}
           status={score.status}
           matchPaused={score.matchPaused}
           actualDurationSeconds={score.actualDurationSeconds}
-          compact
+          className={`inline-flex shrink-0 items-center gap-[0.3em] text-[0.95em] font-black ${paused ? 'text-amber-600' : 'text-[#2F5D4C]'}`}
         />
-        <span className="shrink-0 rounded-full bg-white/15 px-3 py-1 text-xs font-black text-white">
-          {isFinished ? '计分锁定' : isPaused ? '比赛暂停' : '比赛进行中'}
+        <span
+          role="status"
+          title={`实时同步：${socketStatus}`}
+          className="inline-flex shrink-0 items-center gap-[0.3em] text-[0.85em] font-bold text-red-600"
+        >
+          <span className={`h-[0.6em] w-[0.6em] rounded-full ${syncTone}`} />
+          {socketStatus === '已断开' ? '同步已断开' : null}
         </span>
-      </div>
-    </div>
-  );
-}
-
-function TopMatchBar({
-  score,
-  socketStatus,
-  onRefresh,
-  refreshLoading,
-}: {
-  score: ScoreState;
-  socketStatus: '连接中' | '已连接' | '已断开';
-  onRefresh: () => void;
-  refreshLoading: boolean;
-}) {
-  const matchStatus = statusMeta[score.status] ?? statusMeta.PENDING;
-  const socketTone =
-    socketStatus === '已连接'
-      ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-      : socketStatus === '连接中'
-        ? 'border-blue-200 bg-blue-50 text-blue-700'
-        : 'border-red-200 bg-red-50 text-red-700';
-
-  return (
-    <header className="referee-top-match-bar overflow-hidden rounded-2xl border border-[#E5E7EB] bg-white shadow-[0_18px_45px_rgba(15,23,42,0.08)]">
-      <div className="referee-top-match-inner flex min-w-0 flex-col gap-4 border-b border-slate-100 px-3 py-3 sm:px-5 sm:py-4 lg:flex-row lg:items-center lg:justify-between xl:px-6">
-        <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
-          <Link
-            href={score.event.tournament?.id && score.venue?.id
-              ? `/referee/tournaments/${encodeURIComponent(score.event.tournament.id)}/courts/${encodeURIComponent(score.venue.id)}`
-              : '/referee/my-matches'}
-            className="inline-flex h-10 w-fit shrink-0 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-sm font-black text-[#0F172A] shadow-sm transition hover:border-blue-200 hover:bg-blue-50 hover:text-[#2563EB] active:scale-[0.98]"
-          >
-            <ArrowLeftOutlined />
-            返回场次
-          </Link>
-          <div className="hidden h-10 w-px bg-slate-200 lg:block" />
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-black uppercase tracking-[0.18em] text-[#2563EB]">
-                LIVE SCORING
-              </span>
-              <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-black ${
-                score.matchPaused ? 'bg-amber-50 text-amber-700' : 'bg-red-50 text-red-600'
-              }`}>
-                <span className={`h-2 w-2 rounded-full ${
-                  score.matchPaused ? 'bg-amber-500 shadow-[0_0_0_4px_rgba(245,158,11,0.14)]' : 'bg-red-500 shadow-[0_0_0_4px_rgba(239,68,68,0.14)]'
-                }`} />
-                {score.matchPaused ? '比赛暂停中' : '实时计分中'}
-              </span>
-            </div>
-            <h1 className="mt-2 text-2xl font-black tracking-tight text-[#0F172A] sm:truncate sm:text-3xl xl:text-4xl">
-              {score.event.typeLabel} 第 {score.matchNo} 场
-            </h1>
-            <p className="mt-1 text-sm font-semibold text-[#64748B] sm:truncate xl:text-base">
-              {score.event.tournament.name} · {score.round}
-            </p>
-            <p className="mt-1 text-xs font-bold text-[#2563EB] sm:text-sm">
-              计分规则：{formatScoringRule(score.event).label}
-            </p>
-            <MatchClock
-              startedAt={score.startedAt}
-              finishedAt={score.finishedAt}
-              status={score.status}
-              matchPaused={score.matchPaused}
-              actualDurationSeconds={score.actualDurationSeconds}
-            />
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:justify-start lg:justify-end">
-          <span className={`inline-flex h-10 min-w-0 overflow-hidden items-center gap-2 rounded-xl border px-3 text-xs font-black sm:text-sm ${socketTone}`}>
-            <WifiOutlined />
-            实时同步：{socketStatus}
-          </span>
-          <Button
-            icon={<ReloadOutlined />}
-            loading={refreshLoading}
-            onClick={onRefresh}
-            className="h-10 rounded-xl border-slate-200 font-black text-slate-700 hover:border-blue-200 hover:text-blue-600"
-          >
-            刷新
-          </Button>
-          <span className="inline-flex h-10 min-w-0 overflow-hidden items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 sm:text-sm">
-            <ClockCircleOutlined />
-            {formatDateTime(score.scheduledAt)}
-          </span>
-          <span className="inline-flex h-10 min-w-0 overflow-hidden items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 sm:text-sm">
-            <EnvironmentOutlined />
-            {score.venue?.name ?? '未排场地'}
-          </span>
-          <span className={`inline-flex h-10 items-center justify-center rounded-xl px-4 text-xs font-black sm:text-sm ${
-            score.matchPaused && score.status === 'LIVE' ? 'bg-amber-100 text-amber-700' : matchStatus.tone
-          }`}>
-            {score.matchPaused && score.status === 'LIVE' ? '比赛暂停' : matchStatus.label}
-          </span>
-        </div>
+        <span className="shrink-0 rounded-[0.55em] bg-[#DDEFE4] px-[0.75em] py-[0.25em] text-[1.05em] font-black text-[#0B3B2C]">
+          第{currentGameNo(score)}局
+        </span>
+        <button
+          type="button"
+          aria-label="比赛详情与更多操作"
+          onClick={onOpenMore}
+          className="grid h-[2.1em] w-[2.1em] shrink-0 place-items-center rounded-[0.55em] border border-[#D5DDD2] bg-white text-[1.05em] text-[#2F5D4C] transition active:scale-95"
+        >
+          <MenuOutlined />
+        </button>
       </div>
     </header>
   );
 }
 
-function SideScoreCard({
-  side,
-  accent,
-  matchSide,
-  name,
-  affiliation,
-  score,
-  gamesWon,
-  server,
-  servingState,
-  winner,
-  disabled,
-  lockedReason,
-  loading,
-  onPoint,
-  onUndo,
-  undoDisabled,
-  undoLoading,
-}: {
-  side: 1 | 2;
-  accent: 'blue' | 'red';
-  matchSide?: MatchSide | null;
-  name: string;
-  affiliation: string;
-  score: number;
-  gamesWon: number;
-  server: boolean;
-  servingState?: ServingState | null;
-  winner: boolean;
-  disabled: boolean;
-  lockedReason?: string;
-  loading: boolean;
-  onPoint: () => void;
-  onUndo: () => void;
-  undoDisabled: boolean;
-  undoLoading: boolean;
-}) {
-  const isBlue = accent === 'blue';
-  const topBar = isBlue ? 'bg-[#2563EB]' : 'bg-[#EF4444]';
-  const scoreTone = isBlue ? 'text-[#2563EB]' : 'text-[#EF4444]';
-  const buttonTone = isBlue
-    ? 'bg-[#2563EB] hover:!bg-blue-500 active:!bg-blue-700'
-    : 'bg-[#EF4444] hover:!bg-red-500 active:!bg-red-700';
-  const ringTone = isBlue ? 'ring-blue-100' : 'ring-red-100';
-  const players = sidePlayers(matchSide);
-  const doubles = isDoublesSide(matchSide);
-  const displayName = doubles ? sideDisplayName(matchSide) : name;
-  const activeServerPlayer = server ? servingState?.serverPlayerIndex : null;
-  const activeReceiverPlayer = servingState?.receivingSide === side ? servingState.receiverPlayerIndex : null;
+function ScoreStrip({ score, leftSide, rightSide }: { score: ScoreState; leftSide: 1 | 2; rightSide: 1 | 2 }) {
+  const gamesWon = (side: 1 | 2) => (side === 1 ? score.side1Games : score.side2Games);
 
   return (
-    <article className={`referee-side-score-card min-w-0 overflow-hidden rounded-2xl border border-[#E5E7EB] bg-white shadow-[0_18px_45px_rgba(15,23,42,0.08)] ring-1 ${ringTone}`}>
-      <div className={`referee-side-topbar flex h-12 items-center justify-between px-5 text-white ${topBar}`}>
-        <span className="min-w-0 truncate text-sm font-black sm:hidden">{displayName}</span>
-        <span className="hidden text-sm font-black uppercase tracking-[0.18em] sm:inline">SIDE {side}</span>
-        <div className="flex items-center gap-2">
-          {server ? <span className="rounded-full bg-white/20 px-2.5 py-1 text-xs font-black">发球</span> : null}
-          {winner ? <TrophyOutlined className="text-yellow-200" /> : null}
+    <section className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center px-[1.2em] py-[0.35em]">
+      <SideScore side={leftSide} value={currentSideScore(score, leftSide)} />
+      <div className="flex items-center self-stretch">
+        <span aria-hidden className="my-[0.5em] w-px self-stretch bg-[#D3DACF]" />
+        <div className="px-[3em] text-center">
+          <p className="text-[1em] font-black text-[#1E3E33]">大比分</p>
+          <p className="mt-[0.1em] whitespace-nowrap text-[clamp(1.6rem,7.5cqh,5.5rem)] font-black leading-none tabular-nums text-[#0B3B2C]">
+            {gamesWon(leftSide)} : {gamesWon(rightSide)}
+          </p>
         </div>
+        <span aria-hidden className="my-[0.5em] w-px self-stretch bg-[#D3DACF]" />
       </div>
-
-      <div className="referee-side-score-body flex min-h-[300px] flex-col p-4 sm:min-h-[340px] sm:p-5 xl:min-h-[430px]">
-        <div className="min-w-0">
-          <h2 className="hidden truncate text-xl font-black text-[#0F172A] sm:block sm:text-2xl xl:text-3xl">
-            {displayName}
-          </h2>
-          {doubles ? (
-            <div className="mt-1 grid grid-cols-2 gap-1.5 sm:mt-2">
-              {(['right', 'left'] as const).map((courtSide) => {
-                const positions = side === 1 ? servingState?.side1Positions : servingState?.side2Positions;
-                const playerIndex = positions?.[courtSide] ?? null;
-                const player = playerIndex ? players.find((item) => item.index === playerIndex) : null;
-                const isServer = Boolean(playerIndex) && activeServerPlayer === playerIndex;
-                const isReceiver = Boolean(playerIndex) && activeReceiverPlayer === playerIndex;
-                return (
-                  <div
-                    key={courtSide}
-                    className={`rounded-lg px-2 py-1.5 ${
-                      isServer
-                        ? 'bg-emerald-50 ring-1 ring-emerald-200'
-                        : isReceiver
-                          ? 'bg-orange-50 ring-1 ring-orange-200'
-                          : 'bg-slate-50'
-                    }`}
-                  >
-                    <p className={`text-[10px] font-black leading-tight ${
-                      isServer ? 'text-emerald-600' : isReceiver ? 'text-orange-600' : 'text-slate-400'
-                    }`}>
-                      {courtSideLabel(courtSide)}
-                      {isServer ? ' · 发球' : isReceiver ? ' · 接发' : ''}
-                    </p>
-                    <p className={`truncate text-sm font-black leading-tight ${
-                      isServer ? 'text-emerald-700' : isReceiver ? 'text-orange-700' : 'text-slate-600'
-                    }`}>
-                      {player?.name ?? '待定'}
-                    </p>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <p className="mt-2 truncate text-sm font-bold text-[#64748B]">
-              {server && servingState?.serverCourtSide
-                ? `发球站位：${courtSideLabel(servingState.serverCourtSide)}`
-                : `级别：${affiliation}`}
-            </p>
-          )}
-        </div>
-
-        <div className="referee-side-score-zone my-4 flex flex-1 flex-col items-center justify-center rounded-2xl bg-slate-50/80 px-3 py-4 sm:my-7 sm:px-4 sm:py-6">
-          <p className="text-xs font-black uppercase tracking-[0.2em] text-slate-400">本局比分</p>
-          <strong className={`referee-side-score-value mt-2 block text-[5.5rem] font-black leading-none tracking-tight sm:text-[7.5rem] xl:text-[9rem] ${scoreTone}`}>
-            {score}
-          </strong>
-          <p className={`mt-2 text-base font-black ${scoreTone}`}>已胜局数 {gamesWon}</p>
-        </div>
-
-        <div className="space-y-3">
-          <Button
-            type="primary"
-            block
-            disabled={disabled}
-            loading={loading}
-            onClick={onPoint}
-            className={`referee-score-button !h-12 !rounded-2xl !border-0 text-lg !font-black text-white shadow-[0_14px_28px_rgba(37,99,235,0.24)] transition active:scale-[0.99] disabled:!bg-slate-200 disabled:!text-slate-400 sm:!h-14 sm:text-xl ${buttonTone}`}
-          >
-            +1 得分
-          </Button>
-          {lockedReason ? <p className="text-center text-xs font-bold text-slate-400">{lockedReason}</p> : null}
-          <Button
-            block
-            icon={<UndoOutlined />}
-            disabled={undoDisabled}
-            loading={undoLoading}
-            onClick={onUndo}
-            className="referee-undo-button !h-12 !rounded-2xl border-slate-200 !font-black text-slate-600 transition hover:!border-slate-300 hover:!bg-slate-50 active:scale-[0.99] disabled:!bg-slate-50 disabled:!text-slate-300"
-          >
-            撤销上一分
-          </Button>
-        </div>
-      </div>
-    </article>
+      <SideScore side={rightSide} value={currentSideScore(score, rightSide)} />
+    </section>
   );
 }
 
-function CenterScoreboard({
+function SideScore({ side, value }: { side: 1 | 2; value: number }) {
+  return (
+    <div className="min-w-0 text-center">
+      <p className="truncate text-[1em] font-black text-[#1E3E33]">{sideLetter(side)}方 · 本局得分</p>
+      <strong className="block text-[clamp(2.4rem,12.5cqh,9rem)] font-black leading-[0.95] tracking-tight tabular-nums text-[#0B3B2C]">
+        {value}
+      </strong>
+    </div>
+  );
+}
+
+type CourtOverlayRun = 'start' | 'finish' | 'swap' | 'resume' | 'warmup' | 'warmup-end';
+
+/** 按钮要么跳转（href），要么交给页面按 run 执行；secondary 是描边的次要按钮。 */
+type CourtOverlayAction = {
+  label: string;
+  icon?: ReactNode;
+  href?: string;
+  run?: CourtOverlayRun;
+  loading?: boolean;
+  disabled?: boolean;
+  secondary?: boolean;
+};
+
+/** seconds 为空表示没有规定时长，只显示已经过去多久；warningHint 是最后 20 秒的提示。 */
+type CourtOverlayTimer = { startedAt: string; seconds: number | null; warningHint?: string };
+
+/** 球场上的状态提示层。 */
+type CourtOverlay = {
+  tone: 'green' | 'amber' | 'red';
+  title: string;
+  timer?: CourtOverlayTimer;
+  description?: string;
+  /** 显示练球时长的加减按钮。 */
+  warmupPicker?: boolean;
+  actions: CourtOverlayAction[];
+};
+
+const overlayTitleTone: Record<CourtOverlay['tone'], string> = {
+  green: 'text-[#0B5D3B]',
+  amber: 'text-[#9A5B00]',
+  red: 'text-[#C62828]',
+};
+
+function CourtBoard({
   score,
-  leftScore,
-  rightScore,
-  onStart,
-  startDisabled,
+  leftSide,
+  rightSide,
+  overlay,
+  clockOffset,
+  warmupMinutes,
+  onWarmupMinutesChange,
+  onOverlayAction,
+  notice,
 }: {
   score: ScoreState;
-  leftScore: number;
-  rightScore: number;
-  onStart: () => void;
-  startDisabled: boolean;
+  leftSide: 1 | 2;
+  rightSide: 1 | 2;
+  overlay: CourtOverlay | null;
+  clockOffset: number;
+  warmupMinutes: number;
+  onWarmupMinutesChange: (minutes: number) => void;
+  onOverlayAction: (run: CourtOverlayRun) => void;
+  notice: ReactNode;
 }) {
-  const status = statusMeta[score.status] ?? statusMeta.PENDING;
-  const statusLabel = score.matchPaused && score.status === 'LIVE' ? '比赛暂停' : status.label;
-
   return (
-    <article className="referee-center-score-card min-w-0 overflow-hidden rounded-2xl border border-[#0F172A]/10 bg-[#07152F] text-white shadow-[0_24px_60px_rgba(15,23,42,0.22)]">
-      <div className="referee-center-score-body flex h-full min-h-[300px] flex-col p-4 sm:min-h-[360px] sm:p-5 lg:min-h-[430px]">
-        <div className="referee-center-score-panel rounded-2xl border border-white/10 bg-white/5 p-3 text-center sm:p-4">
-          <p className="text-xs font-black uppercase tracking-[0.2em] text-blue-200">比赛总览</p>
-          <div className="mt-4 flex items-center justify-center gap-3 sm:mt-7 sm:gap-5">
-            <span className="referee-center-score-value text-[4.2rem] font-black leading-none text-[#60A5FA] sm:text-[5.5rem] xl:text-[6.5rem]">{leftScore}</span>
-            <span className="pb-2 text-4xl font-black text-white sm:pb-3 sm:text-5xl">:</span>
-            <span className="referee-center-score-value text-[4.2rem] font-black leading-none text-[#F87171] sm:text-[5.5rem] xl:text-[6.5rem]">{rightScore}</span>
-          </div>
-          <div className="mt-4 grid grid-cols-2 gap-2 sm:mt-6 sm:gap-3">
-            <div className="rounded-xl bg-white/8 px-3 py-3">
-              <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-400">当前局</p>
-              <p className="mt-1 text-xl font-black text-white sm:text-2xl">第 {currentGameNo(score)} 局</p>
-            </div>
-            <div className="rounded-xl bg-white/8 px-3 py-3">
-              <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-400">比赛状态</p>
-              <p className="mt-1 text-xl font-black text-white sm:text-2xl">{statusLabel}</p>
-            </div>
-          </div>
-        </div>
+    <section className="relative min-h-0 flex-1 bg-[#12865A] px-[1.4em] py-[0.9em]">
+      <div className="relative h-full w-full">
+        <div aria-hidden className="pointer-events-none absolute inset-0 rounded-[0.35em] border-[3px] border-white/90" />
+        <CourtLines />
+        <CourtNet />
+        <CourtTeam score={score} side={leftSide} display="left" />
+        <CourtTeam score={score} side={rightSide} display="right" />
+      </div>
+      {notice}
+      {overlay ? (
+        <CourtOverlayCard
+          overlay={overlay}
+          clockOffset={clockOffset}
+          warmupMinutes={warmupMinutes}
+          onWarmupMinutesChange={onWarmupMinutesChange}
+          onAction={onOverlayAction}
+        />
+      ) : null}
+    </section>
+  );
+}
 
-        <div className="referee-center-actions mt-auto pt-5">
-          <Button
-            type="primary"
-            block
-            icon={<PlayCircleFilled />}
-            disabled={startDisabled}
-            onClick={onStart}
-            className="referee-start-button !h-12 !rounded-2xl !border-0 !bg-[#22C55E] text-base !font-black text-white shadow-[0_16px_30px_rgba(34,197,94,0.24)] transition hover:!bg-emerald-400 active:scale-[0.99] disabled:!bg-slate-600 disabled:!text-slate-300 sm:!h-14 sm:text-lg"
+// 场地线按示意比例画（不是严格的 13.4m × 6.1m），给球员卡留出空间：
+// 单打边线离边 8.7%，双打后发球线离底线 4.6%，前发球线离网 5%。
+function CourtLines() {
+  const lines: Array<[number, number, number, number]> = [
+    [0, 87, 1000, 87],
+    [0, 913, 1000, 913],
+    [46, 0, 46, 1000],
+    [954, 0, 954, 1000],
+    [450, 0, 450, 1000],
+    [550, 0, 550, 1000],
+    [0, 500, 450, 500],
+    [550, 500, 1000, 500],
+  ];
+  return (
+    <svg
+      aria-hidden
+      className="pointer-events-none absolute inset-0 h-full w-full"
+      viewBox="0 0 1000 1000"
+      preserveAspectRatio="none"
+    >
+      {lines.map(([x1, y1, x2, y2]) => (
+        <line
+          key={`${x1}-${y1}-${x2}-${y2}`}
+          x1={x1}
+          y1={y1}
+          x2={x2}
+          y2={y2}
+          stroke="rgba(255,255,255,0.9)"
+          strokeWidth={3}
+          vectorEffect="non-scaling-stroke"
+        />
+      ))}
+    </svg>
+  );
+}
+
+function CourtNet() {
+  return (
+    <div
+      aria-hidden
+      className="pointer-events-none absolute -bottom-[0.6em] -top-[0.6em] left-1/2 z-[1] flex w-[0.8em] -translate-x-1/2 flex-col items-center"
+    >
+      <span className="h-[0.7em] w-full shrink-0 rounded-[0.2em] bg-white shadow" />
+      <span
+        className="w-[0.5em] flex-1 border-x border-white/80"
+        style={{
+          background:
+            'repeating-linear-gradient(0deg, rgba(255,255,255,0.4) 0 1px, transparent 1px 4px),'
+            + ' repeating-linear-gradient(90deg, rgba(255,255,255,0.4) 0 1px, transparent 1px 4px), #12251D',
+        }}
+      />
+      <span className="h-[0.7em] w-full shrink-0 rounded-[0.2em] bg-white shadow" />
+    </div>
+  );
+}
+
+/**
+ * 每个球员站在哪个发球区。双打按服务端的站位；单打两人都站在与发球员同名的发球区
+ * （本方比分偶数在右、奇数在左）。
+ */
+function sideCourtSlots(score: ScoreState, side: 1 | 2): Record<CourtSide, SidePlayer | null> {
+  const players = sidePlayers(side === 1 ? score.side1 : score.side2);
+  const state = score.servingState;
+  if (players.length < 2) {
+    return state?.serverCourtSide === 'left'
+      ? { left: players[0], right: null }
+      : { left: null, right: players[0] };
+  }
+  const positions = side === 1 ? state?.side1Positions : state?.side2Positions;
+  const byIndex = (index?: PlayerIndex | null) => players.find((player) => player.index === index) ?? null;
+  const right = byIndex(positions?.right);
+  const left = byIndex(positions?.left);
+  if (right && left) return { right, left };
+  return { right: players[0], left: players[1] };
+}
+
+function playerRole(score: ScoreState, side: 1 | 2, playerIndex: number): 'server' | 'receiver' | null {
+  const state = score.servingState;
+  if (score.status !== 'LIVE' || !state) return null;
+  if (state.servingSide === side && state.serverPlayerIndex === playerIndex) return 'server';
+  if (state.receivingSide === side && state.receiverPlayerIndex === playerIndex) return 'receiver';
+  return null;
+}
+
+/**
+ * 俯视球场：左边一方面朝右，他的右发球区在下半场；右边一方面朝左，右发球区在上半场。
+ * 这样发球员和接发球员正好落在对角线上。
+ */
+function CourtTeam({ score, side, display }: { score: ScoreState; side: 1 | 2; display: 'left' | 'right' }) {
+  const slots = sideCourtSlots(score, side);
+  return (
+    <>
+      {(['right', 'left'] as const).map((courtSide) => {
+        const player = slots[courtSide];
+        if (!player) return null;
+        const top = display === 'left' ? courtSide === 'left' : courtSide === 'right';
+        return (
+          <div
+            key={courtSide}
+            className={`absolute z-[2] flex items-center ${
+              display === 'left'
+                ? 'left-[4.6%] right-[55%] justify-end pr-[1.5%]'
+                : 'left-[55%] right-[4.6%] justify-start pl-[1.5%]'
+            } ${top ? 'top-[8.7%] bottom-1/2' : 'top-1/2 bottom-[8.7%]'}`}
           >
-            开始比赛
-          </Button>
-          <p className="mt-4 text-center text-sm font-semibold text-slate-300">
-            {score.status === 'PENDING'
-              ? '比赛未开始，点击开始比赛计分'
-              : score.matchPaused
-                ? '比赛暂停中，前台计时已同步停止'
-                : score.status === 'LIVE'
-                ? '比赛进行中，比分将实时同步'
-                : '比赛已结束，计分已锁定'}
-          </p>
+            <CourtPlayerCard player={player} role={playerRole(score, side, player.index)} />
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+function CourtPlayerCard({ player, role }: { player: SidePlayer; role: 'server' | 'receiver' | null }) {
+  const gender = genderLabel(player.gender);
+  const detail = gender ? `性别：${gender}` : player.affiliation || '';
+  return (
+    <div
+      className={`flex max-h-full w-[82%] min-w-0 max-w-[19em] items-center gap-[0.65em] overflow-hidden rounded-[0.75em] border px-[0.75em] py-[0.5em] shadow-[0_8px_18px_rgba(0,0,0,0.12)] ${
+        role ? 'border-white/25 bg-[#0A5C3C]/90' : 'border-white/10 bg-[#0A5C3C]/70'
+      }`}
+      style={{ fontSize: 'clamp(10px, 3.3cqh, 24px)' }}
+    >
+      <span className="grid h-[2.2em] w-[2.2em] shrink-0 place-items-center rounded-full bg-white/20 text-[1.1em] font-black text-white">
+        {Array.from(player.name)[0] ?? '?'}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[1.2em] font-black leading-tight text-white">{player.name}</span>
+        {detail ? <span className="mt-[0.15em] block truncate text-[0.85em] font-bold text-white/70">{detail}</span> : null}
+      </span>
+      {role ? (
+        <span
+          className={`shrink-0 self-start rounded-full px-[0.7em] py-[0.2em] text-[0.8em] font-black ${
+            role === 'server' ? 'bg-[#FFD43B] text-[#4A3500]' : 'bg-[#D7F5C8] text-[#0E5A36]'
+          }`}
+        >
+          {role === 'server' ? '发球' : '接发球'}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+function CourtOverlayCard({
+  overlay,
+  clockOffset,
+  warmupMinutes,
+  onWarmupMinutesChange,
+  onAction,
+}: {
+  overlay: CourtOverlay;
+  clockOffset: number;
+  warmupMinutes: number;
+  onWarmupMinutesChange: (minutes: number) => void;
+  onAction: (run: CourtOverlayRun) => void;
+}) {
+  return (
+    <div className="absolute inset-0 z-20 grid place-items-center overflow-auto bg-[#04301F]/60 p-[0.6em]">
+      <div role="status" className="w-full max-w-[30em] rounded-[0.9em] bg-white px-[1.3em] py-[0.8em] text-center shadow-[0_18px_40px_rgba(0,0,0,0.25)]">
+        <div className="flex flex-wrap items-center justify-center gap-x-[0.8em] gap-y-[0.2em]">
+          <p className={`text-[1.2em] font-black leading-tight ${overlayTitleTone[overlay.tone]}`}>{overlay.title}</p>
+          {overlay.timer ? <OverlayTimer timer={overlay.timer} clockOffset={clockOffset} /> : null}
+        </div>
+        {overlay.description ? (
+          <p className="mt-[0.35em] line-clamp-2 text-[0.85em] font-semibold leading-snug text-[#5D6B63]">{overlay.description}</p>
+        ) : null}
+        <div className="mt-[0.7em] flex flex-wrap items-center justify-center gap-[0.6em]">
+          {overlay.warmupPicker ? <WarmupMinutesPicker value={warmupMinutes} onChange={onWarmupMinutesChange} /> : null}
+          {overlay.actions.map((action) => (
+            <OverlayActionButton key={action.label} action={action} onAction={onAction} />
+          ))}
         </div>
       </div>
-    </article>
+    </div>
+  );
+}
+
+function OverlayActionButton({ action, onAction }: { action: CourtOverlayAction; onAction: (run: CourtOverlayRun) => void }) {
+  const { run } = action;
+  const className = `inline-flex h-[2.5em] items-center justify-center gap-[0.45em] rounded-[0.65em] px-[1.2em] text-[1em] font-black transition active:scale-[0.98] disabled:cursor-not-allowed ${
+    action.secondary
+      ? 'border-[1.5px] border-[#0E7A4F] bg-white text-[#0E7A4F] disabled:border-[#B9CCC1] disabled:text-[#9DB5A8]'
+      : 'bg-[#0E7A4F] text-white shadow-[0_8px_18px_rgba(14,122,79,0.3)] disabled:bg-[#9DB5A8] disabled:shadow-none'
+  }`;
+  if (action.href) {
+    return (
+      <Link href={action.href} className={className}>
+        {action.icon}
+        {action.label}
+      </Link>
+    );
+  }
+  if (!run) return null;
+  return (
+    <button type="button" onClick={() => onAction(run)} disabled={action.disabled || action.loading} className={className}>
+      {action.loading ? <LoadingOutlined /> : action.icon}
+      {action.label}
+    </button>
+  );
+}
+
+function WarmupMinutesPicker({ value, onChange }: { value: number; onChange: (minutes: number) => void }) {
+  const stepClass = 'grid h-full w-[2.1em] place-items-center text-[1.15em] font-black transition active:scale-90 disabled:cursor-not-allowed disabled:text-[#B5C4BB]';
+  return (
+    <span className="inline-flex h-[2.5em] items-center rounded-[0.65em] border border-[#CFE3D8] bg-[#F3FAF6] text-[#0B3B2C]">
+      <button
+        type="button"
+        aria-label="练球时间减 1 分钟"
+        disabled={value <= MIN_WARMUP_MINUTES}
+        onClick={() => onChange(value - 1)}
+        className={stepClass}
+      >
+        −
+      </button>
+      <span className="whitespace-nowrap text-[0.95em] font-black tabular-nums">练球 {value} 分钟</span>
+      <button
+        type="button"
+        aria-label="练球时间加 1 分钟"
+        disabled={value >= MAX_WARMUP_MINUTES}
+        onClick={() => onChange(value + 1)}
+        className={stepClass}
+      >
+        +
+      </button>
+    </span>
+  );
+}
+
+// 规则上间歇剩 20 秒时裁判要提醒双方回场，倒计时到这里变色。
+const TIMER_WARNING_SECONDS = 20;
+
+function formatSeconds(seconds: number) {
+  const mm = Math.floor(seconds / 60).toString().padStart(2, '0');
+  const ss = (seconds % 60).toString().padStart(2, '0');
+  return `${mm}:${ss}`;
+}
+
+/** 每隔 intervalMs 重新渲染一次，返回当前手机时间。 */
+function useNow(intervalMs: number) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const handle = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(handle);
+  }, [intervalMs]);
+  return now;
+}
+
+function OverlayTimer({ timer, clockOffset }: { timer: CourtOverlayTimer; clockOffset: number }) {
+  const now = useNow(500) + clockOffset;
+  const elapsed = Math.max(0, Math.floor((now - Date.parse(timer.startedAt)) / 1000));
+
+  if (timer.seconds === null) {
+    return (
+      <span className="whitespace-nowrap text-[1.2em] font-black tabular-nums text-[#9A5B00]">
+        已暂停 {formatSeconds(elapsed)}
+      </span>
+    );
+  }
+
+  const remaining = timer.seconds - elapsed;
+  const timeUp = remaining <= 0;
+  const warning = !timeUp && remaining <= TIMER_WARNING_SECONDS;
+  return (
+    <span className="inline-flex items-center gap-[0.5em]" aria-live="polite">
+      <span
+        className={`text-[2.2em] font-black leading-none tabular-nums ${
+          timeUp ? 'text-[#C62828]' : warning ? 'text-[#D97706]' : 'text-[#0B3B2C]'
+        }`}
+      >
+        {formatSeconds(Math.max(0, remaining))}
+      </span>
+      {timeUp ? (
+        <span className="whitespace-nowrap rounded-full bg-[#FDECEC] px-[0.65em] py-[0.15em] text-[0.8em] font-black text-[#C62828]">
+          时间到 · 已超 {formatSeconds(-remaining)}
+        </span>
+      ) : warning ? (
+        <span className="whitespace-nowrap rounded-full bg-[#FFF3DC] px-[0.65em] py-[0.15em] text-[0.8em] font-black text-[#B45309]">
+          {timer.warningHint ?? '请提醒双方回场'}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+function PointButton({
+  kind,
+  side,
+  disabled,
+  loading,
+  onClick,
+}: {
+  kind: 'plus' | 'minus';
+  side: 1 | 2;
+  disabled: boolean;
+  loading: boolean;
+  onClick: () => void;
+}) {
+  const plus = kind === 'plus';
+  return (
+    <button
+      type="button"
+      aria-label={`${sideLetter(side)}方 ${plus ? '+1 得分' : '-1 减分'}`}
+      aria-busy={loading}
+      disabled={disabled && !loading}
+      onClick={loading ? undefined : onClick}
+      className={`flex h-[clamp(38px,10.5cqh,92px)] min-w-0 items-center justify-center gap-[0.45em] rounded-[0.7em] font-black text-[#0B3B2C] transition active:scale-[0.98] disabled:cursor-not-allowed ${
+        plus
+          ? 'bg-[#DFF57C] shadow-[0_6px_14px_rgba(132,170,20,0.25)] disabled:bg-[#ECEFE8] disabled:text-[#A9B3AC] disabled:shadow-none'
+          : 'border-[1.5px] border-[#24463A] bg-white disabled:border-[#D8DDD5] disabled:text-[#B5BEB8]'
+      }`}
+    >
+      {loading ? (
+        <LoadingOutlined className="text-[1.5em]" />
+      ) : (
+        <span className="text-[1.9em] leading-none tracking-tight">{plus ? '+1' : '-1'}</span>
+      )}
+      <span className="text-[1.15em]">{plus ? '得分' : '减分'}</span>
+    </button>
+  );
+}
+
+const toolTones = {
+  mint: 'border-[#A8D8C4] bg-[#ECF7F2] text-[#0F3B2E]',
+  amber: 'border-[#F2C661] bg-[#FFF5D9] text-[#8A5300]',
+  red: 'border-[#F1B2B2] bg-[#FDEEEE] text-[#C62828]',
+} as const;
+
+function ToolButton({
+  tone,
+  icon,
+  label,
+  title,
+  attention = false,
+  disabled = false,
+  loading = false,
+  onClick,
+}: {
+  tone: keyof typeof toolTones;
+  icon: ReactNode;
+  label: string;
+  title?: string;
+  attention?: boolean;
+  disabled?: boolean;
+  loading?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      title={title ?? label}
+      aria-busy={loading}
+      disabled={disabled && !loading}
+      onClick={loading ? undefined : onClick}
+      className={`flex h-[clamp(38px,10cqh,84px)] min-w-0 items-center justify-center gap-[0.5em] rounded-[0.7em] border-[1.5px] px-[0.5em] font-black transition active:scale-[0.98] disabled:cursor-not-allowed disabled:border-[#E2E6DF] disabled:bg-[#F3F5F1] disabled:text-[#B3BCB6] ${toolTones[tone]} ${
+        attention ? 'ring-[3px] ring-[#F59E0B]/70' : ''
+      }`}
+    >
+      <span className="shrink-0 text-[1.35em] leading-none">{loading ? <LoadingOutlined /> : icon}</span>
+      <span className="truncate text-[1.05em]">{label}</span>
+    </button>
+  );
+}
+
+function CardIcon({ color }: { color: string }) {
+  return (
+    <span
+      aria-hidden
+      className="inline-block h-[1em] w-[0.72em] rounded-[0.14em] align-middle shadow-[inset_0_0_0_1px_rgba(0,0,0,0.2)]"
+      style={{ background: color }}
+    />
+  );
+}
+
+type ConsoleMenuItem = {
+  key: string;
+  label: string;
+  description?: string;
+  icon: ReactNode;
+  tone: string;
+  disabled?: boolean;
+};
+
+type ConsoleMenuSection = { title?: string; columns: 3 | 4; items: ConsoleMenuItem[] };
+
+/** 底部「警告/判罚」「暂停比赛」「结束比赛」弹出的选项面板。 */
+function ConsoleMenuModal({
+  open,
+  title,
+  sections,
+  onSelect,
+  onClose,
+}: {
+  open: boolean;
+  title: string;
+  sections: ConsoleMenuSection[];
+  onSelect: (key: string) => void;
+  onClose: () => void;
+}) {
+  return (
+    <Modal open={open} title={title} footer={null} centered width={560} onCancel={onClose}>
+      <div className="space-y-3">
+        {sections.map((section, index) => (
+          <div key={section.title ?? index}>
+            {section.title ? <p className="mb-1.5 text-xs font-black text-slate-500">{section.title}</p> : null}
+            <div className={`grid gap-2 ${section.columns === 4 ? 'grid-cols-4' : 'grid-cols-3'}`}>
+              {section.items.map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  disabled={item.disabled}
+                  onClick={() => onSelect(item.key)}
+                  className={`flex min-h-[64px] min-w-0 flex-col items-center justify-center gap-1 rounded-xl border px-2 py-2 text-center transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40 ${item.tone}`}
+                >
+                  <span className="text-xl leading-none">{item.icon}</span>
+                  <span className="text-sm font-black">{item.label}</span>
+                  {item.description ? (
+                    <span className="line-clamp-2 text-[11px] font-semibold leading-tight opacity-75">{item.description}</span>
+                  ) : null}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </Modal>
   );
 }
 
@@ -1367,36 +1856,27 @@ function GameRecordCard({ score }: { score: ScoreState }) {
   const paused = score.matchPaused && score.status === 'LIVE';
 
   return (
-    <section className="referee-sub-card min-w-0 rounded-2xl border border-[#E5E7EB] bg-white p-4 shadow-[0_18px_45px_rgba(15,23,42,0.08)] sm:p-5">
-      <div className="flex items-center gap-3">
-        <span className="grid h-10 w-10 place-items-center rounded-xl bg-blue-50 text-[#2563EB]">
-          <FieldTimeOutlined />
-        </span>
-        <div>
-          <h2 className="text-xl font-black text-[#0F172A]">局分记录</h2>
-          <p className="text-sm font-semibold text-[#64748B]">每局比分与胜局状态</p>
-        </div>
-      </div>
-
-      <div className="referee-record-list mt-5 space-y-3">
+    <section>
+      <h2 className="text-sm font-black text-[#0F172A]">局分记录（A : B）</h2>
+      <div className="mt-2 space-y-2">
         {recordItems(score).map((game) => {
-          const statusText = game.winnerSide ? `胜方 SIDE ${game.winnerSide}` : game.active ? (paused ? '暂停中' : '进行中') : '未开始';
+          const statusText = game.winnerSide
+            ? `胜方 ${sideLetter(game.winnerSide === 2 ? 2 : 1)}方`
+            : game.active ? (paused ? '暂停中' : '进行中') : '未开始';
           return (
             <div
               key={game.gameNo}
-              className={`grid grid-cols-[72px_minmax(0,1fr)_76px] items-center gap-2 rounded-2xl border px-3 py-3 sm:grid-cols-[100px_minmax(0,1fr)_96px] sm:gap-3 sm:px-4 ${
-                game.active
-                  ? 'border-blue-200 bg-blue-50/80'
-                  : 'border-slate-100 bg-slate-50/70'
+              className={`grid grid-cols-[64px_minmax(0,1fr)_72px] items-center gap-2 rounded-xl border px-3 py-2 ${
+                game.active ? 'border-emerald-200 bg-emerald-50/80' : 'border-slate-100 bg-slate-50/70'
               }`}
             >
-              <span className={`font-black ${game.active ? 'text-[#2563EB]' : 'text-slate-600'}`}>
+              <span className={`text-sm font-black ${game.active ? 'text-emerald-700' : 'text-slate-600'}`}>
                 第{game.gameNo}局
               </span>
-              <strong className="text-center text-xl font-black text-[#0F172A] sm:text-2xl">
+              <strong className="text-center text-lg font-black text-[#0F172A]">
                 {game.side1Score} <span className="text-slate-300">:</span> {game.side2Score}
               </strong>
-              <span className={`text-right text-[11px] font-black sm:text-xs ${game.active ? 'text-[#2563EB]' : 'text-slate-400'}`}>
+              <span className={`text-right text-[11px] font-black ${game.active ? 'text-emerald-700' : 'text-slate-400'}`}>
                 {statusText}
               </span>
             </div>
@@ -1407,201 +1887,43 @@ function GameRecordCard({ score }: { score: ScoreState }) {
   );
 }
 
-function RefereeActionCard({
-  matchId,
-  busyAction,
-  disabled,
-  matchStatus,
-  matchPaused,
-  courtSwapRequired,
-  canSetGameServe,
-  serveCheckPending,
-  onPauseToggle,
-  onSwapCourt,
-  onOpenGameServe,
-  onOpenSideAction,
-  onOpenForfeit,
-  onOpenRetire,
-  onOpenFinish,
-}: {
-  matchId: string;
-  busyAction: string;
-  disabled: boolean;
-  matchStatus: ScoreState['status'];
-  matchPaused: boolean;
-  courtSwapRequired: boolean;
-  canSetGameServe: boolean;
-  serveCheckPending: boolean;
-  onPauseToggle: () => void;
-  onSwapCourt: () => void;
-  onOpenGameServe: () => void;
-  onOpenSideAction: (action: Exclude<PendingRefereeAction, null>) => void;
-  onOpenForfeit: () => void;
-  onOpenRetire: () => void;
-  onOpenFinish: () => void;
-}) {
-  const matchEnded = matchStatus === 'COMPLETED' || matchStatus === 'CANCELLED';
-  const pauseActionPath = `/matches/${matchId}/${matchPaused ? 'resume' : 'pause'}`;
-  const serveAction = {
-    label: '发球设置',
-    icon: <SwapOutlined />,
-    className: serveCheckPending
-      ? 'border-amber-300 text-amber-700 hover:!border-amber-500 hover:!bg-amber-50'
-      : 'border-slate-200 text-slate-700 hover:!border-slate-400 hover:!bg-slate-50',
-    onClick: onOpenGameServe,
-    loading: false,
-    pauseToggle: true,
-  };
-  const actions = [
-    {
-      label: matchPaused ? '恢复比赛' : '比赛暂停',
-      icon: matchPaused ? <PlayCircleOutlined /> : <PauseCircleOutlined />,
-      className: matchPaused
-        ? 'border-emerald-200 text-emerald-700 hover:!border-emerald-400 hover:!bg-emerald-50'
-        : 'border-amber-200 text-amber-700 hover:!border-amber-400 hover:!bg-amber-50',
-      onClick: onPauseToggle,
-      loading: busyAction === pauseActionPath,
-      pauseToggle: true,
-    },
-    {
-      label: '交换场地',
-      icon: <ReloadOutlined />,
-      className: courtSwapRequired
-        ? 'border-orange-300 text-orange-700 hover:!border-orange-500 hover:!bg-orange-50'
-        : 'border-slate-200 text-slate-700 hover:!border-slate-400 hover:!bg-slate-50',
-      onClick: onSwapCourt,
-      loading: busyAction === `/matches/${matchId}/swap-court`,
-      pauseToggle: true,
-    },
-    {
-      label: '普通暂停',
-      icon: <PauseCircleOutlined />,
-      className: 'border-blue-200 text-blue-700 hover:!border-blue-400 hover:!bg-blue-50',
-      onClick: () => onOpenSideAction({ type: 'TIMEOUT', label: '普通暂停' }),
-      loading: busyAction === `/matches/${matchId}/events`,
-      pauseToggle: false,
-    },
-    {
-      label: '医疗暂停',
-      icon: <MedicineBoxOutlined />,
-      className: 'border-emerald-200 text-emerald-700 hover:!border-emerald-400 hover:!bg-emerald-50',
-      onClick: () => onOpenSideAction({ type: 'MEDICAL_TIMEOUT', label: '医疗暂停' }),
-      loading: busyAction === `/matches/${matchId}/events`,
-      pauseToggle: false,
-    },
-    {
-      label: '警告',
-      icon: <WarningOutlined />,
-      className: 'border-orange-200 text-orange-700 hover:!border-orange-400 hover:!bg-orange-50',
-      onClick: () => onOpenSideAction({ type: 'WARNING', label: '警告' }),
-      loading: busyAction === `/matches/${matchId}/events`,
-      pauseToggle: false,
-    },
-    {
-      label: '黄牌',
-      icon: <ExclamationCircleOutlined />,
-      className: 'border-yellow-200 text-yellow-700 hover:!border-yellow-400 hover:!bg-yellow-50',
-      onClick: () => onOpenSideAction({ action: 'card', cardType: 'yellow', label: '黄牌' }),
-      loading: busyAction === `/matches/${matchId}/card`,
-      pauseToggle: false,
-    },
-    {
-      label: '红牌',
-      icon: <ExclamationCircleOutlined />,
-      className: 'border-red-200 text-red-700 hover:!border-red-400 hover:!bg-red-50',
-      onClick: () => onOpenSideAction({ action: 'card', cardType: 'red', label: '红牌' }),
-      loading: busyAction === `/matches/${matchId}/card`,
-      pauseToggle: false,
-    },
-    {
-      label: '黑牌',
-      icon: <CloseCircleOutlined />,
-      className: 'border-slate-300 text-slate-800 hover:!border-slate-500 hover:!bg-slate-50',
-      onClick: () => onOpenSideAction({ action: 'card', cardType: 'black', label: '黑牌取消资格' }),
-      loading: busyAction === `/matches/${matchId}/card`,
-      pauseToggle: false,
-    },
-    {
-      label: '发球违例',
-      icon: <WarningOutlined />,
-      className: 'border-violet-200 text-violet-700 hover:!border-violet-400 hover:!bg-violet-50',
-      onClick: () => onOpenSideAction({ action: 'fault', faultType: '发球违例', label: '发球违例' }),
-      loading: busyAction === `/matches/${matchId}/fault`,
-      pauseToggle: false,
-    },
-    {
-      label: '接发违例',
-      icon: <WarningOutlined />,
-      className: 'border-violet-200 text-violet-700 hover:!border-violet-400 hover:!bg-violet-50',
-      onClick: () => onOpenSideAction({ action: 'fault', faultType: '接发违例', label: '接发违例' }),
-      loading: busyAction === `/matches/${matchId}/fault`,
-      pauseToggle: false,
-    },
-    {
-      label: '触网违例',
-      icon: <WarningOutlined />,
-      className: 'border-violet-200 text-violet-700 hover:!border-violet-400 hover:!bg-violet-50',
-      onClick: () => onOpenSideAction({ action: 'fault', faultType: '触网违例', label: '触网违例' }),
-      loading: busyAction === `/matches/${matchId}/fault`,
-      pauseToggle: false,
-    },
-    {
-      label: '弃权处理',
-      icon: <CloseCircleOutlined />,
-      className: 'border-red-200 text-red-700 hover:!border-red-400 hover:!bg-red-50',
-      onClick: onOpenForfeit,
-      loading: false,
-      pauseToggle: false,
-    },
-    {
-      label: '伤退/退赛',
-      icon: <MedicineBoxOutlined />,
-      className: 'border-rose-200 text-rose-700 hover:!border-rose-400 hover:!bg-rose-50',
-      onClick: onOpenRetire,
-      loading: false,
-      pauseToggle: false,
-    },
-    {
-      label: '结束比赛',
-      icon: <StopOutlined />,
-      className: 'border-red-200 text-red-700 hover:!border-red-400 hover:!bg-red-50',
-      onClick: onOpenFinish,
-      loading: false,
-      pauseToggle: false,
-    },
+function MatchInfoPanel({ score, socketStatus }: { score: ScoreState; socketStatus: SocketStatus }) {
+  const items: Array<[string, ReactNode]> = [
+    ['赛事', score.event.tournament?.name ?? '—'],
+    ['场次', `${score.event.typeLabel} · ${score.round} · 第 ${score.matchNo} 场`],
+    ['计分规则', formatScoringRule(score.event).label],
+    ['A 方', sideDisplayName(score.side1)],
+    ['B 方', sideDisplayName(score.side2)],
+    ['比赛状态', score.matchPaused && score.status === 'LIVE' ? '比赛暂停' : statusLabels[score.status]],
+    ['计划时间', formatDateTime(score.scheduledAt)],
+    ['场地', score.venue?.name ?? '未排场地'],
+    [
+      '比赛用时',
+      score.startedAt ? (
+        <MatchClock
+          startedAt={score.startedAt}
+          finishedAt={score.finishedAt}
+          status={score.status}
+          matchPaused={score.matchPaused}
+          actualDurationSeconds={score.actualDurationSeconds}
+          className="inline-flex items-center gap-1"
+        />
+      ) : '未开始',
+    ],
+    ['实时同步', socketStatus],
   ];
 
   return (
-    <section className="referee-sub-card min-w-0 rounded-2xl border border-[#E5E7EB] bg-white p-4 shadow-[0_18px_45px_rgba(15,23,42,0.08)] sm:p-5">
-      <div className="flex items-center gap-3">
-        <span className="grid h-10 w-10 place-items-center rounded-xl bg-slate-900 text-white">
-          <StopOutlined />
-        </span>
-        <div>
-          <h2 className="text-xl font-black text-[#0F172A]">裁判操作</h2>
-          <p className="text-sm font-semibold text-[#64748B]">暂停、警告与危险判罚</p>
-        </div>
-      </div>
-
-      <div className="referee-action-grid mt-5 grid grid-cols-2 gap-2 sm:gap-3">
-        {(canSetGameServe ? [serveAction, ...actions] : actions).map((action) => (
-          <Button
-            key={action.label}
-            icon={action.icon}
-            disabled={
-              matchEnded ||
-              (action.pauseToggle && matchStatus !== 'LIVE') ||
-              (Boolean(busyAction) && !action.loading) ||
-              (!action.pauseToggle && disabled && action.label !== '结束比赛')
-            }
-            loading={action.loading}
-            onClick={action.onClick}
-            className={`referee-action-button !h-12 !rounded-2xl !bg-white text-xs !font-black transition active:scale-[0.98] disabled:!border-slate-100 disabled:!bg-slate-50 disabled:!text-slate-300 sm:text-sm ${action.className}`}
-          >
-            {action.label}
-          </Button>
+    <section>
+      <h2 className="text-sm font-black text-[#0F172A]">比赛信息</h2>
+      <dl className="mt-2 divide-y divide-slate-100 rounded-xl border border-slate-100 bg-slate-50/60">
+        {items.map(([label, value]) => (
+          <div key={label} className="flex items-center justify-between gap-3 px-3 py-2">
+            <dt className="shrink-0 text-xs font-bold text-slate-500">{label}</dt>
+            <dd className="min-w-0 truncate text-right text-sm font-black text-[#0F172A]">{value}</dd>
+          </div>
         ))}
-      </div>
+      </dl>
     </section>
   );
 }
@@ -1969,40 +2291,6 @@ function GameServeModal({
         </p>
       </div>
     </Modal>
-  );
-}
-
-function MatchInfoPanel({
-  score,
-  side1Score,
-  side2Score,
-}: {
-  score: ScoreState;
-  side1Score: number;
-  side2Score: number;
-}) {
-  const status = statusMeta[score.status] ?? statusMeta.PENDING;
-  const items = [
-    ['比赛状态', score.matchPaused && score.status === 'LIVE' ? '比赛暂停' : status.label],
-    ['当前局数', `第 ${currentGameNo(score)} 局`],
-    ['总比分', `${score.side1Games} : ${score.side2Games}`],
-    ['本局比分', `${side1Score} : ${side2Score}`],
-    ['开始时间', formatDateTime(score.scheduledAt)],
-    ['场地', score.venue?.name ?? '未排场地'],
-  ];
-
-  return (
-    <section className="rounded-2xl border border-[#E5E7EB] bg-white p-4 shadow-[0_18px_45px_rgba(15,23,42,0.08)] sm:p-5">
-      <h2 className="text-xl font-black text-[#0F172A]">比赛信息</h2>
-      <div className="mt-4 space-y-3">
-        {items.map(([label, value]) => (
-          <div key={label} className="flex items-center justify-between gap-3 rounded-2xl bg-slate-50 px-4 py-3">
-            <span className="text-sm font-bold text-[#64748B]">{label}</span>
-            <strong className="truncate text-right text-sm font-black text-[#0F172A]">{value}</strong>
-          </div>
-        ))}
-      </div>
-    </section>
   );
 }
 
