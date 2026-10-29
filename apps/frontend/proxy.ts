@@ -52,11 +52,12 @@ export default async function proxy(req: NextRequest) {
   const isAdminRoute = req.nextUrl.pathname.startsWith('/nicaiyixiahh');
   const isRefereeRoute = req.nextUrl.pathname.startsWith('/referee');
   const isMyRegistrationsRoute = req.nextUrl.pathname.startsWith('/my-registrations');
-  const isRegisterRoute = /\/competitions\/[^/]+\/register$/.test(req.nextUrl.pathname);
   const isLoginPage = req.nextUrl.pathname === '/login';
 
+  // 报名页不再要求登录：学生组与社会组都凭报名码进入。
+  // 未登录用户提交时由页面走 public-register 游客通道。
   if (
-    (isAdminRoute || isRefereeRoute || isRegisterRoute || isMyRegistrationsRoute) &&
+    (isAdminRoute || isRefereeRoute || isMyRegistrationsRoute) &&
     (!isLoggedIn || hasInvalidSession)
   ) {
     return loginRedirect(req);
@@ -72,7 +73,6 @@ export const config = {
     '/nicaiyixiahh/:path*',
     '/referee/:path*',
     '/my-registrations/:path*',
-    '/competitions/:path*/register',
     '/login',
   ],
 };
