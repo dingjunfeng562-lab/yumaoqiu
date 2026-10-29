@@ -79,6 +79,10 @@ type BatchImportItem = {
   studentId: string;
   school: string;
   className: string;
+  // 粘贴格式第 5 列是「学院班级」。后端把 college 作为学生组必填校验项，
+  // 因此这一列要同时作为 college 提交；majorGrade 预留扩展。
+  college?: string;
+  majorGrade?: string;
   contact: string;
   teamName?: string;
   partnerName?: string;
@@ -86,6 +90,8 @@ type BatchImportItem = {
   partnerStudentId?: string;
   partnerSchool?: string;
   partnerClassName?: string;
+  partnerCollege?: string;
+  partnerMajorGrade?: string;
   partnerContact?: string;
 };
 
@@ -525,6 +531,11 @@ export default function AdminCompetitionPlayersPage() {
       studentId: row.studentId ?? '',
       school: row.school ?? '',
       className: row.className ?? '',
+      // 第 5 列（学院班级）同时作为 college 提交：学生组赛事的字段规则要求
+      // 学院必填，此前只传 className 会导致「第 N 行缺少学院」。
+      college: row.college ?? row.className ?? '',
+      majorGrade: row.majorGrade,
+      row: row.lineNumber,
       contact: row.contact ?? '',
       teamName: row.teamName,
       partnerName: row.partnerName,
@@ -532,6 +543,7 @@ export default function AdminCompetitionPlayersPage() {
       partnerStudentId: row.partnerStudentId,
       partnerSchool: row.partnerSchool,
       partnerClassName: row.partnerClassName,
+      partnerCollege: row.partnerCollege ?? row.partnerClassName,
       partnerContact: row.partnerContact,
     }));
 
