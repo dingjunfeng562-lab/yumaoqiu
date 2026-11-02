@@ -27,6 +27,7 @@ import {
   TeamMatch,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { unpaidMessage, unpaidTeams } from '../payments/payment-rules';
 import {
   AddTeamPlayersDto,
   BatchImportTeamsDto,
@@ -374,6 +375,20 @@ export class TeamCompetitionsService {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
   }
 
+  /** 组别开启团体赛收费时未缴费的队伍，前端在生成对阵前提示。 */
+  async listUnpaidTeams(teamCompetitionId: string) {
+    const competition = await this.ensureCompetition(teamCompetitionId);
+    return unpaidTeams(this.prisma, competition);
+  }
+
+  private async assertTeamsPaid(
+    db: Prisma.TransactionClient,
+    competition: { id: string; tournamentId: string; entrantType: EntrantType },
+  ) {
+    const unpaid = await unpaidTeams(db, competition);
+    if (unpaid.length) throw new BadRequestException(unpaidMessage('队伍', unpaid.map((team) => team.name)));
+  }
+
   async listTeams(teamCompetitionId: string) {
     await this.ensureCompetition(teamCompetitionId);
     const teams = await this.prisma.team.findMany({
@@ -585,6 +600,7 @@ export class TeamCompetitionsService {
       await tx.$queryRaw`SELECT id FROM TeamCompetition WHERE id = ${teamCompetitionId} FOR UPDATE`;
       const competition = await tx.teamCompetition.findUnique({ where: { id: teamCompetitionId }, include: { items: { orderBy: { sortOrder: 'asc' } } } });
       if (!competition) throw new NotFoundException('团体赛不存在');
+      await this.assertTeamsPaid(tx, competition);
       const teams = await tx.team.findMany({
         where: { teamCompetitionId }, include: { members: { include: { player: true } } }, orderBy: { createdAt: 'asc' },
       });
@@ -1664,6 +1680,7 @@ export class TeamCompetitionsService {
       if (!competition) {
         throw new NotFoundException('团体赛不存在');
       }
+      await this.assertTeamsPaid(tx, competition);
 
       const teams = await tx.team.findMany({
         where: { teamCompetitionId },

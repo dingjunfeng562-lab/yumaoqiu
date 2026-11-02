@@ -47,6 +47,7 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   LoadingOutlined,
+  WalletOutlined,
 } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { canAccessAdminPage, firstAdminPage } from '@/lib/admin-permissions';
@@ -70,6 +71,7 @@ type NavItem = {
 const MENU_SECTIONS = [
   { key: 'overview', label: '总览' },
   { key: 'competition', label: '赛事管理' },
+  { key: 'payment', label: '缴费' },
   { key: 'execution', label: '竞赛执行' },
   { key: 'content', label: '内容与传播' },
   { key: 'system', label: '系统与账号' },
@@ -83,6 +85,7 @@ const baseMenuItems: NavItem[] = [
   { key: '/nicaiyixiahh/events', section: 'competition', icon: <UnorderedListOutlined />, label: '单项管理' },
   { key: '/nicaiyixiahh/team-competitions', section: 'competition', icon: <ApartmentOutlined />, label: '团体赛管理' },
   { key: '/nicaiyixiahh/players', section: 'competition', icon: <UserOutlined />, label: '选手管理' },
+  { key: '/nicaiyixiahh/payments', section: 'payment', icon: <WalletOutlined />, label: '缴费管理' },
   { key: '/nicaiyixiahh/draws', section: 'execution', icon: <BranchesOutlined />, label: '抽签编排' },
   { key: '/nicaiyixiahh/scheduling', section: 'execution', icon: <CalendarOutlined />, label: '场地排程' },
   { key: '/nicaiyixiahh/scoring', section: 'execution', icon: <FieldTimeOutlined />, label: '裁判分配' },

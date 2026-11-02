@@ -367,7 +367,7 @@ export default function TournamentsPage() {
     return () => window.clearTimeout(timer);
   }, [openCreate]);
 
-  const openEdit = (tournament: Tournament) => {
+  const openEdit = useCallback((tournament: Tournament) => {
     setEditing(tournament);
     setCoverFileList(
       tournament.coverImageUrl
@@ -431,7 +431,34 @@ export default function TournamentsPage() {
       ],
     });
     setModalOpen(true);
-  };
+  }, [form]);
+
+  // 从「场地排程 → 编辑赛程设置」跳转过来时，直接打开对应赛事的编辑弹窗，
+  // 而不是停在赛事列表让用户自己再找一次。
+  useEffect(() => {
+    if (!tournaments.length) return;
+    const params = new URLSearchParams(window.location.search);
+    const editId = params.get('edit');
+    if (!editId) return;
+    const target = tournaments.find((item) => item.id === editId);
+    if (!target) return;
+    if (target.isArchived) {
+      message.warning('该赛事已归档，无法编辑');
+      const url = new URL(window.location.href);
+      url.searchParams.delete('edit');
+      window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+      return;
+    }
+    // 与「新建赛事」入口保持一致，把打开弹窗放到下一个宏任务里，避免在 effect 中同步更新表单状态。
+    const timer = window.setTimeout(() => {
+      openEdit(target);
+      // 打开后移除查询参数，关闭弹窗再刷新不会重复打开。
+      const url = new URL(window.location.href);
+      url.searchParams.delete('edit');
+      window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [openEdit, tournaments]);
 
   const uploadProps: UploadProps = {
     action: `${API_BASE}/tournaments/upload-cover`,

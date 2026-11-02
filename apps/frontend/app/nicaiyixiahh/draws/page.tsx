@@ -47,6 +47,7 @@ import {
 import { SecondStageBracket, type SecondStageData } from '@/components/bracket/SecondStageBracket';
 import TeamCompetitionGroups from '@/components/TeamCompetitionGroups';
 import ClearResultsButton from '@/components/ClearResultsButton';
+import { UnpaidNotice } from '@/components/payments/UnpaidNotice';
 
 type TeamCompetitionOption = {
   id: string;
@@ -1150,6 +1151,8 @@ export default function DrawsPage() {
           )}
         </Space>
       </div>
+
+      <UnpaidNotice kind="event" id={selectedEventId || undefined} token={token} revision={registrations} />
 
       <section style={{ marginBottom: 16, border: '1px solid #f0f0f0', borderRadius: 8, padding: 16, background: '#fff' }}>
         <Row gutter={[16, 16]} align="middle">

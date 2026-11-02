@@ -24,6 +24,7 @@ import {
   EventType,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { unpaidEventEntrants, unpaidMessage } from '../payments/payment-rules';
 import { DrawAlgorithmService } from './draw-algorithm.service';
 import { DrawLogService } from './draw-log.service';
 import {
@@ -172,9 +173,9 @@ export class DrawsService {
   }
 
   async getDrawDetail(eventId: string) {
-    await this.ensureEvent(eventId);
+    const event = await this.ensureEvent(eventId);
 
-    const [currentDraw, seedSettings, entrantCount] = await Promise.all([
+    const [currentDraw, seedSettings, entrantCount, unpaidEntrants] = await Promise.all([
       this.prisma.drawBracket.findFirst({
         where: { eventItemId: eventId, isCurrent: true },
         include: {
@@ -189,6 +190,7 @@ export class DrawsService {
       this.prisma.registration.count({
         where: { eventId, status: RegistrationStatus.APPROVED },
       }),
+      unpaidEventEntrants(this.prisma, event),
     ]);
 
     return {
@@ -197,6 +199,8 @@ export class DrawsService {
       currentDraw,
       seedSettings,
       entrantCount,
+      // 组别开启收费时，未缴费的报名会阻止抽签/重抽，前端据此提示。
+      unpaidEntrants,
       seedLimit: this.drawAlgorithmService.getSeedLimit(entrantCount),
     };
   }
@@ -314,6 +318,11 @@ export class DrawsService {
     });
     if (registrations.length < 2) {
       throw new BadRequestException('至少需要 2 个报名才能抽签');
+    }
+    // 生成、重抽、审批通过的重抽都经过这里；未缴费的报名必须先确认缴费或设为免缴。
+    const unpaid = await unpaidEventEntrants(this.prisma, event);
+    if (unpaid.length) {
+      throw new BadRequestException(unpaidMessage('选手', unpaid.map((entry) => entry.name)));
     }
 
     const seedLimit = this.drawAlgorithmService.getSeedLimit(registrations.length);

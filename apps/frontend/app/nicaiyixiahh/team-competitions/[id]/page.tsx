@@ -10,6 +10,7 @@ import TeamCompetitionFields, { TEAM_SCORING_OPTIONS, teamDefaults, teamAppearan
 import TeamRosterImportModal from '@/components/TeamRosterImport';
 import TeamCompetitionGroups from '@/components/TeamCompetitionGroups';
 import TeamDrawActions from '@/components/TeamDrawActions';
+import { UnpaidNotice } from '@/components/payments/UnpaidNotice';
 
 type Player = { id: string; name: string; gender: 'MALE' | 'FEMALE'; affiliation: string };
 type Team = { id: string; name: string; affiliation: string; memberCount: number; members: Player[]; rosterOverrideConfirmed?: boolean };
@@ -165,6 +166,7 @@ export default function TeamCompetitionDetailPage() {
       </Space>
     </Space>
     <TeamDrawActions competitionId={id} token={token} hasDraw={hasDraw} disabled={busy} revision={competition} onChanged={loadData} />
+    {!hasDraw && <UnpaidNotice kind="team" id={id} token={token} revision={competition} />}
     <Alert type="info" showIcon title={`各子项赛前独立填报名单并锁定，在同一场地按顺序开赛；${competition.playAllMatches ? '胜负确定时即计入排名，补打不计入正式比分、胜次或净胜分；全部打完再推进下一轮' : '达到团体胜场数后其余子项无需比赛'}。下一轮可重新安排选手。`} />
     <Card title="项目出场顺序"><Space wrap>{competition.items.map(item => <Tag key={item.id} color="blue">{item.sortOrder}. {item.eventTypeLabel}</Tag>)}</Space></Card>
     <Card title={<div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingBlock: 12 }}><span>队伍与队员</span><Space wrap><Button icon={<PlusOutlined />} disabled={rosterLocked} title={rosterLocked ? '对阵已发布，需先取消对阵才能新增队伍' : undefined} onClick={() => openTeam()}>从选手库建队</Button><Button disabled={rosterLocked} title={rosterLocked ? '对阵已发布，需先取消对阵才能批量导入队伍' : undefined} onClick={() => setBatchOpen(true)}>批量导入团体队员</Button></Space></div>}>

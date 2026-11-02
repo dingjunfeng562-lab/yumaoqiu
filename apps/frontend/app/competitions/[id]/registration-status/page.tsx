@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { Alert, Button, Card, Descriptions, Input, Space, Tag, Typography } from 'antd';
 import { apiFetch } from '@/lib/api';
+import { PaymentGroupCard } from '@/components/payments/PaymentGroups';
+import type { PaymentGroupView } from '@/lib/payments';
 
 type RegistrationView = {
   id: string;
@@ -32,6 +34,7 @@ export default function RegistrationStatusPage() {
   const [token, setToken] = useState('');
   const [input, setInput] = useState('');
   const [data, setData] = useState<RegistrationView | null>(null);
+  const [payment, setPayment] = useState<PaymentGroupView | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -53,8 +56,14 @@ export default function RegistrationStatusPage() {
         { redirectOnForbidden: false },
       );
       setData(result);
+      // 缴费信息查询失败不影响报名状态展示。
+      apiFetch<PaymentGroupView | null>(
+        `/payments/guest/${id}/${encodeURIComponent(value.trim())}`,
+        { redirectOnForbidden: false },
+      ).then(setPayment).catch(() => setPayment(null));
     } catch (err) {
       setData(null);
+      setPayment(null);
       setError(err instanceof Error ? err.message : '查询失败');
     } finally {
       setLoading(false);
@@ -98,7 +107,7 @@ export default function RegistrationStatusPage() {
               查询
             </Button>
           </Space.Compact>
-          {error ? <Alert type="error" showIcon message={error} /> : null}
+          {error ? <Alert type="error" showIcon title={error} /> : null}
           {data ? (
             <>
               <Descriptions column={1} bordered size="small">
@@ -114,8 +123,9 @@ export default function RegistrationStatusPage() {
                   {new Date(data.createdAt).toLocaleString('zh-CN', { hour12: false })}
                 </Descriptions.Item>
               </Descriptions>
+              {payment?.required ? <PaymentGroupCard group={payment} showCompetition={false} /> : null}
               {data.rejectReason ? (
-                <Alert type="warning" showIcon message={`驳回原因：${data.rejectReason}`} />
+                <Alert type="warning" showIcon title={`驳回原因：${data.rejectReason}`} />
               ) : null}
               <Typography.Text type="secondary">
                 如需修改报名信息，请联系组委会。

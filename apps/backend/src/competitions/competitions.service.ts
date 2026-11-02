@@ -253,10 +253,26 @@ export class CompetitionsService {
       );
     }
     const rules = normalizeRegistrationFieldRules(tournament.registrationFieldRules);
+    const payment = await this.prisma.tournamentPaymentSetting.findUnique({
+      where: { tournamentId_entrantType: { tournamentId: tournament.id, entrantType } },
+      select: { enabled: true, singlesFee: true, doublesFee: true },
+    });
     return {
       tournamentId: tournament.id,
       title: tournament.name,
       subtitle: tournament.subtitle,
+      // 扫码报名先展示赛事简介，再进入报名表。
+      coverImageUrl: tournament.coverImageUrl,
+      organizer: tournament.organizer,
+      description: tournament.description ?? tournament.rules,
+      registrationNotice: tournament.registrationNotice,
+      maxRegistrationEvents: tournament.allowCrossEventRegistration ? tournament.maxRegistrationEvents : 1,
+      needsRegistrationReview: tournament.needsRegistrationReview,
+      registrationOpen: effectiveTournamentStatus(tournament) === TournamentStatus.REGISTRATION_OPEN,
+      // 本组别收费标准（分）；未开启时为 null。免审核且收费时，提交后直接进入缴费页。
+      payment: payment?.enabled
+        ? { singlesFee: payment.singlesFee, doublesFee: payment.doublesFee }
+        : null,
       startDate: tournament.startDate.toISOString(),
       endDate: tournament.endDate.toISOString(),
       location: tournament.location,
@@ -660,6 +676,23 @@ export class CompetitionsService {
       orderBy: [{ createdAt: 'desc' }],
     });
 
+    // 赛事只存了 submittedById，没有建立 Prisma 关系。超级管理员需要在赛事管理里
+    // 看到每条赛事由哪个账号创建/发布，这里一次性查出账号，避免逐条查询。
+    const publisherIds = [
+      ...new Set(
+        competitions
+          .map((competition) => competition.submittedById)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    const publishers = publisherIds.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: publisherIds } },
+          select: { id: true, username: true, email: true, role: true },
+        })
+      : [];
+    const publisherById = new Map(publishers.map((publisher) => [publisher.id, publisher]));
+
     return competitions.map((competition) => {
       // 管理员在「参赛选手」里手工新增、批量导入、Excel 导入、选手库加入的报名不经过
       // 审核队列，直接以已通过状态落库（competitionRegistrationId 为空）。它们和线上报名
@@ -682,6 +715,12 @@ export class CompetitionsService {
         approvalStatus: competition.approvalStatus,
         rejectReason: competition.rejectReason,
         photoAccessEnabled: Boolean(competition.photoAccessToken),
+        // 「发布人」= 创建并提交该赛事的账号；账号删除后 submittedById 仍保留，
+        // 前端据此区分「账号已删除」和更早的历史赛事。
+        submittedById: competition.submittedById,
+        publisher: competition.submittedById
+          ? publisherById.get(competition.submittedById) ?? null
+          : null,
         counts: {
           // all = 报名审核页「全部」的条数 = 线上报名 + 管理员录入的已通过报名。
           all: competition.competitionRegistrations.length + adminApproved,
@@ -1787,7 +1826,8 @@ export class CompetitionsService {
     const duplicate = await this.prisma.competitionRegistration.findFirst({
       where: {
         competitionId,
-        status: { not: RegistrationStatus.REMOVED },
+        // 被驳回的报名允许重新提交；游客没有账号可排除旧记录，只能在这里放行。
+        status: { notIn: [RegistrationStatus.REMOVED, RegistrationStatus.REJECTED] },
         ...(excludeId ? { id: { not: excludeId } } : {}),
         OR: [
           ...(entrantType === EntrantType.SCHOOL && person.studentId

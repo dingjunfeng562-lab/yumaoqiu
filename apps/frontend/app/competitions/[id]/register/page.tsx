@@ -1,11 +1,12 @@
 'use client';
 
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
-import { useEffect, useMemo, useState } from 'react';
+import { useParams, useRouter } from 'next/navigation';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import { PortalFeaturePage } from '@/components/home/PortalFeaturePage';
 import SocialRegistrationForm, { type SocialCodeInfo } from '@/components/SocialRegistrationForm';
+import { RegistrationIntro, type RegistrationIntroInfo } from '@/components/registration/RegistrationIntro';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 
@@ -163,15 +164,9 @@ function isPrimaryGenderAllowed(option: EventOption | undefined, gender: FormSta
   return genderOptionsForPrimary(option).some((item) => item.value === gender);
 }
 
-type RegistrationCodeInfo = {
+type RegistrationCodeInfo = RegistrationIntroInfo & {
   tournamentId: string;
-  title: string;
-  startDate: string;
-  endDate: string;
-  location?: string | null;
-  registrationStatus?: string;
   entrantType: 'SCHOOL' | 'SOCIAL';
-  entrantTypeLabel: string;
   loginRequired: boolean;
   fieldRules?: {
     SCHOOL?: { studentId?: string; college?: string; majorGrade?: string };
@@ -179,6 +174,17 @@ type RegistrationCodeInfo = {
   };
   events: Array<{ id: string; type: string; label: string; isDouble: boolean }>;
 };
+
+/** 免审核且本组别收费时，报名一提交就是已通过状态，直接进入缴费页。 */
+function paymentPageAfterSubmit(
+  competitionId: string,
+  codeInfo: { payment?: unknown },
+  registrationStatus: string | undefined,
+  guestToken?: string | null,
+) {
+  if (!codeInfo.payment || registrationStatus !== 'approved') return null;
+  return `/competitions/${competitionId}/payment${guestToken ? `?token=${encodeURIComponent(guestToken)}` : ''}`;
+}
 
 export default function CompetitionRegisterPage() {
   const params = useParams<{ id: string }>();
@@ -188,13 +194,17 @@ export default function CompetitionRegisterPage() {
   const [info, setInfo] = useState<RegistrationCodeInfo | null>(null);
   const [checking, setChecking] = useState(false);
   const [codeError, setCodeError] = useState('');
+  // 报名码通过后先看赛事简介，点底部「立即报名」才进入选择组别。
+  const [started, setStarted] = useState(false);
 
+  // 扫二维码进入时链接里已带报名码：直接校验，第一屏就是赛事简介。
   useEffect(() => {
     const value = new URLSearchParams(window.location.search).get('code') ?? '';
-    if (value) {
-      setCode(value);
+    if (!value) return;
+    void Promise.resolve().then(() => {
       setCodeInput(value);
-    }
+      return verifyCode(value);
+    });
   }, []);
 
   async function verifyCode(value: string) {
@@ -220,11 +230,6 @@ export default function CompetitionRegisterPage() {
       setChecking(false);
     }
   }
-
-  useEffect(() => {
-    if (code) void verifyCode(code);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   if (!info) {
     return (
@@ -268,6 +273,25 @@ export default function CompetitionRegisterPage() {
     );
   }
 
+  if (!started) {
+    return (
+      <PortalFeaturePage
+        activeHref="/competitions"
+        eyebrow="Registration"
+        title={info.title}
+        description="先了解赛事简介和报名须知，准备好后点击底部「立即报名」。"
+      >
+        <RegistrationIntro
+          info={info}
+          onStart={() => {
+            setStarted(true);
+            window.scrollTo({ top: 0 });
+          }}
+        />
+      </PortalFeaturePage>
+    );
+  }
+
   if (info.entrantType === 'SOCIAL') {
     return (
       <PortalFeaturePage
@@ -280,6 +304,7 @@ export default function CompetitionRegisterPage() {
           competitionId={info.tournamentId}
           registrationCode={code}
           info={info as SocialCodeInfo}
+          paymentPageFor={(status, guestToken) => paymentPageAfterSubmit(info.tournamentId, info, status, guestToken)}
         />
       </PortalFeaturePage>
     );
@@ -297,6 +322,7 @@ function SchoolRegisterPage({
 }) {
   const params = useParams<{ id: string }>();
   const id = params?.id;
+  const router = useRouter();
   const { data: session } = useSession();
   const token = session?.user?.accessToken;
   const [competition, setCompetition] = useState<Competition | null>(null);
@@ -307,6 +333,12 @@ function SchoolRegisterPage({
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [step, setStep] = useState<'events' | 'details'>('events');
+  const messageRef = useRef<HTMLDivElement>(null);
+
+  // 提交按钮在表单底部，结果提示在顶部；提交后把提示滚到可见位置（手机上尤其需要）。
+  useEffect(() => {
+    if (message) messageRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [message]);
 
   useEffect(() => {
     if (!id) return;
@@ -491,7 +523,16 @@ function SchoolRegisterPage({
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.message ?? '报名提交失败');
-      setMessage(data.message ?? '报名已提交，请等待管理员审核。');
+      const paymentPage = paymentPageAfterSubmit(id, codeInfo, data.registration?.status, data.guestToken);
+      if (paymentPage) {
+        router.push(paymentPage);
+        return;
+      }
+      setMessage(
+        codeInfo.payment && data.registration?.status === 'pending'
+          ? `${data.message ?? '报名已提交，请等待管理员审核。'}审核通过后请到首页「报名查询」缴费。`
+          : data.message ?? '报名已提交，请等待管理员审核。',
+      );
       setExisting(data.registration ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : '报名提交失败');
@@ -534,11 +575,15 @@ function SchoolRegisterPage({
           )}
         </section>
 
-        <section className="rounded-lg border border-blue-100 bg-white p-4 shadow-sm sm:p-6">
+        {/* 手机上从赛事简介点「立即报名」后，第一眼就是选择组别 */}
+        <section className="order-first rounded-lg border border-blue-100 bg-white p-4 shadow-sm sm:p-6 lg:order-none">
           <h2 className="text-lg font-black text-slate-950 sm:text-xl">报名表单</h2>
           {message && (
-            <div className="mt-4 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm font-bold text-green-700">
+            <div ref={messageRef} className="mt-4 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm font-bold text-green-700">
               {message}
+              {codeInfo.payment ? (
+                <Link href="/registration-query" className="ml-2 text-blue-700 underline">去报名查询</Link>
+              ) : null}
             </div>
           )}
           {existing?.rejectReason ? (

@@ -27,6 +27,14 @@ import { apiFetch } from '@/lib/api';
 import { useCurrentAccess } from '@/lib/use-current-role';
 import { CompetitionRankingsModal } from '@/components/admin/CompetitionRankingsModal';
 
+const PUBLISHER_ROLE_LABELS: Record<string, string> = {
+  ROOT: '超级管理员',
+  ADMIN: '赛事管理员',
+  PLAYER: '普通用户',
+  REFEREE: '裁判',
+  PHOTOGRAPHER: '摄影师',
+};
+
 type Competition = {
   id: string;
   title: string;
@@ -41,6 +49,13 @@ type Competition = {
   approvalStatus?: 'PENDING' | 'APPROVED' | 'REJECTED';
   rejectReason?: string | null;
   photoAccessEnabled?: boolean;
+  submittedById?: string | null;
+  publisher?: {
+    id: string;
+    username: string | null;
+    email: string | null;
+    role: string;
+  } | null;
   counts: {
     all: number;
     pending: number;
@@ -301,6 +316,32 @@ export default function AdminCompetitionsPage() {
     }
   }
 
+  const publisherColumn = {
+    title: '发布人',
+    key: 'publisher',
+    width: 120,
+    render: (_: unknown, record: Competition) => {
+      const publisher = record.publisher;
+      if (!publisher) {
+        return (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {record.submittedById ? '账号已删除' : '未记录'}
+          </Typography.Text>
+        );
+      }
+      const tooltip = [
+        publisher.username,
+        PUBLISHER_ROLE_LABELS[publisher.role] ?? publisher.role,
+        publisher.email,
+      ].filter(Boolean).join(' · ');
+      return (
+        <Typography.Text ellipsis={{ tooltip }} style={{ display: 'block', fontSize: 12 }}>
+          {publisher.username || publisher.email || '未知账号'}
+        </Typography.Text>
+      );
+    },
+  };
+
   const columns = [
     {
       title: '赛事',
@@ -317,6 +358,7 @@ export default function AdminCompetitionsPage() {
         </Space>
       ),
     },
+    ...(canOperate ? [publisherColumn] : []),
     {
       title: '比赛时间',
       key: 'date',
@@ -467,7 +509,7 @@ export default function AdminCompetitionsPage() {
           dataSource={competitions}
           loading={loading}
           pagination={{ pageSize: 10, showSizeChanger: false, hideOnSinglePage: true }}
-          scroll={{ x: 1130 }}
+          scroll={{ x: 1250 }}
           tableLayout="fixed"
           size="middle"
           locale={{ emptyText: '暂无赛事' }}

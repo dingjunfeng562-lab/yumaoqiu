@@ -5,6 +5,8 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import { Header } from '@/components/home/Header';
+import { PaymentGroupList } from '@/components/payments/PaymentGroups';
+import type { PaymentGroupView } from '@/lib/payments';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 
@@ -77,6 +79,19 @@ export default function MyRegistrationsPage() {
   const [registrations, setRegistrations] = useState<MyRegistration[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [payments, setPayments] = useState<PaymentGroupView[]>([]);
+
+  useEffect(() => {
+    if (!token) return;
+    let alive = true;
+    fetch(`${API_BASE}/payments/me`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' })
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data: PaymentGroupView[]) => { if (alive) setPayments(data); })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [token]);
 
   useEffect(() => {
     if (!token) return;
@@ -146,6 +161,13 @@ export default function MyRegistrationsPage() {
           </p>
         </div>
       </section>
+
+      {payments.some((group) => group.required) ? (
+        <section className="mx-auto max-w-[1100px] px-4 pt-6 sm:px-6 sm:pt-8 lg:px-8">
+          <h2 className="mb-3 text-lg font-black text-slate-900">缴费情况</h2>
+          <PaymentGroupList groups={payments.filter((group) => group.required)} />
+        </section>
+      ) : null}
 
       <section className="mx-auto max-w-[1100px] px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
         {loading ? (

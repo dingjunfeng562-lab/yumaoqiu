@@ -77,6 +77,11 @@ export class TeamCompetitionsController {
     return this.teamCompetitionsService.listTeams(id);
   }
 
+  @Get(':id/unpaid-teams')
+  listUnpaidTeams(@Param('id') id: string) {
+    return this.teamCompetitionsService.listUnpaidTeams(id);
+  }
+
   @Get(':id/available-players')
   availablePlayers(@Param('id') id: string, @Req() req: { user: AuthActor }) {
     return this.teamCompetitionsService.availablePlayers(id, req.user);

@@ -13,6 +13,7 @@ const navItems = [
   { label: '赛事列表', href: '/competitions' },
   { label: '直播大屏幕', href: '/live-screen' },
   { label: '成绩排行', href: '/ranking' },
+  { label: '报名查询', href: '/registration-query' },
   { label: '通知公告', href: '/notice' },
 ];
 

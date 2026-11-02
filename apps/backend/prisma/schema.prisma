@@ -176,6 +176,13 @@ enum EmailLogStatus {
   SKIPPED
 }
 
+// 缴费状态：未缴费 / 已缴费（管理员确认转账）/ 免缴（特邀、工作人员等）。
+enum PaymentStatus {
+  UNPAID
+  PAID
+  WAIVED
+}
+
 model InviteCode {
   id           String   @id @default(cuid())
   code         String   @unique
@@ -298,6 +305,8 @@ model Player {
   createdAt         DateTime       @default(now())
   updatedAt         DateTime       @updatedAt
   @@index([ownerId])
+  // 公开缴费查询按姓名精确匹配。
+  @@index([name])
 }
 
 model Tournament {
@@ -360,11 +369,57 @@ model Tournament {
   refereeGrants         RefereeTournamentGrant[]
   photoUploadGrants     PhotoUploadGrant[]
   broadcasts            BroadcastSession[]
+  paymentSettings       TournamentPaymentSetting[]
+  paymentLogs           PaymentLog[]
   createdAt             DateTime         @default(now())
   updatedAt             DateTime         @updatedAt
 
   @@index([approvalStatus, isPublished])
   @@index([submittedById])
+}
+
+// 每个赛事每个组别（学生组/社会组）一份收费设置。金额单位为分。
+// 单打按人（一条报名）收，双打按对收，团体赛按队收。
+model TournamentPaymentSetting {
+  id           String      @id @default(cuid())
+  tournamentId String
+  tournament   Tournament  @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  entrantType  EntrantType
+  enabled      Boolean     @default(false)
+  singlesFee   Int         @default(0)
+  doublesFee   Int         @default(0)
+  teamFee      Int         @default(0)
+  // 收款户名、账号、转账备注要求等说明，选手端原样展示。
+  instructions String?     @db.Text
+  qrImageUrl   String?     @db.VarChar(255)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@unique([tournamentId, entrantType])
+}
+
+// 缴费状态变更记录。registrationId / teamId 不建外键，报名或队伍删除后记录仍保留。
+model PaymentLog {
+  id             String        @id @default(cuid())
+  tournamentId   String
+  tournament     Tournament    @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  entrantType    EntrantType
+  registrationId String?
+  teamId         String?
+  // 记录当时的参赛方名称和项目，便于对账。
+  targetName     String        @db.VarChar(191)
+  itemName       String        @db.VarChar(120)
+  fromStatus     PaymentStatus
+  toStatus       PaymentStatus
+  amount         Int?
+  note           String?       @db.VarChar(255)
+  operatorId     String?
+  operatorName   String?       @db.VarChar(191)
+  createdAt      DateTime      @default(now())
+
+  @@index([tournamentId, createdAt])
+  @@index([registrationId])
+  @@index([teamId])
 }
 
 enum BroadcastStatus {
@@ -847,6 +902,12 @@ model Registration {
   seedRank         Int?
   finalRank        Int?
   groupName        String?
+  // 缴费：双打一条报名即一对，按对收一次。paidAmount 为确认时的实缴金额（分）。
+  paymentStatus    PaymentStatus      @default(UNPAID)
+  paidAmount       Int?
+  paidAt           DateTime?
+  paymentConfirmedById String?
+  paymentNote      String?            @db.VarChar(255)
   drawSlots        DrawSlot[]
   drawSeedSettings DrawSeedSetting[]
   drawGroupMembers DrawGroupMember[]
@@ -985,6 +1046,12 @@ model Team {
   notes             String?
   finalRank         Int?
   rosterOverrideConfirmed Boolean @default(false)
+  // 团体赛按队收费。
+  paymentStatus     PaymentStatus @default(UNPAID)
+  paidAmount        Int?
+  paidAt            DateTime?
+  paymentConfirmedById String?
+  paymentNote       String?      @db.VarChar(255)
   members           TeamMember[]
   lineups           TeamLineup[]
   team1Matches      TeamMatch[]  @relation("team1Matches")

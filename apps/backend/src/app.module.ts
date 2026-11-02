@@ -23,6 +23,7 @@ import { UsageMetricsModule } from './usage-metrics/usage-metrics.module';
 import { BroadcastsModule } from './broadcasts/broadcasts.module';
 import { PhotoActivitiesModule } from './photo-activities/photo-activities.module';
 import { MatchManagementModule } from './match-management/match-management.module';
+import { PaymentsModule } from './payments/payments.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ResultsResetModule } from './common/results-reset.module';
@@ -54,6 +55,7 @@ import { ResultsResetModule } from './common/results-reset.module';
     BroadcastsModule,
     PhotoActivitiesModule,
     MatchManagementModule,
+    PaymentsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

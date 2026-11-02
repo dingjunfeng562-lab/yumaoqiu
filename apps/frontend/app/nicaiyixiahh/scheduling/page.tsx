@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import dayjs, { Dayjs } from 'dayjs';
 import {
@@ -198,6 +199,7 @@ function dailyTimeValue(value?: string, fallback = '18:00') {
 }
 
 export default function AdminSchedulingPage() {
+  const router = useRouter();
   const { data: session } = useSession();
   const token = session?.user?.accessToken;
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
@@ -538,7 +540,15 @@ export default function AdminSchedulingPage() {
         </div>
         <Space wrap>
           <Button icon={<ReloadOutlined />} onClick={() => loadSchedule()} loading={loading}>刷新</Button>
-          <Button href="/nicaiyixiahh/tournaments">编辑赛程设置</Button>
+          <Button
+            disabled={!selectedTournamentId}
+            onClick={() => {
+              if (!selectedTournamentId) return;
+              router.push(`/nicaiyixiahh/tournaments?edit=${encodeURIComponent(selectedTournamentId)}`);
+            }}
+          >
+            编辑赛程设置
+          </Button>
           <Dropdown
             disabled={!canExportStageOrder}
             menu={{

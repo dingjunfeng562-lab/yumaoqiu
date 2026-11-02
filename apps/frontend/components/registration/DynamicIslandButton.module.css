@@ -1,0 +1,198 @@
+/* 「灵动岛」式悬浮报名按钮：入场时从小胶囊展开成完整按钮，点击后收缩再放大过渡到报名表。 */
+.dock {
+  position: fixed;
+  left: 0;
+  right: 0;
+  /* 手机端底部有 64px 的主导航，悬浮在它上方 */
+  bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+  z-index: 50;
+  display: flex;
+  justify-content: center;
+  padding: 0 16px;
+  pointer-events: none;
+}
+
+@media (min-width: 1024px) {
+  .dock {
+    bottom: calc(28px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+.island {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: 440px;
+  height: 64px;
+  padding: 0 8px 0 18px;
+  border: 0;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #09090b;
+  color: #fff;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 18px 40px rgba(2, 12, 42, 0.38), inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+  animation: islandIn 680ms cubic-bezier(0.2, 0.9, 0.2, 1.12) both;
+  transition: transform 200ms ease, box-shadow 200ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.island:hover {
+  box-shadow: 0 22px 48px rgba(2, 12, 42, 0.45), inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+.island:active {
+  transform: scale(0.97);
+}
+
+.island:focus-visible {
+  outline: 3px solid #fbbf24;
+  outline-offset: 3px;
+}
+
+.island:disabled {
+  cursor: not-allowed;
+  background: #3f3f46;
+}
+
+.pressed {
+  animation: islandPress 340ms cubic-bezier(0.3, 0.7, 0.2, 1) forwards;
+}
+
+.dot {
+  position: relative;
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #22c55e;
+}
+
+.dot::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: inherit;
+  background: rgba(34, 197, 94, 0.45);
+  animation: dotPulse 1.8s ease-out infinite;
+}
+
+.island:disabled .dot {
+  background: #a1a1aa;
+}
+
+.island:disabled .dot::after {
+  display: none;
+}
+
+.text {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  animation: fadeIn 320ms 420ms ease both;
+}
+
+.title {
+  font-size: 16px;
+  font-weight: 900;
+  line-height: 1.2;
+  letter-spacing: 0.02em;
+}
+
+.subtitle {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: rgba(255, 255, 255, 0.62);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.arrow {
+  display: grid;
+  flex: none;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border-radius: 999px;
+  background: #fbbf24;
+  color: #09090b;
+  font-size: 20px;
+  font-weight: 900;
+  animation: fadeIn 320ms 420ms ease both;
+}
+
+.island:disabled .arrow {
+  background: #71717a;
+  color: #e4e4e7;
+}
+
+@keyframes islandIn {
+  0% {
+    max-width: 124px;
+    height: 36px;
+    opacity: 0;
+    transform: translateY(28px);
+  }
+  40% {
+    max-width: 124px;
+    height: 36px;
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    max-width: 440px;
+    height: 64px;
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes islandPress {
+  0% {
+    transform: scale(1);
+  }
+  45% {
+    transform: scale(0.94);
+  }
+  100% {
+    transform: scale(1.06);
+    opacity: 0;
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes dotPulse {
+  0% {
+    opacity: 0.9;
+    transform: scale(0.6);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.8);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .island,
+  .pressed,
+  .text,
+  .arrow,
+  .dot::after {
+    animation: none;
+  }
+}

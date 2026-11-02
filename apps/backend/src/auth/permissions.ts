@@ -4,6 +4,7 @@ export const PERMISSION_OPTIONS = [
   { key: 'TOURNAMENTS', label: '创建和编辑赛事', group: '赛事' },
   { key: 'TOURNAMENT_ADMIN', label: '赛事审核、发布、归档和排名', group: '赛事' },
   { key: 'PLAYERS', label: '选手管理与报名审核', group: '赛事' },
+  { key: 'PAYMENTS', label: '缴费管理', group: '赛事' },
   { key: 'ORDERBOOK', label: '秩序册导出', group: '赛事' },
   { key: 'DATA_EXPORT', label: '赛程、成绩和报名数据导出', group: '赛事' },
   { key: 'EVENTS', label: '单项管理', group: '赛事' },
@@ -31,7 +32,7 @@ export const DEFAULT_PERMISSIONS: Record<Role, PermissionKey[]> = {
   // 管理员默认拥有赛事运营的整套功能，只保留四项平台级配置（赛事审核发布、
   // 公告、AI 配置、图片审核、邮件设置）给超级管理员；邀请码始终由角色固定授予。
   ADMIN: [
-    'TOURNAMENTS', 'PLAYERS', 'ORDERBOOK', 'DATA_EXPORT', 'EVENTS', 'TEAMS',
+    'TOURNAMENTS', 'PLAYERS', 'PAYMENTS', 'ORDERBOOK', 'DATA_EXPORT', 'EVENTS', 'TEAMS',
     'DRAWS', 'SCHEDULING', 'SCORING', 'PHOTOS', 'USERS', 'DASHBOARD',
     'REGISTRATION', 'REFEREE', 'PHOTO_UPLOAD',
   ],
@@ -56,7 +57,7 @@ export function hasPermission(user: PermissionUser, ...keys: PermissionKey[]) {
 
 // 空集合表示仅超级管理员可用。未列出的控制器仍走各自的角色守卫。
 export function requiredPermissions(controller: string, action: string, kind?: string): PermissionKey[] | undefined {
-  const tournamentRead: PermissionKey[] = ['TOURNAMENTS', 'TOURNAMENT_ADMIN', 'PLAYERS', 'ORDERBOOK', 'DATA_EXPORT', 'EVENTS', 'TEAMS', 'DRAWS', 'SCHEDULING', 'SCORING', 'PHOTOS', 'EMAIL', 'DASHBOARD'];
+  const tournamentRead: PermissionKey[] = ['TOURNAMENTS', 'TOURNAMENT_ADMIN', 'PLAYERS', 'PAYMENTS', 'ORDERBOOK', 'DATA_EXPORT', 'EVENTS', 'TEAMS', 'DRAWS', 'SCHEDULING', 'SCORING', 'PHOTOS', 'EMAIL', 'DASHBOARD'];
   switch (controller) {
     case 'AuthController':
       if (['createRoot', 'createAdmin', 'updateUserRole', 'updateInviteQuota', 'setUserPermissions', 'getUserPermissions', 'permissionOptions'].includes(action)) return [];
@@ -104,6 +105,7 @@ export function requiredPermissions(controller: string, action: string, kind?: s
     // 裁判员对局管理（赛事级对阵、时间、比分、结束状态与修改）仅限超级管理员。
     case 'MatchManagementController': return [];
     case 'CompetitionsController': return ['REGISTRATION'];
+    case 'AdminPaymentsController': return ['PAYMENTS'];
     default: return undefined;
   }
 }
