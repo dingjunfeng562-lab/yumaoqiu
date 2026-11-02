@@ -1,14 +1,29 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { Format, MatchEventType, MatchStatus, RegistrationStatus, TournamentStatus } from '@prisma/client';
+import { promisify } from 'node:util';
+import { gzip } from 'node:zlib';
 import { PrismaService } from '../prisma/prisma.service';
 import { TeamCompetitionsService } from '../team-competitions/team-competitions.service';
 import { AnnouncementsService } from '../announcements/announcements.service';
+import { ScoringGateway } from '../scoring/scoring.gateway';
 import { effectiveTournamentStatus } from '../tournaments/tournament-status';
 import { applyFinalRankings, limitRankings, teamStandings } from '../common/final-rankings';
 import { tournamentResultsReady } from '../common/tournament-results-ready';
 import { buildKnockoutSkeleton } from '../common/knockout-skeleton';
+import { VersionedCache } from '../common/versioned-cache';
+
+const gzipAsync = promisify(gzip);
 
 const SECOND_STAGE_FORMAL_ROUND_NO_BASE = 100;
+
+// Every scoring/bracket broadcast invalidates the brackets cache immediately
+// (see ScoringGateway.publicDataChanges), so live scores are never delayed.
+// This TTL only bounds staleness for edits that don't broadcast (e.g. an admin
+// changing a venue), which previously needed a manual page reload anyway.
+const BRACKETS_CACHE_TTL_MS = 3_000;
+
+/** A JSON response serialized once and shared by every request. */
+export type PublicJsonPayload = { json: string; gzip: Buffer };
 
 const EVENT_TYPE_LABELS: Record<string, string> = {
   MENS_SINGLES: '男子单打',
@@ -88,11 +103,20 @@ type RankedStandingRow = StandingRow & {
 
 @Injectable()
 export class PublicService {
+  // /api/public/brackets is ~700KB and ~270ms of CPU to build, and every open
+  // bracket / live-screen page refetches it on each scoreboard:update. Sharing
+  // one build per data version keeps the cost flat no matter how many watch.
+  private readonly bracketsCache = new VersionedCache<PublicJsonPayload>(BRACKETS_CACHE_TTL_MS);
+
   constructor(
     private prisma: PrismaService,
     private teamCompetitionsService: TeamCompetitionsService,
     private announcementsService: AnnouncementsService,
-  ) {}
+    // Optional so the smoke test can construct the service without Nest.
+    @Optional() scoringGateway?: ScoringGateway,
+  ) {
+    scoringGateway?.publicDataChanges.subscribe(() => this.bracketsCache.invalidate());
+  }
 
   async getLobby() {
     const tournaments = await this.prisma.tournament.findMany({
@@ -477,6 +501,13 @@ export class PublicService {
     return {
       announcement: await this.announcementsService.findActivePopup(),
     };
+  }
+
+  getBracketsPayload(): Promise<PublicJsonPayload> {
+    return this.bracketsCache.get(async () => {
+      const json = JSON.stringify(await this.getBrackets());
+      return { json, gzip: await gzipAsync(json) };
+    });
   }
 
   async getBrackets() {

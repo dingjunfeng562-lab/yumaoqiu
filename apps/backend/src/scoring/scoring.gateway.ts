@@ -24,6 +24,12 @@ export class ScoringGateway {
   // ScoringService internals, which keeps the dependency one-directional.
   readonly matchChanges = new Subject<string>();
 
+  // Fires synchronously right BEFORE every scoreboard/bracket broadcast, so
+  // public read caches (e.g. /api/public/brackets) are invalidated before any
+  // client receives the event and refetches. Order matters: emitting first
+  // would let a refetch be answered from the pre-write cache.
+  readonly publicDataChanges = new Subject<void>();
+
   @SubscribeMessage('joinMatch')
   joinMatch(@ConnectedSocket() client: Socket, @MessageBody() body: { matchId?: string }) {
     if (!body?.matchId) return { ok: false, message: 'matchId required' };
@@ -39,6 +45,7 @@ export class ScoringGateway {
   }
 
   emitMatchState(matchId: string, state: unknown) {
+    this.publicDataChanges.next();
     this.server.to(this.matchRoom(matchId)).emit('match:update', state);
     this.server.emit('scoreboard:update', state);
     this.matchChanges.next(matchId);
@@ -49,6 +56,8 @@ export class ScoringGateway {
   // the same `/scores` namespace and refetch the affected tournament/event
   // instead of polling.
   emitBracketUpdate(payload: { tournamentId?: string | null; eventId?: string | null; matchId?: string | null }) {
+    // Invalidate even when nothing is broadcast: the caller still changed data.
+    this.publicDataChanges.next();
     if (!payload.tournamentId && !payload.eventId && !payload.matchId) return;
     if (payload.matchId) this.matchChanges.next(payload.matchId);
     this.server.emit('bracket:update', {

@@ -1,4 +1,5 @@
-import { Controller, Get, Header, Param, Query } from '@nestjs/common';
+import { Controller, Get, Header, Param, Query, Req, Res } from '@nestjs/common';
+import type { Request, Response } from 'express';
 import { PublicService } from './public.service';
 import { TournamentScreenService } from './tournament-screen.service';
 
@@ -45,9 +46,21 @@ export class PublicController {
     return this.publicService.getAnnouncementPopup();
   }
 
+  // Served from a shared, pre-serialized and pre-gzipped payload (see
+  // PublicService.getBracketsPayload). nginx leaves bodies that already carry
+  // Content-Encoding alone, so the gzip happens once per data change instead
+  // of once per viewer.
   @Get('brackets')
-  getBrackets() {
-    return this.publicService.getBrackets();
+  async getBrackets(@Req() req: Request, @Res() res: Response) {
+    const payload = await this.publicService.getBracketsPayload();
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.vary('Accept-Encoding'); // append; CORS already set Vary: Origin
+    if (/\bgzip\b/i.test(String(req.headers['accept-encoding'] ?? ''))) {
+      res.setHeader('Content-Encoding', 'gzip');
+      res.end(payload.gzip);
+    } else {
+      res.end(payload.json);
+    }
   }
 
   @Get('history')
