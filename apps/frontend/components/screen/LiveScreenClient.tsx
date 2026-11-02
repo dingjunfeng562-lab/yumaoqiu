@@ -1,8 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { io, type Socket } from 'socket.io-client';
+import { useCallback, useMemo, useState } from 'react';
 import type {
   BracketMatch,
   BracketParticipant,
@@ -10,9 +9,7 @@ import type {
 } from '@/components/bracket/KnockoutBracket';
 import type { SecondStageData } from '@/components/bracket/SecondStageBracket';
 import { SecondStageCrossBracket } from '@/components/bracket/SecondStageCrossBracket';
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
-const SOCKET_BASE = API_BASE.replace(/\/api\/?$/, '');
+import { useLiveBrackets } from '@/lib/use-live-brackets';
 
 type SocketState = 'connecting' | 'synced' | 'offline';
 type MatchFilter = 'ALL' | 'LIVE' | 'PENDING' | 'COMPLETED';
@@ -129,13 +126,6 @@ function statusPillClasses(status?: string | null, paused?: boolean) {
   if (normalized === 'LIVE') return 'bg-yellow-300 text-slate-950';
   if (normalized === 'COMPLETED') return 'bg-red-500 text-white';
   return 'bg-white/12 text-white/72';
-}
-
-async function fetchBrackets() {
-  const res = await fetch(`${API_BASE}/public/brackets`, { cache: 'no-store' });
-  if (!res.ok) throw new Error('获取直播大屏数据失败');
-  const data = (await res.json()) as { brackets?: KnockoutBracketData[] };
-  return data.brackets ?? [];
 }
 
 function LivePill({ state }: { state: SocketState }) {
@@ -406,11 +396,18 @@ export function LiveScreenClient({
     initialBrackets.find((bracket) => bracket.tournamentId === initialSelectedTournamentId)?.id ??
     initialBrackets[0]?.id ??
     '';
-  const [brackets, setBrackets] = useState(initialBrackets);
   const [selectedTournamentId, setSelectedTournamentId] = useState(initialSelectedTournamentId);
   const [selectedId, setSelectedId] = useState(initialSelectedEventId);
   const [socketState, setSocketState] = useState<SocketState>('connecting');
-  const [updatedAt, setUpdatedAt] = useState(new Date());
+  // 刷新时只取正在显示的赛事；跟随下方的「有效值」effectiveTournamentId。
+  const [liveTournamentId, setLiveTournamentId] = useState<string | null>(initialSelectedTournamentId || null);
+  // 比分靠 bracket:match 推送逐场就地更新；60 秒定时刷新只是推送中断时的兜底。
+  const { brackets, updatedAt } = useLiveBrackets(initialBrackets, {
+    tournamentId: liveTournamentId,
+    pollMs: 60_000,
+    onSocketState: setSocketState,
+    onRefetchError: () => setSocketState('offline'),
+  });
 
   // 一级：赛事（按 tournamentId 去重，保留后端顺序）。
   const tournaments = useMemo(() => {
@@ -428,6 +425,12 @@ export function LiveScreenClient({
     selectedTournamentId && tournaments.some((t) => t.id === selectedTournamentId)
       ? selectedTournamentId
       : tournaments[0]?.id ?? '';
+
+  // 刷新范围跟随实际显示的赛事（含所选赛事失效后的回退）。渲染期按条件调整 state 是
+  // React 推荐的写法，不需要 effect。
+  if ((effectiveTournamentId || null) !== liveTournamentId) {
+    setLiveTournamentId(effectiveTournamentId || null);
+  }
 
   // 二级：该赛事下的组别（项目）。
   const events = useMemo(
@@ -452,41 +455,6 @@ export function LiveScreenClient({
     },
     [brackets],
   );
-
-  const reload = useCallback(async () => {
-    try {
-      const next = await fetchBrackets();
-      setBrackets(next);
-      setUpdatedAt(new Date());
-      // 选择保持不变；若刷新后所选已不存在，渲染时的「有效值」会自动回退首项。
-    } catch {
-      setSocketState('offline');
-    }
-  }, []);
-
-  useEffect(() => {
-    const socket: Socket = io(`${SOCKET_BASE}/scores`, {
-      transports: ['polling', 'websocket'],
-      withCredentials: true,
-    });
-    socket.on('connect', () => setSocketState('synced'));
-    socket.on('disconnect', () => setSocketState('offline'));
-    socket.on('connect_error', () => setSocketState('offline'));
-    socket.on('scoreboard:update', () => {
-      void reload();
-    });
-    // Bracket advance / forfeit / clear events from the scoring service.
-    socket.on('bracket:update', () => {
-      void reload();
-    });
-    const timer = window.setInterval(() => {
-      void reload();
-    }, 15000);
-    return () => {
-      window.clearInterval(timer);
-      socket.disconnect();
-    };
-  }, [reload]);
 
   const [filter, setFilter] = useState<MatchFilter>('ALL');
 

@@ -49,10 +49,17 @@ export class PublicController {
   // Served from a shared, pre-serialized and pre-gzipped payload (see
   // PublicService.getBracketsPayload). nginx leaves bodies that already carry
   // Content-Encoding alone, so the gzip happens once per data change instead
-  // of once per viewer.
+  // of once per viewer. `?tournamentId=` narrows it to one tournament; without
+  // it the response is unchanged (all public brackets).
   @Get('brackets')
-  async getBrackets(@Req() req: Request, @Res() res: Response) {
-    const payload = await this.publicService.getBracketsPayload();
+  async getBrackets(
+    @Query('tournamentId') tournamentId: string | undefined,
+    @Req() req: Request,
+    @Res() res: Response,
+  ) {
+    const payload = await this.publicService.getBracketsPayload(
+      typeof tournamentId === 'string' && tournamentId ? tournamentId : undefined,
+    );
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.vary('Accept-Encoding'); // append; CORS already set Vary: Origin
     if (/\bgzip\b/i.test(String(req.headers['accept-encoding'] ?? ''))) {

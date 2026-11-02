@@ -1,19 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
-import { io, type Socket } from 'socket.io-client';
+import { useLiveBrackets } from '@/lib/use-live-brackets';
 import { KnockoutBracket, type KnockoutBracketData } from './KnockoutBracket';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
-const SOCKET_BASE = API_BASE.replace(/\/api$/, '');
-
-type BracketUpdate = { tournamentId?: string | null; eventId?: string | null; matchId?: string | null };
-
 // Live wrapper around the bracket section: keeps the server-rendered
-// brackets as initial state and refetches on every bracket:update broadcast
-// from the scoring service so advances / forfeits / clears show up without
-// a page reload. We also listen to scoreboard:update so live scores during
-// matches keep the bracket detail modal in sync.
+// brackets as initial state. Live score ticks patch the affected match in
+// place (bracket:match), and advances / forfeits / clears refetch only this
+// tournament, so everything updates without a page reload (see useLiveBrackets).
 export function LiveBracketsSection({
   tournamentId,
   initialBrackets,
@@ -21,37 +14,8 @@ export function LiveBracketsSection({
   tournamentId: string;
   initialBrackets: KnockoutBracketData[];
 }) {
-  const [brackets, setBrackets] = useState(initialBrackets);
-
-  const reload = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_BASE}/public/brackets`, { cache: 'no-store' });
-      if (!res.ok) return;
-      const data = (await res.json()) as { brackets?: KnockoutBracketData[] };
-      setBrackets((data.brackets ?? []).filter((bracket) => bracket.tournamentId === tournamentId));
-    } catch {
-      /* leave previous state on transient errors */
-    }
-  }, [tournamentId]);
-
-  useEffect(() => {
-    const socket: Socket = io(`${SOCKET_BASE}/scores`, {
-      transports: ['polling', 'websocket'],
-      withCredentials: true,
-    });
-    socket.on('bracket:update', (payload: BracketUpdate) => {
-      // Best-effort filter: a bracket update for an unrelated tournament
-      // doesn't need to retrigger our fetch.
-      if (payload?.tournamentId && payload.tournamentId !== tournamentId) return;
-      void reload();
-    });
-    socket.on('scoreboard:update', () => {
-      void reload();
-    });
-    return () => {
-      socket.disconnect();
-    };
-  }, [reload, tournamentId]);
+  const { brackets: allBrackets } = useLiveBrackets(initialBrackets, { tournamentId });
+  const brackets = allBrackets.filter((bracket) => bracket.tournamentId === tournamentId);
 
   if (!brackets.length) {
     return (

@@ -68,6 +68,21 @@ export class ScoringGateway {
     });
   }
 
+  // Lean per-match update for the PUBLIC bracket / live-screen pages: carries
+  // the one match exactly as it appears inside /api/public/brackets, so those
+  // pages patch it in place instead of refetching every bracket on every
+  // point. `match: null` means "can't patch this one, refetch the
+  // tournament". scoreboard:update / bracket:update are unchanged; the admin
+  // tournament screen keeps using them.
+  emitPublicBracketMatch(payload: {
+    tournamentId: string;
+    bracketId: string;
+    matchId: string;
+    match: unknown;
+  }) {
+    this.server.emit('bracket:match', { ...payload, at: new Date().toISOString() });
+  }
+
   private matchRoom(matchId: string) {
     return `match:${matchId}`;
   }

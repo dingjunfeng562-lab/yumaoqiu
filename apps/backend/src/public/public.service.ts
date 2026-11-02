@@ -1,5 +1,5 @@
-import { Injectable, Optional } from '@nestjs/common';
-import { Format, MatchEventType, MatchStatus, RegistrationStatus, TournamentStatus } from '@prisma/client';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { Format, MatchEventType, MatchStatus, Prisma, RegistrationStatus, TournamentStatus } from '@prisma/client';
 import { promisify } from 'node:util';
 import { gzip } from 'node:zlib';
 import { PrismaService } from '../prisma/prisma.service';
@@ -11,10 +11,43 @@ import { applyFinalRankings, limitRankings, teamStandings } from '../common/fina
 import { tournamentResultsReady } from '../common/tournament-results-ready';
 import { buildKnockoutSkeleton } from '../common/knockout-skeleton';
 import { VersionedCache } from '../common/versioned-cache';
+import { CoalescingRunner } from '../common/coalescing-runner';
 
 const gzipAsync = promisify(gzip);
 
 const SECOND_STAGE_FORMAL_ROUND_NO_BASE = 100;
+
+// The match shape a public bracket card needs. Shared by the full
+// /api/public/brackets build and the per-match bracket:match push so both
+// produce byte-identical match views.
+const PUBLIC_BRACKET_MATCH_INCLUDE = {
+  venue: true,
+  referee: { select: { username: true } },
+  games: { orderBy: { gameNo: 'asc' } },
+  events: {
+    where: {
+      type: {
+        in: [
+          MatchEventType.TIMEOUT,
+          MatchEventType.MEDICAL_TIMEOUT,
+          MatchEventType.WARNING,
+          MatchEventType.YELLOW_CARD,
+          MatchEventType.FORFEIT,
+          MatchEventType.SERVE_CHANGE,
+        ],
+      },
+    },
+    orderBy: { createdAt: 'desc' },
+  },
+} satisfies Prisma.MatchInclude;
+
+// Which events show up in the public brackets. The per-match push applies the
+// same rules so it never leaks a match the brackets endpoint would hide.
+const PUBLIC_BRACKET_TOURNAMENT_WHERE = {
+  isPublished: true,
+  isArchived: false,
+  approvalStatus: 'APPROVED',
+} satisfies Prisma.TournamentWhereInput;
 
 // Every scoring/bracket broadcast invalidates the brackets cache immediately
 // (see ScoringGateway.publicDataChanges), so live scores are never delayed.
@@ -24,6 +57,30 @@ const BRACKETS_CACHE_TTL_MS = 3_000;
 
 /** A JSON response serialized once and shared by every request. */
 export type PublicJsonPayload = { json: string; gzip: Buffer };
+
+/** One data version of the public brackets, plus payloads derived from it. */
+type BracketsSnapshot = {
+  views: Array<{ tournamentId: string }>;
+  tournamentIds: Set<string>;
+  // key: tournamentId, or ALL_TOURNAMENTS. Built lazily, dropped with the version.
+  payloads: Map<string, Promise<PublicJsonPayload>>;
+};
+
+const ALL_TOURNAMENTS = '*';
+const UNKNOWN_TOURNAMENT = ''; // matches no view -> shared empty payload
+
+/** bracket:match push body; `match: null` = refetch the tournament instead. */
+export type PublicBracketMatchUpdate = {
+  tournamentId: string;
+  bracketId: string;
+  matchId: string;
+  match: ReturnType<PublicService['publicBracketMatchView']> | null;
+};
+
+async function toJsonPayload(body: unknown): Promise<PublicJsonPayload> {
+  const json = JSON.stringify(body);
+  return { json, gzip: await gzipAsync(json) };
+}
 
 const EVENT_TYPE_LABELS: Record<string, string> = {
   MENS_SINGLES: '男子单打',
@@ -106,7 +163,15 @@ export class PublicService {
   // /api/public/brackets is ~700KB and ~270ms of CPU to build, and every open
   // bracket / live-screen page refetches it on each scoreboard:update. Sharing
   // one build per data version keeps the cost flat no matter how many watch.
-  private readonly bracketsCache = new VersionedCache<PublicJsonPayload>(BRACKETS_CACHE_TTL_MS);
+  private readonly bracketsCache = new VersionedCache<BracketsSnapshot>(BRACKETS_CACHE_TTL_MS);
+
+  private readonly logger = new Logger(PublicService.name);
+
+  // One bracket:match build per match at a time: pushes for a match go out in
+  // order, and a burst of points collapses into at most one extra build.
+  private readonly bracketMatchPushes = new CoalescingRunner((error, matchId) =>
+    this.logger.warn(`bracket:match push failed for ${matchId}: ${String(error)}`),
+  );
 
   constructor(
     private prisma: PrismaService,
@@ -115,7 +180,16 @@ export class PublicService {
     // Optional so the smoke test can construct the service without Nest.
     @Optional() scoringGateway?: ScoringGateway,
   ) {
-    scoringGateway?.publicDataChanges.subscribe(() => this.bracketsCache.invalidate());
+    if (!scoringGateway) return;
+    scoringGateway.publicDataChanges.subscribe(() => this.bracketsCache.invalidate());
+    // matchChanges fires after the write is committed and broadcast, so the
+    // match is read back fresh.
+    scoringGateway.matchChanges.subscribe((matchId) => {
+      void this.bracketMatchPushes.trigger(matchId, async () => {
+        const update = await this.getPublicBracketMatchUpdate(matchId);
+        if (update) scoringGateway.emitPublicBracketMatch(update);
+      });
+    });
   }
 
   async getLobby() {
@@ -503,21 +577,77 @@ export class PublicService {
     };
   }
 
-  getBracketsPayload(): Promise<PublicJsonPayload> {
-    return this.bracketsCache.get(async () => {
-      const json = JSON.stringify(await this.getBrackets());
-      return { json, gzip: await gzipAsync(json) };
+  /**
+   * /api/public/brackets, optionally narrowed to one tournament. Without a
+   * tournamentId the body is exactly what it always was (all brackets).
+   * Unknown ids share one empty payload, so arbitrary ids can't grow memory.
+   */
+  async getBracketsPayload(tournamentId?: string): Promise<PublicJsonPayload> {
+    const snapshot = await this.bracketsCache.get(async () => {
+      const { brackets } = await this.getBrackets();
+      return {
+        views: brackets,
+        tournamentIds: new Set(brackets.map((view) => view.tournamentId)),
+        payloads: new Map(),
+      };
     });
+    const key = !tournamentId
+      ? ALL_TOURNAMENTS
+      : snapshot.tournamentIds.has(tournamentId)
+        ? tournamentId
+        : UNKNOWN_TOURNAMENT;
+    let payload = snapshot.payloads.get(key);
+    if (!payload) {
+      const views = key === ALL_TOURNAMENTS ? snapshot.views : snapshot.views.filter((view) => view.tournamentId === key);
+      payload = toJsonPayload({ brackets: views });
+      payload.catch(() => snapshot.payloads.delete(key));
+      snapshot.payloads.set(key, payload);
+    }
+    return payload;
+  }
+
+  /**
+   * The single match exactly as /api/public/brackets would render it, for the
+   * bracket:match push. Returns null when the match isn't on any public
+   * bracket (team match, unpublished tournament, draw not published), and
+   * `match: null` for second-stage matches, which live in a different view:
+   * the client refetches that tournament instead.
+   */
+  async getPublicBracketMatchUpdate(matchId: string): Promise<PublicBracketMatchUpdate | null> {
+    const match = await this.prisma.match.findUnique({
+      where: { id: matchId },
+      include: { ...PUBLIC_BRACKET_MATCH_INCLUDE, event: { include: { tournament: true } } },
+    });
+    const event = match?.event;
+    if (!match || !event || !event.drawPublished) return null;
+    const { tournament } = event;
+    if (
+      tournament.isPublished !== PUBLIC_BRACKET_TOURNAMENT_WHERE.isPublished ||
+      tournament.isArchived !== PUBLIC_BRACKET_TOURNAMENT_WHERE.isArchived ||
+      tournament.approvalStatus !== PUBLIC_BRACKET_TOURNAMENT_WHERE.approvalStatus
+    ) {
+      return null;
+    }
+
+    const base = { tournamentId: tournament.id, bracketId: event.id, matchId: match.id };
+    if (this.isSecondStageFormalMatch(match)) return { ...base, match: null };
+
+    // Same registration set the full build uses: this event's APPROVED entries.
+    const sideIds = [match.side1Id, match.side2Id].filter((id): id is string => Boolean(id));
+    const registrations = sideIds.length
+      ? await this.prisma.registration.findMany({
+          where: { id: { in: sideIds }, eventId: event.id, status: RegistrationStatus.APPROVED },
+          include: { player1: true, player2: true },
+        })
+      : [];
+    const registrationMap = new Map<string, any>(registrations.map((item) => [item.id, item]));
+    return { ...base, match: this.publicBracketMatchView(match, registrationMap) };
   }
 
   async getBrackets() {
     const events = await this.prisma.event.findMany({
       where: {
-        tournament: {
-          isPublished: true,
-          isArchived: false,
-          approvalStatus: 'APPROVED',
-        },
+        tournament: PUBLIC_BRACKET_TOURNAMENT_WHERE,
         drawPublished: true,
         matches: { some: { roundNo: { lt: SECOND_STAGE_FORMAL_ROUND_NO_BASE } } },
       },
@@ -530,26 +660,7 @@ export class PublicService {
         },
         matches: {
           where: { roundNo: { lt: SECOND_STAGE_FORMAL_ROUND_NO_BASE } },
-          include: {
-            venue: true,
-            referee: { select: { username: true } },
-            games: { orderBy: { gameNo: 'asc' } },
-            events: {
-              where: {
-                type: {
-                  in: [
-                    MatchEventType.TIMEOUT,
-                    MatchEventType.MEDICAL_TIMEOUT,
-                    MatchEventType.WARNING,
-                    MatchEventType.YELLOW_CARD,
-                    MatchEventType.FORFEIT,
-                    MatchEventType.SERVE_CHANGE,
-                  ],
-                },
-              },
-              orderBy: { createdAt: 'desc' },
-            },
-          },
+          include: PUBLIC_BRACKET_MATCH_INCLUDE,
           orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }],
         },
         secondStage: {
@@ -855,58 +966,62 @@ export class PublicService {
       participants,
       groups,
       knockoutSkeleton: skeleton,
-      matches: bracketMatches.map((match: any) => {
-        const pauseState = this.computePublicPauseState(match.events ?? [], match.finishedAt);
-        const courtDisplayState = this.computePublicCourtDisplayState(match.events ?? []);
-        const forfeitedSideName = match.forfeitedSide === 1
-          ? this.sideName(match.side1Id, registrationMap)
-          : match.forfeitedSide === 2
-            ? this.sideName(match.side2Id, registrationMap)
-            : null;
-        const forfeit = this.decodeForfeit(match.forfeitReason);
-        return {
-        id: match.id,
-        roundNo: match.roundNo,
-        roundLabel: this.publicRoundLabel(match.round),
-        matchNo: match.matchNo,
-        status: match.status,
-        side1Id: match.side1Id,
-        side2Id: match.side2Id,
-        winnerSide: match.winnerSide,
-        winnerId: match.winnerSide === 1 ? match.side1Id : match.winnerSide === 2 ? match.side2Id : null,
-        forfeitedSide: match.forfeitedSide ?? null,
-        forfeitKind: match.forfeitedSide ? forfeit.kind : null,
-        forfeitLabel: match.forfeitedSide ? forfeit.label : null,
-        forfeitReason: match.forfeitedSide ? forfeit.reason : null,
-        venueName: match.venue?.name ?? '待排场地',
-        refereeName: match.referee?.username ?? null,
-        scheduledAt: match.scheduledAt?.toISOString?.() ?? null,
-        startedAt: match.startedAt?.toISOString?.() ?? null,
-        finishedAt: match.finishedAt?.toISOString?.() ?? null,
-        durationMinutes: match.durationMinutes ?? null,
-        matchPaused: pauseState.paused,
-        pausedAt: pauseState.pausedAt?.toISOString?.() ?? null,
-        courtDisplayState,
-        actualDurationSeconds: this.publicActualDurationSeconds(match.startedAt, match.finishedAt, match.status, pauseState),
-        latestEvents: match.events
-          ?.filter((event: any) => this.decodePublicMatchPauseNote(event.note) !== 'END')
-          .filter((event: any) => !this.isPublicCourtEvent(event))
-          .filter((event: any) => !event.note?.startsWith(WARMUP_NOTE_PREFIX))
-          .slice(0, 3)
-          .map((event: any) => this.publicMatchEventView(event, match, registrationMap)) ?? [],
-        score: match.forfeitedSide
-          ? forfeit.label
-          : match.games.length
-            ? `${match.games.at(-1)?.side1Score ?? 0}:${match.games.at(-1)?.side2Score ?? 0}`
-            : '0:0',
-        gamesText: match.forfeitedSide
-          ? `${forfeitedSideName ?? `选手 ${match.forfeitedSide}`} ${forfeit.label}`
-          : match.games.length
-            ? match.games.map((game: any) => `${game.side1Score}:${game.side2Score}`).join(' / ')
-            : '-',
-        };
-      }),
+      matches: bracketMatches.map((match: any) => this.publicBracketMatchView(match, registrationMap)),
       secondStage: this.publicSecondStageView(event.secondStage, event.format, registrationMap),
+    };
+  }
+
+  // One match card inside a public bracket. Also used verbatim by the
+  // bracket:match push, so a patched card equals a refetched one.
+  private publicBracketMatchView(match: any, registrationMap: Map<string, any>) {
+    const pauseState = this.computePublicPauseState(match.events ?? [], match.finishedAt);
+    const courtDisplayState = this.computePublicCourtDisplayState(match.events ?? []);
+    const forfeitedSideName = match.forfeitedSide === 1
+      ? this.sideName(match.side1Id, registrationMap)
+      : match.forfeitedSide === 2
+        ? this.sideName(match.side2Id, registrationMap)
+        : null;
+    const forfeit = this.decodeForfeit(match.forfeitReason);
+    return {
+      id: match.id,
+      roundNo: match.roundNo,
+      roundLabel: this.publicRoundLabel(match.round),
+      matchNo: match.matchNo,
+      status: match.status,
+      side1Id: match.side1Id,
+      side2Id: match.side2Id,
+      winnerSide: match.winnerSide,
+      winnerId: match.winnerSide === 1 ? match.side1Id : match.winnerSide === 2 ? match.side2Id : null,
+      forfeitedSide: match.forfeitedSide ?? null,
+      forfeitKind: match.forfeitedSide ? forfeit.kind : null,
+      forfeitLabel: match.forfeitedSide ? forfeit.label : null,
+      forfeitReason: match.forfeitedSide ? forfeit.reason : null,
+      venueName: match.venue?.name ?? '待排场地',
+      refereeName: match.referee?.username ?? null,
+      scheduledAt: match.scheduledAt?.toISOString?.() ?? null,
+      startedAt: match.startedAt?.toISOString?.() ?? null,
+      finishedAt: match.finishedAt?.toISOString?.() ?? null,
+      durationMinutes: match.durationMinutes ?? null,
+      matchPaused: pauseState.paused,
+      pausedAt: pauseState.pausedAt?.toISOString?.() ?? null,
+      courtDisplayState,
+      actualDurationSeconds: this.publicActualDurationSeconds(match.startedAt, match.finishedAt, match.status, pauseState),
+      latestEvents: match.events
+        ?.filter((event: any) => this.decodePublicMatchPauseNote(event.note) !== 'END')
+        .filter((event: any) => !this.isPublicCourtEvent(event))
+        .filter((event: any) => !event.note?.startsWith(WARMUP_NOTE_PREFIX))
+        .slice(0, 3)
+        .map((event: any) => this.publicMatchEventView(event, match, registrationMap)) ?? [],
+      score: match.forfeitedSide
+        ? forfeit.label
+        : match.games.length
+          ? `${match.games.at(-1)?.side1Score ?? 0}:${match.games.at(-1)?.side2Score ?? 0}`
+          : '0:0',
+      gamesText: match.forfeitedSide
+        ? `${forfeitedSideName ?? `选手 ${match.forfeitedSide}`} ${forfeit.label}`
+        : match.games.length
+          ? match.games.map((game: any) => `${game.side1Score}:${game.side2Score}`).join(' / ')
+          : '-',
     };
   }
 
