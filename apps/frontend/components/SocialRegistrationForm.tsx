@@ -54,7 +54,7 @@ export default function SocialRegistrationForm({
   const [step, setStep] = useState<'events' | 'details'>('events');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
-  const [success, setSuccess] = useState<{ token: string; pending: boolean } | null>(null);
+  const [success, setSuccess] = useState<{ token: string; pending: boolean; appended: boolean } | null>(null);
   const emailRule = info.fieldRules?.SOCIAL?.email ?? 'optional';
 
   function updateItem(index: number, patch: Partial<ItemState>) {
@@ -139,6 +139,7 @@ export default function SocialRegistrationForm({
     try {
       const result = await apiFetch<{
         message?: string;
+        appended?: boolean;
         guestToken?: string | null;
         registration?: { id: string; status?: string };
       }>(`/competitions/${competitionId}/public-register`, {
@@ -166,11 +167,15 @@ export default function SocialRegistrationForm({
       }
       const paymentPage = paymentPageFor?.(result.registration?.status, result.guestToken);
       if (paymentPage) {
-        message.success('报名成功，请完成缴费');
+        message.success(result.appended ? '已追加报名项目，请完成缴费' : '报名成功，请完成缴费');
         router.push(paymentPage);
         return;
       }
-      setSuccess({ token: result.guestToken, pending: result.registration?.status === 'pending' });
+      setSuccess({
+        token: result.guestToken,
+        pending: result.registration?.status === 'pending',
+        appended: Boolean(result.appended),
+      });
       message.success(result.message ?? '报名已提交');
     } catch (err) {
       setError(err instanceof Error ? err.message : '报名提交失败');
@@ -186,8 +191,12 @@ export default function SocialRegistrationForm({
           <Alert
             type="success"
             showIcon
-            title={success.pending ? '社会组报名已提交，请等待组委会审核' : '社会组报名成功'}
-            description="请保存下面的报名编号，凭编号和链接查询报名状态。"
+            title={success.appended ? '已追加到你之前的报名' : success.pending ? '社会组报名已提交，请等待组委会审核' : '社会组报名成功'}
+            description={
+              success.appended
+                ? '报名编号与第一次报名相同，凭编号和链接可查看全部项目。'
+                : '请保存下面的报名编号，凭编号和链接查询报名状态。'
+            }
           />
           {info.payment && success.pending ? (
             <Alert
@@ -218,7 +227,7 @@ export default function SocialRegistrationForm({
         showIcon
         style={{ marginBottom: 16 }}
         title="社会组无需登录，提交后凭报名编号查询审核结果"
-        description="单位/俱乐部可填写“个人”；双打需填写搭档姓名、性别和联系方式。"
+        description="单位/俱乐部可填写“个人”；双打需填写搭档姓名、性别和联系方式。已报过名、想再兼报的：只选新项目提交即可，姓名和联系方式要与第一次报名时一致。"
       />
       <Segmented
         block

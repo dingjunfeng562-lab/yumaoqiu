@@ -54,7 +54,7 @@ import {
   markEventsStale,
   requireAdminActor,
 } from '../common/registration-changes';
-import { registrationDisplayName } from '../payments/payment-rules';
+import { normalizeContact, registrationDisplayName } from '../payments/payment-rules';
 
 const EVENT_TYPE_LABELS: Record<EventType, string> = {
   MENS_SINGLES: '男子单打',
@@ -386,12 +386,7 @@ export class CompetitionsService {
   async publicRegister(competitionId: string, dto: PublicCompetitionRegistrationDto) {
     const competition = await this.findCompetition(competitionId, false);
     this.ensureRegistrationWindow(competition);
-    const result = await this.saveRegistration(competition, null, dto);
-    const guestToken = await this.prisma.competitionRegistration.findUnique({
-      where: { id: result.registration.id },
-      select: { guestToken: true },
-    });
-    return { ...result, guestToken: guestToken?.guestToken ?? null };
+    return this.saveRegistration(competition, null, dto);
   }
 
   private async saveRegistration(
@@ -425,7 +420,8 @@ export class CompetitionsService {
       throw new BadRequestException('报名项目不能重复');
     }
 
-    const existing = userId
+    const name = dto.name.trim();
+    const ownRegistration = userId
       ? await this.prisma.competitionRegistration.findUnique({
           where: {
             competitionId_userId: {
@@ -443,9 +439,16 @@ export class CompetitionsService {
           },
         })
       : null;
+    // 扫码报名大多是游客，没有账号可认人：同一赛事里姓名和联系方式都相同的游客报名视为同一个人，
+    // 再次提交时与登录用户一样走「追加项目」，否则兼项永远报不上第二项。
+    const existing = ownRegistration ?? await this.findGuestRegistration(competition.id, name, contact);
+    // 追加到游客报名时只新增项目，本人信息沿用第一次报名：不能凭姓名和手机号改掉别人的资料，
+    // 也不绕过「报名信息修改截止时间」。
+    const guestAppendTarget =
+      existing && !existing.userId && existing.status === RegistrationStatus.APPROVED ? existing : null;
 
     if (existing?.status === RegistrationStatus.PENDING) {
-      throw new ConflictException('你已提交报名，待审核状态下不能重复提交');
+      throw new ConflictException('你已提交报名，正在等待审核；审核通过后可再次提交，追加新的项目');
     }
     if (existing && existing.entrantType !== entrantType) {
       throw new ConflictException(
@@ -455,18 +458,23 @@ export class CompetitionsService {
 
     await this.ensureNoDuplicateRegistration(competition.id, entrantType, {
       studentId,
-      name: dto.name.trim(),
+      name,
       contact,
     }, existing?.id);
 
-    const existingApprovedEventIds =
-      existing?.status === RegistrationStatus.APPROVED
-        ? existing.eventItems.map((item) => item.eventId)
-        : [];
+    const existingApprovedItems = existing?.status === RegistrationStatus.APPROVED ? existing.eventItems : [];
+    const existingApprovedEventIds = existingApprovedItems.map((item) => item.eventId);
     const eventIds = [...new Set([...existingApprovedEventIds, ...submittedEventIds])];
     const maxRegistrationEvents = competition.allowCrossEventRegistration ? competition.maxRegistrationEvents : 1;
     if (eventIds.length > maxRegistrationEvents) {
-      throw new BadRequestException(`最多选择 ${maxRegistrationEvents} 个报名项目`);
+      if (!existingApprovedItems.length) {
+        throw new BadRequestException(`最多选择 ${maxRegistrationEvents} 个报名项目`);
+      }
+      const remaining = maxRegistrationEvents - existingApprovedItems.length;
+      throw new BadRequestException(
+        `本赛事每人最多报名 ${maxRegistrationEvents} 个项目，你已报名${this.eventItemLabels(existingApprovedItems)}，` +
+          (remaining > 0 ? `最多还能追加 ${remaining} 个` : '不能再追加'),
+      );
     }
 
     const events = competition.events.filter((event) => eventIds.includes(event.id));
@@ -478,30 +486,43 @@ export class CompetitionsService {
     }
 
     const gender = this.normalizeGender(dto.gender);
+    if (guestAppendTarget && gender !== guestAppendTarget.gender) {
+      throw new BadRequestException(
+        `性别与第一次报名时不一致（第一次报名填写的是${guestAppendTarget.gender === Gender.MALE ? '男' : '女'}）`,
+      );
+    }
+    // 搭档学校、学院等没填时取本人的；追加到游客报名时取第一次报名登记的。
+    const fallback = guestAppendTarget
+      ? {
+          school: guestAppendTarget.school?.trim() || school,
+          college: guestAppendTarget.college,
+          majorGrade: guestAppendTarget.majorGrade,
+          className: guestAppendTarget.className,
+        }
+      : { school, college, majorGrade, className };
     for (const item of dto.items) {
       const event = events.find((current) => current.id === item.eventId.trim());
       if (!event) {
         throw new BadRequestException('存在无效的报名项目');
       }
       this.ensureRegistrationGender(event.type, gender, item.partnerGender);
-      this.ensurePartnerFields(event.type, item, entrantType, rules, {
-        school,
-        college,
-        majorGrade,
-        className,
-      });
+      this.ensurePartnerFields(event.type, item, entrantType, rules, fallback);
+    }
+
+    const newItems = dto.items.filter((item) => !existingApprovedEventIds.includes(item.eventId.trim()));
+    if (existingApprovedItems.length && !newItems.length) {
+      throw new ConflictException(`你已报名${this.eventItemLabels(existingApprovedItems)}，请选择新的报名项目`);
     }
 
     const nextStatus = competition.needsRegistrationReview
       ? RegistrationStatus.PENDING
       : RegistrationStatus.APPROVED;
-    const fallback = { school, college, majorGrade, className };
     const baseData = {
       entrantType,
       studentId,
       college,
       majorGrade,
-      name: dto.name.trim(),
+      name,
       gender,
       school,
       className,
@@ -513,14 +534,10 @@ export class CompetitionsService {
     const registration = await this.prisma.$transaction(async (tx) => {
       if (existing) {
         if (existing.status === RegistrationStatus.APPROVED) {
-          const newItems = dto.items.filter((item) => !existingApprovedEventIds.includes(item.eventId.trim()));
-          if (!newItems.length) {
-            throw new ConflictException('请选择新的报名项目');
-          }
           const updated = await tx.competitionRegistration.update({
             where: { id: existing.id },
             data: {
-              ...baseData,
+              ...(guestAppendTarget ? {} : baseData),
               status: RegistrationStatus.APPROVED,
               rejectReason: null,
               eventItems: {
@@ -613,6 +630,12 @@ export class CompetitionsService {
         await this.createApprovedRegistrationRecords(tx, created, null);
       }
       return created;
+    }).catch((error: unknown) => {
+      // 连点两次「追加」时，后一次会撞上同一份报名里项目不能重复的唯一约束。
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        throw new ConflictException('该项目已报名，请勿重复提交');
+      }
+      throw error;
     });
 
     if (registration.status === RegistrationStatus.APPROVED) {
@@ -622,12 +645,48 @@ export class CompetitionsService {
       this.notifyRegistrationEmail(registration, 'registration_submitted');
     }
 
+    const appended = existing?.status === RegistrationStatus.APPROVED;
     return {
-      message: existing?.status === RegistrationStatus.APPROVED
+      message: appended
         ? '已追加报名项目。'
         : competition.needsRegistrationReview ? '报名已提交，请等待管理员审核。' : '报名已提交并自动通过。',
+      appended,
       registration: this.toCompetitionRegistrationView(registration),
+      // 游客凭报名编号查询和缴费；追加到游客报名时仍是第一次报名的编号。
+      guestToken: registration.guestToken ?? null,
     };
+  }
+
+  /**
+   * 游客没有账号，靠「同一赛事 + 姓名 + 联系方式」认出同一个人。只对上学号不算，
+   * 免得凭别人的学号就能往别人的报名里加项目。联系方式按缴费查询的规则去掉空格、横线再比。
+   */
+  private async findGuestRegistration(competitionId: string, name: string, contact: string) {
+    const target = normalizeContact(contact);
+    if (!name || !target) return null;
+    const candidates = await this.prisma.competitionRegistration.findMany({
+      where: {
+        competitionId,
+        userId: null,
+        name,
+        status: { in: [RegistrationStatus.APPROVED, RegistrationStatus.PENDING] },
+      },
+      include: {
+        user: true,
+        eventItems: {
+          include: {
+            event: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+    const matches = candidates.filter((item) => normalizeContact(item.contact) === target);
+    return matches.find((item) => item.status === RegistrationStatus.APPROVED) ?? matches[0] ?? null;
+  }
+
+  private eventItemLabels(items: Array<{ event: { type: EventType; groupLabel?: string | null } }>) {
+    return items.map((item) => eventDisplayLabel(item.event)).join('、');
   }
 
   async listMyRegistrations(userId: string) {
@@ -2158,11 +2217,15 @@ export class CompetitionsService {
           { name, contact },
         ],
       },
-      select: { id: true, entrantType: true },
+      select: { id: true, entrantType: true, userId: true },
     });
     if (duplicate) {
+      const label = entrantTypeLabel(duplicate.entrantType);
+      // 姓名 + 联系方式都对上的游客报名在前面已当作「追加」处理，走到这里多半是只有学号对上。
       throw new ConflictException(
-        `该选手已在本赛事${entrantTypeLabel(duplicate.entrantType)}报名，不能重复报名`,
+        duplicate.userId
+          ? `该选手已用账号在本赛事${label}报名；如需兼报其他项目，请登录该账号后提交`
+          : `该选手已在本赛事${label}报名，不能重复报名；如需兼报其他项目，请填写与第一次报名时相同的姓名和联系方式`,
       );
     }
   }

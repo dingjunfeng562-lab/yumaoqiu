@@ -164,6 +164,33 @@ function isPrimaryGenderAllowed(option: EventOption | undefined, gender: FormSta
   return genderOptionsForPrimary(option).some((item) => item.value === gender);
 }
 
+/** 用后端返回的报名记录回填表单：进入页面时，以及提交/追加成功后显示实际登记的内容。 */
+function formFromRegistration(registration: ExistingRegistration): FormState {
+  return {
+    studentId: registration.studentId,
+    name: registration.name,
+    gender: registration.gender,
+    school: registration.school ?? '',
+    college: registration.college ?? registration.className ?? '',
+    majorGrade: registration.majorGrade ?? '',
+    className: registration.className ?? '',
+    contact: registration.phone ?? '',
+    remark: registration.remark ?? '',
+    items: registration.items.length
+      ? registration.items.map((item) => ({
+          eventId: item.eventId,
+          partnerName: item.partnerName ?? '',
+          partnerGender: item.partnerGender ?? '',
+          partnerStudentId: item.partnerStudentId ?? '',
+          partnerSchool: item.partnerSchool ?? '',
+          partnerClassName: item.partnerClassName ?? '',
+          partnerContact: item.partnerContact ?? '',
+          teamName: item.teamName ?? '',
+        }))
+      : initialForm.items,
+  };
+}
+
 type RegistrationCodeInfo = RegistrationIntroInfo & {
   tournamentId: string;
   entrantType: 'SCHOOL' | 'SOCIAL';
@@ -367,29 +394,7 @@ function SchoolRegisterPage({
         setExisting(registrationData);
         if (registrationData) {
           setStep('details');
-          setForm({
-            studentId: registrationData.studentId,
-            name: registrationData.name,
-            gender: registrationData.gender,
-            school: registrationData.school ?? '',
-            college: registrationData.college ?? registrationData.className ?? '',
-            majorGrade: registrationData.majorGrade ?? '',
-            className: registrationData.className ?? '',
-            contact: registrationData.phone ?? '',
-            remark: registrationData.remark ?? '',
-            items: registrationData.items.length
-              ? registrationData.items.map((item) => ({
-                  eventId: item.eventId,
-                  partnerName: item.partnerName ?? '',
-                  partnerGender: item.partnerGender ?? '',
-                  partnerStudentId: item.partnerStudentId ?? '',
-                  partnerSchool: item.partnerSchool ?? '',
-                  partnerClassName: item.partnerClassName ?? '',
-                  partnerContact: item.partnerContact ?? '',
-                  teamName: item.teamName ?? '',
-                }))
-              : initialForm.items,
-          });
+          setForm(formFromRegistration(registrationData));
         }
       } catch (err) {
         if (alive) setError(err instanceof Error ? err.message : '赛事信息加载失败');
@@ -534,6 +539,8 @@ function SchoolRegisterPage({
           : data.message ?? '报名已提交，请等待管理员审核。',
       );
       setExisting(data.registration ?? null);
+      // 追加时后端返回的是整份报名（含之前报的项目），表单跟着显示实际登记的全部项目。
+      if (data.registration) setForm(formFromRegistration(data.registration));
     } catch (err) {
       setError(err instanceof Error ? err.message : '报名提交失败');
     } finally {
@@ -619,6 +626,11 @@ function SchoolRegisterPage({
                     新增项目
                   </button>
                 </div>
+                {!existing && maxSelectableEvents > 1 ? (
+                  <p className="text-xs font-bold leading-5 text-slate-500">
+                    本赛事每人最多报 {maxSelectableEvents} 个项目。已报过名、想再兼报的：只选新项目提交即可，姓名和联系方式要与第一次报名时一致。
+                  </p>
+                ) : null}
                 {form.items.map((item, index) => (
                   <div key={`${index}-${item.eventId}`} className="grid gap-4 rounded-lg border border-white bg-white p-4 md:grid-cols-[1fr_auto]">
                     <Field label={`组别/项目 ${index + 1}`}>
