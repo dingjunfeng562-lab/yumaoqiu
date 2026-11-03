@@ -861,6 +861,25 @@ export class CompetitionsService {
 
   async getOrCreatePhotoAccess(id: string) {
     await this.findCompetition(id, true);
+    const existing = await this.prisma.tournament.findUnique({
+      where: { id },
+      select: { name: true, photoAccessToken: true, approvalStatus: true },
+    });
+    if (!existing) {
+      throw new NotFoundException('赛事不存在');
+    }
+    // 存量兼容：已经发出过图片二维码的赛事始终可以再次查看；审核门槛只拦第一次生成。
+    if (existing.photoAccessToken) {
+      return {
+        competitionId: id,
+        title: existing.name,
+        accessToken: existing.photoAccessToken,
+        path: `/tupiannicai/${existing.photoAccessToken}`,
+      };
+    }
+    if (existing.approvalStatus !== 'APPROVED') {
+      throw new BadRequestException('赛事审核通过后才能生成图片二维码');
+    }
     const generatedToken = randomUUID().replace(/-/g, '');
 
     // updateMany makes concurrent first-time requests safe: only one request

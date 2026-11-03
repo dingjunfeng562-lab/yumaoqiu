@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, usePathname, useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import {
+  Alert,
   Button,
   Card,
   Checkbox,
@@ -53,6 +54,16 @@ type AdminPhoto = {
   uploader: Uploader | null;
 };
 type PhotoPage = { total: number; page: number; pageSize: number; items: AdminPhoto[] };
+type PhotoTarget = {
+  targetType: 'TOURNAMENT' | 'ACTIVITY';
+  id: string;
+  title: string;
+  approvalStatus: 'PENDING' | 'APPROVED' | 'REJECTED';
+  rejectReason: string | null;
+  isArchived: boolean;
+  photoAccessEnabled: boolean;
+  photoUploadAccessEnabled: boolean;
+};
 type OpLog = {
   id: string;
   photoId: string | null;
@@ -98,13 +109,14 @@ export default function AdminPhotosPage() {
   const id = params?.id;
   const pathname = usePathname();
   const isActivity = pathname.startsWith('/nicaiyixiahh/photo-activities/');
-  const parentPath = isActivity ? '/nicaiyixiahh/photo-activities' : '/nicaiyixiahh/competitions';
+  // 图片管理入口已统一到「活动图片」，两个模式的返回按钮都回到那里。
+  const parentPath = '/nicaiyixiahh/photo-activities';
   const targetLabel = isActivity ? '活动' : '赛事';
   const router = useRouter();
   const { data: session } = useSession();
   const token = session?.user?.accessToken as string | undefined;
 
-  const [title, setTitle] = useState('当前内容');
+  const [target, setTarget] = useState<PhotoTarget>();
   const [photos, setPhotos] = useState<AdminPhoto[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -133,14 +145,17 @@ export default function AdminPhotosPage() {
 
   useEffect(() => {
     if (!token || !id) return;
-    (isActivity
-      ? apiFetch<{ title: string }>(`/admin/photo-activities/${id}`, { token }).then((item) => setTitle(item.title))
-      : apiFetch<Array<{ id: string; title: string }>>('/admin/competitions', { token }).then((list) => {
-          const found = list.find((competition) => competition.id === id);
-          if (found) setTitle(found.title);
-        }))
+    let cancelled = false;
+    apiFetch<PhotoTarget>(`/admin/photo-targets/${isActivity ? 'ACTIVITY' : 'TOURNAMENT'}/${encodeURIComponent(id)}`, { token })
+      .then((item) => { if (!cancelled) setTarget(item); })
       .catch(() => undefined);
+    return () => { cancelled = true; };
   }, [token, id, isActivity]);
+
+  const title = target?.title ?? '当前内容';
+  // 审核门槛只影响「第一次生成」；已经有授权二维码的对象始终可以查看。
+  const uploadQrBlocked = !!target && !target.photoUploadAccessEnabled && target.approvalStatus !== 'APPROVED';
+  const uploadQrHint = uploadQrBlocked ? `${targetLabel}审核通过后才能生成上传授权二维码` : undefined;
 
   const load = useCallback(async () => {
     if (!token || !id) return;
@@ -347,12 +362,22 @@ export default function AdminPhotosPage() {
     <div>
       <Space style={{ marginBottom: 16 }} wrap>
         <Button icon={<ArrowLeftOutlined />} onClick={() => router.push(parentPath)}>
-          返回{targetLabel}图片
+          返回活动图片
         </Button>
         <Typography.Title level={4} style={{ margin: 0 }}>
           图片管理 · {title}
         </Typography.Title>
       </Space>
+
+      {target && target.approvalStatus !== 'APPROVED' ? (
+        <Alert
+          type={target.approvalStatus === 'REJECTED' ? 'error' : 'warning'}
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={`${targetLabel}${target.approvalStatus === 'REJECTED' ? '审核未通过' : '尚未通过审核'}`}
+          description={`${targetLabel}审核通过后才能生成上传授权二维码；已经生成过的二维码仍可正常查看和使用。${target.rejectReason ? `驳回原因：${target.rejectReason}` : ''}`}
+        />
+      ) : null}
 
       <Card size="small" style={{ marginBottom: 16 }}>
         <Space wrap size="middle">
@@ -392,7 +417,7 @@ export default function AdminPhotosPage() {
         <Button type="primary" icon={<UploadOutlined />} onClick={() => setUploadOpen(true)}>
           上传图片
         </Button>
-        <Button icon={<QrcodeOutlined />} loading={uploadAccessLoading} onClick={() => void showUploadAccessQr()}>
+        <Button icon={<QrcodeOutlined />} loading={uploadAccessLoading} disabled={uploadQrBlocked} title={uploadQrHint} onClick={() => void showUploadAccessQr()}>
           上传授权二维码
         </Button>
         <Checkbox

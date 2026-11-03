@@ -689,11 +689,9 @@ export default function WatermarkSettingsPage() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 4 }}>
         <Button
           icon={<ArrowLeftOutlined />}
-          onClick={() =>
-            router.push(isActivity ? '/nicaiyixiahh/photo-activities' : '/nicaiyixiahh/competitions')
-          }
+          onClick={() => router.push('/nicaiyixiahh/photo-activities')}
         >
-          返回{isActivity ? '活动图片' : '赛事管理'}
+          返回活动图片
         </Button>
         <Typography.Title level={4} style={{ margin: 0 }}>
           水印设置

@@ -103,6 +103,22 @@ export class AdminPhotosController {
     return this.photosService.listTournamentsWithPhotos(req.user);
   }
 
+  // ----- 「活动图片」统一入口（赛事 + 活动） -----
+
+  @Get('photo-targets')
+  listPhotoTargets(@Req() req: { user: AuthActor }) {
+    return this.photosService.listPhotoTargets(req.user);
+  }
+
+  @Get('photo-targets/:targetType/:targetId')
+  getPhotoTarget(
+    @Param('targetType') targetType: string,
+    @Param('targetId') targetId: string,
+    @Req() req: { user: AuthActor },
+  ) {
+    return this.photosService.getPhotoTarget(req.user, targetType, targetId);
+  }
+
   @Post('tournaments/:id/photo-upload-access')
   createPhotoUploadAccess(@Param('id') id: string) {
     return this.photosService.createTournamentUploadAccess(id);

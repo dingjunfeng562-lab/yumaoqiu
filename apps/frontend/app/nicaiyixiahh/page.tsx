@@ -474,9 +474,11 @@ export default function AdminDashboard() {
                 图片审核设置
               </Button>
             ) : null}
-            <Button type="link" size="small" onClick={() => router.push('/nicaiyixiahh/competitions')}>
-              图片管理
-            </Button>
+            {access.can('PHOTOS') ? (
+              <Button type="link" size="small" onClick={() => router.push('/nicaiyixiahh/photo-activities')}>
+                图片管理
+              </Button>
+            ) : null}
           </Space>
         }
       >

@@ -142,13 +142,15 @@ export class PhotoActivitiesService {
 
   async createPhotoAccess(id: string, actor: AuthActor) {
     const activity = await this.requireManageable(id, actor);
+    // 存量兼容：已有二维码的活动始终可以再次查看，审核门槛只拦第一次生成。
+    if (activity.photoAccessToken) {
+      return { accessToken: activity.photoAccessToken, path: `/tupiannicai/${activity.photoAccessToken}` };
+    }
     if (activity.approvalStatus !== TournamentApprovalStatus.APPROVED) {
       throw new BadRequestException('活动审核通过后才能生成图片二维码');
     }
-    const photoAccessToken = activity.photoAccessToken ?? randomBytes(24).toString('base64url');
-    if (!activity.photoAccessToken) {
-      await this.prisma.photoActivity.update({ where: { id }, data: { photoAccessToken } });
-    }
+    const photoAccessToken = randomBytes(24).toString('base64url');
+    await this.prisma.photoActivity.update({ where: { id }, data: { photoAccessToken } });
     return { accessToken: photoAccessToken, path: `/tupiannicai/${photoAccessToken}` };
   }
 

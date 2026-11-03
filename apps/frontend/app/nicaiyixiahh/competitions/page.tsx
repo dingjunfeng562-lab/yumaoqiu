@@ -1,22 +1,19 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { Button, Card, Dropdown, Input, Modal, QRCode, Space, Table, Tag, Typography, message } from 'antd';
+import { Button, Card, Dropdown, Input, Modal, Space, Table, Tag, Typography, message } from 'antd';
 import type { MenuProps } from 'antd';
 import {
   AuditOutlined,
   CopyOutlined,
   DesktopOutlined,
-  DownloadOutlined,
   EyeOutlined,
   MoreOutlined,
   PauseCircleOutlined,
-  PictureOutlined,
-  PlusOutlined,
   PlayCircleOutlined,
-  QrcodeOutlined,
+  PlusOutlined,
   ReloadOutlined,
   TeamOutlined,
   TrophyOutlined,
@@ -48,7 +45,6 @@ type Competition = {
   isPublished: boolean;
   approvalStatus?: 'PENDING' | 'APPROVED' | 'REJECTED';
   rejectReason?: string | null;
-  photoAccessEnabled?: boolean;
   submittedById?: string | null;
   publisher?: {
     id: string;
@@ -63,14 +59,6 @@ type Competition = {
     rejected: number;
     removed: number;
   };
-};
-
-type PhotoAccess = {
-  competitionId: string;
-  title: string;
-  accessToken: string;
-  path: string;
-  url: string;
 };
 
 function formatDate(value: string) {
@@ -114,11 +102,7 @@ export default function AdminCompetitionsPage() {
   const [competitions, setCompetitions] = useState<Competition[]>([]);
   const [loading, setLoading] = useState(false);
   const [rankingCompetition, setRankingCompetition] = useState<Competition>();
-  const [qrLoadingId, setQrLoadingId] = useState<string>();
-  const [photoAccess, setPhotoAccess] = useState<PhotoAccess>();
-  const [qrOpen, setQrOpen] = useState(false);
   const [screenAccess, setScreenAccess] = useState<{ id: string; title: string; url: string }>();
-  const qrContainerRef = useRef<HTMLDivElement>(null);
 
   const loadCompetitions = useCallback(async () => {
     if (!token) return;
@@ -167,48 +151,6 @@ export default function AdminCompetitionsPage() {
     } catch (error) {
       message.error(error instanceof Error ? error.message : '恢复失败');
     }
-  }
-
-  async function showPhotoQrCode(record: Competition) {
-    if (!token) return;
-    setQrLoadingId(record.id);
-    try {
-      const data = await apiFetch<Omit<PhotoAccess, 'url'>>(
-        `/admin/competitions/${encodeURIComponent(record.id)}/photo-access`,
-        { method: 'POST', token },
-      );
-      const url = new URL(data.path, window.location.origin).toString();
-      setPhotoAccess({ ...data, url });
-      setCompetitions((current) =>
-        current.map((item) =>
-          item.id === record.id ? { ...item, photoAccessEnabled: true } : item,
-        ),
-      );
-      setQrOpen(true);
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '二维码生成失败');
-    } finally {
-      setQrLoadingId(undefined);
-    }
-  }
-
-  async function copyPhotoAccessUrl() {
-    if (!photoAccess) return;
-    try {
-      await navigator.clipboard.writeText(photoAccess.url);
-      message.success('访问地址已复制');
-    } catch {
-      message.error('复制失败，请手动复制地址');
-    }
-  }
-
-  function downloadQrCode() {
-    const canvas = qrContainerRef.current?.querySelector('canvas');
-    if (!canvas || !photoAccess) return;
-    const link = document.createElement('a');
-    link.download = `${photoAccess.title}-赛事图片二维码.png`;
-    link.href = canvas.toDataURL('image/png');
-    link.click();
   }
 
   function confirmTogglePublication(record: Competition) {
@@ -261,23 +203,12 @@ export default function AdminCompetitionsPage() {
         });
       }
     }
+    // 图片、水印和图片二维码已移到「活动图片」统一管理，这里不再提供入口。
+    if (canOperate) {
+      items.push({ key: 'rankings', icon: <TrophyOutlined />, label: '设置排名' });
+    }
     if (access.can('PHOTOS')) {
-      items.push(
-        { key: 'watermark', icon: <PictureOutlined />, label: '水印设置' },
-        { key: 'rankings', icon: <TrophyOutlined />, label: '设置排名', disabled: !canOperate },
-        { key: 'photos', icon: <PictureOutlined />, label: '图片管理' },
-        {
-          key: 'qr',
-          icon: <QrcodeOutlined />,
-          label: qrLoadingId === record.id
-            ? '二维码生成中…'
-            : record.photoAccessEnabled
-              ? '查看图片二维码'
-              : '生成图片二维码',
-          disabled: qrLoadingId === record.id,
-        },
-        { key: 'screen', icon: <DesktopOutlined />, label: '赛事大屏' },
-      );
+      items.push({ key: 'screen', icon: <DesktopOutlined />, label: '赛事大屏' });
     }
     if (role === 'ROOT') {
       items.push({ key: 'broadcast', icon: <VideoCameraOutlined />, label: '赛事直播' });
@@ -293,17 +224,8 @@ export default function AdminCompetitionsPage() {
       case 'restore':
         confirmRestore(record);
         break;
-      case 'watermark':
-        router.push(competitionPath(record, 'watermark'));
-        break;
       case 'rankings':
         setRankingCompetition(record);
-        break;
-      case 'photos':
-        router.push(competitionPath(record, 'photos'));
-        break;
-      case 'qr':
-        void showPhotoQrCode(record);
         break;
       case 'screen':
         openScreen(record);
@@ -530,33 +452,6 @@ export default function AdminCompetitionsPage() {
             }}>复制链接</Button>
           </Space>
         </Space>}
-      </Modal>
-      <Modal
-        title={photoAccess ? `${photoAccess.title} · 图片二维码` : '赛事图片二维码'}
-        open={qrOpen}
-        footer={null}
-        onCancel={() => setQrOpen(false)}
-        width={440}
-      >
-        {photoAccess ? (
-          <Space direction="vertical" size={18} style={{ width: '100%', alignItems: 'center', paddingTop: 8 }}>
-            <div ref={qrContainerRef} style={{ padding: 12, borderRadius: 12, background: '#fff' }}>
-              <QRCode type="canvas" value={photoAccess.url} size={260} bordered={false} />
-            </div>
-            <Typography.Text type="secondary" style={{ textAlign: 'center' }}>
-              扫码后先显示本次比赛封面，点击封面任意位置进入照片墙。
-            </Typography.Text>
-            <Input value={photoAccess.url} readOnly addonAfter={<CopyOutlined onClick={copyPhotoAccessUrl} />} />
-            <Space>
-              <Button icon={<CopyOutlined />} onClick={copyPhotoAccessUrl}>
-                复制地址
-              </Button>
-              <Button type="primary" icon={<DownloadOutlined />} onClick={downloadQrCode}>
-                下载二维码
-              </Button>
-            </Space>
-          </Space>
-        ) : null}
       </Modal>
     </div>
   );

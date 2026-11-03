@@ -1,6 +1,6 @@
 import { AuthActor, tournamentScope } from '../auth/admin-scope';
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { PhotoCategory, Prisma } from '@prisma/client';
+import { PhotoCategory, Prisma, TournamentApprovalStatus } from '@prisma/client';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, normalize } from 'node:path';
@@ -38,6 +38,26 @@ type UploadFile = {
 };
 
 type WatermarkLogo = { order: number; path: string; filename?: string };
+export type PhotoTargetType = 'TOURNAMENT' | 'ACTIVITY';
+/** 「活动图片」列表里赛事和活动共用的展示结构。 */
+export type PhotoTarget = {
+  targetType: PhotoTargetType;
+  id: string;
+  title: string;
+  coverImageUrl: string | null;
+  startAt: Date;
+  endAt: Date | null;
+  approvalStatus: TournamentApprovalStatus;
+  rejectReason: string | null;
+  isArchived: boolean;
+  /** 仅活动有值（SINGLE / RANGE），赛事为 null。 */
+  dateMode: string | null;
+  photoCount: number;
+  photoAccessEnabled: boolean;
+  photoUploadAccessEnabled: boolean;
+  submittedBy: { id: string; username: string | null } | null;
+  createdAt: Date;
+};
 type ProcessedUpload = {
   idx: number;
   name: string;
@@ -179,6 +199,127 @@ export class PhotosService {
   }
 
   // ---------------------------------------------------------------------------
+  // 活动图片：赛事 + 活动统一入口
+  // ---------------------------------------------------------------------------
+
+  /**
+   * 「活动图片」列表的数据源：把该账号可管理的赛事和独立活动归一成同一种结构。
+   * 只读，不改动任何图片、水印、二维码或授权数据；赛事沿用 tournamentScope，
+   * 因此管理员看到的范围与「赛事管理」完全一致，超级管理员看到全部。
+   */
+  async listPhotoTargets(actor?: AuthActor): Promise<PhotoTarget[]> {
+    const [tournaments, activities] = await Promise.all([
+      this.prisma.tournament.findMany({
+        where: tournamentScope(actor),
+        select: {
+          id: true,
+          name: true,
+          coverImageUrl: true,
+          startDate: true,
+          endDate: true,
+          approvalStatus: true,
+          rejectReason: true,
+          isArchived: true,
+          photoAccessToken: true,
+          photoUploadToken: true,
+          submittedById: true,
+          createdAt: true,
+          _count: { select: { photos: { where: { deletedAt: null } } } },
+        },
+      }),
+      this.prisma.photoActivity.findMany({
+        where: actor && actor.role !== 'ROOT' ? { submittedById: actor.id } : {},
+        select: {
+          id: true,
+          title: true,
+          coverImageUrl: true,
+          dateMode: true,
+          startAt: true,
+          endAt: true,
+          approvalStatus: true,
+          rejectReason: true,
+          photoAccessToken: true,
+          photoUploadToken: true,
+          submittedById: true,
+          createdAt: true,
+          _count: { select: { photos: { where: { deletedAt: null } } } },
+        },
+      }),
+    ]);
+
+    const userIds = [
+      ...new Set(
+        [...tournaments, ...activities]
+          .map((row) => row.submittedById)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    const users = userIds.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: userIds } },
+          select: { id: true, username: true },
+        })
+      : [];
+    const usernameById = new Map(users.map((user) => [user.id, user.username]));
+    const submittedBy = (id: string | null) =>
+      id ? { id, username: usernameById.get(id) ?? null } : null;
+
+    const targets: PhotoTarget[] = [
+      ...tournaments.map((row) => ({
+        targetType: 'TOURNAMENT' as const,
+        id: row.id,
+        title: row.name,
+        coverImageUrl: row.coverImageUrl,
+        startAt: row.startDate,
+        endAt: row.endDate,
+        approvalStatus: row.approvalStatus,
+        rejectReason: row.rejectReason,
+        isArchived: row.isArchived,
+        dateMode: null,
+        photoCount: row._count.photos,
+        photoAccessEnabled: Boolean(row.photoAccessToken),
+        photoUploadAccessEnabled: Boolean(row.photoUploadToken),
+        submittedBy: submittedBy(row.submittedById),
+        createdAt: row.createdAt,
+      })),
+      ...activities.map((row) => ({
+        targetType: 'ACTIVITY' as const,
+        id: row.id,
+        title: row.title,
+        coverImageUrl: row.coverImageUrl,
+        startAt: row.startAt,
+        endAt: row.endAt,
+        approvalStatus: row.approvalStatus,
+        rejectReason: row.rejectReason,
+        isArchived: false,
+        dateMode: row.dateMode,
+        photoCount: row._count.photos,
+        photoAccessEnabled: Boolean(row.photoAccessToken),
+        photoUploadAccessEnabled: Boolean(row.photoUploadToken),
+        submittedBy: submittedBy(row.submittedById),
+        createdAt: row.createdAt,
+      })),
+    ];
+
+    return targets.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  }
+
+  /** 「活动图片」子页（图片管理 / 水印设置）需要的单个对象信息。 */
+  async getPhotoTarget(actor: AuthActor | undefined, targetType: string, id: string): Promise<PhotoTarget> {
+    const normalized = targetType.toUpperCase();
+    if (normalized !== 'TOURNAMENT' && normalized !== 'ACTIVITY') {
+      throw new BadRequestException('图片对象类型不正确');
+    }
+    const target = (await this.listPhotoTargets(actor)).find(
+      (item) => item.targetType === normalized && item.id === id,
+    );
+    if (!target) {
+      throw new NotFoundException(normalized === 'TOURNAMENT' ? '赛事不存在或不属于你' : '活动不存在或不属于你');
+    }
+    return target;
+  }
+
+  // ---------------------------------------------------------------------------
   // Upload + watermark
   // ---------------------------------------------------------------------------
 
@@ -261,11 +402,14 @@ export class PhotosService {
       select: { photoUploadToken: true, approvalStatus: true },
     });
     if (!tournament) throw new NotFoundException('赛事不存在');
-    if (tournament.approvalStatus !== 'APPROVED') throw new BadRequestException('赛事审核通过后才能生成上传授权二维码');
-    const token = tournament.photoUploadToken ?? randomBytes(24).toString('base64url');
-    if (!tournament.photoUploadToken) {
-      await this.prisma.tournament.update({ where: { id: tournamentId }, data: { photoUploadToken: token } });
+    // 存量兼容：已经生成过授权二维码的赛事始终可以再次查看，不受当前审核状态影响；
+    // 审核门槛只用于「第一次生成」，避免已经在用的二维码突然打不开。
+    if (tournament.photoUploadToken) {
+      return { token: tournament.photoUploadToken, path: `/photographer/authorize/${tournament.photoUploadToken}` };
     }
+    if (tournament.approvalStatus !== 'APPROVED') throw new BadRequestException('赛事审核通过后才能生成上传授权二维码');
+    const token = randomBytes(24).toString('base64url');
+    await this.prisma.tournament.update({ where: { id: tournamentId }, data: { photoUploadToken: token } });
     return { token, path: `/photographer/authorize/${token}` };
   }
 
@@ -275,11 +419,12 @@ export class PhotosService {
       select: { photoUploadToken: true, approvalStatus: true },
     });
     if (!activity) throw new NotFoundException('活动不存在');
-    if (activity.approvalStatus !== 'APPROVED') throw new BadRequestException('活动审核通过后才能生成上传授权二维码');
-    const token = activity.photoUploadToken ?? randomBytes(24).toString('base64url');
-    if (!activity.photoUploadToken) {
-      await this.prisma.photoActivity.update({ where: { id: activityId }, data: { photoUploadToken: token } });
+    if (activity.photoUploadToken) {
+      return { token: activity.photoUploadToken, path: `/photographer/authorize/${activity.photoUploadToken}` };
     }
+    if (activity.approvalStatus !== 'APPROVED') throw new BadRequestException('活动审核通过后才能生成上传授权二维码');
+    const token = randomBytes(24).toString('base64url');
+    await this.prisma.photoActivity.update({ where: { id: activityId }, data: { photoUploadToken: token } });
     return { token, path: `/photographer/authorize/${token}` };
   }
 

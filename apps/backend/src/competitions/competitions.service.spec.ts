@@ -227,3 +227,62 @@ describe('CompetitionsService 驳回后重新报名', () => {
     expect(findFirst.mock.calls[0][0].where.status).toEqual({ notIn: ['REMOVED', 'REJECTED'] });
   });
 });
+
+describe('CompetitionsService 赛事图片二维码', () => {
+  function buildPhotoAccessService(state: { photoAccessToken: string | null; approvalStatus: string }) {
+    const prisma = {
+      tournament: {
+        findFirst: jest.fn().mockResolvedValue(buildTournament()),
+        // 第一次查当前 token / 审核状态；已通过且首次生成时再查一次结果
+        findUnique: jest.fn()
+          .mockResolvedValueOnce({ name: '2026 羽动云赛', ...state })
+          .mockResolvedValueOnce({ name: '2026 羽动云赛', photoAccessToken: 'generated-token' }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const service = new CompetitionsService(prisma as never, { send: jest.fn() } as never);
+    return { service, prisma };
+  }
+
+  it('已有二维码的赛事即使当前不是已通过状态，也能继续查看原二维码', async () => {
+    const { service, prisma } = buildPhotoAccessService({
+      photoAccessToken: 'existing-token',
+      approvalStatus: 'PENDING',
+    });
+
+    const result = await service.getOrCreatePhotoAccess(competitionId);
+
+    expect(result).toMatchObject({
+      accessToken: 'existing-token',
+      path: '/tupiannicai/existing-token',
+    });
+    expect(prisma.tournament.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('没有二维码且未通过审核时拒绝生成', async () => {
+    const { service, prisma } = buildPhotoAccessService({
+      photoAccessToken: null,
+      approvalStatus: 'REJECTED',
+    });
+
+    await expect(service.getOrCreatePhotoAccess(competitionId)).rejects.toThrow(
+      '赛事审核通过后才能生成图片二维码',
+    );
+    expect(prisma.tournament.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('审核通过后首次生成二维码并落库', async () => {
+    const { service, prisma } = buildPhotoAccessService({
+      photoAccessToken: null,
+      approvalStatus: 'APPROVED',
+    });
+
+    const result = await service.getOrCreatePhotoAccess(competitionId);
+
+    expect(result.accessToken).toBe('generated-token');
+    expect(result.path).toBe('/tupiannicai/generated-token');
+    const [updateArgs] = prisma.tournament.updateMany.mock.calls[0];
+    expect(updateArgs.where).toEqual({ id: competitionId, photoAccessToken: null });
+    expect(updateArgs.data.photoAccessToken).toMatch(/^[0-9a-f]{32}$/);
+  });
+});

@@ -98,6 +98,52 @@ async function main() {
     const photographerTournamentUpload = await multipart(photographer, 'POST', '/photographer/upload', { targetType: 'TOURNAMENT', targetId: tournament.id, category: 'MATCH', photos: new Blob([png], { type: 'image/png' }) });
     assert.equal(photographerTournamentUpload.uploaded, 1);
 
+    // 「活动图片」统一入口：赛事与活动都要出现在同一份列表里，管理员范围不变。
+    const rootTargets = await request(root, 'GET', '/admin/photo-targets');
+    const findTarget = (type, targetId) => rootTargets.find((item) => item.targetType === type && item.id === targetId);
+    assert(findTarget('TOURNAMENT', tournament.id), '活动图片列表必须包含赛事');
+    assert(findTarget('ACTIVITY', adminActivity.id), '活动图片列表必须包含活动');
+    const adminTargets = await request(admin, 'GET', '/admin/photo-targets');
+    assert(adminTargets.every((item) => item.targetType === 'ACTIVITY' && item.id === adminActivity.id), '管理员只能看到自己提交的活动');
+    const targetDetail = await request(root, 'GET', `/admin/photo-targets/TOURNAMENT/${tournament.id}`);
+    assert.equal(targetDetail.title, tournament.name);
+    await request(otherAdmin, 'GET', `/admin/photo-targets/TOURNAMENT/${tournament.id}`, undefined, 404);
+
+    // 存量兼容：已经有二维码的赛事即使当前不是已通过状态，也必须能继续查看原二维码；
+    // 没有二维码且未通过审核的赛事，才拒绝新生成。
+    const legacyToken = 'a'.repeat(32);
+    const legacyTournament = await db.tournament.create({
+      data: {
+        name: `${prefix}存量二维码赛事`,
+        startDate: new Date('2026-10-09T00:00:00.000Z'),
+        endDate: new Date('2026-10-10T00:00:00.000Z'),
+        approvalStatus: 'PENDING',
+        submittedById: root.id,
+        photoAccessToken: legacyToken,
+        photoUploadToken: legacyToken,
+      },
+    });
+    const legacyAccess = await request(root, 'POST', `/admin/competitions/${legacyTournament.id}/photo-access`, {}, 201);
+    assert.equal(legacyAccess.accessToken, legacyToken);
+    const legacyUploadAccess = await request(root, 'POST', `/admin/tournaments/${legacyTournament.id}/photo-upload-access`, {}, 201);
+    assert.equal(legacyUploadAccess.token, legacyToken);
+    const legacyTarget = (await request(root, 'GET', '/admin/photo-targets'))
+      .find((item) => item.targetType === 'TOURNAMENT' && item.id === legacyTournament.id);
+    assert.equal(legacyTarget?.photoAccessEnabled, true);
+    assert.equal(legacyTarget?.photoUploadAccessEnabled, true);
+
+    const pendingTournament = await db.tournament.create({
+      data: {
+        name: `${prefix}待审赛事`,
+        startDate: new Date('2026-10-11T00:00:00.000Z'),
+        endDate: new Date('2026-10-12T00:00:00.000Z'),
+        approvalStatus: 'PENDING',
+        submittedById: root.id,
+      },
+    });
+    await request(root, 'POST', `/admin/competitions/${pendingTournament.id}/photo-access`, {}, 400);
+    await request(root, 'POST', `/admin/tournaments/${pendingTournament.id}/photo-upload-access`, {}, 400);
+
     await multipart(admin, 'POST', `/admin/photo-activities/${adminActivity.id}/watermark/logos`, { file: new Blob([png], { type: 'image/png' }) });
     const uploaded = await multipart(admin, 'POST', `/admin/photo-activities/${adminActivity.id}/photos`, { category: 'MATCH', photos: new Blob([png], { type: 'image/png' }) });
     assert.equal(uploaded.uploaded, 1);
@@ -146,10 +192,15 @@ async function main() {
       };
       try {
         const rootPage = await makePage(root, { width: 1440, height: 960 });
-        await rootPage.goto('http://localhost:3000/admin/photo-activities');
+        await rootPage.goto('http://localhost:3000/nicaiyixiahh/photo-activities');
         await rootPage.getByRole('heading', { name: '活动图片' }).waitFor();
         await rootPage.getByText(rootActivity.title, { exact: true }).waitFor();
         await rootPage.getByText(adminActivity.title, { exact: true }).waitFor();
+        // 赛事也出现在同一份「活动图片」列表里，并可以直接进入图片管理。
+        const tournamentRow = rootPage.getByRole('row').filter({ hasText: tournament.name });
+        await tournamentRow.getByRole('button', { name: '图片管理' }).waitFor();
+        await tournamentRow.getByRole('button', { name: '生成二维码' }).waitFor();
+        assert.equal(await tournamentRow.getByRole('button', { name: '编辑' }).count(), 0);
         const rootActivityRow = rootPage.getByRole('row').filter({ hasText: rootActivity.title });
         await rootActivityRow.getByRole('button', { name: '删除' }).waitFor();
         await rootPage.getByRole('button', { name: '新建活动' }).click();
@@ -160,16 +211,17 @@ async function main() {
         await dialog.getByText(/图片 AI 审核/).waitFor();
         await rootPage.keyboard.press('Escape');
         await dialog.waitFor({ state: 'hidden' });
-        await rootPage.goto('http://localhost:3000/admin');
+        await rootPage.goto('http://localhost:3000/nicaiyixiahh');
         await rootPage.getByRole('heading', { name: '仪表盘' }).waitFor();
         await rootPage.getByText('活动图片统计', { exact: true }).waitFor();
         await rootPage.getByText(rootActivity.title, { exact: true }).waitFor();
         await rootPage.getByText(adminActivity.title, { exact: true }).waitFor();
 
         const adminPage = await makePage(admin, { width: 390, height: 844 });
-        await adminPage.goto('http://localhost:3000/admin/photo-activities');
+        await adminPage.goto('http://localhost:3000/nicaiyixiahh/photo-activities');
         await adminPage.getByText(adminActivity.title, { exact: true }).waitFor();
         assert.equal(await adminPage.getByText(rootActivity.title, { exact: true }).count(), 0);
+        assert.equal(await adminPage.getByText(tournament.name, { exact: true }).count(), 0);
         const row = adminPage.getByRole('row').filter({ hasText: adminActivity.title });
         await row.getByRole('button', { name: '图片管理' }).waitFor();
         await row.getByRole('button', { name: 'Logo 设置' }).waitFor();
@@ -179,11 +231,13 @@ async function main() {
         await adminPage.getByRole('heading', { name: `图片管理 · ${adminActivity.title}` }).waitFor();
         await adminPage.getByRole('button', { name: '上传图片' }).waitFor();
         await adminPage.getByRole('button', { name: '上传授权二维码' }).waitFor();
-        await adminPage.goto('http://localhost:3000/admin/photo-activities');
+        await adminPage.getByRole('button', { name: '返回活动图片' }).waitFor();
+        await adminPage.goto('http://localhost:3000/nicaiyixiahh/photo-activities');
         const refreshedRow = adminPage.getByRole('row').filter({ hasText: adminActivity.title });
         await refreshedRow.getByRole('button', { name: 'Logo 设置' }).click();
         await adminPage.getByRole('heading', { name: '水印设置' }).waitFor();
         await adminPage.getByText('Logo 列表', { exact: true }).waitFor();
+        await adminPage.getByRole('button', { name: '返回活动图片' }).waitFor();
 
         const photographerPage = await makePage(photographer, { width: 390, height: 844 });
         await photographerPage.goto(`http://localhost:3000/photographer/authorize/${activityUploadAccess.token}`);
@@ -192,7 +246,7 @@ async function main() {
         await photographerPage.getByText(/请先扫描管理员提供的上传授权二维码/).waitFor();
         await photographerPage.getByRole('combobox').click();
         await photographerPage.getByText(new RegExp(adminActivity.title)).waitFor();
-        checks += 27;
+        checks += 33;
       } finally {
         for (const context of contexts) await context.close();
         await browser.close();
