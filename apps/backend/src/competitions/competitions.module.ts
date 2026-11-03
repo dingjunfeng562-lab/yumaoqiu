@@ -8,5 +8,6 @@ import { CompetitionsService } from './competitions.service';
   imports: [PrismaModule],
   controllers: [CompetitionsController, AdminCompetitionsController],
   providers: [CompetitionsService],
+  exports: [CompetitionsService],
 })
 export class CompetitionsModule {}

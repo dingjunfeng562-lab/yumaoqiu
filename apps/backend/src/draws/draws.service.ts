@@ -201,6 +201,8 @@ export class DrawsService {
       entrantCount,
       // 组别开启收费时，未缴费的报名会阻止抽签/重抽，前端据此提示。
       unpaidEntrants,
+      // 签表生成后报名有删除、调出或调入，需要重新抽签；前端据此提示，冻结和发布也会被拒绝。
+      drawStale: event.drawStale,
       seedLimit: this.drawAlgorithmService.getSeedLimit(entrantCount),
     };
   }
@@ -485,7 +487,7 @@ export class DrawsService {
 
       await tx.event.update({
         where: { id: eventId },
-        data: { drawLocked: false, drawPublished: false, drawGeneratedAt: new Date() },
+        data: { drawLocked: false, drawPublished: false, drawGeneratedAt: new Date(), drawStale: false },
       });
 
       await this.drawLogService.create(tx, {
@@ -610,6 +612,8 @@ export class DrawsService {
     const draw = await this.prisma.drawBracket.findUnique({ where: { id: drawId } });
     if (!draw || draw.eventItemId !== eventId) throw new NotFoundException('签表不存在');
     if (draw.status !== DrawStatus.DRAWN) throw new ConflictException('只有已抽签状态才能冻结');
+    const staleEvent = await this.ensureEvent(eventId);
+    if (staleEvent.drawStale) throw new ConflictException('报名有删除或调整，签表与参赛名单不一致，请先重新抽签后再冻结');
 
     return this.prisma.$transaction(async (tx) => {
       const frozen = await tx.drawBracket.update({
@@ -702,6 +706,7 @@ export class DrawsService {
     if (!operatorId) throw new BadRequestException('缺少操作人信息');
     const event = await this.ensureEvent(eventId);
     if (event.drawPublished) throw new ConflictException('对阵已发布，无需重复发布');
+    if (event.drawStale) throw new ConflictException('报名有删除或调整，签表与参赛名单不一致，请先重新抽签后再发布');
     const draw = await this.prisma.drawBracket.findUnique({ where: { id: drawId } });
     if (!draw || draw.eventItemId !== eventId) throw new NotFoundException('签表不存在');
     if (draw.status !== DrawStatus.DRAWN && draw.status !== DrawStatus.FROZEN) {
@@ -873,7 +878,7 @@ export class DrawsService {
       // 复位单项抽签状态:回到未锁定、未发布、未生成。
       await tx.event.updateMany({
         where: { id: { in: eventIds } },
-        data: { drawLocked: false, drawPublished: false, drawGeneratedAt: null },
+        data: { drawLocked: false, drawPublished: false, drawGeneratedAt: null, drawStale: false },
       });
     });
 

@@ -237,6 +237,15 @@ export class AdminBatchCompetitionPlayersDto {
   players: AdminBatchCompetitionPlayerDto[];
 }
 
+/** 参赛选手页批量删除报名（真删除，只删选中的项目）。 */
+export class DeleteAdminPlayersDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(500)
+  @IsString({ each: true })
+  registrationIds: string[];
+}
+
 export class RejectRegistrationDto {
   @IsOptional()
   @IsString()

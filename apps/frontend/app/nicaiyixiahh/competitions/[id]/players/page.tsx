@@ -5,12 +5,20 @@ import type { Key } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { Alert, Button, Card, Checkbox, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography, message } from 'antd';
+import { Alert, Button, Card, Checkbox, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Tooltip, Typography, message } from 'antd';
 import { AuditOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, FileExcelOutlined, PlusOutlined, RollbackOutlined, StopOutlined, TeamOutlined, UserAddOutlined, UsergroupAddOutlined } from '@ant-design/icons';
+import dayjs from 'dayjs';
 import { apiFetch } from '@/lib/api';
 import { importTeamRoster, parseTeamRoster, TeamRosterImportInput, type TeamImportCompetition } from '@/components/TeamRosterImport';
 import SocialPlayerImportModal from '@/components/SocialPlayerImport';
 import ExcelRosterImportModal from '@/components/ExcelRosterImport';
+import {
+  RegistrationEditModal,
+  isEditDeadlinePassed,
+  showRedrawPrompt,
+  type EditableFieldRules,
+  type RedrawEvent,
+} from '@/components/admin/RegistrationEditModal';
 
 type CompetitionEventOption = {
   id: string;
@@ -26,6 +34,9 @@ type Competition = {
   title: string;
   eventOptions?: CompetitionEventOption[];
   registrationFieldRules?: import('@/lib/excel-roster').RosterFieldRules | null;
+  fieldRules?: EditableFieldRules | null;
+  // 过了这个时间不能再改报名信息和组别，删除不受影响。
+  registrationEditDeadline?: string | null;
   maxRegistrationEvents?: number;
   allowCrossEventRegistration?: boolean;
 };
@@ -119,12 +130,6 @@ function genderText(value?: string) {
   if (value === 'MALE') return '男';
   if (value === 'FEMALE') return '女';
   return value || '-';
-}
-
-function genderLabelToValue(value?: string): 'MALE' | 'FEMALE' | undefined {
-  if (value === '男' || value === 'MALE') return 'MALE';
-  if (value === '女' || value === 'FEMALE') return 'FEMALE';
-  return undefined;
 }
 
 type PlayerFormValues = {
@@ -277,10 +282,13 @@ export default function AdminCompetitionPlayersPage() {
   const [libraryForm] = Form.useForm<LibrarySelectionFormValues>();
   const [form] = Form.useForm<PlayerFormValues>();
   const [formModalOpen, setFormModalOpen] = useState(false);
-  const [editingPlayer, setEditingPlayer] = useState<Player | null>(null);
   const [formSubmitting, setFormSubmitting] = useState(false);
   const [selectedPlayerIds, setSelectedPlayerIds] = useState<Key[]>([]);
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [editingRegistrationId, setEditingRegistrationId] = useState<string | null>(null);
+  // 删除报名只开放给管理员和超级管理员；这一页只看报名信息，不显示缴费情况。
+  const canDelete = canManage && (access.role === 'ADMIN' || access.role === 'ROOT');
+  const editLocked = isEditDeadlinePassed(competition?.registrationEditDeadline);
   const watchedFormEventId = Form.useWatch('eventId', form);
   const watchedLibraryEventId = Form.useWatch('eventId', libraryForm);
   const watchedLibraryPlayer1Id = Form.useWatch('player1Id', libraryForm);
@@ -393,30 +401,20 @@ export default function AdminCompetitionPlayersPage() {
     return () => window.clearTimeout(timer);
   }, [canManage]);
 
-  async function removePlayerRecord(record: Player) {
-    if (!token || !id) return;
-    if (record.competitionRegistrationId) {
-      await apiFetch(`/admin/competition-registrations/${record.competitionRegistrationId}/remove`, {
-        method: 'PATCH',
-        token,
-      });
-      return;
-    }
-    await apiFetch(`/admin/competitions/${id}/players/${record.id}/remove`, {
-      method: 'PATCH',
-      token,
-    });
-  }
-
+  // 删除只删这一个项目（真删除），该选手报的其他项目保留；已抽签的项目删除后需要重新抽签。
   async function removePlayer(record: Player) {
-    if (!token) return;
+    if (!token || !id) return;
     try {
-      await removePlayerRecord(record);
-      message.success('已移除该报名');
+      const result = await apiFetch<{ deleted: number; redrawEvents?: RedrawEvent[] }>(
+        `/admin/competitions/${id}/players/${record.id}/remove`,
+        { method: 'PATCH', token },
+      );
+      message.success('已删除该报名');
       setSelectedPlayerIds((current) => current.filter((key) => key !== record.id));
+      showRedrawPrompt(result);
       await loadData();
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '移除失败');
+      message.error(error instanceof Error ? error.message : '删除失败');
     }
   }
 
@@ -431,13 +429,17 @@ export default function AdminCompetitionPlayersPage() {
 
     setBulkDeleting(true);
     try {
-      await Promise.all(selectedPlayers.map((player) => removePlayerRecord(player)));
-      message.success(`已批量删除 ${selectedPlayers.length} 条参赛记录`);
+      // 一次提交：有一条不能删（签表已冻结、已发布或已开赛）就整批不删。
+      const result = await apiFetch<{ deleted: number; redrawEvents?: RedrawEvent[] }>(
+        `/admin/competitions/${id}/players/delete`,
+        { method: 'POST', token, body: JSON.stringify({ registrationIds: selectedPlayers.map((player) => player.id) }) },
+      );
+      message.success(`已批量删除 ${result.deleted} 条参赛记录`);
       setSelectedPlayerIds([]);
+      showRedrawPrompt(result);
       await loadData();
     } catch (error) {
       message.error(error instanceof Error ? error.message : '批量删除失败');
-      await loadData();
     } finally {
       setBulkDeleting(false);
     }
@@ -570,7 +572,6 @@ export default function AdminCompetitionPlayersPage() {
       message.warning('当前赛事暂无参赛项目');
       return;
     }
-    setEditingPlayer(null);
     setFormSocial(false);
     const defaultEvent =
       competition.eventOptions.find((event) => event.id === eventIdFilter) ?? competition.eventOptions[0];
@@ -580,26 +581,7 @@ export default function AdminCompetitionPlayersPage() {
   }
 
   function openEditModal(record: Player) {
-    setEditingPlayer(record);
-    setFormSocial(Boolean(record.isSocial));
-    form.resetFields();
-    form.setFieldsValue({
-      eventId: record.eventId,
-      name: record.primaryName || record.name,
-      gender: genderLabelToValue(record.genderLabel) ?? 'MALE',
-      studentId: record.studentId,
-      school: record.school ?? '',
-      className: record.className,
-      contact: record.phone,
-      teamName: record.teamName ?? undefined,
-      partnerName: record.partner?.name,
-      partnerGender: genderLabelToValue(record.partner?.genderLabel),
-      partnerStudentId: record.partner?.studentId,
-      partnerSchool: record.partner?.school,
-      partnerClassName: record.partner?.className,
-      partnerContact: record.partner?.phone,
-    });
-    setFormModalOpen(true);
+    setEditingRegistrationId(record.id);
   }
 
   async function submitPlayerForm() {
@@ -648,21 +630,12 @@ export default function AdminCompetitionPlayersPage() {
 
     setFormSubmitting(true);
     try {
-      if (editingPlayer) {
-        await apiFetch(`/admin/competitions/${id}/players/${editingPlayer.id}`, {
-          method: 'PATCH',
-          body: JSON.stringify(payload),
-          token,
-        });
-        message.success('已更新参赛选手信息');
-      } else {
-        await apiFetch(`/admin/competitions/${id}/players`, {
-          method: 'POST',
-          body: JSON.stringify(payload),
-          token,
-        });
-        message.success('已新增参赛选手');
-      }
+      await apiFetch(`/admin/competitions/${id}/players`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        token,
+      });
+      message.success('已新增参赛选手');
       setFormModalOpen(false);
       await loadData();
     } catch (error) {
@@ -824,12 +797,23 @@ export default function AdminCompetitionPlayersPage() {
       render: (_: unknown, record: Player) =>
         canManage ? (
           <Space>
-            <Button size="small" icon={<EditOutlined />} onClick={() => openEditModal(record)}>
-              编辑
-            </Button>
-            <Popconfirm title="确认移除该报名？" onConfirm={() => removePlayer(record)}>
-              <Button size="small" danger icon={<StopOutlined />}>移除</Button>
-            </Popconfirm>
+            <Tooltip title={editLocked ? '已过报名信息修改截止时间' : undefined}>
+              <Button size="small" icon={<EditOutlined />} disabled={editLocked} onClick={() => openEditModal(record)}>
+                编辑
+              </Button>
+            </Tooltip>
+            {canDelete ? (
+              <Popconfirm
+                title="确认删除该报名？"
+                description="只删除这一个项目，报名信息一并删除，不能恢复。"
+                okText="确认删除"
+                cancelText="取消"
+                okButtonProps={{ danger: true }}
+                onConfirm={() => removePlayer(record)}
+              >
+                <Button size="small" danger icon={<StopOutlined />}>删除</Button>
+              </Popconfirm>
+            ) : null}
           </Space>
         ) : (
           <Typography.Text type="secondary">只读</Typography.Text>
@@ -1007,24 +991,26 @@ export default function AdminCompetitionPlayersPage() {
               >
                 Excel 导入
               </Button>
-              <Popconfirm
-                title={`确认批量删除选中的 ${selectedPlayerIds.length} 条参赛记录？`}
-                description="删除后这些报名会从参赛选手列表中移除。"
-                okText="确认删除"
-                cancelText="取消"
-                okButtonProps={{ danger: true, loading: bulkDeleting }}
-                onConfirm={removeSelectedPlayers}
-                disabled={!selectedPlayerIds.length || bulkDeleting}
-              >
-                <Button
-                  danger
-                  icon={<DeleteOutlined />}
+              {canDelete ? (
+                <Popconfirm
+                  title={`确认批量删除选中的 ${selectedPlayerIds.length} 条参赛记录？`}
+                  description="只删除选中的项目，报名信息一并删除，不能恢复。"
+                  okText="确认删除"
+                  cancelText="取消"
+                  okButtonProps={{ danger: true, loading: bulkDeleting }}
+                  onConfirm={removeSelectedPlayers}
                   disabled={!selectedPlayerIds.length || bulkDeleting}
-                  loading={bulkDeleting}
                 >
-                  批量删除{selectedPlayerIds.length ? `（${selectedPlayerIds.length}）` : ''}
-                </Button>
-              </Popconfirm>
+                  <Button
+                    danger
+                    icon={<DeleteOutlined />}
+                    disabled={!selectedPlayerIds.length || bulkDeleting}
+                    loading={bulkDeleting}
+                  >
+                    批量删除{selectedPlayerIds.length ? `（${selectedPlayerIds.length}）` : ''}
+                  </Button>
+                </Popconfirm>
+              ) : null}
             </>
           ) : null}
           <Button icon={<DownloadOutlined />} onClick={() => message.info('导出按钮已预留，可在后续接入 Excel 导出。')}>
@@ -1038,6 +1024,15 @@ export default function AdminCompetitionPlayersPage() {
           </Button>
         </Space>
       </div>
+      {editLocked && competition?.registrationEditDeadline ? (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginTop: 16 }}
+          title={`已过报名信息修改截止时间（${dayjs(competition.registrationEditDeadline).format('YYYY-MM-DD HH:mm')}），不能再修改报名信息和组别，删除不受影响。`}
+          description="如需修改，请先在缴费管理中调整截止时间。"
+        />
+      ) : null}
       <Card
         style={{ marginTop: 16 }}
         title={<span style={{ fontSize: 14, fontWeight: 700 }}>参赛选手列表</span>}
@@ -1218,8 +1213,25 @@ export default function AdminCompetitionPlayersPage() {
           onImported={loadData}
         />
       ) : null}
+      {id ? (
+        <RegistrationEditModal
+          open={!!editingRegistrationId}
+          registrationId={editingRegistrationId}
+          basePath={`/admin/competitions/${id}/players`}
+          token={token}
+          events={competition?.eventOptions ?? []}
+          fieldRules={competition?.fieldRules ?? competition?.registrationFieldRules ?? null}
+          editDeadline={competition?.registrationEditDeadline}
+          onClose={() => setEditingRegistrationId(null)}
+          onSaved={async (result) => {
+            setEditingRegistrationId(null);
+            showRedrawPrompt(result);
+            await loadData();
+          }}
+        />
+      ) : null}
       <Modal
-        title={editingPlayer ? '编辑参赛选手' : '新增参赛选手'}
+        title="新增参赛选手"
         open={formModalOpen}
         onCancel={() => setFormModalOpen(false)}
         onOk={submitPlayerForm}
@@ -1236,13 +1248,11 @@ export default function AdminCompetitionPlayersPage() {
           >
             <Select options={eventOptions} placeholder="选择参赛项目" />
           </Form.Item>
-          {editingPlayer ? null : (
-            <Form.Item style={{ marginBottom: 12 }}>
-              <Checkbox checked={formSocial} onChange={(e) => setFormSocial(e.target.checked)}>
-                社会人员（填写单位，无需学号、学院班级）
-              </Checkbox>
-            </Form.Item>
-          )}
+          <Form.Item style={{ marginBottom: 12 }}>
+            <Checkbox checked={formSocial} onChange={(e) => setFormSocial(e.target.checked)}>
+              社会人员（填写单位，无需学号、学院班级）
+            </Checkbox>
+          </Form.Item>
           <Typography.Text strong>{formIsDouble ? '队员一' : '选手信息'}</Typography.Text>
           <div
             style={{

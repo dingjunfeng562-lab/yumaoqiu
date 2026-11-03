@@ -10,6 +10,7 @@ import {
   AdminBatchCompetitionPlayersDto,
   AdminCompetitionLibraryPlayerDto,
   AdminCompetitionPlayerDto,
+  DeleteAdminPlayersDto,
   RejectRegistrationDto,
 } from './dto/competition-registration.dto';
 
@@ -18,8 +19,16 @@ type AuthRequest = {
     id?: string;
     username?: string | null;
     email?: string | null;
+    role?: Role;
   };
 };
+
+/** JWT 校验后的当前用户，删除和修改报名时用于记录操作人并校验是否为管理员。 */
+function changeActor(req: AuthRequest) {
+  return req.user?.id && req.user.role
+    ? { id: req.user.id, role: req.user.role, username: req.user.username ?? null }
+    : undefined;
+}
 
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(Role.ADMIN, Role.ROOT)
@@ -139,6 +148,15 @@ export class AdminCompetitionsController {
   }
 
   @Roles(Role.ADMIN)
+  @Get('competitions/:competitionId/players/:registrationId')
+  getPlayer(
+    @Param('competitionId') competitionId: string,
+    @Param('registrationId') registrationId: string,
+  ) {
+    return this.competitionsService.getAdminPlayer(competitionId, registrationId);
+  }
+
+  @Roles(Role.ADMIN)
   @Patch('competitions/:competitionId/players/:registrationId')
   updatePlayer(
     @Param('competitionId') competitionId: string,
@@ -150,10 +168,11 @@ export class AdminCompetitionsController {
       competitionId,
       registrationId,
       dto,
-      req.user?.id,
+      req.user,
     );
   }
 
+  /** 删除单条报名（真删除，只删这一项）。 */
   @Roles(Role.ADMIN)
   @Patch('competitions/:competitionId/players/:registrationId/remove')
   removePlayerRegistration(
@@ -164,7 +183,22 @@ export class AdminCompetitionsController {
     return this.competitionsService.removeAdminPlayerRegistration(
       competitionId,
       registrationId,
-      req.user?.id,
+      changeActor(req),
+    );
+  }
+
+  /** 批量删除报名：有一条不能删（签表已冻结、已发布或已开赛）就整批不删。 */
+  @Roles(Role.ADMIN)
+  @Post('competitions/:competitionId/players/delete')
+  deletePlayers(
+    @Param('competitionId') competitionId: string,
+    @Body() dto: DeleteAdminPlayersDto,
+    @Req() req: AuthRequest,
+  ) {
+    return this.competitionsService.deleteAdminRegistrations(
+      competitionId,
+      dto.registrationIds,
+      changeActor(req),
     );
   }
 

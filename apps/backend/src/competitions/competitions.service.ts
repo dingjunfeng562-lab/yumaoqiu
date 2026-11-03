@@ -44,6 +44,17 @@ import {
   normalizeRegistrationCode,
   registrationCodeFor,
 } from '../common/registration-code';
+import {
+  ChangeActor,
+  RedrawEvent,
+  checkEventsForEntrantChange,
+  deleteOrphanPlayers,
+  ensureRegistrationEditable,
+  lockEvents,
+  markEventsStale,
+  requireAdminActor,
+} from '../common/registration-changes';
+import { registrationDisplayName } from '../payments/payment-rules';
 
 const EVENT_TYPE_LABELS: Record<EventType, string> = {
   MENS_SINGLES: '男子单打',
@@ -1300,11 +1311,54 @@ export class CompetitionsService {
     return this.toRegistrationView(created);
   }
 
+  /** 后台读取单条报名，用于编辑表单；otherEvents 是同一份报名表里的其他项目（改组别时会一起转）。 */
+  async getAdminPlayer(competitionId: string, registrationId: string) {
+    const registration = await this.prisma.registration.findUnique({
+      where: { id: registrationId },
+      include: REGISTRATION_VIEW_INCLUDE,
+    });
+    if (
+      !registration ||
+      registration.event.tournamentId !== competitionId ||
+      registration.status !== RegistrationStatus.APPROVED
+    ) {
+      throw new NotFoundException('报名记录不存在');
+    }
+    const others = registration.competitionRegistrationId
+      ? await this.prisma.registration.findMany({
+          where: {
+            competitionRegistrationId: registration.competitionRegistrationId,
+            status: RegistrationStatus.APPROVED,
+            id: { not: registration.id },
+          },
+          include: { event: true },
+          orderBy: { createdAt: 'asc' },
+        })
+      : [];
+    return {
+      ...this.toRegistrationView(registration),
+      otherEvents: others.map((item) => ({
+        id: item.id,
+        eventId: item.eventId,
+        eventType: item.event.type,
+        entrantType: item.event.entrantType,
+        label: eventDisplayLabel(item.event),
+      })),
+    };
+  }
+
+  /**
+   * 后台修改单项报名，参赛选手页与缴费管理共用。
+   * - 只改信息不影响签表，随时可改，但受赛事「报名信息修改截止时间」限制；
+   * - 改项目或组别会动到签表：已冻结、已发布或已开赛的项目不能改，已抽签的项目改完需要重新抽签；
+   * - 线上报名的一份报名表只属于一个组别，改组别时这个人报的所有项目一起转到另一组的同名项目；
+   * - 同一份报名表里的其他项目同步本人信息（姓名、性别、学校、学号等），各项目显示保持一致。
+   */
   async updateAdminPlayer(
     competitionId: string,
     registrationId: string,
     dto: AdminCompetitionPlayerDto,
-    reviewedById?: string,
+    actor?: { id?: string; username?: string | null },
   ) {
     const registration = await this.prisma.registration.findUnique({
       where: { id: registrationId },
@@ -1313,7 +1367,14 @@ export class CompetitionsService {
         player1: true,
         player2: true,
         competitionRegistration: {
-          include: { eventItems: true },
+          include: {
+            eventItems: true,
+            registrations: {
+              where: { status: RegistrationStatus.APPROVED, id: { not: registrationId } },
+              include: { event: true, player1: true, player2: true },
+              orderBy: { createdAt: 'asc' },
+            },
+          },
         },
       },
     });
@@ -1322,31 +1383,79 @@ export class CompetitionsService {
     }
 
     const competition = await this.findCompetition(competitionId, true);
+    ensureRegistrationEditable(competition);
     const targetEvent = competition.events.find(
       (item) => item.id === (dto.eventId ?? registration.eventId),
     );
     if (!targetEvent) throw new BadRequestException('请选择当前赛事下的参赛项目');
-
-    // 仅信息修改不影响对阵结构，随时可改；只有「改报名项目」才会动到签表，故对已锁定项目拦截。
-    const changingEvent = targetEvent.id !== registration.eventId;
-    if (changingEvent && (registration.event.drawLocked || targetEvent.drawLocked)) {
-      throw new ConflictException('签表已冻结或对阵已发布，请先取消发布后再调整报名项目');
-    }
 
     const rules = normalizeRegistrationFieldRules(competition.registrationFieldRules);
     const player = this.normalizeAdminBatchPlayer(dto, 1, targetEvent, rules);
     if (player.entrantType !== targetEvent.entrantType) {
       throw new BadRequestException('报名组别与项目组别不一致');
     }
-    if (player.social && registration.competitionRegistrationId) {
-      throw new BadRequestException('选手自助报名的记录不能改为社会组');
+
+    const application = registration.competitionRegistration;
+    const siblings = application?.registrations ?? [];
+    const groupChanging = registration.event.entrantType !== targetEvent.entrantType;
+    const changingEvent = targetEvent.id !== registration.eventId;
+
+    // 同一份报名表里的其他项目：改组别时转到另一组的同名项目，否则留在原项目。
+    const siblingTargets = siblings.map((sibling) => {
+      if (!groupChanging) return { sibling, target: sibling.event };
+      const target = competition.events.find(
+        (event) => event.entrantType === targetEvent.entrantType && event.type === sibling.event.type,
+      );
+      if (!target) {
+        throw new BadRequestException(
+          `${entrantTypeLabel(targetEvent.entrantType)}没有${EVENT_TYPE_LABELS[sibling.event.type]}项目，该选手报名的${eventDisplayLabel(sibling.event)}无法一起转组`,
+        );
+      }
+      return { sibling, target };
+    });
+    const targetEventIds = [targetEvent.id, ...siblingTargets.map((item) => item.target.id)];
+    if (new Set(targetEventIds).size !== targetEventIds.length) {
+      throw new ConflictException(`该选手已报名${eventDisplayLabel(targetEvent)}，同一项目不能重复报名`);
     }
+    // 本人性别改了的话，其他项目也要符合性别要求。
+    for (const { sibling, target } of siblingTargets) {
+      if (sibling.player1.gender === player.gender) continue;
+      try {
+        this.ensureRegistrationGender(target.type, player.gender, sibling.player2?.gender);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : '性别不符合项目要求';
+        throw new BadRequestException(`该选手还报名了${eventDisplayLabel(target)}：${reason}`);
+      }
+    }
+
     await this.ensureNoExistingEventStudentIds(targetEvent.id, [player], registration.id);
     await this.ensureNoExistingEventSocialContacts(targetEvent.id, [player], registration.id);
+    for (const { sibling, target } of siblingTargets) {
+      const toSchool = target.entrantType === EntrantType.SCHOOL;
+      const person: NormalizedAdminBatchPlayer = {
+        ...player,
+        social: !toSchool,
+        entrantType: target.entrantType,
+        partnerName: sibling.player2?.name,
+        partnerContact: sibling.player2?.contact ?? sibling.partnerPhone ?? undefined,
+        partnerStudentId: toSchool ? sibling.partnerStudentId ?? undefined : undefined,
+      };
+      await this.ensureNoExistingEventStudentIds(target.id, [person], sibling.id);
+      await this.ensureNoExistingEventSocialContacts(target.id, [person], sibling.id);
+    }
 
+    const movedSiblings = siblingTargets.filter(({ sibling, target }) => sibling.eventId !== target.id);
+    const changedEventIds = [
+      ...(changingEvent ? [registration.eventId, targetEvent.id] : []),
+      ...movedSiblings.flatMap(({ sibling, target }) => [sibling.eventId, target.id]),
+    ];
     const isDouble = this.isDoubleEvent(targetEvent.type);
+    const logAction = groupChanging ? 'GROUP_CHANGE' : 'EVENT_CHANGE';
 
-    const updated = await this.prisma.$transaction(async (tx) => {
+    const { updated, redrawEvents } = await this.prisma.$transaction(async (tx) => {
+      await lockEvents(tx, changedEventIds);
+      const redraw = await checkEventsForEntrantChange(tx, changedEventIds, '调整报名项目或组别');
+
       await tx.player.update({
         where: { id: registration.player1Id },
         data: {
@@ -1383,13 +1492,14 @@ export class CompetitionsService {
           secondaryId = secondary.id;
         }
       }
+      const primaryName = secondaryId && player.partnerName ? `${player.name} / ${player.partnerName}` : player.name;
 
       await tx.registration.update({
         where: { id: registration.id },
         data: {
           eventId: targetEvent.id,
           player2Id: secondaryId,
-          name: secondaryId && player.partnerName ? `${player.name} / ${player.partnerName}` : player.name,
+          name: primaryName,
           teamName: secondaryId ? player.teamName ?? null : null,
           entrantType: player.entrantType,
           studentId: player.studentId ?? null,
@@ -1406,15 +1516,48 @@ export class CompetitionsService {
           partnerClassName: secondaryId ? player.partnerClassName ?? null : null,
           partnerPhone: secondaryId ? player.partnerContact ?? null : null,
           reviewedAt: new Date(),
-          reviewedBy: reviewedById ?? null,
+          reviewedBy: actor?.id ?? null,
         },
       });
 
-      // 选手自助报名生成的记录，学校/学院班级在视图里优先取自报名主表，
-      // 因此必须把主表与对应项目一并改掉，前台与后台列表才会随之更新。
-      if (registration.competitionRegistrationId) {
+      // 同一个人的其他项目：同步本人信息；改组别时转到另一组的同名项目。
+      for (const { sibling, target } of siblingTargets) {
+        const toSchool = target.entrantType === EntrantType.SCHOOL;
+        await tx.player.update({
+          where: { id: sibling.player1Id },
+          data: {
+            name: player.name,
+            gender: player.gender,
+            affiliation: player.school,
+            contact: player.contact,
+          },
+        });
+        await tx.registration.update({
+          where: { id: sibling.id },
+          data: {
+            eventId: target.id,
+            entrantType: target.entrantType,
+            eventName: eventDisplayLabel(target),
+            name: sibling.player2 ? `${player.name} / ${sibling.player2.name}` : player.name,
+            studentId: player.studentId ?? null,
+            college: player.college ?? null,
+            majorGrade: player.majorGrade ?? null,
+            className: player.className ?? null,
+            phone: player.contact,
+            gender: player.gender,
+            // 社会组没有学号、学院和年级专业。
+            ...(toSchool
+              ? {}
+              : { partnerStudentId: null, partnerCollege: null, partnerMajorGrade: null, partnerClassName: null }),
+          },
+        });
+      }
+
+      // 选手自助报名的记录，学校/学院班级在视图里优先取自报名主表，
+      // 因此主表与对应项目要一并改掉，选手端「我的报名」才会显示新的组别和项目。
+      if (application) {
         await tx.competitionRegistration.update({
-          where: { id: registration.competitionRegistrationId },
+          where: { id: application.id },
           data: {
             entrantType: player.entrantType,
             studentId: player.studentId ?? null,
@@ -1427,82 +1570,251 @@ export class CompetitionsService {
             contact: player.contact,
           },
         });
-        const eventItem = registration.competitionRegistration?.eventItems.find(
-          (item) => item.eventId === targetEvent.id,
-        );
-        if (eventItem) {
+
+        const currentEventIds = new Set([registration.eventId, ...siblings.map((item) => item.eventId)]);
+        const claimed = new Set<string>();
+        const findItem = (eventId: string) => {
+          const item =
+            application.eventItems.find((entry) => entry.eventId === eventId && !claimed.has(entry.id)) ??
+            // 以前改项目时报名表里的项目没有跟着改：取一条不再对应任何报名的项目。
+            application.eventItems.find((entry) => !currentEventIds.has(entry.eventId) && !claimed.has(entry.id));
+          if (item) claimed.add(item.id);
+          return item;
+        };
+
+        const partnerData = {
+          partnerName: secondaryId ? player.partnerName ?? null : null,
+          partnerGender: secondaryId ? player.partnerGender ?? null : null,
+          partnerStudentId: secondaryId ? player.partnerStudentId ?? null : null,
+          partnerSchool: secondaryId ? player.partnerSchool ?? null : null,
+          partnerCollege: secondaryId ? player.partnerCollege ?? null : null,
+          partnerMajorGrade: secondaryId ? player.partnerMajorGrade ?? null : null,
+          partnerClassName: secondaryId ? player.partnerClassName ?? null : null,
+          partnerContact: secondaryId ? player.partnerContact ?? null : null,
+          teamName: secondaryId ? player.teamName ?? null : null,
+        };
+        const primaryItem = findItem(registration.eventId);
+        if (primaryItem) {
           await tx.competitionRegistrationEventItem.update({
-            where: { id: eventItem.id },
+            where: { id: primaryItem.id },
+            data: { eventId: targetEvent.id, ...partnerData },
+          });
+        } else {
+          await tx.competitionRegistrationEventItem.create({
+            data: { competitionRegistrationId: application.id, eventId: targetEvent.id, ...partnerData },
+          });
+        }
+        for (const { sibling, target } of movedSiblings) {
+          const item = findItem(sibling.eventId);
+          if (!item) continue;
+          const toSchool = target.entrantType === EntrantType.SCHOOL;
+          await tx.competitionRegistrationEventItem.update({
+            where: { id: item.id },
             data: {
-              partnerName: secondaryId ? player.partnerName ?? null : null,
-              partnerGender: secondaryId ? player.partnerGender ?? null : null,
-              partnerStudentId: secondaryId ? player.partnerStudentId ?? null : null,
-              partnerSchool: secondaryId ? player.partnerSchool ?? null : null,
-              partnerCollege: secondaryId ? player.partnerCollege ?? null : null,
-              partnerMajorGrade: secondaryId ? player.partnerMajorGrade ?? null : null,
-              partnerClassName: secondaryId ? player.partnerClassName ?? null : null,
-              partnerContact: secondaryId ? player.partnerContact ?? null : null,
-              teamName: secondaryId ? player.teamName ?? null : null,
+              eventId: target.id,
+              ...(toSchool
+                ? {}
+                : { partnerStudentId: null, partnerCollege: null, partnerMajorGrade: null, partnerClassName: null }),
             },
           });
         }
       }
 
-      return tx.registration.findUniqueOrThrow({
+      // 改项目或组别会影响应缴金额，记一笔变更，缴费状态和已缴金额保持不变。
+      const moves = [
+        ...(changingEvent
+          ? [{ id: registration.id, name: primaryName, from: registration.event, to: targetEvent, paymentStatus: registration.paymentStatus, paidAmount: registration.paidAmount }]
+          : []),
+        ...movedSiblings.map(({ sibling, target }) => ({
+          id: sibling.id,
+          name: sibling.player2 ? `${player.name} / ${sibling.player2.name}` : player.name,
+          from: sibling.event,
+          to: target,
+          paymentStatus: sibling.paymentStatus,
+          paidAmount: sibling.paidAmount,
+        })),
+      ];
+      for (const move of moves) {
+        await tx.paymentLog.create({
+          data: {
+            tournamentId: competitionId,
+            entrantType: move.to.entrantType,
+            action: logAction,
+            registrationId: move.id,
+            targetName: move.name.slice(0, 191),
+            itemName: eventDisplayLabel(move.to).slice(0, 120),
+            fromStatus: move.paymentStatus,
+            toStatus: move.paymentStatus,
+            amount: move.paidAmount,
+            note: `${eventDisplayLabel(move.from)} → ${eventDisplayLabel(move.to)}`.slice(0, 255),
+            operatorId: actor?.id ?? null,
+            operatorName: actor?.username ?? null,
+          },
+        });
+      }
+
+      await markEventsStale(tx, redraw);
+      const row = await tx.registration.findUniqueOrThrow({
         where: { id: registration.id },
         include: REGISTRATION_VIEW_INCLUDE,
       });
-    });
+      return { updated: row, redrawEvents: redraw };
+    }, { timeout: 30_000, maxWait: 10_000 });
 
-    return this.toRegistrationView(updated);
+    // 一起转到学生组的双打项目只同步了本人信息，搭档缺的学号、学院要管理员再编辑该项目补填。
+    const incompleteEvents = movedSiblings
+      .filter(
+        ({ sibling, target }) =>
+          target.entrantType === EntrantType.SCHOOL &&
+          sibling.player2Id &&
+          ((rules.SCHOOL.studentId === 'required' && !sibling.partnerStudentId) ||
+            (rules.SCHOOL.college === 'required' && !sibling.partnerCollege)),
+      )
+      .map(({ target }) => eventDisplayLabel(target));
+
+    return {
+      ...this.toRegistrationView(updated),
+      redrawEvents,
+      movedEvents: movedSiblings.map(({ target }) => eventDisplayLabel(target)),
+      incompleteEvents,
+    };
   }
 
+  /** 参赛选手页「删除」单条报名：只删这一项，联动规则见 deleteAdminRegistrations。 */
   async removeAdminPlayerRegistration(
     competitionId: string,
     registrationId: string,
-    reviewedById?: string,
+    actor?: ChangeActor,
   ) {
-    const registration = await this.prisma.registration.findUnique({
-      where: { id: registrationId },
-      include: {
-        event: true,
-      },
+    return this.deleteAdminRegistrations(competitionId, [registrationId], actor);
+  }
+
+  /**
+   * 后台删除单项报名（真删除，只删选中的项目）。参赛选手页与缴费管理共用。
+   * - 报名表里对应的项目一并删除；删到最后一项时整份报名表删除（游客报名编号失效，选手可以重新报名）；
+   * - 只为这条报名生成的选手档案一并删除，选手库里的正式选手保留；
+   * - 种子设置、小组成员随外键级联删除，签位置空；已生成签表的项目标记为需要重新抽签；
+   * - 签表已冻结、已发布或已有比赛开始的项目不能删，批量删除只要有一条不能删就整批不删；
+   * - 缴费记录保留，另记一条「删除」，写明删除时的缴费状态和金额。
+   */
+  async deleteAdminRegistrations(
+    competitionId: string,
+    registrationIds: string[],
+    actor: ChangeActor | undefined,
+    note?: string,
+  ) {
+    requireAdminActor(actor, '删除报名');
+    return this.prisma.$transaction(
+      (tx) => this.deleteEventRegistrationsInTx(tx, competitionId, registrationIds, actor, note),
+      { timeout: 60_000, maxWait: 10_000 },
+    );
+  }
+
+  /** 在调用方的事务里删除单项报名；缴费管理批量删除时与删除队伍放在同一个事务。 */
+  async deleteEventRegistrationsInTx(
+    tx: Prisma.TransactionClient,
+    competitionId: string,
+    registrationIds: string[],
+    actor: ChangeActor,
+    note?: string,
+  ): Promise<{ deleted: number; redrawEvents: RedrawEvent[] }> {
+    const ids = [...new Set(registrationIds.filter(Boolean))];
+    if (!ids.length) return { deleted: 0, redrawEvents: [] };
+    const registrations = await tx.registration.findMany({
+      where: { id: { in: ids } },
+      include: { event: true, player1: { select: { name: true } }, player2: { select: { name: true } } },
     });
-    if (!registration || registration.event.tournamentId !== competitionId) {
-      throw new NotFoundException('报名记录不存在');
-    }
-    if (registration.competitionRegistrationId) {
-      return this.removeRegistration(registration.competitionRegistrationId, reviewedById);
-    }
-    if (registration.event.drawLocked) {
-      throw new ConflictException('签表已冻结或对阵已发布，请先取消发布后再调整报名');
+    if (
+      registrations.length !== ids.length ||
+      registrations.some((row) => row.event.tournamentId !== competitionId)
+    ) {
+      throw new NotFoundException('部分报名不存在或不属于该赛事，请刷新后重试');
     }
 
-    const updated = await this.prisma.registration.update({
-      where: { id: registration.id },
-      data: {
-        status: RegistrationStatus.REMOVED,
-        reviewedAt: new Date(),
-        reviewedBy: reviewedById ?? null,
-        rejectReason: null,
-        groupName: null,
-        isSeed: false,
-        seedRank: null,
-      },
-      include: {
-        event: true,
-        player1: true,
-        player2: true,
-        competitionRegistration: {
-          include: {
-            user: true,
-            eventItems: true,
-          },
+    const eventIds = registrations.map((row) => row.eventId);
+    await lockEvents(tx, eventIds);
+    const redrawEvents = await checkEventsForEntrantChange(tx, eventIds, '删除报名');
+
+    const cleanNote = note?.trim().slice(0, 255) || null;
+    for (const row of registrations) {
+      await tx.paymentLog.create({
+        data: {
+          tournamentId: competitionId,
+          entrantType: row.event.entrantType,
+          action: 'DELETE',
+          registrationId: row.id,
+          targetName: registrationDisplayName(row).slice(0, 191),
+          itemName: eventDisplayLabel(row.event).slice(0, 120),
+          fromStatus: row.paymentStatus,
+          toStatus: row.paymentStatus,
+          amount: row.paidAmount,
+          note: cleanNote,
+          operatorId: actor.id,
+          operatorName: actor.username ?? null,
         },
+      });
+    }
+
+    await tx.registration.deleteMany({ where: { id: { in: ids } } });
+
+    const applicationIds = [
+      ...new Set(registrations.map((row) => row.competitionRegistrationId).filter((id): id is string => Boolean(id))),
+    ];
+    for (const applicationId of applicationIds) {
+      await this.reconcileApplicationAfterDelete(
+        tx,
+        applicationId,
+        registrations.filter((row) => row.competitionRegistrationId === applicationId).map((row) => row.eventId),
+      );
+    }
+
+    await deleteOrphanPlayers(
+      tx,
+      registrations.filter((row) => row.competitionRegistrationId).flatMap((row) => [row.player1Id, row.player2Id]),
+      { registrationOwned: true },
+    );
+    await deleteOrphanPlayers(
+      tx,
+      registrations.filter((row) => !row.competitionRegistrationId).flatMap((row) => [row.player1Id, row.player2Id]),
+      { registrationOwned: false },
+    );
+    await markEventsStale(tx, redrawEvents);
+    return { deleted: registrations.length, redrawEvents };
+  }
+
+  /**
+   * 删除报名后整理报名表：删掉对应的项目；不再有已通过的报名时整份报名表删除。
+   * 以前被移除、驳回留下的旧参赛记录不动，外键会把它们与报名表解除关联。
+   */
+  private async reconcileApplicationAfterDelete(
+    tx: Prisma.TransactionClient,
+    applicationId: string,
+    deletedEventIds: string[],
+  ) {
+    const application = await tx.competitionRegistration.findUnique({
+      where: { id: applicationId },
+      include: {
+        eventItems: true,
+        registrations: { where: { status: RegistrationStatus.APPROVED }, select: { eventId: true } },
       },
     });
-
-    return this.toRegistrationView(updated);
+    if (!application) return;
+    if (!application.registrations.length) {
+      await tx.competitionRegistration.delete({ where: { id: application.id } });
+      return;
+    }
+    const activeEventIds = new Set(application.registrations.map((row) => row.eventId));
+    const claimed = new Set<string>();
+    for (const eventId of deletedEventIds) {
+      const item =
+        application.eventItems.find((entry) => entry.eventId === eventId && !activeEventIds.has(entry.eventId) && !claimed.has(entry.id)) ??
+        // 以前改项目时报名表里的项目没有跟着改：删一条不再对应任何报名的项目。
+        application.eventItems.find((entry) => !activeEventIds.has(entry.eventId) && !claimed.has(entry.id));
+      if (item) claimed.add(item.id);
+    }
+    if (claimed.size) {
+      await tx.competitionRegistrationEventItem.deleteMany({ where: { id: { in: [...claimed] } } });
+    }
   }
 
   async approveRegistration(competitionRegistrationId: string, reviewedById?: string) {
@@ -1588,7 +1900,15 @@ export class CompetitionsService {
 
   async removeRegistration(competitionRegistrationId: string, reviewedById?: string) {
     const competitionRegistration = await this.ensureCompetitionRegistration(competitionRegistrationId);
-    await this.prisma.$transaction(async (tx) => {
+    const redrawEvents = await this.prisma.$transaction(async (tx) => {
+      // 已进入签表的报名：签表已冻结、已发布或已开赛时不能移除；已抽签的项目移除后需要重新抽签。
+      const active = await tx.registration.findMany({
+        where: { competitionRegistrationId: competitionRegistration.id, status: RegistrationStatus.APPROVED },
+        select: { eventId: true },
+      });
+      const eventIds = active.map((row) => row.eventId);
+      await lockEvents(tx, eventIds);
+      const redraw = await checkEventsForEntrantChange(tx, eventIds, '移除报名');
       await tx.competitionRegistration.update({
         where: { id: competitionRegistration.id },
         data: {
@@ -1610,10 +1930,12 @@ export class CompetitionsService {
           seedRank: null,
         },
       });
+      await markEventsStale(tx, redraw);
+      return redraw;
     });
 
     const updated = await this.ensureCompetitionRegistration(competitionRegistration.id);
-    return this.toCompetitionRegistrationView(updated);
+    return { ...this.toCompetitionRegistrationView(updated), redrawEvents };
   }
 
   /**
@@ -2294,6 +2616,8 @@ export class CompetitionsService {
       registrationStartTime: competition.registrationStartDate?.toISOString() ?? null,
       registrationEndTime: competition.registrationEndDate?.toISOString() ?? null,
       registeredCount: approvedCount,
+      // 后台用：过了这个时间不能再改报名信息和组别。
+      registrationEditDeadline: detailed ? competition.registrationEditDeadline?.toISOString() ?? null : undefined,
       createdAt: detailed ? competition.createdAt.toISOString() : undefined,
       updatedAt: detailed ? competition.updatedAt.toISOString() : undefined,
       isPublished: detailed ? competition.isPublished : undefined,

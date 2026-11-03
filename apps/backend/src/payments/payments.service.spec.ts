@@ -139,7 +139,7 @@ describe('public payment lookup', () => {
         findMany: jest.fn().mockResolvedValue([{ tournamentId: 't1', entrantType: 'SCHOOL', ...setting, instructions: '转账备注姓名', qrImageUrl: null }]),
       },
     };
-    const service = new PaymentsService(prisma as never);
+    const service = new PaymentsService(prisma as never, {} as never, {} as never);
     const result = await service.lookup(' 张三 ', '13800138000');
 
     const where = prisma.registration.findMany.mock.calls[0][0].where;
@@ -153,7 +153,7 @@ describe('public payment lookup', () => {
   });
 
   it('rejects incomplete input', async () => {
-    const service = new PaymentsService({} as never);
+    const service = new PaymentsService({} as never, {} as never, {} as never);
     await expect(service.lookup('张三', '138')).rejects.toThrow('请输入姓名和完整的联系方式');
   });
 });
@@ -176,14 +176,14 @@ describe('rejected registrations', () => {
 
   it('shows a rejected registration with its reason in the public lookup', async () => {
     const prisma = lookupPrisma([rejected]);
-    const result = await new PaymentsService(prisma as never).lookup('王五', '13800138000');
+    const result = await new PaymentsService(prisma as never, {} as never, {} as never).lookup('王五', '13800138000');
     expect(prisma.competitionRegistration.findMany.mock.calls[0][0].where.status).toEqual({ in: ['PENDING', 'REJECTED'] });
     expect(result.groups[0].items[0]).toMatchObject({ status: 'REJECTED', note: '单位填写有误', amount: 0 });
   });
 
   it('hides the old rejection once the person has registered again', async () => {
     const resubmitted = { ...rejected, id: 'cr2', status: 'PENDING', rejectReason: null };
-    const result = await new PaymentsService(lookupPrisma([resubmitted, rejected]) as never).lookup('王五', '13800138000');
+    const result = await new PaymentsService(lookupPrisma([resubmitted, rejected]) as never, {} as never, {} as never).lookup('王五', '13800138000');
     expect(result.groups[0].items.map((item) => item.status)).toEqual(['NOT_REQUIRED']);
   });
 });

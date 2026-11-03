@@ -340,6 +340,8 @@ model Tournament {
   /// 两组报名字段规则：{ SCHOOL: { studentId, college, majorGrade }, SOCIAL: { email } }
   /// 值为 required / optional / hidden；为空时使用默认规则。
   registrationFieldRules          Json?
+  /// 报名信息修改截止时间：过了这个时间，后台缴费管理和参赛选手页都不能再改报名信息和组别（删除不受影响）。为空表示不限制。
+  registrationEditDeadline DateTime?
   defaultMatchMinutes   Int              @default(45)
   breakMinutes          Int              @default(10)
   dailyStartTime        String           @default("09:00") @db.VarChar(5)
@@ -404,6 +406,8 @@ model PaymentLog {
   tournamentId   String
   tournament     Tournament    @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
   entrantType    EntrantType
+  // STATUS：缴费状态变更；DELETE：删除报名或队伍（from/to 均为删除时的状态）；GROUP_CHANGE：改组别。
+  action         String        @default("STATUS") @db.VarChar(16)
   registrationId String?
   teamId         String?
   // 记录当时的参赛方名称和项目，便于对账。
@@ -770,6 +774,8 @@ model Event {
   drawLocked         Boolean            @default(false)
   drawPublished      Boolean            @default(false)
   drawGeneratedAt    DateTime?
+  /// 签表生成后报名有删除、调出或调入：签表与参赛名单不一致，需要重新抽签；重新抽签或清空签表后复位。为 true 时不能冻结或发布。
+  drawStale          Boolean            @default(false)
   registrations      Registration[]
   competitionRegistrationItems CompetitionRegistrationEventItem[]
   matches            Match[]

@@ -6,6 +6,7 @@ import {
   Alert,
   Button,
   Card,
+  DatePicker,
   Drawer,
   Empty,
   Form,
@@ -21,6 +22,7 @@ import {
   Switch,
   Table,
   Tag,
+  Tooltip,
   Typography,
   Upload,
   message,
@@ -29,13 +31,21 @@ import {
   CheckCircleOutlined,
   DeleteOutlined,
   DownloadOutlined,
+  EditOutlined,
   HistoryOutlined,
   ReloadOutlined,
   UndoOutlined,
   UploadOutlined,
 } from '@ant-design/icons';
-import dayjs from 'dayjs';
+import dayjs, { type Dayjs } from 'dayjs';
 import { apiFetch } from '@/lib/api';
+import {
+  RegistrationEditModal,
+  isEditDeadlinePassed,
+  showRedrawPrompt,
+  type EditableFieldRules,
+  type RedrawEvent,
+} from '@/components/admin/RegistrationEditModal';
 import { useCurrentAccess } from '@/lib/use-current-role';
 import { ENTRANT_LABELS, type EntrantType, type PaymentStatus, toFen, uploadUrl, yuan } from '@/lib/payments';
 
@@ -63,6 +73,7 @@ type Row = {
   contact: string;
   affiliation: string;
   members?: string;
+  teamNotes?: string | null;
   amountDue: number;
   paymentStatus: PaymentStatus;
   paidAmount: number | null;
@@ -84,15 +95,20 @@ type Summary = {
 
 type Overview = {
   competition: Tournament;
+  editDeadline: string | null;
+  fieldRules?: EditableFieldRules;
   settings: Setting[];
-  events: { id: string; entrantType: EntrantType; label: string }[];
+  events: { id: string; type: string; isDouble: boolean; entrantType: EntrantType; label: string }[];
   teamCompetitions: { id: string; name: string; entrantType: EntrantType }[];
   summary: Summary[];
   rows: Row[];
 };
 
+type PaymentLogAction = 'STATUS' | 'DELETE' | 'GROUP_CHANGE' | 'EVENT_CHANGE';
+
 type PaymentLog = {
   id: string;
+  action?: PaymentLogAction;
   targetName: string;
   itemName: string;
   fromStatus: PaymentStatus;
@@ -110,6 +126,31 @@ const STATUS_META: Record<PaymentStatus, { label: string; color: string }> = {
 };
 
 const ACTION_LABELS: Record<PaymentStatus, string> = { PAID: '确认缴费', WAIVED: '设为免缴', UNPAID: '撤销为未缴费' };
+
+type DeleteResult = {
+  deleted: number;
+  redrawEvents?: RedrawEvent[];
+  redrawTeamCompetitions?: Array<{ id: string; name: string }>;
+};
+
+type TeamForm = { name: string; affiliation: string; notes?: string };
+
+function logChangeText(row: PaymentLog) {
+  if (row.action === 'DELETE') {
+    const amount = row.amount != null && row.fromStatus === 'PAID' ? ` ${yuan(row.amount)}` : '';
+    return `删除报名（原为${STATUS_META[row.fromStatus].label}${amount}）`;
+  }
+  if (row.action === 'GROUP_CHANGE') return `改组别：${row.note ?? ''}`;
+  if (row.action === 'EVENT_CHANGE') return `改项目：${row.note ?? ''}`;
+  return `${STATUS_META[row.fromStatus].label} → ${STATUS_META[row.toStatus].label}`;
+}
+
+/** 已缴费但金额与当前应缴不同（改了组别、项目或收费标准），提示差额由管理员处理。 */
+function paidDifference(row: Row) {
+  if (row.paymentStatus !== 'PAID' || row.paidAmount == null || row.paidAmount === row.amountDue) return null;
+  const diff = row.amountDue - row.paidAmount;
+  return diff > 0 ? `少缴 ${yuan(diff)}` : `多缴 ${yuan(-diff)}`;
+}
 
 type SettingForm = { enabled: boolean; singles: number; doubles: number; team: number; instructions?: string };
 
@@ -136,6 +177,18 @@ export default function AdminPaymentsPage() {
   const [logsOpen, setLogsOpen] = useState(false);
   const [logs, setLogs] = useState<PaymentLog[]>([]);
   const [form] = Form.useForm<SettingForm>();
+  const [editingRegistrationId, setEditingRegistrationId] = useState<string | null>(null);
+  const [editingTeam, setEditingTeam] = useState<Row | null>(null);
+  const [teamSaving, setTeamSaving] = useState(false);
+  const [teamForm] = Form.useForm<TeamForm>();
+  const [deleteRows, setDeleteRows] = useState<Row[] | null>(null);
+  const [deleteNote, setDeleteNote] = useState('');
+  const [deleting, setDeleting] = useState(false);
+  // 截止时间输入框的草稿；undefined 表示显示已保存的值。
+  const [deadlineDraft, setDeadlineDraft] = useState<Dayjs | null | undefined>(undefined);
+  const [savingDeadline, setSavingDeadline] = useState(false);
+  // 删除报名、修改报名信息只开放给管理员和超级管理员。
+  const isAdmin = access.role === 'ADMIN' || access.role === 'ROOT';
 
   useEffect(() => {
     if (!token) return;
@@ -171,6 +224,7 @@ export default function AdminPaymentsPage() {
     setCompetitionId(id);
     setOverview(null);
     setSelectedKeys([]);
+    setDeadlineDraft(undefined);
   }
 
   function changeEntrantType(value: EntrantType) {
@@ -187,6 +241,9 @@ export default function AdminPaymentsPage() {
 
   const setting = overview?.settings.find((item) => item.entrantType === entrantType);
   const summary = overview?.summary.find((item) => item.entrantType === entrantType);
+  const editLocked = isEditDeadlinePassed(overview?.editDeadline);
+  const savedDeadline = overview?.editDeadline ? dayjs(overview.editDeadline) : null;
+  const deadline = deadlineDraft === undefined ? savedDeadline : deadlineDraft;
 
   useEffect(() => {
     if (!setting) return;
@@ -279,6 +336,84 @@ export default function AdminPaymentsPage() {
     }
   }
 
+  async function saveDeadline(value: Dayjs | null) {
+    if (!token || !competitionId) return;
+    setSavingDeadline(true);
+    try {
+      await apiFetch(`/admin/competitions/${competitionId}/payments/edit-deadline`, {
+        token,
+        method: 'PUT',
+        body: JSON.stringify({ deadline: value ? value.toISOString() : null }),
+      });
+      message.success(value ? `修改截止时间已设为 ${value.format('YYYY-MM-DD HH:mm')}` : '已取消修改截止时间');
+      setDeadlineDraft(undefined);
+      await loadOverview();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '保存失败');
+    } finally {
+      setSavingDeadline(false);
+    }
+  }
+
+  function openEdit(row: Row) {
+    if (row.kind === 'EVENT') {
+      setEditingRegistrationId(row.id);
+      return;
+    }
+    setEditingTeam(row);
+    teamForm.setFieldsValue({ name: row.name, affiliation: row.affiliation, notes: row.teamNotes ?? '' });
+  }
+
+  async function saveTeam() {
+    if (!token || !competitionId || !editingTeam) return;
+    let values: TeamForm;
+    try {
+      values = await teamForm.validateFields();
+    } catch {
+      return;
+    }
+    setTeamSaving(true);
+    try {
+      await apiFetch(`/admin/competitions/${competitionId}/payments/teams/${editingTeam.id}`, {
+        token,
+        method: 'PATCH',
+        body: JSON.stringify({ name: values.name.trim(), affiliation: values.affiliation.trim(), notes: values.notes?.trim() ?? '' }),
+      });
+      message.success('队伍信息已保存');
+      setEditingTeam(null);
+      await loadOverview();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '保存失败');
+    } finally {
+      setTeamSaving(false);
+    }
+  }
+
+  async function submitDelete() {
+    if (!token || !competitionId || !deleteRows?.length) return;
+    setDeleting(true);
+    try {
+      const result = await apiFetch<DeleteResult>(`/admin/competitions/${competitionId}/payments/delete`, {
+        token,
+        method: 'POST',
+        body: JSON.stringify({
+          note: deleteNote.trim() || undefined,
+          entries: deleteRows.map((row) => (row.kind === 'TEAM' ? { teamId: row.id } : { registrationId: row.id })),
+        }),
+      });
+      message.success(`已删除 ${result.deleted} 项`);
+      setDeleteRows(null);
+      setDeleteNote('');
+      setSelectedKeys([]);
+      showRedrawPrompt(result);
+      await loadOverview();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '删除失败');
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   async function openLogs() {
     if (!token || !competitionId) return;
     setLogsOpen(true);
@@ -312,19 +447,33 @@ export default function AdminPaymentsPage() {
     XLSX.writeFile(book, `${name}-${ENTRANT_LABELS[entrantType]}-缴费明细-${dayjs().format('YYYYMMDD')}.xlsx`);
   }
 
+  // 第一行是缴费状态操作，第二行是改报名信息和删除（仅管理员），操作列保持原来的宽度，不挡住状态列。
   const actionButtons = (row: Row) => (
-    <Space size={4} wrap>
-      {row.paymentStatus !== 'PAID' ? (
-        <Button size="small" type="primary" onClick={() => setAction({ status: 'PAID', rows: [row] })}>确认缴费</Button>
-      ) : null}
-      {row.paymentStatus === 'UNPAID' ? (
-        <Button size="small" onClick={() => setAction({ status: 'WAIVED', rows: [row] })}>免缴</Button>
-      ) : null}
-      {row.paymentStatus !== 'UNPAID' ? (
-        <Button size="small" danger icon={<UndoOutlined />} onClick={() => setAction({ status: 'UNPAID', rows: [row] })}>撤销</Button>
+    <Space orientation="vertical" size={4}>
+      <Space size={4} wrap>
+        {row.paymentStatus !== 'PAID' ? (
+          <Button size="small" type="primary" onClick={() => setAction({ status: 'PAID', rows: [row] })}>确认缴费</Button>
+        ) : null}
+        {row.paymentStatus === 'UNPAID' ? (
+          <Button size="small" onClick={() => setAction({ status: 'WAIVED', rows: [row] })}>免缴</Button>
+        ) : null}
+        {row.paymentStatus !== 'UNPAID' ? (
+          <Button size="small" danger icon={<UndoOutlined />} onClick={() => setAction({ status: 'UNPAID', rows: [row] })}>撤销</Button>
+        ) : null}
+      </Space>
+      {isAdmin ? (
+        <Space size={4} wrap>
+          <Tooltip title={editLocked ? '已过报名信息修改截止时间' : row.kind === 'TEAM' ? '修改队名、单位、备注' : '修改组别、项目和选手信息'}>
+            <Button size="small" icon={<EditOutlined />} disabled={editLocked} onClick={() => openEdit(row)}>编辑</Button>
+          </Tooltip>
+          <Button size="small" type="primary" danger icon={<DeleteOutlined />} onClick={() => setDeleteRows([row])}>删除</Button>
+        </Space>
       ) : null}
     </Space>
   );
+
+  const deletePaid = (deleteRows ?? []).filter((row) => row.paymentStatus === 'PAID');
+  const deletePaidTotal = deletePaid.reduce((sum, row) => sum + (row.paidAmount ?? 0), 0);
 
   return (
     <Space orientation="vertical" size={16} style={{ width: '100%' }}>
@@ -334,6 +483,7 @@ export default function AdminPaymentsPage() {
           <Typography.Text type="secondary">
             {access.role === 'ADMIN' ? '只显示你创建的赛事。' : ''}
             按组别设置单打、双打（每对）、团体赛（每队）金额；选手转账后在这里确认。未缴费的选手和队伍不能进入抽签编排。
+            「撤销」只把缴费状态改回未缴费；「删除」会连同报名信息一起删除，不能恢复。
           </Typography.Text>
         </div>
         <Space wrap>
@@ -360,6 +510,34 @@ export default function AdminPaymentsPage() {
             options={[{ value: 'SCHOOL', label: '学生组' }, { value: 'SOCIAL', label: '社会组' }]}
           />
         </Space>
+        {overview && isAdmin ? (
+          <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <Typography.Text strong>报名信息修改截止时间</Typography.Text>
+            <DatePicker
+              showTime={{ format: 'HH:mm' }}
+              format="YYYY-MM-DD HH:mm"
+              value={deadline}
+              onChange={(value) => setDeadlineDraft(value ?? null)}
+              placeholder="不限制"
+              style={{ width: 200 }}
+            />
+            <Button
+              loading={savingDeadline}
+              disabled={(deadline?.valueOf() ?? null) === (savedDeadline?.valueOf() ?? null)}
+              onClick={() => saveDeadline(deadline)}
+            >
+              保存
+            </Button>
+            {overview.editDeadline ? (
+              <Button type="link" disabled={savingDeadline} onClick={() => saveDeadline(null)}>不限制</Button>
+            ) : null}
+            <Typography.Text type={editLocked ? 'danger' : 'secondary'}>
+              {editLocked
+                ? '已过截止时间：缴费管理和参赛选手页都不能再改报名信息和组别，删除不受影响。'
+                : '过了这个时间，缴费管理和参赛选手页都不能再改报名信息和组别，删除不受影响。'}
+            </Typography.Text>
+          </div>
+        ) : null}
       </Card>
 
       {competitionId && setting ? (
@@ -460,6 +638,16 @@ export default function AdminPaymentsPage() {
               >
                 批量免缴
               </Button>
+              {isAdmin ? (
+                <Button
+                  danger
+                  icon={<DeleteOutlined />}
+                  disabled={!selectedRows.length}
+                  onClick={() => setDeleteRows(selectedRows)}
+                >
+                  批量删除{selectedRows.length ? `（${selectedRows.length}）` : ''}
+                </Button>
+              ) : null}
               <Button icon={<DownloadOutlined />} onClick={exportRows} disabled={!rows.length}>导出</Button>
             </Space>
           )}
@@ -508,8 +696,13 @@ export default function AdminPaymentsPage() {
               {
                 title: '应缴',
                 dataIndex: 'amountDue',
-                width: 90,
-                render: (value: number, row) => (value > 0 || row.paymentStatus !== 'UNPAID' ? yuan(value) : <Typography.Text type="secondary">无需</Typography.Text>),
+                width: 110,
+                render: (value: number, row) => (
+                  <Space orientation="vertical" size={0}>
+                    {value > 0 || row.paymentStatus !== 'UNPAID' ? yuan(value) : <Typography.Text type="secondary">无需</Typography.Text>}
+                    {paidDifference(row) ? <Typography.Text type="warning" style={{ fontSize: 12 }}>{paidDifference(row)}</Typography.Text> : null}
+                  </Space>
+                ),
               },
               {
                 title: '状态',
@@ -539,6 +732,7 @@ export default function AdminPaymentsPage() {
         open={!!action}
         title={action ? `${ACTION_LABELS[action.status]}（${action.rows.length} 项）` : ''}
         okText="确定"
+        cancelText="取消"
         confirmLoading={submitting}
         onOk={submitAction}
         onCancel={() => { setAction(null); setActionNote(''); }}
@@ -558,18 +752,102 @@ export default function AdminPaymentsPage() {
         ) : null}
       </Modal>
 
-      <Drawer title="缴费操作记录" size={640} open={logsOpen} onClose={() => setLogsOpen(false)}>
+      <Modal
+        open={!!deleteRows}
+        title={deleteRows ? `删除报名（${deleteRows.length} 项）` : ''}
+        okText="确认删除"
+        cancelText="取消"
+        okButtonProps={{ danger: true }}
+        confirmLoading={deleting}
+        onOk={submitDelete}
+        onCancel={() => { setDeleteRows(null); setDeleteNote(''); }}
+        destroyOnHidden
+      >
+        {deleteRows ? (
+          <Space orientation="vertical" style={{ width: '100%' }}>
+            <Typography.Paragraph style={{ marginBottom: 0 }}>
+              {deleteRows.slice(0, 8).map((row) => `${row.name}（${row.itemName}）`).join('、')}
+              {deleteRows.length > 8 ? ` 等 ${deleteRows.length} 项` : ''}
+            </Typography.Paragraph>
+            <Alert
+              type="warning"
+              showIcon
+              title="删除后报名信息一并删除，不能恢复"
+              description="单项只删除这一个项目，该选手报的其他项目保留；团体赛删除整支队伍。已抽签的项目删除后需要重新抽签；签表已冻结、已发布或已开赛的不能删除。"
+            />
+            {deletePaid.length ? (
+              <Alert
+                type="error"
+                showIcon
+                title={`其中 ${deletePaid.length} 项已缴费，共 ${yuan(deletePaidTotal)}，请线下退款`}
+                description="缴费操作记录里会保留删除时的状态和金额。"
+              />
+            ) : null}
+            <Input.TextArea rows={2} maxLength={255} value={deleteNote} onChange={(event) => setDeleteNote(event.target.value)} placeholder="删除原因（可选），会记入缴费操作记录" />
+          </Space>
+        ) : null}
+      </Modal>
+
+      <Modal
+        open={!!editingTeam}
+        title={editingTeam ? `编辑队伍：${editingTeam.name}` : ''}
+        okText="保存"
+        cancelText="取消"
+        okButtonProps={{ disabled: editLocked }}
+        confirmLoading={teamSaving}
+        onOk={saveTeam}
+        onCancel={() => setEditingTeam(null)}
+        forceRender
+      >
+        <Form form={teamForm} layout="vertical" disabled={editLocked}>
+          <Form.Item label="队名" name="name" rules={[{ required: true, whitespace: true, message: '请填写队名' }]}>
+            <Input maxLength={120} />
+          </Form.Item>
+          <Form.Item label="单位" name="affiliation" rules={[{ required: true, whitespace: true, message: '请填写单位' }]}>
+            <Input maxLength={191} />
+          </Form.Item>
+          <Form.Item label="备注" name="notes">
+            <Input.TextArea rows={2} maxLength={191} />
+          </Form.Item>
+          <Typography.Text type="secondary">队员名单请到团体赛管理中调整；团体赛队伍不能在这里改组别。</Typography.Text>
+        </Form>
+      </Modal>
+
+      {overview ? (
+        <RegistrationEditModal
+          open={!!editingRegistrationId}
+          registrationId={editingRegistrationId}
+          basePath={`/admin/competitions/${competitionId}/payments/registrations`}
+          token={token}
+          events={overview.events}
+          fieldRules={overview.fieldRules}
+          editDeadline={overview.editDeadline}
+          onClose={() => setEditingRegistrationId(null)}
+          onSaved={async (result) => {
+            setEditingRegistrationId(null);
+            showRedrawPrompt(result);
+            await loadOverview();
+          }}
+        />
+      ) : null}
+
+      <Drawer title="缴费操作记录" size={800} open={logsOpen} onClose={() => setLogsOpen(false)}>
         <Table<PaymentLog>
           rowKey="id"
           size="small"
           dataSource={logs}
           pagination={{ pageSize: 20 }}
           columns={[
-            { title: '时间', dataIndex: 'createdAt', width: 120, render: (value: string) => dayjs(value).format('MM/DD HH:mm') },
+            { title: '时间', dataIndex: 'createdAt', width: 100, render: (value: string) => dayjs(value).format('MM/DD HH:mm') },
             { title: '参赛方', render: (_, row) => `${row.targetName}（${row.itemName}）` },
-            { title: '变更', width: 150, render: (_, row) => `${STATUS_META[row.fromStatus].label} → ${STATUS_META[row.toStatus].label}` },
+            { title: '变更', width: 200, render: (_, row) => logChangeText(row) },
             { title: '操作人', dataIndex: 'operatorName', width: 100 },
-            { title: '备注', dataIndex: 'note', width: 120, render: (value: string | null) => value ?? '' },
+            {
+              title: '备注',
+              dataIndex: 'note',
+              width: 140,
+              render: (value: string | null, row) => (row.action === 'GROUP_CHANGE' || row.action === 'EVENT_CHANGE' ? '' : value ?? ''),
+            },
           ]}
         />
       </Drawer>

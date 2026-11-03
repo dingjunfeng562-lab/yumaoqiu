@@ -28,6 +28,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { unpaidMessage, unpaidTeams } from '../payments/payment-rules';
+import type { ChangeActor } from '../common/registration-changes';
 import {
   AddTeamPlayersDto,
   BatchImportTeamsDto,
@@ -490,6 +491,68 @@ export class TeamCompetitionsService {
       await this.clearDraftDrawForRosterChange(tx, team.teamCompetitionId);
       return tx.team.delete({ where: { id: teamId } });
     }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+  }
+
+  /**
+   * 缴费管理批量删除队伍（在调用方的事务里执行，与删除单项报名放在同一个事务）。
+   * 联动与「删除队伍」一致：队员关系、出场名单、分组成员随外键删除，队员的选手档案保留；
+   * 已编排未发布且未开赛的团体赛会清空整个团体赛的对阵和分组，需要重新编排；
+   * 对阵已发布或已有子项开赛的不能删，有一支不能删就整批不删。缴费记录保留并另记一条「删除」。
+   */
+  async removeTeamsInTx(
+    tx: Prisma.TransactionClient,
+    tournamentId: string,
+    teamIds: string[],
+    actor: ChangeActor,
+    note?: string,
+  ): Promise<{ deleted: number; redrawTeamCompetitions: Array<{ id: string; name: string }> }> {
+    const ids = [...new Set(teamIds.filter(Boolean))];
+    if (!ids.length) return { deleted: 0, redrawTeamCompetitions: [] };
+    const teams = await tx.team.findMany({ where: { id: { in: ids } }, include: { teamCompetition: true } });
+    if (teams.length !== ids.length || teams.some((team) => team.teamCompetition.tournamentId !== tournamentId)) {
+      throw new NotFoundException('部分队伍不存在或不属于该赛事，请刷新后重试');
+    }
+    const competitions = [...new Map(teams.map((team) => [team.teamCompetitionId, team.teamCompetition])).values()]
+      .sort((a, b) => a.id.localeCompare(b.id));
+    for (const competition of competitions) {
+      await tx.$queryRaw`SELECT id FROM TeamCompetition WHERE id = ${competition.id} FOR UPDATE`;
+    }
+    const blockers: string[] = [];
+    for (const competition of competitions) {
+      if (!await tx.teamMatch.count({ where: { teamCompetitionId: competition.id } })) continue;
+      const current = await tx.teamCompetition.findUniqueOrThrow({ where: { id: competition.id }, select: { isPublished: true } });
+      if (current.isPublished) blockers.push(`团体赛「${competition.name}」对阵已发布，请先在团体赛详情点击“取消对阵”`);
+      else if (await this.drawHasProgress(tx, competition.id)) blockers.push(`团体赛「${competition.name}」已有子项开赛或产生比分`);
+    }
+    if (blockers.length) throw new ConflictException(`不能删除队伍：${blockers.join('；')}`);
+
+    const redrawTeamCompetitions: Array<{ id: string; name: string }> = [];
+    for (const competition of competitions) {
+      if (await this.clearDraftDrawForRosterChange(tx, competition.id)) {
+        redrawTeamCompetitions.push({ id: competition.id, name: competition.name });
+      }
+    }
+    const cleanNote = note?.trim().slice(0, 255) || null;
+    for (const team of teams) {
+      await tx.paymentLog.create({
+        data: {
+          tournamentId,
+          entrantType: team.teamCompetition.entrantType,
+          action: 'DELETE',
+          teamId: team.id,
+          targetName: team.name.slice(0, 191),
+          itemName: `团体赛 · ${team.teamCompetition.name}`.slice(0, 120),
+          fromStatus: team.paymentStatus,
+          toStatus: team.paymentStatus,
+          amount: team.paidAmount,
+          note: cleanNote,
+          operatorId: actor.id,
+          operatorName: actor.username ?? null,
+        },
+      });
+    }
+    await tx.team.deleteMany({ where: { id: { in: ids } } });
+    return { deleted: teams.length, redrawTeamCompetitions };
   }
 
   async importTeamPlayers(teamCompetitionId: string, dto: ImportTeamPlayersDto, actor?: AuthActor) {

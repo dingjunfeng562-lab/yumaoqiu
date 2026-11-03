@@ -1,8 +1,18 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { EntrantType, PaymentStatus, Prisma, RegistrationStatus, TournamentPaymentSetting } from '@prisma/client';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { EntrantType, EventType, PaymentStatus, Prisma, RegistrationStatus, TournamentPaymentSetting } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { entrantTypeLabel, eventDisplayLabel } from '../common/entrant';
-import { UpdatePaymentSettingDto, UpdatePaymentStatusDto } from './dto/payment.dto';
+import { entrantTypeLabel, eventDisplayLabel, normalizeRegistrationFieldRules } from '../common/entrant';
+import { ChangeActor, ensureRegistrationEditable, requireAdminActor } from '../common/registration-changes';
+import { CompetitionsService } from '../competitions/competitions.service';
+import { AdminCompetitionPlayerDto } from '../competitions/dto/competition-registration.dto';
+import { TeamCompetitionsService } from '../team-competitions/team-competitions.service';
+import {
+  DeletePaymentEntriesDto,
+  UpdateEditDeadlineDto,
+  UpdatePaymentSettingDto,
+  UpdatePaymentStatusDto,
+  UpdatePaymentTeamDto,
+} from './dto/payment.dto';
 import {
   FeeKind,
   FeeSetting,
@@ -48,9 +58,15 @@ const ENTRANT_TYPES: EntrantType[] = [EntrantType.SCHOOL, EntrantType.SOCIAL];
 
 const playerName = { select: { name: true, contact: true, affiliation: true } } as const;
 
+const DOUBLES_TYPES = new Set<EventType>([EventType.MENS_DOUBLES, EventType.WOMENS_DOUBLES, EventType.MIXED_DOUBLES]);
+
 @Injectable()
 export class PaymentsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private competitionsService: CompetitionsService,
+    private teamCompetitionsService: TeamCompetitionsService,
+  ) {}
 
   // ==================== 后台 ====================
 
@@ -90,6 +106,10 @@ export class PaymentsService {
   /** 赛事缴费总览：两个组别的设置、全部已通过报名与团体赛队伍、按组别汇总。 */
   async overview(competitionId: string) {
     const competition = await this.ensureCompetition(competitionId);
+    const tournament = await this.prisma.tournament.findUniqueOrThrow({
+      where: { id: competitionId },
+      select: { registrationEditDeadline: true, registrationFieldRules: true },
+    });
     const settings = await this.settingMap([competitionId]);
     const [registrations, teams, events, teamCompetitions] = await Promise.all([
       this.prisma.registration.findMany({
@@ -161,6 +181,7 @@ export class PaymentsService {
           contact: team.members.map((member) => member.player.contact).find(Boolean) ?? '',
           affiliation: team.affiliation,
           members: team.members.map((member) => member.player.name).join('、'),
+          teamNotes: team.notes,
           amountDue: feeAmount(setting, 'TEAM'),
           paymentStatus: team.paymentStatus,
           paidAmount: team.paidAmount,
@@ -190,8 +211,17 @@ export class PaymentsService {
 
     return {
       competition: { id: competition.id, name: competition.name },
+      // 报名信息修改截止时间；过了这个时间不能再编辑报名信息和组别，删除不受影响。
+      editDeadline: tournament.registrationEditDeadline,
+      fieldRules: normalizeRegistrationFieldRules(tournament.registrationFieldRules),
       settings: ENTRANT_TYPES.map((type) => this.settingView(settings, competitionId, type)),
-      events: events.map((event) => ({ id: event.id, entrantType: event.entrantType, label: eventDisplayLabel(event) })),
+      events: events.map((event) => ({
+        id: event.id,
+        type: event.type,
+        isDouble: DOUBLES_TYPES.has(event.type),
+        entrantType: event.entrantType,
+        label: eventDisplayLabel(event),
+      })),
       teamCompetitions,
       summary,
       rows,
@@ -276,6 +306,89 @@ export class PaymentsService {
       }
     }, { timeout: 30000, maxWait: 10000 });
     return { updated };
+  }
+
+  /**
+   * 删除缴费行：单项删除这一条报名，团体赛删除这支队伍（真删除）。两类放在同一个事务里，
+   * 有一条不能删（签表已冻结、已发布或已开赛）就整批不删。联动规则见
+   * CompetitionsService.deleteAdminRegistrations 与 TeamCompetitionsService.removeTeamsInTx。
+   */
+  async deleteEntries(competitionId: string, dto: DeletePaymentEntriesDto, actor: ChangeActor | undefined) {
+    requireAdminActor(actor, '删除报名');
+    await this.ensureCompetition(competitionId);
+    const registrationIds: string[] = [];
+    const teamIds: string[] = [];
+    for (const entry of dto.entries) {
+      if (entry.registrationId) registrationIds.push(entry.registrationId);
+      else if (entry.teamId) teamIds.push(entry.teamId);
+      else throw new BadRequestException('缺少要删除的报名或队伍');
+    }
+    return this.prisma.$transaction(async (tx) => {
+      const events = await this.competitionsService.deleteEventRegistrationsInTx(tx, competitionId, registrationIds, actor, dto.note);
+      const teams = await this.teamCompetitionsService.removeTeamsInTx(tx, competitionId, teamIds, actor, dto.note);
+      return {
+        deleted: events.deleted + teams.deleted,
+        redrawEvents: events.redrawEvents,
+        redrawTeamCompetitions: teams.redrawTeamCompetitions,
+      };
+    }, { timeout: 60_000, maxWait: 10_000 });
+  }
+
+  /** 编辑表单读取单条报名（与参赛选手页同一份数据，不含缴费信息）。 */
+  getRegistration(competitionId: string, registrationId: string) {
+    return this.competitionsService.getAdminPlayer(competitionId, registrationId);
+  }
+
+  /** 修改单项报名信息或组别，规则与参赛选手页一致。 */
+  updateRegistration(
+    competitionId: string,
+    registrationId: string,
+    dto: AdminCompetitionPlayerDto,
+    actor: ChangeActor | undefined,
+  ) {
+    requireAdminActor(actor, '修改报名信息');
+    return this.competitionsService.updateAdminPlayer(competitionId, registrationId, dto, actor);
+  }
+
+  /** 缴费管理里只改队名、单位、备注；队员名单在团体赛管理里调整，不能改组别。 */
+  async updateTeam(competitionId: string, teamId: string, dto: UpdatePaymentTeamDto, actor: ChangeActor | undefined) {
+    requireAdminActor(actor, '修改队伍信息');
+    const team = await this.prisma.team.findUnique({
+      where: { id: teamId },
+      include: { teamCompetition: { include: { tournament: { select: { registrationEditDeadline: true } } } } },
+    });
+    if (!team || team.teamCompetition.tournamentId !== competitionId) throw new NotFoundException('队伍不存在');
+    ensureRegistrationEditable(team.teamCompetition.tournament);
+    try {
+      return await this.prisma.team.update({
+        where: { id: teamId },
+        data: {
+          name: dto.name.trim(),
+          affiliation: dto.affiliation.trim(),
+          notes: dto.notes?.trim() || null,
+        },
+        select: { id: true, name: true, affiliation: true, notes: true },
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        throw new ConflictException('该团体赛已有同名队伍');
+      }
+      throw error;
+    }
+  }
+
+  /** 设置报名信息修改截止时间；为空表示不限制。 */
+  async setEditDeadline(competitionId: string, dto: UpdateEditDeadlineDto, actor: ChangeActor | undefined) {
+    requireAdminActor(actor, '设置修改截止时间');
+    await this.ensureCompetition(competitionId);
+    const deadline = dto.deadline ? new Date(dto.deadline) : null;
+    if (deadline && Number.isNaN(deadline.getTime())) throw new BadRequestException('截止时间格式不正确');
+    const updated = await this.prisma.tournament.update({
+      where: { id: competitionId },
+      data: { registrationEditDeadline: deadline },
+      select: { registrationEditDeadline: true },
+    });
+    return { editDeadline: updated.registrationEditDeadline };
   }
 
   async logs(competitionId: string) {
