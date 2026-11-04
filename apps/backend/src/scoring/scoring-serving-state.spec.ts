@@ -223,7 +223,7 @@ describe('ScoringService 发球/接发站位', () => {
       expect(service.computeCourtDisplayState([], 3).side1CourtSide).toBe('left');
     });
 
-    it('决胜局 11 分换边在局内再翻一次', () => {
+    it('局内手动换边再翻一次', () => {
       const { service } = setup();
       const swapEvent = { note: 'COURT_SWAP:3' };
       expect(service.computeCourtDisplayState([swapEvent], 3).side1CourtSide).toBe('right');

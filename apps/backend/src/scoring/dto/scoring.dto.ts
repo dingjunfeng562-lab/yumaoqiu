@@ -77,6 +77,11 @@ export class StartMatchDto {
 
   @IsIn([1, 2])
   receiverPlayerIndex: 1 | 2;
+
+  /** A 方开赛时站哪半场；不传按左半场，'right' 时后端记一条换边事件。 */
+  @IsOptional()
+  @IsIn(['left', 'right'])
+  side1CourtSide?: 'left' | 'right';
 }
 
 /** 裁判在「当前这一局」核对/修改发球员与接发球员（发球方由上一局胜方决定，不可改）。 */

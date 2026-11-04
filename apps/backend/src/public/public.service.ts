@@ -128,7 +128,6 @@ const COURT_SWAP_NOTE_PREFIX = 'COURT_SWAP:';
 const COURT_SWAP_REQUIRED_NOTE_PREFIX = 'COURT_SWAP_REQUIRED:';
 const RETIRE_NOTE_PREFIX = 'RETIRE:';
 const BLACK_CARD_NOTE_PREFIX = 'BLACK_CARD:';
-const INTERVAL_REST_NOTE_PREFIX = 'INTERVAL_REST:';
 // 赛前练球只给裁判端看，前台的最近事件里不显示。
 const WARMUP_NOTE_PREFIX = 'WARMUP:';
 
@@ -1238,16 +1237,9 @@ export class PublicService {
   }
 
   private decodePublicMatchPauseNote(note?: string | null): 'START' | 'END' | null {
-    if (
-      note?.startsWith('MATCH_PAUSE:START') ||
-      note?.startsWith('TECHNICAL_PAUSE:START') ||
-      note?.startsWith(`${INTERVAL_REST_NOTE_PREFIX}START`)
-    ) return 'START';
-    if (
-      note?.startsWith('MATCH_PAUSE:END') ||
-      note?.startsWith('TECHNICAL_PAUSE:END') ||
-      note?.startsWith(`${INTERVAL_REST_NOTE_PREFIX}END`)
-    ) return 'END';
+    // 只认裁判手动暂停；技术暂停 / 局间休息已取消，旧事件也不再影响大屏状态。
+    if (note?.startsWith('MATCH_PAUSE:START')) return 'START';
+    if (note?.startsWith('MATCH_PAUSE:END')) return 'END';
     return null;
   }
 

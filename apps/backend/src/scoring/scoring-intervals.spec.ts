@@ -1,10 +1,10 @@
-import { ScoringRule } from '@prisma/client';
 import { ScoringService } from './scoring.service';
 
 /**
  * 间歇与赛前练球。
  *
- * 每局领先方先到 11 分时间歇 60 秒（TECHNICAL_PAUSE），局与局之间休息 120 秒（INTERVAL_REST）；
+ * 裁判端已取消自动技术暂停与局间休息：11 分（或 15 分制的 8 分）不再停表、不再写
+ * TECHNICAL_PAUSE / INTERVAL_REST 事件，只有裁判手动按下的暂停才算暂停。
  * 赛前练球记成 WARMUP:START:<秒> / WARMUP:END，只给裁判端倒计时用，不算比赛暂停。
  */
 describe('ScoringService 间歇与赛前练球', () => {
@@ -14,25 +14,32 @@ describe('ScoringService 间歇与赛前练球', () => {
 
   const at = (iso: string) => new Date(`2026-10-29T${iso}Z`);
 
-  describe('11 分间歇', () => {
-    it('21 分、15 分、31 分制每一局都有', () => {
+  describe('暂停只认手动暂停', () => {
+    it('旧的 11 分技术暂停 / 局间休息事件不再判为暂停', () => {
       const service = setup();
-      for (const rule of [ScoringRule.TWENTYONE_BO3, ScoringRule.FIFTEEN_BO3, ScoringRule.FIFTEEN_ONE, ScoringRule.THIRTYONE_BO3]) {
-        expect(service.shouldUseTechnicalPauseInGame(1, rule)).toBe(true);
-        expect(service.shouldUseTechnicalPauseInGame(2, rule)).toBe(true);
-      }
+      const pause = service.computePauseState([
+        { note: 'TECHNICAL_PAUSE:START:1', createdAt: at('08:00:00') },
+        { note: 'INTERVAL_REST:START:2', createdAt: at('08:10:00') },
+      ]);
+      expect(pause.paused).toBe(false);
+      expect(pause.pauseKind).toBeNull();
     });
 
-    it('打到 11 分就结束的自定义局制没有', () => {
+    it('手动暂停开始与结束成对计算', () => {
       const service = setup();
-      expect(service.shouldUseTechnicalPauseInGame(1, ScoringRule.TWENTYONE_BO3, { customGamePoint: 11 })).toBe(false);
-    });
+      const paused = service.computePauseState([
+        { note: 'MATCH_PAUSE:START:医疗', createdAt: at('08:00:00') },
+      ]);
+      expect(paused.paused).toBe(true);
+      expect(paused.pauseKind).toBe('manual');
+      expect(paused.pauseReason).toBe('医疗');
 
-    it('有一方到 11 分时触发', () => {
-      const service = setup();
-      expect(service.shouldTriggerTechnicalPause(1, 11, 7, ScoringRule.TWENTYONE_BO3)).toBe(true);
-      expect(service.shouldTriggerTechnicalPause(2, 6, 11, ScoringRule.TWENTYONE_BO3)).toBe(true);
-      expect(service.shouldTriggerTechnicalPause(1, 10, 7, ScoringRule.TWENTYONE_BO3)).toBe(false);
+      const resumed = service.computePauseState([
+        { note: 'MATCH_PAUSE:START', createdAt: at('08:00:00') },
+        { note: 'MATCH_PAUSE:END', createdAt: at('08:01:00') },
+      ]);
+      expect(resumed.paused).toBe(false);
+      expect(resumed.pausedDurationMs).toBe(60_000);
     });
   });
 

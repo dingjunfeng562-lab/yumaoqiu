@@ -19,6 +19,7 @@ import {
   PauseCircleOutlined,
   PlayCircleOutlined,
   ReloadOutlined,
+  SettingOutlined,
   SwapOutlined,
   SyncOutlined,
   UndoOutlined,
@@ -77,10 +78,44 @@ type CourtDisplayState = {
   swapCount: number;
 };
 
-type CourtSwapRequired = {
-  required: boolean;
-  gameNo: number | null;
+/** 赛前设置：首发方、发球员、接发球员，以及 A 方开赛站哪半场。 */
+type PreMatchSetup = {
+  servingSide: 1 | 2;
+  serverPlayerIndex: PlayerIndex;
+  receiverPlayerIndex: PlayerIndex;
+  side1CourtSide: CourtSide;
 };
+
+const preMatchSetupStorageKey = (matchId: string) => `referee:match-setup:${matchId}`;
+
+function readPreMatchSetup(matchId: string): PreMatchSetup | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem(preMatchSetupStorageKey(matchId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<PreMatchSetup>;
+    if (
+      (parsed.servingSide === 1 || parsed.servingSide === 2) &&
+      (parsed.serverPlayerIndex === 1 || parsed.serverPlayerIndex === 2) &&
+      (parsed.receiverPlayerIndex === 1 || parsed.receiverPlayerIndex === 2) &&
+      (parsed.side1CourtSide === 'left' || parsed.side1CourtSide === 'right')
+    ) {
+      return parsed as PreMatchSetup;
+    }
+  } catch {
+    // 存储被禁用或内容损坏时当作没设置过。
+  }
+  return null;
+}
+
+function writePreMatchSetup(matchId: string, setup: PreMatchSetup) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem(preMatchSetupStorageKey(matchId), JSON.stringify(setup));
+  } catch {
+    // 隐私模式下写入失败不影响本次操作。
+  }
+}
 
 type MatchEventLog = {
   id: string;
@@ -140,7 +175,7 @@ type ScoreState = {
   finishedAt?: string | null;
   matchPaused?: boolean;
   pausedAt?: string | null;
-  pauseKind?: 'manual' | 'technical' | 'interval' | null;
+  pauseKind?: 'manual' | null;
   pauseReason?: string | null;
   actualDurationSeconds?: number | null;
   side1?: MatchSide | null;
@@ -154,10 +189,11 @@ type ScoreState = {
   lastPointSide?: 1 | 2 | null;
   /** 未开始的场次正在赛前练球时有值。 */
   warmup?: { startedAt: string; seconds: number } | null;
+  /** 未开始的场次已经练过球（含提前结束），之后可以直接开始比赛。 */
+  warmupDone?: boolean;
   /** 服务器当前时间，用来校准手机时钟，倒计时按服务器时间算。 */
   serverNow?: string | null;
   courtDisplayState?: CourtDisplayState | null;
-  courtSwapRequired?: CourtSwapRequired | null;
   events: MatchEventLog[];
   updatedAt?: string | null;
 };
@@ -421,22 +457,8 @@ const DEFAULT_WARMUP_MINUTES = 3;
 const MIN_WARMUP_MINUTES = 1;
 const MAX_WARMUP_MINUTES = 5;
 
-/** seconds 是规定的间歇时长，用来倒计时；手动暂停没有规定时长，改为显示已暂停多久。 */
+/** 现在只有裁判手动暂停；没有规定时长，所以倒计时位置改为显示已暂停多久。 */
 function pauseAlertText(score?: ScoreState | null): { message: string; description: string; seconds: number | null } {
-  if (score?.pauseKind === 'technical') {
-    return {
-      message: '11 分间歇',
-      description: '比赛计时已停止。到时提醒双方回场，点「恢复比赛」继续计分。',
-      seconds: 60,
-    };
-  }
-  if (score?.pauseKind === 'interval') {
-    return {
-      message: `局间休息 · 第 ${score ? currentGameNo(score) : 2} 局前`,
-      description: '比赛计时已停止。到时提醒双方回场，点「恢复比赛」开始下一局。',
-      seconds: 120,
-    };
-  }
   return {
     message: score?.pauseReason ? `比赛暂停：${score.pauseReason}` : '比赛暂停中',
     description: '比赛计时已停止，前台同步显示暂停。点「恢复比赛」继续计分。',
@@ -531,10 +553,12 @@ export default function RefereeScoringPage() {
   const [retireReason, setRetireReason] = useState('伤退/退赛');
   const [retireChooserOpen, setRetireChooserOpen] = useState(false);
   const [finishConfirmOpen, setFinishConfirmOpen] = useState(false);
-  const [startConfirmOpen, setStartConfirmOpen] = useState(false);
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [preMatchSetup, setPreMatchSetup] = useState<PreMatchSetup | null>(null);
   const [startServingSide, setStartServingSide] = useState<1 | 2 | null>(null);
   const [startServerPlayerIndex, setStartServerPlayerIndex] = useState<PlayerIndex | null>(null);
   const [startReceiverPlayerIndex, setStartReceiverPlayerIndex] = useState<PlayerIndex | null>(null);
+  const [startSide1CourtSide, setStartSide1CourtSide] = useState<CourtSide>('left');
   const [gameServeOpen, setGameServeOpen] = useState(false);
   const [gameServeServer, setGameServeServer] = useState<PlayerIndex | null>(null);
   const [gameServeReceiver, setGameServeReceiver] = useState<PlayerIndex | null>(null);
@@ -597,11 +621,43 @@ export default function RefereeScoringPage() {
     }
   }
 
-  function openStartConfirm() {
-    setStartServingSide(null);
-    setStartServerPlayerIndex(null);
-    setStartReceiverPlayerIndex(null);
-    setStartConfirmOpen(true);
+  function openSetup() {
+    setStartServingSide(preMatchSetup?.servingSide ?? 1);
+    setStartServerPlayerIndex(preMatchSetup?.serverPlayerIndex ?? 1);
+    setStartReceiverPlayerIndex(preMatchSetup?.receiverPlayerIndex ?? 1);
+    setStartSide1CourtSide(preMatchSetup?.side1CourtSide ?? 'left');
+    setSetupOpen(true);
+  }
+
+  /** 赛前设置只存在本机（sessionStorage），刷新不丢；开赛时随 /start 一起提交。 */
+  function saveSetup() {
+    if (!startServingSide || !startServerPlayerIndex || !startReceiverPlayerIndex) {
+      messageApi.warning('请先选择首发方、首位发球员和接发球员');
+      return;
+    }
+    const setup: PreMatchSetup = {
+      servingSide: startServingSide,
+      serverPlayerIndex: startServerPlayerIndex,
+      receiverPlayerIndex: startReceiverPlayerIndex,
+      side1CourtSide: startSide1CourtSide,
+    };
+    setPreMatchSetup(setup);
+    if (matchId) writePreMatchSetup(matchId, setup);
+    setSetupOpen(false);
+  }
+
+  async function startMatchNow() {
+    if (!preMatchSetup) {
+      messageApi.warning('请先完成赛前设置');
+      openSetup();
+      return;
+    }
+    await postAction(`/matches/${matchId}/start`, {
+      servingSide: preMatchSetup.servingSide,
+      serverPlayerIndex: preMatchSetup.serverPlayerIndex,
+      receiverPlayerIndex: preMatchSetup.receiverPlayerIndex,
+      side1CourtSide: preMatchSetup.side1CourtSide,
+    });
   }
 
   /**
@@ -628,6 +684,13 @@ export default function RefereeScoringPage() {
     newestScoreAt.current = 0;
     loadScore();
   }, [token, matchId]);
+
+  // 刷新页面 / 锁屏回来后恢复本机保存的赛前设置。
+  useEffect(() => {
+    if (!matchId) return;
+    const saved = readPreMatchSetup(matchId);
+    if (saved) setPreMatchSetup(saved);
+  }, [matchId]);
 
   // 比分越过决胜阈值后，自动弹窗请裁判确认结束比赛。
   // 后端此时保持 status=LIVE 并写入 winnerSide（pendingFinish=true），
@@ -752,9 +815,8 @@ export default function RefereeScoringPage() {
   const matchEnded = score.status === 'COMPLETED' || score.status === 'CANCELLED';
   const paused = live && Boolean(score.matchPaused);
   const busy = busyAction !== '';
-  const courtSwapRequired = live && Boolean(score.courtSwapRequired?.required);
-  const scoringLocked = !live || paused || courtSwapRequired || Boolean(score.pendingFinish) || busy;
-  // 撤销不受「待确认结束」和「需换边」限制：这两种情况下正是要用它改回最后一分。
+  const scoringLocked = !live || paused || Boolean(score.pendingFinish) || busy;
+  // 撤销不受「待确认结束」限制：正是要用它改回最后一分。
   const lastPointSide = lastPointSideOf(score);
   const undoLocked = !live || paused || busy || lastPointSide === null;
   const canMinus = (side: 1 | 2) => !undoLocked && lastPointSide === side && currentSideScore(score, side) > 0;
@@ -768,7 +830,13 @@ export default function RefereeScoringPage() {
 
   const warmupPath = `/matches/${matchId}/warmup`;
   const warmupEndPath = `/matches/${matchId}/warmup-end`;
-  const startAction: CourtOverlayAction = { label: '开始比赛', icon: <PlayCircleOutlined />, run: 'start', disabled: busy };
+  const startPath = `/matches/${matchId}/start`;
+  const setupSummary = preMatchSetup
+    ? `${sideName(preMatchSetup.servingSide === 1 ? score.side1 : score.side2)} 先发：`
+      + `${playerNameByIndex(preMatchSetup.servingSide === 1 ? score.side1 : score.side2, preMatchSetup.serverPlayerIndex)} 发球、`
+      + `${playerNameByIndex(preMatchSetup.servingSide === 1 ? score.side2 : score.side1, preMatchSetup.receiverPlayerIndex)} 接发；`
+      + `${sideName(score.side1)} 站${preMatchSetup.side1CourtSide === 'left' ? '左' : '右'}半场`
+    : '';
 
   const courtOverlay: CourtOverlay | null = score.status === 'PENDING'
     ? score.warmup
@@ -776,22 +844,52 @@ export default function RefereeScoringPage() {
           tone: 'green',
           title: '赛前练球',
           timer: { startedAt: score.warmup.startedAt, seconds: score.warmup.seconds, warningHint: '请双方准备开始比赛' },
-          description: '练球结束后点「开始比赛」，选首发方和发球员。',
+          description: preMatchSetup
+            ? `${setupSummary}。倒计时没走完也可以点「开始比赛」。`
+            : '倒计时没走完也可以点「开始比赛」；开赛前请先完成赛前设置。',
           actions: [
             { label: '结束练球', run: 'warmup-end', loading: busyAction === warmupEndPath, disabled: busy, secondary: true },
-            startAction,
+            { label: '开始比赛', icon: <PlayCircleOutlined />, run: 'start', loading: busyAction === startPath, disabled: busy },
           ],
         }
-      : {
-          tone: 'green',
-          title: '比赛未开始',
-          description: '双方到齐后可先练球再开始比赛；选手未到场请在「结束比赛」里做弃权处理。',
-          warmupPicker: true,
-          actions: [
-            { label: '开始练球', icon: <FieldTimeOutlined />, run: 'warmup', loading: busyAction === warmupPath, disabled: busy, secondary: true },
-            startAction,
-          ],
-        }
+      : score.warmupDone
+        ? preMatchSetup
+          ? {
+              tone: 'green',
+              title: '赛前检查',
+              description: `${setupSummary}。练球已结束，可以开始比赛。`,
+              actions: [
+                { label: '修改设置', run: 'setup', disabled: busy, secondary: true },
+                { label: '开始比赛', icon: <PlayCircleOutlined />, run: 'start', loading: busyAction === startPath, disabled: busy },
+              ],
+            }
+          : {
+              tone: 'green',
+              title: '赛前练球已结束',
+              description: '先完成赛前设置再开始比赛。',
+              actions: [
+                { label: '赛前设置', icon: <SettingOutlined />, run: 'setup', disabled: busy },
+              ],
+            }
+        : preMatchSetup
+          ? {
+              tone: 'green',
+              title: '赛前检查',
+              description: `${setupSummary}。先开始练球，练球倒计时中可以提前开始比赛。`,
+              warmupPicker: true,
+              actions: [
+                { label: '修改设置', run: 'setup', disabled: busy, secondary: true },
+                { label: '开始练球', icon: <FieldTimeOutlined />, run: 'warmup', loading: busyAction === warmupPath, disabled: busy },
+              ],
+            }
+          : {
+              tone: 'amber',
+              title: '比赛未开始',
+              description: '先选首发方、发球员、接发球员和 A 方所在半场；设置后再开始练球。选手未到场请在「结束比赛」里做弃权处理。',
+              actions: [
+                { label: '赛前设置', icon: <SettingOutlined />, run: 'setup', disabled: busy },
+              ],
+            }
     : score.status === 'COMPLETED'
       ? {
           tone: 'green',
@@ -821,39 +919,26 @@ export default function RefereeScoringPage() {
                 disabled: busy,
               }],
             }
-          : courtSwapRequired
+          : paused
             ? {
                 tone: 'amber',
-                title: '决胜局 11 分，请交换场地',
-                description: '交换后自动进入 60 秒间歇。',
+                title: pauseAlert.message,
+                timer: score.pausedAt ? { startedAt: score.pausedAt, seconds: pauseAlert.seconds } : undefined,
+                description: pauseAlert.description,
                 actions: [{
-                  label: '交换场地',
-                  icon: <SyncOutlined />,
-                  run: 'swap',
-                  loading: busyAction === swapPath,
+                  label: '恢复比赛',
+                  icon: <PlayCircleOutlined />,
+                  run: 'resume',
+                  loading: busyAction === resumePath,
                   disabled: busy,
                 }],
               }
-            : paused
-              ? {
-                  tone: 'amber',
-                  title: pauseAlert.message,
-                  timer: score.pausedAt ? { startedAt: score.pausedAt, seconds: pauseAlert.seconds } : undefined,
-                  description: pauseAlert.description,
-                  actions: [{
-                    label: '恢复比赛',
-                    icon: <PlayCircleOutlined />,
-                    run: 'resume',
-                    loading: busyAction === resumePath,
-                    disabled: busy,
-                  }],
-                }
-              : null;
+            : null;
 
   function runOverlayAction(run: CourtOverlayRun) {
-    if (run === 'start') openStartConfirm();
+    if (run === 'start') void startMatchNow();
     else if (run === 'finish') setFinishConfirmOpen(true);
-    else if (run === 'swap') void postAction(swapPath);
+    else if (run === 'setup') openSetup();
     else if (run === 'warmup') void postAction(warmupPath, { seconds: warmupMinutes * 60 });
     else if (run === 'warmup-end') void postAction(warmupEndPath);
     else void postAction(resumePath);
@@ -989,7 +1074,6 @@ export default function RefereeScoringPage() {
             tone="mint"
             icon={<SyncOutlined />}
             label="交换场地"
-            attention={courtSwapRequired}
             disabled={!live || busy}
             loading={busyAction === swapPath}
             onClick={() => void postAction(swapPath)}
@@ -1167,14 +1251,13 @@ export default function RefereeScoringPage() {
         }}
       />
 
-      <StartMatchConfirmModal
-        open={startConfirmOpen}
+      <PreMatchSetupModal
+        open={setupOpen}
         score={score}
-        matchId={matchId}
-        busyAction={busyAction}
         servingSide={startServingSide}
         serverPlayerIndex={startServerPlayerIndex}
         receiverPlayerIndex={startReceiverPlayerIndex}
+        side1CourtSide={startSide1CourtSide}
         onServingSideChange={(side) => {
           setStartServingSide(side);
           const players = sidePlayers(side === 1 ? score.side1 : score.side2);
@@ -1184,19 +1267,9 @@ export default function RefereeScoringPage() {
         }}
         onServerPlayerChange={setStartServerPlayerIndex}
         onReceiverPlayerChange={setStartReceiverPlayerIndex}
-        onCancel={() => setStartConfirmOpen(false)}
-        onConfirm={async () => {
-          if (!startServingSide || !startServerPlayerIndex || !startReceiverPlayerIndex) {
-            messageApi.warning('请先选择首发方、首位发球员和接发球员');
-            return;
-          }
-          await postAction(`/matches/${matchId}/start`, {
-            servingSide: startServingSide,
-            serverPlayerIndex: startServerPlayerIndex,
-            receiverPlayerIndex: startReceiverPlayerIndex,
-          });
-          setStartConfirmOpen(false);
-        }}
+        onSide1CourtSideChange={setStartSide1CourtSide}
+        onCancel={() => setSetupOpen(false)}
+        onConfirm={saveSetup}
       />
 
       <GameServeModal
@@ -1347,7 +1420,7 @@ function SideScore({ side, value }: { side: 1 | 2; value: number }) {
   );
 }
 
-type CourtOverlayRun = 'start' | 'finish' | 'swap' | 'resume' | 'warmup' | 'warmup-end';
+type CourtOverlayRun = 'start' | 'finish' | 'setup' | 'resume' | 'warmup' | 'warmup-end';
 
 /** 按钮要么跳转（href），要么交给页面按 run 执行；secondary 是描边的次要按钮。 */
 type CourtOverlayAction = {
@@ -1989,30 +2062,30 @@ function RefereeSideActionModal({
   );
 }
 
-function StartMatchConfirmModal({
+function PreMatchSetupModal({
   open,
   score,
-  matchId,
-  busyAction,
   servingSide,
   serverPlayerIndex,
   receiverPlayerIndex,
+  side1CourtSide,
   onServingSideChange,
   onServerPlayerChange,
   onReceiverPlayerChange,
+  onSide1CourtSideChange,
   onCancel,
   onConfirm,
 }: {
   open: boolean;
   score: ScoreState;
-  matchId: string;
-  busyAction: string;
   servingSide: 1 | 2 | null;
   serverPlayerIndex: PlayerIndex | null;
   receiverPlayerIndex: PlayerIndex | null;
+  side1CourtSide: CourtSide;
   onServingSideChange: (side: 1 | 2) => void;
   onServerPlayerChange: (playerIndex: PlayerIndex) => void;
   onReceiverPlayerChange: (playerIndex: PlayerIndex) => void;
+  onSide1CourtSideChange: (side: CourtSide) => void;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -2023,11 +2096,10 @@ function StartMatchConfirmModal({
   return (
     <Modal
       open={open}
-      title="确认开始比赛"
-      okText="双方已到齐，开始比赛"
-      cancelText="暂不开始"
+      title="赛前设置"
+      okText="保存设置"
+      cancelText="取消"
       okButtonProps={{
-        loading: busyAction === `/matches/${matchId}/start`,
         disabled: score.status !== 'PENDING' || !servingSide || !serverPlayerIndex || !receiverPlayerIndex,
       }}
       onCancel={onCancel}
@@ -2037,17 +2109,17 @@ function StartMatchConfirmModal({
         <Alert
           type="info"
           showIcon
-          message="请确认双方选手是否到齐"
-          description="确认双方到齐后，请选择首发方、首位发球员和接发球员。0:0 开局两人都在各自右发球区，站位由这两项自动排定。"
+          message="先确认双方选手到齐"
+          description="再选择首发方、首位发球员、接发球员和 A 方所在半场。保存后开始练球，练球倒计时中可以提前开始比赛。"
         />
         <div className="grid gap-2 text-sm font-semibold text-slate-700">
           <div className="rounded-xl border border-blue-100 bg-blue-50/60 px-4 py-3">
-            <span className="text-slate-500">左侧：</span>
+            <span className="text-slate-500">A 方：</span>
             <strong className="text-[#0F172A]">{sideDisplayName(score.side1)}</strong>
             {isDoublesSide(score.side1) ? <p className="mt-1 text-xs text-slate-500">{sidePlayers(score.side1).map((player) => player.name).join(' / ')}</p> : null}
           </div>
           <div className="rounded-xl border border-red-100 bg-red-50/60 px-4 py-3">
-            <span className="text-slate-500">右侧：</span>
+            <span className="text-slate-500">B 方：</span>
             <strong className="text-[#0F172A]">{sideDisplayName(score.side2)}</strong>
             {isDoublesSide(score.side2) ? <p className="mt-1 text-xs text-slate-500">{sidePlayers(score.side2).map((player) => player.name).join(' / ')}</p> : null}
           </div>
@@ -2091,6 +2163,26 @@ function StartMatchConfirmModal({
             />
           </div>
         ) : null}
+        <div>
+          <p className="mb-2 text-sm font-black text-slate-700">场地</p>
+          <div className="grid grid-cols-2 gap-2">
+            <Button
+              className={`!h-11 !rounded-xl !font-black ${side1CourtSide === 'left' ? '!border-blue-500 !bg-blue-50 !text-blue-700' : ''}`}
+              onClick={() => onSide1CourtSideChange('left')}
+            >
+              A 方站左半场
+            </Button>
+            <Button
+              className={`!h-11 !rounded-xl !font-black ${side1CourtSide === 'right' ? '!border-blue-500 !bg-blue-50 !text-blue-700' : ''}`}
+              onClick={() => onSide1CourtSideChange('right')}
+            >
+              A 方站右半场
+            </Button>
+          </div>
+          <p className="mt-1 text-xs font-bold text-slate-500">
+            只决定屏幕和现场的左右；0:0 开局发球方始终从本方右发球区发球。
+          </p>
+        </div>
         {servingSide && serverPlayerIndex && receiverPlayerIndex ? (
           <div className="grid gap-2 sm:grid-cols-2">
             <ServePositionPreview
