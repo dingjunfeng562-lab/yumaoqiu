@@ -45,10 +45,23 @@ type TournamentSummary = {
   teamCompetitions?: Array<{ id: string }>;
 };
 
+type RegistrationCounts = {
+  all: number;
+  pending: number;
+  approved: number;
+  rejected: number;
+  removed: number;
+};
+
+/** 赛事管理列表里的报名统计，仪表盘复用同一份数字，避免和报名审核页对不上。 */
+type AdminCompetitionSummary = {
+  id: string;
+  counts: RegistrationCounts;
+};
+
 type TournamentRow = TournamentSummary & {
   photoCount: number;
-  viewCount: number;
-  downloadCount: number;
+  registrationCounts?: RegistrationCounts;
 };
 
 type UsageMetrics = {
@@ -149,6 +162,7 @@ export default function AdminDashboard() {
 
   const [tournaments, setTournaments] = useState<TournamentSummary[]>([]);
   const [stats, setStats] = useState<TournamentStat[]>([]);
+  const [registrationCounts, setRegistrationCounts] = useState<Record<string, RegistrationCounts>>({});
   const [activityStats, setActivityStats] = useState<PhotoActivityStat[]>([]);
   const [usageMetrics, setUsageMetrics] = useState<UsageMetrics>(EMPTY_USAGE_METRICS);
   const [loading, setLoading] = useState(true);
@@ -160,7 +174,7 @@ export default function AdminDashboard() {
     }
     setLoading(true);
     try {
-      const [tournamentData, photoStats, usageStats, activityData] = await Promise.all([
+      const [tournamentData, photoStats, usageStats, activityData, competitionData] = await Promise.all([
         apiFetch<TournamentSummary[]>('/tournaments', { token, cache: 'no-store' }).catch(() => []),
         apiFetch<TournamentStat[]>('/admin/photos/tournaments', { token, cache: 'no-store' }).catch(() => []),
         isRoot
@@ -169,11 +183,17 @@ export default function AdminDashboard() {
         isRoot
           ? apiFetch<PhotoActivityStat[]>('/admin/photo-activities', { token, cache: 'no-store' }).catch(() => [])
           : Promise.resolve([]),
+        apiFetch<AdminCompetitionSummary[]>('/admin/competitions', { token, cache: 'no-store' }).catch(() => []),
       ]);
+      const countsByTournament: Record<string, RegistrationCounts> = {};
+      for (const competition of competitionData) {
+        if (competition.counts) countsByTournament[competition.id] = competition.counts;
+      }
       setTournaments(tournamentData);
       setStats(photoStats);
       setUsageMetrics(usageStats);
       setActivityStats(activityData);
+      setRegistrationCounts(countsByTournament);
     } finally {
       setLoading(false);
     }
@@ -195,11 +215,10 @@ export default function AdminDashboard() {
         return {
           ...tournament,
           photoCount: photo?.photoCount ?? 0,
-          viewCount: photo?.viewCount ?? 0,
-          downloadCount: photo?.downloadCount ?? 0,
+          registrationCounts: registrationCounts[tournament.id],
         };
       }),
-    [photoMap, tournaments],
+    [photoMap, registrationCounts, tournaments],
   );
 
   const totalPhotos = stats.reduce((sum, item) => sum + item.photoCount, 0);
@@ -336,18 +355,27 @@ export default function AdminDashboard() {
       render: (value: number) => <Typography.Text style={{ fontSize: 12 }}>{value}</Typography.Text>,
     },
     {
-      title: '浏览',
-      dataIndex: 'viewCount',
-      key: 'viewCount',
-      width: 70,
-      render: (value: number) => <Typography.Text style={{ fontSize: 12 }}>{value.toLocaleString()}</Typography.Text>,
-    },
-    {
-      title: '下载',
-      dataIndex: 'downloadCount',
-      key: 'downloadCount',
-      width: 70,
-      render: (value: number) => <Typography.Text style={{ fontSize: 12 }}>{value.toLocaleString()}</Typography.Text>,
+      title: '报名人数',
+      key: 'registrationCounts',
+      width: 100,
+      render: (_: unknown, row: TournamentRow) => {
+        const counts = row.registrationCounts;
+        if (!counts) {
+          return <Typography.Text type="secondary" style={{ fontSize: 12 }}>—</Typography.Text>;
+        }
+        return (
+          <div title={`已通过 ${counts.approved} 人 · 待审 ${counts.pending} 人`}>
+            <div style={{ color: '#0f172a', fontSize: 13, fontWeight: 700, lineHeight: 1.3 }}>
+              {counts.approved.toLocaleString()}
+            </div>
+            {counts.pending > 0 ? (
+              <div style={{ color: '#d97706', fontSize: 11, fontWeight: 600 }}>
+                待审 {counts.pending.toLocaleString()}
+              </div>
+            ) : null}
+          </div>
+        );
+      },
     },
     {
       title: '操作',
@@ -626,7 +654,7 @@ export default function AdminDashboard() {
               dataSource={tournamentRows}
               loading={loading}
               pagination={false}
-              scroll={{ x: 720 }}
+              scroll={{ x: 680 }}
               tableLayout="fixed"
               size="small"
               locale={{ emptyText: '暂无赛事' }}

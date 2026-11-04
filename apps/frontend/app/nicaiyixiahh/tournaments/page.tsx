@@ -11,6 +11,7 @@ import {
   Card,
   Checkbox,
   DatePicker,
+  Dropdown,
   Form,
   Input,
   InputNumber,
@@ -24,18 +25,22 @@ import {
   Table,
   Tag,
   TimePicker,
+  Tooltip,
   Typography,
   Upload,
   message,
 } from 'antd';
-import type { UploadFile, UploadProps } from 'antd';
+import type { MenuProps, UploadFile, UploadProps } from 'antd';
 import {
   ArrowDownOutlined,
   ArrowUpOutlined,
   DeleteOutlined,
   EditOutlined,
   InboxOutlined,
+  MoreOutlined,
   PlusOutlined,
+  QrcodeOutlined,
+  ReloadOutlined,
   UndoOutlined,
   UploadOutlined,
 } from '@ant-design/icons';
@@ -206,13 +211,40 @@ function moveItem<T>(items: T[], from: number, to: number) {
   return next;
 }
 
+// 列表里用紧凑写法（2026.11.06 – 11.08），完整日期放在 tooltip 里。
+function dateRangeText(start: string, end: string) {
+  const startAt = dayjs(start);
+  const endAt = dayjs(end);
+  if (!startAt.isValid() || !endAt.isValid()) return '-';
+  if (startAt.isSame(endAt, 'day')) return startAt.format('YYYY.MM.DD');
+  return `${startAt.format('YYYY.MM.DD')} – ${endAt.format(
+    startAt.year() === endAt.year() ? 'MM.DD' : 'YYYY.MM.DD',
+  )}`;
+}
+
+function eventGroups(record: {
+  events: Array<{ type: EventType; entrantType?: EntrantType }>;
+}) {
+  const school = sortEventTypes(
+    record.events
+      .filter((event) => !event.entrantType || event.entrantType === 'SCHOOL')
+      .map((event) => event.type),
+  );
+  const social = sortEventTypes(
+    record.events.filter((event) => event.entrantType === 'SOCIAL').map((event) => event.type),
+  );
+  return { school, social };
+}
+
+const CELL_TEXT: React.CSSProperties = { fontSize: 12, lineHeight: '20px' };
+
 const ROOT_ROLE = 'ROOT';
 
 const APPROVAL_META: Record<
   'PENDING' | 'APPROVED' | 'REJECTED',
   { label: string; color: string }
 > = {
-  PENDING: { label: '待超级管理员审核', color: 'gold' },
+  PENDING: { label: '待审核', color: 'gold' },
   APPROVED: { label: '已通过审核', color: 'green' },
   REJECTED: { label: '已驳回', color: 'red' },
 };
@@ -257,6 +289,7 @@ export default function TournamentsPage() {
   const [reviewReason, setReviewReason] = useState('');
   const [reviewBusy, setReviewBusy] = useState(false);
   const [statusUpdatingId, setStatusUpdatingId] = useState('');
+  const [codeUpdatingKey, setCodeUpdatingKey] = useState('');
   const [qrTarget, setQrTarget] = useState<{
     record: Tournament;
     entrantType: 'SCHOOL' | 'SOCIAL';
@@ -715,6 +748,7 @@ export default function TournamentsPage() {
 
   async function toggleRegistrationCode(record: Tournament, entrantType: 'SCHOOL' | 'SOCIAL') {
     const enabled = !codeEnabled(record, entrantType);
+    setCodeUpdatingKey(`${record.id}:${entrantType}`);
     try {
       await apiFetch(`/admin/competitions/${record.id}/registration-code`, {
         method: 'PATCH',
@@ -725,6 +759,55 @@ export default function TournamentsPage() {
       await fetchTournaments();
     } catch (error) {
       message.error(error instanceof Error ? error.message : '报名码状态修改失败');
+    } finally {
+      setCodeUpdatingKey('');
+    }
+  }
+
+  // 「归档 / 恢复 / 删除」放在每行的「更多」里，避免操作列被四五个按钮挤满。
+  function rowMenuItems(record: Tournament): NonNullable<MenuProps['items']> {
+    const items: NonNullable<MenuProps['items']> = [];
+    if (record.isArchived) {
+      if (isRoot) items.push({ key: 'restore', icon: <UndoOutlined />, label: '恢复赛事' });
+    } else if (isSuperAdmin) {
+      items.push({ key: 'archive', icon: <InboxOutlined />, label: '归档赛事' });
+    }
+    if (isSuperAdmin || (currentUserId && record.submittedById === currentUserId)) {
+      if (items.length) items.push({ type: 'divider' });
+      items.push({ key: 'delete', icon: <DeleteOutlined />, label: '删除赛事', danger: true });
+    }
+    return items;
+  }
+
+  function handleRowMenu(record: Tournament, key: string) {
+    if (key === 'archive') {
+      Modal.confirm({
+        title: '归档后不建议继续编辑，确认归档？',
+        okText: '归档',
+        cancelText: '取消',
+        onOk: () => handleArchive(record.id),
+      });
+      return;
+    }
+    if (key === 'restore') {
+      Modal.confirm({
+        title: '确认恢复该归档赛事？',
+        content: '恢复后该赛事会重新出现在赛事配置和赛事管理中。',
+        okText: '恢复',
+        cancelText: '取消',
+        onOk: () => handleRestore(record.id),
+      });
+      return;
+    }
+    if (key === 'delete') {
+      Modal.confirm({
+        title: isSuperAdmin ? '确认删除？此操作不可恢复' : '确认删除你创建的赛事？删除后不可恢复',
+        content: '赛事的单项、报名、抽签、比赛和图片数据会一并删除。',
+        okText: '删除',
+        okButtonProps: { danger: true },
+        cancelText: '取消',
+        onOk: () => handleDelete(record.id),
+      });
     }
   }
 
@@ -732,188 +815,259 @@ export default function TournamentsPage() {
     {
       title: '赛事',
       key: 'name',
-      render: (_: unknown, record: Tournament) => (
-        <Space direction="vertical" size={0}>
-          <Typography.Text strong>{record.name}</Typography.Text>
-          <Typography.Text type="secondary">{record.organizer || '-'}</Typography.Text>
-        </Space>
-      ),
-    },
-    {
-      title: '时间',
-      key: 'dates',
-      render: (_: unknown, record: Tournament) =>
-        `${dayjs(record.startDate).format('YYYY年MM月DD日')} - ${dayjs(record.endDate).format('YYYY年MM月DD日')}`,
+      width: 275,
+      render: (_: unknown, record: Tournament) => {
+        const venueCount = record.venues.filter((venue) => venue.isActive).length;
+        const meta = [
+          dateRangeText(record.startDate, record.endDate),
+          venueCount ? `${venueCount} 片场地` : '未配置场地',
+          record.organizer || null,
+        ]
+          .filter(Boolean)
+          .join(' · ');
+        const metaTooltip = [
+          `时间：${dayjs(record.startDate).format('YYYY年MM月DD日')} - ${dayjs(record.endDate).format('YYYY年MM月DD日')}`,
+          `场地：${venueCount ? `${venueCount} 片（已启用）` : '未配置'}`,
+          `主办：${record.organizer || '-'}`,
+        ].join('\n');
+        const showTags =
+          record.approvalStatus !== 'APPROVED' || record.isArchived || record.showOnHome;
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+            <Typography.Text strong ellipsis={{ tooltip: record.name }} style={{ fontSize: 13 }}>
+              {record.name}
+            </Typography.Text>
+            <Typography.Text
+              type="secondary"
+              ellipsis={{ tooltip: metaTooltip }}
+              style={{ fontSize: 12 }}
+            >
+              {meta}
+            </Typography.Text>
+            {showTags ? (
+              <Space size={4} wrap style={{ marginTop: 2 }}>
+                {record.approvalStatus !== 'APPROVED' ? (
+                  <Tooltip
+                    title={
+                      record.approvalStatus === 'REJECTED' && record.rejectReason
+                        ? `驳回原因：${record.rejectReason}`
+                        : undefined
+                    }
+                  >
+                    <Tag
+                      color={(APPROVAL_META[record.approvalStatus] ?? APPROVAL_META.PENDING).color}
+                      style={{ marginInlineEnd: 0 }}
+                    >
+                      {(APPROVAL_META[record.approvalStatus] ?? APPROVAL_META.PENDING).label}
+                    </Tag>
+                  </Tooltip>
+                ) : null}
+                {record.isArchived ? <Tag style={{ marginInlineEnd: 0 }}>已归档</Tag> : null}
+                {record.showOnHome ? (
+                  <Tag color="gold" style={{ marginInlineEnd: 0 }}>
+                    首页展示
+                  </Tag>
+                ) : null}
+              </Space>
+            ) : null}
+          </div>
+        );
+      },
     },
     {
       title: '项目',
       key: 'events',
+      width: 205,
       render: (_: unknown, record: Tournament) => {
-        const school = record.events
-          .filter((event) => !event.entrantType || event.entrantType === 'SCHOOL')
-          .map((event) => eventLabel(event.type));
-        const social = record.events
-          .filter((event) => event.entrantType === 'SOCIAL')
-          .map((event) => eventLabel(event.type));
-        return [
-          school.length ? `学生组：${school.join('/')}` : '',
-          social.length ? `社会组：${social.join('/')}` : '',
-        ].filter(Boolean).join('；') || '-';
+        const { school, social } = eventGroups(record);
+        const rows = [
+          school.length ? { label: '学生', types: school } : null,
+          social.length ? { label: '社会', types: social } : null,
+        ].filter(Boolean) as Array<{ label: string; types: EventType[] }>;
+        if (!rows.length) {
+          return (
+            <Typography.Text type="secondary" style={CELL_TEXT}>
+              -
+            </Typography.Text>
+          );
+        }
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {rows.map((row) => (
+              <div key={row.label} style={{ display: 'flex', gap: 6 }}>
+                <span style={{ ...CELL_TEXT, flex: 'none', color: '#94a3b8' }}>{row.label}</span>
+                <span style={{ ...CELL_TEXT, color: '#334155' }}>
+                  {row.types.map((type) => eventLabel(type)).join('·')}
+                </span>
+              </div>
+            ))}
+          </div>
+        );
       },
     },
     {
       title: '报名码',
       key: 'registrationCode',
-      width: 320,
+      width: 240,
       render: (_: unknown, record: Tournament) => {
-        const hasSchool = record.events.some((event) => !event.entrantType || event.entrantType === 'SCHOOL');
-        const hasSocial = record.events.some((event) => event.entrantType === 'SOCIAL');
+        const { school, social } = eventGroups(record);
         const rows = [
-          { label: '学生', type: 'SCHOOL' as const, code: record.schoolRegistrationCode, hasGroup: hasSchool },
-          { label: '社会', type: 'SOCIAL' as const, code: record.socialRegistrationCode, hasGroup: hasSocial },
+          {
+            label: '学生',
+            type: 'SCHOOL' as const,
+            code: record.schoolRegistrationCode,
+            hasGroup: school.length > 0,
+          },
+          {
+            label: '社会',
+            type: 'SOCIAL' as const,
+            code: record.socialRegistrationCode,
+            hasGroup: social.length > 0,
+          },
         ];
         return (
-          <Space direction="vertical" size={4}>
-            {rows.map((item) => (
-              <Space key={item.type} size={4} wrap>
-                <Typography.Text type="secondary">{item.label}</Typography.Text>
-                {item.code ? (
-                  <>
-                    <Typography.Text code copyable={{ text: item.code }}>
-                      {item.code}
-                    </Typography.Text>
-                    <Tag color={codeEnabled(record, item.type) ? 'green' : 'default'}>
-                      {codeEnabled(record, item.type) ? '启用' : '停用'}
-                    </Tag>
-                    <Button
-                      size="small"
-                      type="link"
-                      onClick={() =>
-                        setQrTarget({
-                          record,
-                          entrantType: item.type,
-                          code: item.code!,
-                          enabled: codeEnabled(record, item.type),
-                        })
-                      }
-                    >
-                      二维码
-                    </Button>
-                    <Button size="small" type="link" onClick={() => void toggleRegistrationCode(record, item.type)}>
-                      {codeEnabled(record, item.type) ? '停用' : '启用'}
-                    </Button>
-                  </>
-                ) : (
-                  <Typography.Text type="secondary">{item.hasGroup ? '未生成' : '未开放'}</Typography.Text>
-                )}
-                <Button
-                  size="small"
-                  type="link"
-                  disabled={!item.hasGroup}
-                  onClick={() => void regenerateRegistrationCode(record, item.type)}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {rows.map((item) => {
+              const code = item.code;
+              const enabled = codeEnabled(record, item.type);
+              const busy = codeUpdatingKey === `${record.id}:${item.type}`;
+              return (
+                <div
+                  key={item.type}
+                  style={{ display: 'flex', alignItems: 'center', gap: 6, minHeight: 26 }}
                 >
-                  重生成
-                </Button>
-              </Space>
-            ))}
-          </Space>
+                  <span style={{ width: 24, flex: 'none', fontSize: 12, color: '#94a3b8' }}>
+                    {item.label}
+                  </span>
+                  <span style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center' }}>
+                    {code ? (
+                      <Typography.Text
+                        code
+                        copyable={{ text: code }}
+                        style={{ fontSize: 12, whiteSpace: 'nowrap' }}
+                      >
+                        {code}
+                      </Typography.Text>
+                    ) : (
+                      <Tooltip title={item.hasGroup ? '尚未生成报名码，点击右侧按钮生成' : '该组别未开放报名'}>
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          {item.hasGroup ? '未生成' : '未开放'}
+                        </Typography.Text>
+                      </Tooltip>
+                    )}
+                  </span>
+                  {code ? (
+                    <>
+                      <Tooltip title={enabled ? '报名码启用中，点击停用' : '报名码已停用，点击启用'}>
+                        <Switch
+                          size="small"
+                          checked={enabled}
+                          loading={busy}
+                          checkedChildren="启用"
+                          unCheckedChildren="停用"
+                          onChange={() => void toggleRegistrationCode(record, item.type)}
+                        />
+                      </Tooltip>
+                      <Tooltip title="查看报名二维码">
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<QrcodeOutlined />}
+                          onClick={() => setQrTarget({ record, entrantType: item.type, code, enabled })}
+                        />
+                      </Tooltip>
+                    </>
+                  ) : null}
+                  {item.hasGroup ? (
+                    <Tooltip title={code ? '重新生成报名码' : '生成报名码'}>
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={<ReloadOutlined />}
+                        loading={busy}
+                        onClick={() => void regenerateRegistrationCode(record, item.type)}
+                      />
+                    </Tooltip>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
         );
       },
     },
     {
       title: '状态',
       key: 'status',
+      width: 135,
       render: (_: unknown, record: Tournament) => {
-        const meta = statusLabel(record.status);
         if (isSuperAdmin && !record.isArchived) {
           return (
-            <Space>
-              <Select
-                size="small"
-                value={record.status}
-                options={STATUS_OPTIONS}
-                style={{ width: 120 }}
-                loading={statusUpdatingId === record.id}
-                onChange={(status) => handleStatusChange(record, status)}
-              />
-              {record.showOnHome && <Tag color="gold">首页展示</Tag>}
-            </Space>
+            <Select
+              size="small"
+              value={record.status}
+              options={STATUS_OPTIONS}
+              style={{ width: 110 }}
+              loading={statusUpdatingId === record.id}
+              onChange={(status) => handleStatusChange(record, status)}
+            />
           );
         }
+        const meta = statusLabel(record.status);
         return (
-          <Space>
-            <Tag color={meta.color}>{meta.label}</Tag>
-            {record.showOnHome && <Tag color="gold">首页展示</Tag>}
-            {record.isArchived && <Tag>已归档</Tag>}
-          </Space>
+          <Tag color={record.isArchived ? 'default' : meta.color}>
+            {record.isArchived ? '已归档' : meta.label}
+          </Tag>
         );
       },
     },
     {
-      title: '审核',
-      key: 'approval',
-      width: 160,
+      title: '操作',
+      key: 'actions',
+      width: 250,
       render: (_: unknown, record: Tournament) => {
-        const meta = APPROVAL_META[record.approvalStatus] ?? APPROVAL_META.PENDING;
+        const canApprove =
+          isSuperAdmin && record.approvalStatus !== 'APPROVED' && !record.isArchived;
+        const menuItems = rowMenuItems(record);
         return (
-          <Space direction="vertical" size={2}>
-            <Tag color={meta.color}>{meta.label}</Tag>
-            {record.approvalStatus === 'REJECTED' && record.rejectReason ? (
-              <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                {record.rejectReason}
-              </Typography.Text>
+          <Space size={6} wrap>
+            {canApprove ? (
+              <>
+                <Popconfirm
+                  title="确认通过审核?通过后将自动公开赛事"
+                  onConfirm={() => handleApprove(record)}
+                >
+                  <Button type="primary" size="small">
+                    通过审核
+                  </Button>
+                </Popconfirm>
+                <Button size="small" onClick={() => openReject(record)}>
+                  驳回
+                </Button>
+              </>
+            ) : null}
+            <Button
+              icon={<EditOutlined />}
+              size="small"
+              onClick={() => openEdit(record)}
+              disabled={record.isArchived}
+            >
+              编辑
+            </Button>
+            {menuItems.length ? (
+              <Dropdown
+                trigger={['click']}
+                placement="bottomRight"
+                menu={{ items: menuItems, onClick: ({ key }) => handleRowMenu(record, key) }}
+              >
+                <Tooltip title="更多操作">
+                  <Button icon={<MoreOutlined />} size="small" />
+                </Tooltip>
+              </Dropdown>
             ) : null}
           </Space>
         );
       },
-    },
-    { title: '场地', key: 'venues', render: (_: unknown, record: Tournament) => record.venues.filter((venue) => venue.isActive).length },
-    {
-      title: '操作',
-      key: 'actions',
-      width: 320,
-      render: (_: unknown, record: Tournament) => (
-        <Space wrap>
-          {isSuperAdmin && record.approvalStatus !== 'APPROVED' && !record.isArchived ? (
-            <>
-              <Popconfirm title="确认通过审核?通过后将自动公开赛事" onConfirm={() => handleApprove(record)}>
-                <Button type="primary" size="small">
-                  通过审核
-                </Button>
-              </Popconfirm>
-              <Button danger size="small" onClick={() => openReject(record)}>
-                驳回
-              </Button>
-            </>
-          ) : null}
-          <Button icon={<EditOutlined />} size="small" onClick={() => openEdit(record)} disabled={record.isArchived}>
-            编辑
-          </Button>
-          {isSuperAdmin && !record.isArchived && (
-            <Popconfirm title="归档后不建议继续编辑，确认归档？" onConfirm={() => handleArchive(record.id)}>
-              <Button icon={<InboxOutlined />} size="small">
-                归档
-              </Button>
-            </Popconfirm>
-          )}
-          {record.isArchived && isRoot && (
-            <Popconfirm title="确认恢复该归档赛事？" onConfirm={() => handleRestore(record.id)}>
-              <Button icon={<UndoOutlined />} size="small">恢复赛事</Button>
-            </Popconfirm>
-          )}
-          {isSuperAdmin || (currentUserId && record.submittedById === currentUserId) ? (
-            <Popconfirm
-              title={isSuperAdmin ? '确认删除？此操作不可恢复' : '确认删除你创建的赛事？删除后不可恢复'}
-              description="赛事的单项、报名、抽签、比赛和图片数据会一并删除。"
-              onConfirm={() => handleDelete(record.id)}
-            >
-              <Button icon={<DeleteOutlined />} size="small" danger>
-                删除
-              </Button>
-            </Popconfirm>
-          ) : null}
-        </Space>
-      ),
     },
   ];
 
@@ -921,7 +1075,16 @@ export default function TournamentsPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16, alignItems: 'center' }}>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: 12,
+          flexWrap: 'wrap',
+          marginBottom: 16,
+        }}
+      >
         <div>
           <Typography.Title level={4} style={{ margin: 0 }}>
             赛事配置
@@ -953,7 +1116,24 @@ export default function TournamentsPage() {
         />
       ) : null}
 
-      <Table rowKey="id" columns={columns} dataSource={tournaments} loading={loading} pagination={false} />
+      <Card
+        style={{ marginTop: 4 }}
+        title={<span style={{ fontSize: 14, fontWeight: 700 }}>赛事列表</span>}
+        extra={<Typography.Text type="secondary">共 {tournaments.length} 个赛事</Typography.Text>}
+        styles={{ body: { padding: 0 } }}
+      >
+        <Table
+          rowKey="id"
+          columns={columns}
+          dataSource={tournaments}
+          loading={loading}
+          pagination={false}
+          scroll={{ x: 1105 }}
+          tableLayout="fixed"
+          size="middle"
+          locale={{ emptyText: '暂无赛事，点击右上角「新建赛事」开始配置' }}
+        />
+      </Card>
 
       <Modal
         title={editing ? '编辑赛事' : '新建赛事'}
