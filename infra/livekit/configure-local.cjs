@@ -22,7 +22,7 @@ const backup = path.join(local, 'backend.env.before-local');
 if (!fs.existsSync(backup)) fs.writeFileSync(backup, original);
 const key = env.LIVEKIT_API_KEY || `local_${randomBytes(12).toString('hex')}`;
 const secret = env.LIVEKIT_API_SECRET || randomBytes(32).toString('hex');
-const values = { LIVEKIT_URL: `ws://${host}:7880`, LIVEKIT_INTERNAL_URL: 'http://127.0.0.1:7880',
+const values = { LIVEKIT_ENABLED: 'true', LIVEKIT_URL: `ws://${host}:7880`, LIVEKIT_INTERNAL_URL: 'http://127.0.0.1:7880',
   LIVEKIT_API_KEY: key, LIVEKIT_API_SECRET: secret, CAMERA_PUBLIC_URL: `http://${host}:4000` };
 let updated = original;
 for (const [name, value] of Object.entries(values)) {

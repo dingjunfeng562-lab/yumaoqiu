@@ -49,9 +49,9 @@ node infra/livekit/start-local.cjs
 
 本地跨不同网络测试可将电脑与手机加入同一虚拟组网，再使用 `node infra/livekit/configure-local.cjs --host 电脑的VPN_IP` 配置媒体与二维码地址，并重启后端/媒体。管理员防火墙工具可用 `--remote-subnet VPN的IPv4网段/CIDR` 放行该组网；API 4000 同样需允许该组网访问。未建立可互通的组网或公网媒体/TURN 时，手机 5G 无法直接连接电脑的 `192.168.*` 地址。此限制来自路由，不是 App 限制。
 
-后端读取 `LIVEKIT_URL`、`LIVEKIT_API_KEY`、`LIVEKIT_API_SECRET`；可用 `LIVEKIT_INTERNAL_URL` 指向本机管理 API。`LIVEKIT_VIEWER_LIMIT` 默认 8，用于保守控制观看规模。公开接入使用 HTTPS/WSS，手机只需要访问公网业务地址和媒体地址。
+直播功能默认关闭：后端只有在 `LIVEKIT_ENABLED=true` 且同时配置 `LIVEKIT_URL`、`LIVEKIT_API_KEY`、`LIVEKIT_API_SECRET` 时才连接 LiveKit；否则不启动多机位状态巡检，相关接口返回「直播功能已关闭」。可用 `LIVEKIT_INTERNAL_URL` 指向本机管理 API。`LIVEKIT_VIEWER_LIMIT` 默认 8，用于保守控制观看规模。公开接入使用 HTTPS/WSS，手机只需要访问公网业务地址和媒体地址。
 
-当前本地 4000 后端已配置并加载 LiveKit，媒体地址为 `ws://192.168.1.23:7880`，手机后台地址为 `http://192.168.1.23:4000`；媒体服务已启动，程序限定的局域网 TCP 7880/7881、UDP 7882 防火墙规则已生效。另建了「1号场地 · 多机位测试」4 CAM 房间，原单机位直播间继续运行。公网媒体尚未部署；本地配置与公网模板独立，App 继续支持可达的公网或 VPN 地址。
+本机默认关闭 LiveKit（`.env` 不设置 `LIVEKIT_ENABLED`），4000 后端启动时不会连接媒体服务，也不再输出多机位巡检告警；原有 `LIVEKIT_URL` 等凭据保留但不生效。需要多机位直播时重新执行 `node infra/livekit/configure-local.cjs`（会把 `LIVEKIT_ENABLED` 写为 `true`），再重启后端与媒体服务。公网媒体尚未部署；本地配置与公网模板独立，App 继续支持可达的公网或 VPN 地址。
 
 生产示例位于 `infra/livekit/`：
 

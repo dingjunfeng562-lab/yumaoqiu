@@ -11,11 +11,17 @@ export type MediaParticipant = {
 export class LivekitMediaService {
   private readonly jwt = new JwtService();
 
+  /** LiveKit is opt-in: it stays off unless LIVEKIT_ENABLED=true is set explicitly. */
+  enabled() {
+    return process.env.LIVEKIT_ENABLED === 'true';
+  }
+
   configured() {
-    return Boolean(process.env.LIVEKIT_URL && process.env.LIVEKIT_API_KEY && process.env.LIVEKIT_API_SECRET);
+    return this.enabled() && Boolean(process.env.LIVEKIT_URL && process.env.LIVEKIT_API_KEY && process.env.LIVEKIT_API_SECRET);
   }
 
   private config() {
+    if (!this.enabled()) throw new ServiceUnavailableException('直播功能已关闭（需设置 LIVEKIT_ENABLED=true 才会启用）');
     if (!this.configured()) throw new ServiceUnavailableException('请先配置 LiveKit 媒体服务');
     const url = new URL(process.env.LIVEKIT_URL!);
     if (!['wss:', 'ws:'].includes(url.protocol) || url.username || url.password) {

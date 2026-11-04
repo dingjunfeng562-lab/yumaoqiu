@@ -3,8 +3,15 @@ import { LivekitMediaService } from './livekit-media.service';
 
 describe('LiveKit credentials', () => {
   const original = { ...process.env };
-  beforeEach(() => { process.env.LIVEKIT_URL = 'ws://localhost:7880'; process.env.LIVEKIT_API_KEY = 'testkey'; process.env.LIVEKIT_API_SECRET = 'unit-test-secret'; process.env.NODE_ENV = 'test'; });
+  beforeEach(() => { process.env.LIVEKIT_ENABLED = 'true'; process.env.LIVEKIT_URL = 'ws://localhost:7880'; process.env.LIVEKIT_API_KEY = 'testkey'; process.env.LIVEKIT_API_SECRET = 'unit-test-secret'; process.env.NODE_ENV = 'test'; });
   afterAll(() => { process.env = original; });
+  it('stays off unless LIVEKIT_ENABLED=true, even with credentials present', () => {
+    delete process.env.LIVEKIT_ENABLED;
+    const service = new LivekitMediaService();
+    expect(service.enabled()).toBe(false);
+    expect(service.configured()).toBe(false);
+    expect(() => service.token('room', 'camera', 'camera')).toThrow('直播功能已关闭');
+  });
   const claims = (role: 'camera' | 'viewer' | 'director', audio = false) => {
     const result = new LivekitMediaService().token('room-one', `${role}_one`, role, audio);
     return new JwtService().verify(result.token, { secret: 'unit-test-secret', algorithms: ['HS256'] });

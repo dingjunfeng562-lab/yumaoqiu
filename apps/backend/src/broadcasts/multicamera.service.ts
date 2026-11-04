@@ -29,6 +29,13 @@ export class MulticameraService implements OnModuleInit, OnModuleDestroy {
 
   onModuleInit() {
     this.broadcasts.setMediaLifecycle({ close: (id) => this.closeMedia(id) });
+    // LiveKit is off by default: do not poll a media server that was never enabled.
+    if (!this.media.configured()) {
+      this.logger.log(this.media.enabled()
+        ? 'LIVEKIT_ENABLED=true 但缺少 LIVEKIT_URL/LIVEKIT_API_KEY/LIVEKIT_API_SECRET，多机位直播未启动'
+        : 'LiveKit 直播默认关闭（LIVEKIT_ENABLED 未开启），不启动多机位状态巡检');
+      return;
+    }
     this.timer = setInterval(() => void this.reconcile(), 3000);
     this.timer.unref();
   }
@@ -55,6 +62,7 @@ export class MulticameraService implements OnModuleInit, OnModuleDestroy {
   async enable(id: string, count: number, actor: Actor) {
     await this.authorize(id, actor, false, true);
     if (!Number.isInteger(count) || count < 1 || count > 6) throw new BadRequestException('机位数量应为 1 至 6');
+    if (!this.media.enabled()) throw new BadRequestException('直播功能已关闭，如需启用请设置 LIVEKIT_ENABLED=true');
     if (!this.media.configured()) throw new BadRequestException('请先配置 LIVEKIT_URL、LIVEKIT_API_KEY 和 LIVEKIT_API_SECRET');
     const room = await this.room(id);
     if (room.liveRoomName) return this.snapshot(id, actor);
