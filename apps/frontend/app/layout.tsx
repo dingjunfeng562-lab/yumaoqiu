@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from 'next';
+import { headers } from 'next/headers';
 import type { ActiveAnnouncement } from '@/components/GlobalAnnouncementModal';
+import { MAINTENANCE_VIEW_HEADER } from '@/lib/maintenance';
 import { Providers } from './providers';
 import './globals.css';
 
@@ -35,12 +37,14 @@ async function getInitialAnnouncement() {
 }
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const initialAnnouncement = await getInitialAnnouncement();
+  // proxy 把页面换成了全服维护页：不拉公告，也不让 Providers 弹公告、跳登录。
+  const maintenanceView = (await headers()).get(MAINTENANCE_VIEW_HEADER) === '1';
+  const initialAnnouncement = maintenanceView ? null : await getInitialAnnouncement();
 
   return (
     <html lang="zh-CN">
       <body>
-        <Providers initialAnnouncement={initialAnnouncement}>{children}</Providers>
+        <Providers initialAnnouncement={initialAnnouncement} maintenanceView={maintenanceView}>{children}</Providers>
       </body>
     </html>
   );

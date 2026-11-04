@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import { useSearchParams } from 'next/navigation';
@@ -29,7 +29,6 @@ const usernamePattern = /^[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9_-]{1,19}$
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const manrope = { className: 'font-sans' };
-const jetbrainsMono = { className: 'font-mono' };
 const sessionReadyAttempts = 8;
 const sessionReadyDelayMs = 120;
 
@@ -77,6 +76,20 @@ function LoginContent() {
   const [loginType, setLoginType] = useState<LoginType>('username');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  // 全服维护期间登录页仍可打开（给管理员用），顶部提示普通用户暂停登录。
+  const [maintenanceOn, setMaintenanceOn] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${process.env.NEXT_PUBLIC_API_URL}/maintenance/status`, { cache: 'no-store' })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((status: { enabled?: boolean } | null) => {
+        if (!cancelled) setMaintenanceOn(status?.enabled === true);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const onFinish = async (values: FormValues) => {
     setLoading(true);
@@ -92,7 +105,14 @@ function LoginContent() {
       });
 
       if (!res?.ok || res?.error) {
-        setError((res as { code?: string }).code === 'locked' ? '账号已锁定,请稍后再试' : '账号或密码错误');
+        const code = (res as { code?: string }).code;
+        setError(
+          code === 'locked'
+            ? '账号已锁定,请稍后再试'
+            : code === 'maintenance'
+              ? '系统维护中，暂停登录，仅管理员可登录'
+              : '账号或密码错误',
+        );
         return;
       }
 
@@ -180,6 +200,15 @@ function LoginContent() {
                 );
               })}
             </div>
+
+            {maintenanceOn && !error ? (
+              <Alert
+                showIcon
+                type="warning"
+                title="全服维护中，暂停登录，仅管理员可登录"
+                className="modern-login-alert"
+              />
+            ) : null}
 
             {/* 错误提示 */}
             {error ? (

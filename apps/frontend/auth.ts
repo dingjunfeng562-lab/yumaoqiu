@@ -6,6 +6,11 @@ class LockedCredentialsSignin extends CredentialsSignin {
   code = 'locked';
 }
 
+// 全服维护期间，非管理员账号登录会被后端拒绝。
+class MaintenanceCredentialsSignin extends CredentialsSignin {
+  code = 'maintenance';
+}
+
 async function refreshAccessToken(token: Record<string, unknown>): Promise<Record<string, unknown>> {
   const refreshToken = token.refreshToken as string | undefined;
   if (!refreshToken) {
@@ -84,6 +89,9 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         if (!res.ok) {
           if (data?.message === '账号已锁定,请稍后再试') {
             throw new LockedCredentialsSignin();
+          }
+          if (data?.code === 'MAINTENANCE') {
+            throw new MaintenanceCredentialsSignin();
           }
           return null;
         }

@@ -104,6 +104,8 @@ export function requiredPermissions(controller: string, action: string, kind?: s
     case 'BroadcastsController': return [];
     // 裁判员对局管理（赛事级对阵、时间、比分、结束状态与修改）仅限超级管理员。
     case 'MatchManagementController': return [];
+    // 全服维护开关与维护页内容仅限超级管理员。
+    case 'AdminMaintenanceController': return [];
     case 'CompetitionsController': return ['REGISTRATION'];
     case 'AdminPaymentsController': return ['PAYMENTS'];
     default: return undefined;

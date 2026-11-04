@@ -10,17 +10,22 @@ import type { ActiveAnnouncement } from '@/components/GlobalAnnouncementModal';
 export function Providers({
   children,
   initialAnnouncement,
+  maintenanceView = false,
 }: {
   children: React.ReactNode;
   initialAnnouncement?: ActiveAnnouncement | null;
+  maintenanceView?: boolean;
 }) {
   const pathname = usePathname();
   const isAdminPage = pathname === '/nicaiyixiahh' || pathname.startsWith('/nicaiyixiahh/');
   // Dedicated display surfaces: the tournament screen and the OBS scoreboard.
   // Neither may show the global announcement or bounce to /login, which would
   // put a modal or a login form into the live broadcast.
+  // 全服维护页同理（proxy 换页时地址不变，靠 maintenanceView 识别）。
   const isTournamentScreen = pathname.startsWith('/live-screen/')
-    || pathname.startsWith('/broadcast/overlay/');
+    || pathname.startsWith('/broadcast/overlay/')
+    || maintenanceView
+    || pathname === '/maintenance';
 
   useEffect(() => {
     if (isAdminPage) {

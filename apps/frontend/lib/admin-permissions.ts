@@ -11,6 +11,8 @@ export function canAccessAdminPage(role: string | undefined, pathname: string, p
   // 直播管理、裁判员对局管理仅超级管理员可见，没有可分配的功能权限键。
   if (pathname === '/nicaiyixiahh/broadcasts') return false;
   if (pathname.startsWith('/nicaiyixiahh/match-management')) return false;
+  // 全服维护开关仅超级管理员可见。
+  if (pathname === '/nicaiyixiahh/maintenance') return false;
   if (/^\/nicaiyixiahh\/team-competitions\/[^/]+$/.test(pathname)) {
     return hasFeature(role, permissions, 'TEAMS');
   }

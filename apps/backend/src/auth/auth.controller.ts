@@ -1,5 +1,6 @@
-import { Controller, Post, Body, Get, Delete, Param, UseGuards, Patch, Req } from '@nestjs/common';
+import { Controller, Post, Body, Get, Delete, Param, UseGuards, Patch, Req, ServiceUnavailableException } from '@nestjs/common';
 import { AuthService } from './auth.service';
+import { canEnterDuringMaintenance, MaintenanceService } from '../maintenance/maintenance.service';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { RolesGuard } from './roles.guard';
@@ -36,7 +37,10 @@ type RequestWithUser = {
 
 @Controller(['auth', 'v1/auth'])
 export class AuthController {
-  constructor(private authService: AuthService) {}
+  constructor(
+    private authService: AuthService,
+    private maintenance: MaintenanceService,
+  ) {}
 
   @Post('register')
   register(@Body() dto: RegisterDto) {
@@ -44,8 +48,13 @@ export class AuthController {
   }
 
   @Post('login')
-  login(@Body() dto: LoginDto) {
-    return this.authService.login(dto);
+  async login(@Body() dto: LoginDto) {
+    const result = await this.authService.login(dto);
+    // 全服维护期间只有管理员、超级管理员能登录（先校验密码，避免借此探测账号角色）。
+    if (!canEnterDuringMaintenance(result.user.role) && (await this.maintenance.getState()).enabled) {
+      throw new ServiceUnavailableException({ statusCode: 503, code: 'MAINTENANCE', message: '系统维护中，暂停登录' });
+    }
+    return result;
   }
 
   @Post('refresh')

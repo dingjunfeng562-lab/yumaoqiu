@@ -48,6 +48,8 @@ import {
   MenuUnfoldOutlined,
   LoadingOutlined,
   WalletOutlined,
+  ToolOutlined,
+  WarningFilled,
 } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { canAccessAdminPage, firstAdminPage } from '@/lib/admin-permissions';
@@ -99,7 +101,41 @@ const baseMenuItems: NavItem[] = [
   { key: '/nicaiyixiahh/invite-codes', section: 'system', icon: <KeyOutlined />, label: '邀请码管理' },
   { key: '/nicaiyixiahh/email', section: 'system', icon: <MailOutlined />, label: '邮件通知设置' },
   { key: '/nicaiyixiahh/ai-config', section: 'system', icon: <MessageOutlined />, label: 'AI 助手配置' },
+  { key: '/nicaiyixiahh/maintenance', section: 'system', icon: <ToolOutlined />, label: '全服维护' },
 ];
+
+// 后台顶部的全服维护横幅：管理员只能看不能操作，超级管理员提醒及时关闭。
+function MaintenanceBanner({ role, onManage }: { role?: string; onManage?: () => void }) {
+  const isRoot = role === 'ROOT';
+  return (
+    <div
+      role="alert"
+      style={{
+        flex: '0 0 auto',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexWrap: 'wrap',
+        gap: 8,
+        padding: '9px 16px',
+        background: '#cf1322',
+        color: '#fff',
+        fontSize: 14,
+        fontWeight: 600,
+        lineHeight: 1.5,
+        textAlign: 'center',
+      }}
+    >
+      <WarningFilled />
+      <span>{isRoot ? '全服维护中，除超级管理员外不能进行任何操作' : '全服维护中，不能进行任何操作'}</span>
+      {isRoot && onManage ? (
+        <Button size="small" ghost onClick={onManage} style={{ borderColor: '#fff', color: '#fff' }}>
+          前往关闭维护
+        </Button>
+      ) : null}
+    </div>
+  );
+}
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const [siderWidth, setSiderWidth] = useState(SIDER_DEFAULT_WIDTH);
@@ -181,6 +217,28 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       window.clearInterval(id);
     };
   }, [token, pathname, isSuperOrRoot]);
+
+  // 全服维护状态：进入后台、切换页面、每 30 秒查一次；维护页开关后立即刷新（maintenance-changed 事件）。
+  const [maintenanceOn, setMaintenanceOn] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    const check = () => {
+      fetch(`${process.env.NEXT_PUBLIC_API_URL}/maintenance/status`, { cache: 'no-store' })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((status: { enabled?: boolean } | null) => {
+          if (!cancelled && typeof status?.enabled === 'boolean') setMaintenanceOn(status.enabled);
+        })
+        .catch(() => {});
+    };
+    check();
+    const id = window.setInterval(check, 30_000);
+    window.addEventListener('maintenance-changed', check);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+      window.removeEventListener('maintenance-changed', check);
+    };
+  }, [pathname]);
 
   const visibleMenuItems = baseMenuItems.filter(
     (item) => canAccessAdminPage(role, item.key, access.permissions),
@@ -491,6 +549,12 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       </Drawer>
 
       <Layout style={{ height: '100vh', minWidth: 0, overflow: 'hidden' }}>
+        {maintenanceOn ? (
+          <MaintenanceBanner
+            role={role}
+            onManage={pathname === '/nicaiyixiahh/maintenance' ? undefined : () => router.push('/nicaiyixiahh/maintenance')}
+          />
+        ) : null}
         <Header
           style={{
             background: '#fff',

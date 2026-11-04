@@ -23,6 +23,16 @@ export class UploadsController {
     return new StreamableFile(createReadStream(path), { type: this.contentType(path) });
   }
 
+  // 全服维护页的配图，维护期间所有人都要能看到。
+  @Get('maintenance/:filename')
+  @Header('Cache-Control', IMMUTABLE_CACHE)
+  getMaintenanceImage(@Param('filename') filename: string) {
+    const safeName = normalize(filename).replace(/^(\.\.[/\\])+/, '').replace(/[/\\]/g, '');
+    const path = join(process.cwd(), 'uploads', 'maintenance', safeName);
+    if (!existsSync(path)) throw new NotFoundException('文件不存在');
+    return new StreamableFile(createReadStream(path), { type: this.contentType(path) });
+  }
+
   // 收款码需要在公开查询页和报名页展示，与封面一样公开。
   @Get('payment-qr/:filename')
   @Header('Cache-Control', IMMUTABLE_CACHE)

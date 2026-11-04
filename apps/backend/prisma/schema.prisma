@@ -1460,6 +1460,22 @@ model UsageMetric {
   @@map("usage_metrics")
 }
 
+// 全服维护：单行配置（id 固定为 default）。开启后除管理员、超级管理员外，
+// 前台所有页面都显示维护页；后端只有超级管理员能做写操作。
+model SystemMaintenance {
+  id            String    @id @default("default") @db.VarChar(32)
+  enabled       Boolean   @default(false)
+  title         String    @default("系统维护中") @db.VarChar(80)
+  content       String    @db.MediumText
+  startedAt     DateTime? @map("started_at")
+  expectedEndAt DateTime? @map("expected_end_at")
+  updatedBy     String?   @db.VarChar(191) @map("updated_by")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  @@map("system_maintenance")
+}
+
 model DrawGroupMember {
   id                  String       @id @default(cuid())
   drawGroupId         String       @map("draw_group_id")

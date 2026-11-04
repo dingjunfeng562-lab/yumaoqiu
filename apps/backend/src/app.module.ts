@@ -24,6 +24,7 @@ import { BroadcastsModule } from './broadcasts/broadcasts.module';
 import { PhotoActivitiesModule } from './photo-activities/photo-activities.module';
 import { MatchManagementModule } from './match-management/match-management.module';
 import { PaymentsModule } from './payments/payments.module';
+import { MaintenanceModule } from './maintenance/maintenance.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ResultsResetModule } from './common/results-reset.module';
@@ -56,6 +57,7 @@ import { ResultsResetModule } from './common/results-reset.module';
     PhotoActivitiesModule,
     MatchManagementModule,
     PaymentsModule,
+    MaintenanceModule,
   ],
   controllers: [AppController],
   providers: [AppService],

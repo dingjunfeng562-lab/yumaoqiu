@@ -48,6 +48,8 @@ services:
     environment:
       NODE_ENV: production
       PORT: "${FRONTEND_PORT:-13000}"
+      # 服务端（proxy 查全服维护状态、维护页）直连本机后端，不绕公网 CDN。
+      INTERNAL_API_URL: "http://127.0.0.1:${BACKEND_PORT:-14000}/api"
     command:
       ["node", "node_modules/next/dist/bin/next", "start", "-p", "${FRONTEND_PORT:-13000}"]
     depends_on:
