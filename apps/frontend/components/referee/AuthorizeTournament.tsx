@@ -12,7 +12,6 @@ export default function AuthorizeTournament({ accessCode }: { accessCode: string
   const access = useCurrentAccess();
   const canReferee = access.ready && access.can('REFEREE');
   const token = session?.user?.accessToken;
-  const role = session?.user?.role;
   const router = useRouter();
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);

@@ -126,7 +126,6 @@ export function AiShuttleChat() {
       setLoading(true);
 
       // Add a placeholder assistant message for streaming
-      const assistantIndex = historyMessages.length;
       setMessages((prev) => [...prev, { role: 'assistant', content: '', thinking: '' }]);
 
       const abortController = new AbortController();

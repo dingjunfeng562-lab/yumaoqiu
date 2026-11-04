@@ -38,7 +38,6 @@ export default function PlayersPage() {
   const { data: session } = useSession();
   const access = useCurrentAccess();
   const token = session?.user?.accessToken as string | undefined;
-  const role = (session?.user as { role?: string } | undefined)?.role;
   // 选手库写操作由实时的选手管理权限控制。
   const canManage = access.can('PLAYERS');
 

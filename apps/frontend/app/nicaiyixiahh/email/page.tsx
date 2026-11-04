@@ -891,9 +891,7 @@ export default function AdminEmailPage() {
   const router = useRouter();
   const { data: session } = useSession();
   const token = session?.user?.accessToken as string | undefined;
-  const sessionRole = (session?.user as { role?: string } | undefined)?.role;
 
-  const [liveRole, setLiveRole] = useState<string | undefined>(sessionRole);
   const [roleChecked, setRoleChecked] = useState(false);
   const [activeTab, setActiveTab] = useState('settings');
   const [logEventFilter, setLogEventFilter] = useState<string | undefined>();
@@ -901,11 +899,9 @@ export default function AdminEmailPage() {
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
-    apiFetch<{ role?: string }>('/auth/me', { token })
-      .then((me) => {
-        if (cancelled) return;
-        if (me?.role) setLiveRole(me.role);
-        setRoleChecked(true);
+    apiFetch('/auth/me', { token })
+      .then(() => {
+        if (!cancelled) setRoleChecked(true);
       })
       .catch(() => {
         if (!cancelled) setRoleChecked(true);
@@ -925,7 +921,6 @@ export default function AdminEmailPage() {
   }, []);
 
   const access = useCurrentAccess();
-  const role = liveRole ?? sessionRole;
   // 超级管理员可查看全部设置，修改权限保留给 ROOT。
   const isSuperAdmin = access.can('EMAIL');
 

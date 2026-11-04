@@ -78,13 +78,6 @@ const FORMAT_LABELS: Record<string, string> = {
 };
 
 
-const STATUS_LABELS: Record<string, { label: string; color: string }> = {
-  PENDING: { label: '待排程', color: 'default' },
-  LIVE: { label: '进行中', color: 'red' },
-  COMPLETED: { label: '已结束', color: 'blue' },
-  CANCELLED: { label: '已取消', color: 'default' },
-};
-
 const CIRCLED_SEEDS = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩', '⑪', '⑫', '⑬', '⑭', '⑮', '⑯'];
 const SECOND_STAGE_SLOT_CODES = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
 // 选中此哨兵值或留空，表示该 A-H 签位轮空（无选手）。
@@ -206,14 +199,6 @@ function affiliation(registration?: Registration | null) {
     : registration.player1.affiliation;
 }
 
-function sourceLabel(rounds: RoundItem[], match: MatchItem, sideNo: 1 | 2) {
-  if (match.roundNo <= 1) return '轮空';
-  const previousRound = rounds.find((round) => round.roundNo === match.roundNo - 1);
-  const previousMatchNo = match.matchNo * 2 - (sideNo === 1 ? 1 : 0);
-  const previousRoundName = roundCn(previousRound?.round ?? `R${match.roundNo - 1}`);
-  return `${previousRoundName} 第 ${previousMatchNo} 场胜者`;
-}
-
 function groupNameSortValue(value: string) {
   const letters = /^[A-Z]+/.exec(value.trim().toUpperCase())?.[0];
   if (!letters) return Number.MAX_SAFE_INTEGER;
@@ -234,10 +219,6 @@ function isDoublesEvent(type?: string) {
 
 function isSingleElimination(event?: EventItem) {
   return ['SINGLE_ELIMINATION', 'SINGLE_ELIMINATION_PLUS_GROUP_RANKING'].includes(event?.format ?? '');
-}
-
-function statusMeta(status: string) {
-  return STATUS_LABELS[status] ?? STATUS_LABELS.PENDING;
 }
 
 function toBracketParticipant(
@@ -295,99 +276,6 @@ function toKnockoutBracketData(data: BracketData): KnockoutBracketData {
     matches,
     knockoutSkeleton: data.knockoutSkeleton ?? null,
   };
-}
-
-function MatchCard({
-  match,
-  rounds,
-}: {
-  match: MatchItem;
-  rounds: RoundItem[];
-}) {
-  const normalized = match.status || 'PENDING';
-  const isLive = normalized === 'LIVE';
-  const isCompleted = normalized === 'COMPLETED';
-  const isFinal = match.round === 'F';
-  const finalWinner = isFinal && isCompleted && match.winnerSide;
-  const cardBorder = finalWinner
-    ? '1px solid #f59e0b'
-    : isLive
-      ? '1px solid #ef4444'
-      : '1px solid #d8e6ff';
-
-  return (
-    <div
-      style={{
-        width: 236,
-        border: cardBorder,
-        borderRadius: 8,
-        background: '#fff',
-        boxShadow: finalWinner
-          ? '0 0 0 3px rgba(245,158,11,0.12), 0 12px 28px rgba(245,158,11,0.18)'
-          : '0 8px 22px rgba(30, 90, 180, 0.08)',
-        overflow: 'hidden',
-      }}
-    >
-      <div style={{ padding: '8px 10px', background: isLive ? '#fff1f2' : '#f0f6ff' }}>
-        <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-          <Typography.Text strong style={{ color: isLive ? '#dc2626' : '#1d4ed8' }}>
-            第 {match.matchNo} 场
-          </Typography.Text>
-          <Tag color={statusMeta(normalized).color}>{isLive ? 'LIVE' : statusMeta(normalized).label}</Tag>
-        </Space>
-      </div>
-      {[1, 2].map((sideNo) => {
-        const side = sideNo === 1 ? match.side1 : match.side2;
-        const winner = match.winnerSide === sideNo;
-        const loser = isCompleted && match.winnerSide && !winner;
-        const placeholder = sideNo === 1 ? sourceLabel(rounds, match, 1) : sourceLabel(rounds, match, 2);
-        return (
-          <div
-            key={sideNo}
-            style={{
-              minHeight: 58,
-              padding: '10px 12px',
-              borderTop: '1px solid #eef4ff',
-              background: side ? (winner ? '#fff7e6' : '#fff') : '#f8fafc',
-            }}
-          >
-            {side ? (
-              <>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                  <Typography.Text
-                    strong={winner}
-                    delete={Boolean(loser)}
-                    style={{ color: loser ? '#94a3b8' : '#111827' }}
-                  >
-                    {side.isSeed && <StarFilled style={{ color: '#2563eb', marginRight: 4 }} />}
-                    {sideName(side)}
-                  </Typography.Text>
-                  {winner && (
-                    <Space size={4}>
-                      <TrophyOutlined style={{ color: '#f59e0b' }} />
-                      {finalWinner && <Tag color="gold">冠军</Tag>}
-                    </Space>
-                  )}
-                </div>
-                <Typography.Text type="secondary" style={{ display: 'block', marginTop: 4, fontSize: 12 }}>
-                  {affiliation(side)}
-                </Typography.Text>
-              </>
-            ) : (
-              <>
-                <Typography.Text type="secondary" strong>
-                  {placeholder}
-                </Typography.Text>
-                <Typography.Text type="secondary" style={{ display: 'block', marginTop: 4, fontSize: 12 }}>
-                  待定
-                </Typography.Text>
-              </>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
 }
 
 function BracketRenderer({ data }: { data?: BracketData | null }) {

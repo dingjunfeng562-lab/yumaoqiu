@@ -94,9 +94,6 @@ export default function RegisterFormPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitMessage, setSubmitMessage] = useState<SubmitMessage | null>(null);
 
-  const inviteCode = Form.useWatch('inviteCode', form) ?? '';
-  const username = Form.useWatch('username', form) ?? '';
-  const email = Form.useWatch('email', form) ?? '';
   const password = Form.useWatch('password', form) ?? '';
   const confirmPassword = Form.useWatch('confirmPassword', form) ?? '';
 

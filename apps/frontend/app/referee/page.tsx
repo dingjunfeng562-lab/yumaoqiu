@@ -15,7 +15,6 @@ export default function RefereeHomePage() {
   const access = useCurrentAccess();
   const canReferee = access.ready && access.can('REFEREE');
   const token = session?.user?.accessToken;
-  const role = session?.user?.role;
   const [tournaments, setTournaments] = useState<AuthorizedTournament[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');

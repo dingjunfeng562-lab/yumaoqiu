@@ -18,6 +18,7 @@ yarn-debug.log*
 dist/
 build/
 .next/
+.next-*/
 .vite/
 *.tsbuildinfo
 

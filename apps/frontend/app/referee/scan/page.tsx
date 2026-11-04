@@ -11,7 +11,7 @@ import { parseRefereeEntry } from '@/lib/referee-entry';
 
 export default function RefereeScanPage() {
   const router = useRouter();
-  const { data: session, status } = useSession();
+  const { status } = useSession();
   const access = useCurrentAccess();
   const canReferee = access.ready && access.can('REFEREE');
   const video = useRef<HTMLVideoElement>(null);

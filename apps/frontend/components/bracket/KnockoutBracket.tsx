@@ -114,7 +114,6 @@ type LayoutMatch = BracketMatch & {
 
 const CARD_WIDTH = 188;
 const CARD_HEIGHT = 52;
-const PAIR_GAP = 14; // vertical gap between two participants of the same pair
 const COL_GAP = 96;
 const TOP_OFFSET = 56;
 const BOARD_PADDING = 28;
@@ -222,7 +221,7 @@ function matchEventText(event?: BracketMatchEvent | null) {
 
 function rowHeightFor(bracketSize: number) {
   // rowHeight = vertical pitch between two SLOTS in column 0 (one team box each)
-  // We need at least CARD_HEIGHT + PAIR_GAP/2 per slot so paired teams sit close
+  // We need at least CARD_HEIGHT plus a small gap (~7px) per slot so paired teams sit close
   // and adjacent pairs have breathing room.
   if (bracketSize <= 8) return 78;
   if (bracketSize <= 16) return 70;
@@ -686,7 +685,6 @@ export function KnockoutBracket({
           onOpenMatch={(m) => setSelectedMatch(m)}
           adminMode={adminMode}
           slots={slots}
-          slotIndexById={slotIndexById}
           onDragSlot={setDraggedSlot}
           onDropSlot={swapSlots}
           zoom={zoom}
@@ -751,7 +749,6 @@ function TreeView({
   onOpenMatch,
   adminMode,
   slots,
-  slotIndexById,
   onDragSlot,
   onDropSlot,
   zoom,
@@ -776,7 +773,6 @@ function TreeView({
   onOpenMatch: (m: LayoutMatch) => void;
   adminMode: boolean;
   slots: BracketParticipant[];
-  slotIndexById: Map<string, number>;
   onDragSlot: (idx: number | null) => void;
   onDropSlot: (targetIdx: number) => void;
   zoom: number;
@@ -1509,7 +1505,6 @@ function MatchCard({
   const isLive = status === 'LIVE';
   const isPaused = isLive && Boolean(match.matchPaused);
   const isDone = status === 'COMPLETED';
-  const isPending = status === 'PENDING';
   const forfeitedSide = match.forfeitedSide === 1 || match.forfeitedSide === 2 ? match.forfeitedSide : null;
   const bothForfeited = match.forfeitedSide === 0;
   const isForfeit = forfeitedSide !== null || bothForfeited;

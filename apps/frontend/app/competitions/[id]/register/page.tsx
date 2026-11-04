@@ -160,10 +160,6 @@ function genderOptionsForPartner(option: EventOption | undefined, primaryGender:
   ];
 }
 
-function isPrimaryGenderAllowed(option: EventOption | undefined, gender: FormState['gender']) {
-  return genderOptionsForPrimary(option).some((item) => item.value === gender);
-}
-
 /** 用后端返回的报名记录回填表单：进入页面时，以及提交/追加成功后显示实际登记的内容。 */
 function formFromRegistration(registration: ExistingRegistration): FormState {
   return {

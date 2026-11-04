@@ -28,7 +28,7 @@ function isActiveNavItem(href: string, currentPath: string) {
 export function Header({ activeHref }: { activeHref?: string }) {
   const pathname = usePathname() ?? '/';
   const currentPath = activeHref ?? pathname;
-  const { data: session, status } = useSession();
+  const { status } = useSession();
   const access = useCurrentAccess();
   const roleHref = firstAdminPage(access.role, access.permissions) ?? (access.can('REFEREE') ? '/referee/my-matches' : access.can('REGISTRATION') ? '/my-registrations' : access.can('PHOTO_UPLOAD') ? '/photographer/upload' : '/account');
   const [menuOpen, setMenuOpen] = useState(false);

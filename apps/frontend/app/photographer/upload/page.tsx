@@ -303,7 +303,6 @@ export default function PhotographerUploadPage() {
         while (cursor < items.length) {
           const current = items[cursor];
           cursor += 1;
-          // eslint-disable-next-line no-await-in-loop
           const ok = await uploadOne(current);
           if (ok) success += 1;
         }
