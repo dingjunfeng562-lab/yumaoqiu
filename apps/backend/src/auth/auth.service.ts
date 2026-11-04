@@ -630,7 +630,7 @@ export class AuthService {
     if (reasons) {
       throw new ConflictException(`该账号有${reasons.join('、')}，这些是审计记录，不能删除账号，请改为封禁。`);
     }
-    return this.deleteOrExplain(() =>
+    const deleted = await this.deleteOrExplain(() =>
       this.prisma.$transaction(async (tx) => {
         await tx.inviteCode.updateMany({ where: { createdById: id }, data: { isEnabled: false } });
         // 不要回退 staffInviteUsed：它记录的是已消耗和已预扣的额度，
@@ -638,6 +638,8 @@ export class AuthService {
         return tx.user.delete({ where: { id } });
       }),
     );
+    // 只返回公开字段：delete 返回的是整条记录，含 passwordHash。
+    return this.serializeUser(deleted);
   }
 
   async deleteUsers(ids: string[], actor: AuthActor) {

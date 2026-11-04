@@ -204,3 +204,32 @@ describe('AuthService 邀请码余额', () => {
     expect(consume).toHaveBeenCalledWith(tx, 'admin-1');
   });
 });
+
+describe('AuthService 删除账号', () => {
+  it('只返回公开字段，不带密码哈希', async () => {
+    const { service, prisma } = buildService();
+    const row = {
+      id: 'user-1',
+      username: 'someone',
+      email: 'someone@example.com',
+      passwordHash: '$2b$10$secret-hash',
+      role: Role.ADMIN,
+      status: UserStatus.ACTIVE,
+      mustChangePassword: false,
+      permissions: null,
+      createdAt: new Date('2026-11-04T00:00:00Z'),
+    };
+    const internals = service as unknown as Record<string, unknown>;
+    internals.requireManageableUser = jest.fn().mockResolvedValue(undefined);
+    internals.userDeletionBlockers = jest.fn().mockResolvedValue(new Map());
+    prisma.user.findUnique.mockResolvedValue(row);
+    const tx = { inviteCode: { updateMany: jest.fn() }, user: { delete: jest.fn().mockResolvedValue(row) } };
+    prisma.$transaction.mockImplementation((callback: (client: unknown) => unknown) => callback(tx));
+
+    const result = await service.deleteUser('user-1', { id: 'root-1', role: Role.ROOT } as never);
+
+    expect(tx.user.delete).toHaveBeenCalledWith({ where: { id: 'user-1' } });
+    expect(result).not.toHaveProperty('passwordHash');
+    expect(result).toMatchObject({ id: 'user-1', username: 'someone', role: Role.ADMIN });
+  });
+});
