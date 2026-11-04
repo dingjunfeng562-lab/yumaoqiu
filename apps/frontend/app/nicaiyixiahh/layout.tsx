@@ -104,7 +104,7 @@ const baseMenuItems: NavItem[] = [
   { key: '/nicaiyixiahh/maintenance', section: 'system', icon: <ToolOutlined />, label: '全服维护' },
 ];
 
-// 后台顶部的全服维护横幅：管理员只能看不能操作，超级管理员提醒及时关闭。
+// 后台顶部的全服维护横幅：所有人看到同一句提示；超级管理员另有入口去关闭维护。
 function MaintenanceBanner({ role, onManage }: { role?: string; onManage?: () => void }) {
   const isRoot = role === 'ROOT';
   return (
@@ -127,7 +127,7 @@ function MaintenanceBanner({ role, onManage }: { role?: string; onManage?: () =>
       }}
     >
       <WarningFilled />
-      <span>{isRoot ? '全服维护中，除超级管理员外不能进行任何操作' : '全服维护中，不能进行任何操作'}</span>
+      <span>全服维护中，任何人无法进行任何操作</span>
       {isRoot && onManage ? (
         <Button size="small" ghost onClick={onManage} style={{ borderColor: '#fff', color: '#fff' }}>
           前往关闭维护
