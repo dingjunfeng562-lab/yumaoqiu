@@ -354,14 +354,16 @@ export class TeamCompetitionsService {
     const players = await this.loadPlayers(playerIds, actor);
     validateTeamRoster(players);
     this.ensureSingleCompetitionMembership(players, teamCompetitionId);
+    const name = this.normalizeTeamName(dto.name);
 
     return this.prisma.$transaction(async tx => {
       await tx.$queryRaw`SELECT id FROM TeamCompetition WHERE id = ${teamCompetitionId} FOR UPDATE`;
+      await this.ensureTeamNameAvailable(tx, teamCompetitionId, name);
       await this.clearDraftDrawForRosterChange(tx, teamCompetitionId);
       return tx.team.create({
         data: {
           teamCompetitionId,
-          name: dto.name,
+          name,
           affiliation: dto.affiliation,
           notes: dto.notes,
           members: {
@@ -428,14 +430,27 @@ export class TeamCompetitionsService {
   }
 
   async updateTeam(teamId: string, dto: UpdateTeamDto) {
-    await this.ensureTeam(teamId);
-    return this.prisma.team.update({
-      where: { id: teamId },
-      data: dto,
-      include: {
-        members: { include: { player: true }, orderBy: { createdAt: 'asc' } },
-      },
-    });
+    const team = await this.ensureTeam(teamId);
+    const data = { ...dto };
+    if (dto.name !== undefined) {
+      data.name = this.normalizeTeamName(dto.name);
+      await this.ensureTeamNameAvailable(this.prisma, team.teamCompetitionId, data.name, teamId);
+    }
+    try {
+      return await this.prisma.team.update({
+        where: { id: teamId },
+        data,
+        include: {
+          members: { include: { player: true }, orderBy: { createdAt: 'asc' } },
+        },
+      });
+    } catch (error) {
+      // 改名不加团体赛锁，与同时新建的同名队伍撞唯一索引时也给出明确提示。
+      if (data.name !== undefined && error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        throw new ConflictException(this.teamNameTakenMessage(data.name));
+      }
+      throw error;
+    }
   }
 
   async replaceTeamMembers(teamId: string, dto: ReplaceTeamMembersDto, actor?: AuthActor) {
@@ -558,9 +573,11 @@ export class TeamCompetitionsService {
   async importTeamPlayers(teamCompetitionId: string, dto: ImportTeamPlayersDto, actor?: AuthActor) {
     await this.ensureCompetition(teamCompetitionId);
     validateTeamRoster(dto.players);
+    const teamName = this.normalizeTeamName(dto.teamName);
 
     return this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM TeamCompetition WHERE id = ${teamCompetitionId} FOR UPDATE`;
+      await this.ensureTeamNameAvailable(tx, teamCompetitionId, teamName);
       const drawCleared = await this.clearDraftDrawForRosterChange(tx, teamCompetitionId);
       const createdPlayers = [] as Array<{ id: string }>;
       for (const player of dto.players) {
@@ -581,7 +598,7 @@ export class TeamCompetitionsService {
       const team = await tx.team.create({
         data: {
           teamCompetitionId,
-          name: dto.teamName,
+          name: teamName,
           affiliation: dto.affiliation,
           notes: dto.notes,
           members: {
@@ -1337,6 +1354,33 @@ export class TeamCompetitionsService {
       throw new ConflictException('同一队伍不能重复添加同一位队员');
     }
     return uniqueIds;
+  }
+
+  private normalizeTeamName(value: string) {
+    const name = value.trim();
+    if (!name) throw new BadRequestException('队名不能为空');
+    return name;
+  }
+
+  private teamNameTakenMessage(name: string) {
+    return `当前团体赛中已有名为“${name}”的队伍，请换一个队名`;
+  }
+
+  /**
+   * 同一团体赛内队名唯一（数据库唯一索引 teamCompetitionId + name）。写入前先查，
+   * 撞索引时给出明确提示，而不是返回 500。按数据库排序规则比较，与唯一索引的判定一致。
+   */
+  private async ensureTeamNameAvailable(
+    db: Prisma.TransactionClient | PrismaService,
+    teamCompetitionId: string,
+    name: string,
+    excludeTeamId?: string,
+  ) {
+    const clash = await db.team.findFirst({
+      where: { teamCompetitionId, name, ...(excludeTeamId ? { id: { not: excludeTeamId } } : {}) },
+      select: { id: true },
+    });
+    if (clash) throw new ConflictException(this.teamNameTakenMessage(name));
   }
 
   /**

@@ -284,3 +284,83 @@ describe('TeamCompetitionsService official scores and live group rankings', () =
     expect(encounter.matches.slice(3).map(child => child.status)).toEqual(['CANCELLED', 'CANCELLED']);
   });
 });
+
+describe('TeamCompetitionsService team names', () => {
+  function setup(clash: { id: string } | null = null) {
+    const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      team: {
+        findFirst: jest.fn().mockResolvedValue(clash),
+        create: jest.fn().mockImplementation(({ data }) => Promise.resolve({ id: 'newTeam', ...data })),
+      },
+      teamCompetition: { findUnique: jest.fn().mockResolvedValue({ isPublished: false }) },
+      teamMatch: { count: jest.fn().mockResolvedValue(0), deleteMany: jest.fn() },
+      player: { create: jest.fn().mockResolvedValue({ id: 'p9' }) },
+    };
+    const prisma = {
+      teamCompetition: { findUnique: jest.fn().mockResolvedValue({ id: 'comp1', items: [] }) },
+      player: { findMany: jest.fn().mockResolvedValue([{ id: 'p1', name: '张三', gender: 'MALE', teamMembers: [] }]) },
+      team: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'team2', teamCompetitionId: 'comp1', members: [] }),
+        findFirst: jest.fn().mockResolvedValue(clash),
+        update: jest.fn().mockImplementation(({ data }) => Promise.resolve({ id: 'team2', ...data })),
+      },
+      $transaction: jest.fn().mockImplementation((fn: (client: typeof tx) => unknown) => fn(tx)),
+    };
+    const service = new TeamCompetitionsService(prisma as unknown as PrismaService);
+    return { service, prisma, tx };
+  }
+
+  it('rejects adding a team whose name is already taken with 409 instead of a database error', async () => {
+    const { service, tx } = setup({ id: 'team1' });
+    await expect(service.createTeam('comp1', { name: '护理一队', affiliation: '护理', playerIds: ['p1'] }))
+      .rejects.toMatchObject({ status: 409, message: expect.stringContaining('“护理一队”') });
+    expect(tx.team.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { teamCompetitionId: 'comp1', name: '护理一队' } }));
+    expect(tx.team.create).not.toHaveBeenCalled();
+    expect(tx.teamMatch.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('trims the team name before checking and saving it', async () => {
+    const { service, tx } = setup();
+    await service.createTeam('comp1', { name: '  护理三队 ', affiliation: '护理', playerIds: ['p1'] });
+    expect(tx.team.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { teamCompetitionId: 'comp1', name: '护理三队' } }));
+    expect(tx.team.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ name: '护理三队' }) }));
+  });
+
+  it('rejects a blank team name with 400', async () => {
+    const { service, tx } = setup();
+    await expect(service.createTeam('comp1', { name: '   ', affiliation: '护理', playerIds: ['p1'] }))
+      .rejects.toMatchObject({ status: 400 });
+    expect(tx.team.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects renaming a team to another team\'s name but ignores the team itself', async () => {
+    const { service, prisma } = setup({ id: 'team1' });
+    await expect(service.updateTeam('team2', { name: '护理一队' })).rejects.toMatchObject({ status: 409 });
+    expect(prisma.team.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: { teamCompetitionId: 'comp1', name: '护理一队', id: { not: 'team2' } },
+    }));
+    expect(prisma.team.update).not.toHaveBeenCalled();
+  });
+
+  it('updates other fields without a name check', async () => {
+    const { service, prisma } = setup({ id: 'team1' });
+    await service.updateTeam('team2', { affiliation: '临床' });
+    expect(prisma.team.findFirst).not.toHaveBeenCalled();
+    expect(prisma.team.update).toHaveBeenCalledWith(expect.objectContaining({ data: { affiliation: '临床' } }));
+  });
+
+  it('turns a unique-index race on rename into 409', async () => {
+    const { service, prisma } = setup();
+    prisma.team.update.mockRejectedValueOnce(new Prisma.PrismaClientKnownRequestError('Unique constraint failed', { code: 'P2002', clientVersion: 'test' }));
+    await expect(service.updateTeam('team2', { name: '护理一队' })).rejects.toMatchObject({ status: 409 });
+  });
+
+  it('rejects importing a single team under a taken name before creating any player', async () => {
+    const { service, tx } = setup({ id: 'team1' });
+    await expect(service.importTeamPlayers('comp1', { teamName: '护理一队', affiliation: '护理', players: [{ name: '李四', gender: 'MALE' }] } as never))
+      .rejects.toMatchObject({ status: 409 });
+    expect(tx.player.create).not.toHaveBeenCalled();
+    expect(tx.team.create).not.toHaveBeenCalled();
+  });
+});
