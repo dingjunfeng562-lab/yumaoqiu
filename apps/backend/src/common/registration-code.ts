@@ -21,14 +21,10 @@ export function isValidRegistrationCode(value: string): boolean {
   return /^[A-Z2-9]{6,16}$/.test(value);
 }
 
+/** 赛事上的兼容报名码只剩默认学生组；其它组别的码存在 TournamentGroup 上。 */
 export function registrationCodeFor(
-  tournament: {
-    schoolRegistrationCode?: string | null;
-    socialRegistrationCode?: string | null;
-  },
+  tournament: { schoolRegistrationCode?: string | null },
   entrantType: EntrantType,
 ): string | null {
-  return entrantType === EntrantType.SCHOOL
-    ? tournament.schoolRegistrationCode ?? null
-    : tournament.socialRegistrationCode ?? null;
+  return entrantType === EntrantType.SCHOOL ? tournament.schoolRegistrationCode ?? null : null;
 }

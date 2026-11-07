@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer';
 import {
   IsDateString,
+  IsBoolean,
   IsInt,
   IsOptional,
   IsString,
@@ -13,6 +14,13 @@ import {
  * 从而保留团体赛“整场顺延”等既有联动。
  */
 export class UpdateManagedMatchDto {
+  @IsOptional()
+  @IsBoolean()
+  allowOutsideGroup?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  scheduleLocked?: boolean;
   @IsOptional()
   @IsDateString()
   scheduledAt?: string | null;

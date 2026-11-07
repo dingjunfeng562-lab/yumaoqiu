@@ -9,6 +9,8 @@ import { Alert, Button, Card, Checkbox, Form, Input, Modal, Popconfirm, Select, 
 import { AuditOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, FileExcelOutlined, PlusOutlined, RollbackOutlined, StopOutlined, TeamOutlined, UserAddOutlined, UsergroupAddOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { apiFetch } from '@/lib/api';
+import { GroupAdminFields } from '@/components/admin/GroupAdminFields';
+import type { GroupFields } from '@/lib/registration-groups';
 import { importTeamRoster, parseTeamRoster, TeamRosterImportInput, type TeamImportCompetition } from '@/components/TeamRosterImport';
 import SocialPlayerImportModal from '@/components/SocialPlayerImport';
 import ExcelRosterImportModal from '@/components/ExcelRosterImport';
@@ -27,6 +29,8 @@ type CompetitionEventOption = {
   isDouble: boolean;
   entrantType?: 'SCHOOL' | 'SOCIAL';
   groupLabel?: string | null;
+  groupId?: string | null;
+  groupFields?: GroupFields | null;
 };
 
 type Competition = {
@@ -64,12 +68,17 @@ type Player = {
     majorGrade?: string;
     className?: string;
     phone?: string;
+    age?: number | null;
+    shirtSize?: string;
   } | null;
   studentId: string;
   school?: string;
   className: string;
   phone: string;
   genderLabel: string;
+  // 年龄和衣服尺寸只在线上报名里收集，后台直接录入的选手为空。
+  age?: number | null;
+  shirtSize?: string;
   eventName: string;
   createdAt: string;
   statusLabel: string;
@@ -133,6 +142,8 @@ function genderText(value?: string) {
 }
 
 type PlayerFormValues = {
+  identityNumber?: string; partnerIdentityNumber?: string;
+  college?: string; majorGrade?: string; partnerCollege?: string; partnerMajorGrade?: string;
   eventId: string;
   name: string;
   gender: 'MALE' | 'FEMALE';
@@ -273,7 +284,7 @@ export default function AdminCompetitionPlayersPage() {
   const [socialModalOpen, setSocialModalOpen] = useState(false);
   // Excel 模板批量导入（.xls/.xlsx）：自动识别项目与双打配对。
   const [excelModalOpen, setExcelModalOpen] = useState(false);
-  // 手工新增/编辑表单是否按社会人员格式（单位、无学号/学院班级/队伍名称）。
+  // 手工新增/编辑表单是否按第三方人员格式（单位、无学号/学院班级/队伍名称）。
   const [formSocial, setFormSocial] = useState(false);
   const [libraryModalOpen, setLibraryModalOpen] = useState(false);
   const [libraryPlayers, setLibraryPlayers] = useState<LibraryPlayer[]>([]);
@@ -314,6 +325,7 @@ export default function AdminCompetitionPlayersPage() {
     () => competition?.eventOptions?.find((event) => event.id === batchEventId),
     [competition, batchEventId],
   );
+  const formEvent = competition?.eventOptions?.find(event => event.id === watchedFormEventId);
   const formIsDouble = useMemo(
     () => Boolean(competition?.eventOptions?.find((event) => event.id === watchedFormEventId)?.isDouble),
     [competition, watchedFormEventId],
@@ -628,14 +640,17 @@ export default function AdminCompetitionPlayersPage() {
       payload.partnerContact = values.partnerContact?.trim();
     }
 
+    if (formEvent?.groupFields) {
+      Object.assign(payload, values, { entrantType: formEvent.entrantType, social: formEvent.entrantType === 'SOCIAL' });
+    }
     setFormSubmitting(true);
     try {
-      await apiFetch(`/admin/competitions/${id}/players`, {
+      const result = await apiFetch<{ status?: string }>(`/admin/competitions/${id}/players`, {
         method: 'POST',
         body: JSON.stringify(payload),
         token,
       });
-      message.success('已新增参赛选手');
+      message.success(result.status === 'pending' ? '已保存，请在报名审核页完成资格核验' : '已新增参赛选手');
       setFormModalOpen(false);
       await loadData();
     } catch (error) {
@@ -667,7 +682,7 @@ export default function AdminCompetitionPlayersPage() {
             <Typography.Text type={record.teamName ? 'secondary' : undefined}>
               {record.primaryName || record.name}
             </Typography.Text>
-            {record.isSocial ? <Tag color="purple">社会</Tag> : record.isTemporary ? <Tag color="orange">临时</Tag> : null}
+            {record.isSocial ? <Tag color="purple">第三方</Tag> : record.isTemporary ? <Tag color="orange">临时</Tag> : null}
           </Space>
           {record.partner ? (
             <Typography.Text type="secondary">
@@ -746,6 +761,22 @@ export default function AdminCompetitionPlayersPage() {
       ),
     },
     {
+      title: '年龄 / 衣服尺寸',
+      key: 'ageShirt',
+      width: 120,
+      render: (_: unknown, record: Player) => {
+        const text = (age?: number | null, shirt?: string) => (age == null && !shirt ? '-' : `${age != null ? `${age}岁` : '-'} / ${shirt || '-'}`);
+        return (
+          <Space direction="vertical" size={0}>
+            <Typography.Text>{text(record.age, record.shirtSize)}</Typography.Text>
+            {record.partner ? (
+              <Typography.Text type="secondary">{text(record.partner.age, record.partner.shirtSize)}</Typography.Text>
+            ) : null}
+          </Space>
+        );
+      },
+    },
+    {
       title: '参赛项目',
       dataIndex: 'eventName',
       key: 'eventName',
@@ -758,7 +789,7 @@ export default function AdminCompetitionPlayersPage() {
       width: 80,
       render: (_: unknown, record: Player) => (
         <Tag color={record.entrantType === 'SOCIAL' || record.isSocial ? 'orange' : 'geekblue'}>
-          {record.entrantTypeLabel ?? (record.isSocial ? '社会组' : '学生组')}
+          {record.entrantTypeLabel ?? (record.isSocial ? '第三方' : '学生组')}
         </Tag>
       ),
     },
@@ -944,7 +975,7 @@ export default function AdminCompetitionPlayersPage() {
             options={[
               { value: 'all', label: '全部组别' },
               { value: 'SCHOOL', label: '学生组' },
-              { value: 'SOCIAL', label: '社会组' },
+              { value: 'SOCIAL', label: '第三方' },
             ]}
           />
           <Input.Search
@@ -982,7 +1013,7 @@ export default function AdminCompetitionPlayersPage() {
                 onClick={() => setSocialModalOpen(true)}
                 disabled={!competition?.eventOptions?.length}
               >
-                社会人员
+                第三方人员
               </Button>
               <Button
                 icon={<FileExcelOutlined />}
@@ -1046,7 +1077,7 @@ export default function AdminCompetitionPlayersPage() {
           dataSource={players}
           loading={loading}
           pagination={{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }}
-          scroll={{ x: 1460, y: 'calc(100vh - 440px)' }}
+          scroll={{ x: 1580, y: 'calc(100vh - 440px)' }}
           tableLayout="fixed"
           size="middle"
           locale={{ emptyText: '暂无参赛选手' }}
@@ -1248,9 +1279,10 @@ export default function AdminCompetitionPlayersPage() {
           >
             <Select options={eventOptions} placeholder="选择参赛项目" />
           </Form.Item>
+          {formEvent?.groupFields ? <GroupAdminFields fields={formEvent.groupFields} doubles={formIsDouble} /> : <>
           <Form.Item style={{ marginBottom: 12 }}>
             <Checkbox checked={formSocial} onChange={(e) => setFormSocial(e.target.checked)}>
-              社会人员（填写单位，无需学号、学院班级）
+              第三方人员（填写单位，无需学号、学院班级）
             </Checkbox>
           </Form.Item>
           <Typography.Text strong>{formIsDouble ? '队员一' : '选手信息'}</Typography.Text>
@@ -1356,6 +1388,8 @@ export default function AdminCompetitionPlayersPage() {
               </div>
             </>
           ) : null}
+          </>}
+
         </Form>
       </Modal>
     </div>

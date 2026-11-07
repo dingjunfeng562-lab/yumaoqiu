@@ -1,7 +1,8 @@
-import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { PortalFeaturePage } from '@/components/home/PortalFeaturePage';
-import { isRichAnnouncementContent, sanitizeAnnouncementHtml } from '@/lib/announcement-html';
+import { CompetitionFeatureGrid } from '@/components/competitions/CompetitionFeatureGrid';
+import { TournamentSwitcher } from '@/components/competitions/TournamentSwitcher';
+import { ViewCounter } from '@/components/competitions/ViewCounter';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,6 +32,7 @@ type CompetitionDetail = {
   maxRegistrationEvents?: number;
   allowCrossEventRegistration?: boolean;
   needsRegistrationReview?: boolean;
+  status?: string;
   statusLabel?: string;
   registrationStatus?: string;
   registrationStartTime?: string | null;
@@ -86,11 +88,6 @@ export default async function CompetitionDetailPage({ params }: { params: Promis
     (competition.events?.length ? competition.events : competition.projects) ??
     [];
 
-  const description = (competition.description ?? '').trim();
-  const richDescription = description && isRichAnnouncementContent(description)
-    ? sanitizeAnnouncementHtml(description)
-    : null;
-  const notice = (competition.registrationNotice ?? '').trim();
   const cover = normalizeCover(competition.coverImage);
 
   return (
@@ -99,9 +96,12 @@ export default async function CompetitionDetailPage({ params }: { params: Promis
       eyebrow="Competition Detail"
       title={competition.title}
       description={competition.subtitle ?? '查看赛事简介、项目设置与报名须知,准备好就立即报名。'}
+      actions={<TournamentSwitcher currentId={competition.id} />}
+      back={{ href: '/competitions', label: '赛事列表' }}
     >
+      <ViewCounter competitionId={competition.id} />
       <div className="grid gap-4 sm:gap-6 lg:grid-cols-[1.55fr_1fr]">
-        {/* Left column: cover + intro + notice */}
+        {/* Left column: cover + feature grid（赛事简介、报名须知在 /intro 页） */}
         <div className="space-y-4 sm:space-y-6">
           <article className="overflow-hidden rounded-xl border border-blue-100 bg-white shadow-sm">
             <div
@@ -132,37 +132,10 @@ export default async function CompetitionDetailPage({ params }: { params: Promis
             </div>
           </article>
 
-          <section className="rounded-xl border border-blue-100 bg-white p-5 shadow-sm sm:p-6">
-            <div className="flex flex-col items-center text-center">
-              <h3 className="text-lg font-black text-slate-900">赛事简介</h3>
-              <span className="mt-1 text-xs font-semibold text-slate-400">Introduction</span>
-            </div>
-            {richDescription ? (
-              <div
-                className="rich-public-content mx-auto mt-4 max-w-3xl text-sm font-medium leading-7 text-slate-700"
-                dangerouslySetInnerHTML={{ __html: richDescription }}
-              />
-            ) : (
-              <div className="mx-auto mt-4 max-w-3xl whitespace-pre-wrap text-center text-sm font-medium leading-7 text-slate-700">
-                {description || <span className="text-slate-400">暂无简介,后台未填写说明。</span>}
-              </div>
-            )}
-          </section>
-
-          {notice ? (
-            <section className="rounded-xl border border-amber-200 bg-amber-50/60 p-6 shadow-sm">
-              <div className="flex items-baseline justify-between">
-                <h3 className="text-lg font-black text-amber-900">报名须知</h3>
-                <span className="text-xs font-semibold text-amber-700/70">Notice</span>
-              </div>
-              <div className="mt-4 whitespace-pre-wrap text-sm font-medium leading-7 text-amber-900/90">
-                {notice}
-              </div>
-            </section>
-          ) : null}
+          <CompetitionFeatureGrid competitionId={competition.id} ongoing={competition.status === 'ONGOING'} />
         </div>
 
-        {/* Right column: facts + projects + actions */}
+        {/* Right column: facts + projects */}
         <aside className="space-y-4 sm:space-y-6">
           <section className="rounded-xl border border-blue-100 bg-white p-5 shadow-sm sm:p-6">
             <h3 className="text-lg font-black text-slate-900">赛事信息</h3>
@@ -206,33 +179,6 @@ export default async function CompetitionDetailPage({ params }: { params: Promis
             ) : (
               <p className="mt-4 text-sm font-semibold text-slate-500">项目待公布</p>
             )}
-          </section>
-
-          <section className="space-y-3 rounded-xl border border-blue-100 bg-white p-5 shadow-sm sm:p-6">
-            <Link
-              href={`/competitions/${competition.id}/register`}
-              className="inline-flex h-11 w-full items-center justify-center rounded-lg bg-amber-400 text-sm font-black text-white shadow-sm transition hover:bg-amber-500"
-            >
-              立即报名
-            </Link>
-            <Link
-              href={`/competitions/${competition.id}/players`}
-              className="inline-flex h-11 w-full items-center justify-center rounded-lg border border-blue-200 text-sm font-black text-blue-700 transition hover:bg-blue-50"
-            >
-              查看选手
-            </Link>
-            <Link
-              href={`/competitions/${competition.id}/brackets`}
-              className="inline-flex h-11 w-full items-center justify-center rounded-lg border border-blue-200 text-sm font-black text-blue-700 transition hover:bg-blue-50"
-            >
-              查看对阵表
-            </Link>
-            <Link
-              href="/competitions"
-              className="inline-flex h-11 w-full items-center justify-center rounded-lg text-sm font-semibold text-slate-500 transition hover:text-blue-700"
-            >
-              ← 返回赛事列表
-            </Link>
           </section>
         </aside>
       </div>

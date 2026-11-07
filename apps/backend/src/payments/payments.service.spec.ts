@@ -171,7 +171,7 @@ describe('rejected registrations', () => {
   const rejected = {
     id: 'cr1', competitionId: 't1', status: 'REJECTED', rejectReason: '单位填写有误', name: '王五', contact: '138 0013 8000',
     competition: { id: 't1', name: '秋季赛' },
-    eventItems: [{ id: 'i1', partnerName: null, event: { type: 'MENS_SINGLES', groupLabel: '社会组', entrantType: 'SOCIAL' } }],
+    eventItems: [{ id: 'i1', partnerName: null, event: { type: 'MENS_SINGLES', groupLabel: '成人组', entrantType: 'SOCIAL' } }],
   };
 
   it('shows a rejected registration with its reason in the public lookup', async () => {

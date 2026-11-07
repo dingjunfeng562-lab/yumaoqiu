@@ -88,7 +88,7 @@ export function requiredPermissions(controller: string, action: string, kind?: s
     case 'SchedulingController': return ['SCHEDULING'];
     case 'ScoringController':
       if (['authorizeTournament', 'listAuthorizedTournaments', 'listRefereeMatches', 'listTournamentCourts', 'listCourtMatches', 'claimCourtMatch'].includes(action)) return ['REFEREE'];
-      if (['listAssignableReferees', 'getRefereeAccessCode', 'correctMatchScore', 'assignReferee'].includes(action)) return ['SCORING'];
+      if (['listAssignableReferees', 'getRefereeAccessCode', 'correctMatchScore', 'assignReferee', 'forfeitTeamMatch'].includes(action)) return ['SCORING'];
       return ['SCORING', 'REFEREE'];
     case 'AdminPhotosController': return action === 'listTournamentStats' ? ['PHOTOS', 'DASHBOARD'] : ['PHOTOS'];
     case 'PhotoActivitiesController':
@@ -106,6 +106,9 @@ export function requiredPermissions(controller: string, action: string, kind?: s
     case 'MatchManagementController': return [];
     // 全服维护开关与维护页内容仅限超级管理员。
     case 'AdminMaintenanceController': return [];
+    // 赛事统计跟着「仪表盘」权限；学校名称归并是全局数据，仅限超级管理员。
+    case 'AdminStatisticsController': return action === 'tournamentStatistics' ? ['DASHBOARD'] : [];
+    case 'RegistrationGroupsController': return action === 'list' ? tournamentRead : ['TOURNAMENTS'];
     case 'CompetitionsController': return ['REGISTRATION'];
     case 'AdminPaymentsController': return ['PAYMENTS'];
     default: return undefined;

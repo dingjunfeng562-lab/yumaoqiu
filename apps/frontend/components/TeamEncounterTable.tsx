@@ -2,6 +2,7 @@
 
 import { Button, Space, Table, Tag } from 'antd';
 import dayjs from 'dayjs';
+import { roundCn } from '@/lib/round';
 
 export type TeamEncounterGame = {
   gameNo: number;
@@ -19,6 +20,7 @@ export type TeamEncounterChild = {
   eventType?: string | null;
   eventTypeLabel?: string | null;
   winnerSide?: number | null;
+  forfeitedSide?: number | null;
   side1Name?: string | null;
   side2Name?: string | null;
   referee?: string | null;
@@ -97,6 +99,7 @@ export default function TeamEncounterTable({
         <Space size={4}>
           <span>{sideName(child.side1Name)}</span>
           {child.winnerSide === 1 && <Tag color="green">胜</Tag>}
+          {child.forfeitedSide === 1 && <Tag color="red">弃权</Tag>}
         </Space>
       ),
     },
@@ -106,6 +109,7 @@ export default function TeamEncounterTable({
         <Space size={4}>
           <span>{sideName(child.side2Name)}</span>
           {child.winnerSide === 2 && <Tag color="green">胜</Tag>}
+          {child.forfeitedSide === 2 && <Tag color="red">弃权</Tag>}
         </Space>
       ),
     },
@@ -137,7 +141,7 @@ export default function TeamEncounterTable({
             title: '轮次',
             width: 120,
             render: (_: unknown, encounter: TeamEncounter) =>
-              `${encounter.round} / 第 ${encounter.matchNo} 场`,
+              encounter.round === 'BRONZE' ? roundCn(encounter.round) : `${roundCn(encounter.round)} / 第 ${encounter.matchNo} 场`,
           },
         ]
       : []),

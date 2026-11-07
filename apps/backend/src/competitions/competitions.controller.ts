@@ -41,6 +41,12 @@ export class CompetitionsController {
     return this.competitionsService.getPublicCompetition(id);
   }
 
+  // 前台赛事主页打开时调用，浏览量 +1。公开接口，不需要登录。
+  @Post(':id/view')
+  recordView(@Param('id') id: string) {
+    return this.competitionsService.recordView(id);
+  }
+
   @Get(':id/public-registration/:token')
   getPublicRegistration(@Param('id') id: string, @Param('token') token: string) {
     return this.competitionsService.getPublicRegistration(id, token);

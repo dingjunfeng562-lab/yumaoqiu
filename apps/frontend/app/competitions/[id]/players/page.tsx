@@ -160,6 +160,7 @@ export default function CompetitionPlayersPage() {
       eyebrow="Players"
       title="参赛选手列表"
       description="这里只展示当前赛事中已通过管理员审核的报名人员，待审核和已驳回报名不会出现在这里。"
+      back={{ href: `/competitions/${id}`, label: '赛事主页' }}
     >
       <div className="mb-5 flex flex-col gap-4 sm:mb-6 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
         <div className="min-w-0">
@@ -168,18 +169,12 @@ export default function CompetitionPlayersPage() {
             {competition?.location || '地点待公布'}
           </p>
         </div>
-        <div className="grid grid-cols-2 gap-3 sm:flex">
+        <div className="flex gap-3">
           <Link
             href={`/competitions/${id}/register`}
             className="inline-flex h-10 items-center justify-center rounded-lg bg-amber-400 px-4 text-sm font-black text-white"
           >
             立即报名
-          </Link>
-          <Link
-            href="/competitions"
-            className="inline-flex h-10 items-center justify-center rounded-lg border border-blue-200 px-4 text-sm font-black text-blue-700"
-          >
-            返回赛事列表
           </Link>
         </div>
       </div>

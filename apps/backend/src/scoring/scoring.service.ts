@@ -139,6 +139,14 @@ type MatchScoringConfig = {
   appliedStage: string | null;
 };
 
+const PLAYABLE_MATCH_INCLUDE = {
+  event: true,
+  teamCompetitionItem: true,
+  teamMatch: { include: { teamCompetition: true } },
+} as const satisfies Prisma.MatchInclude;
+
+type PlayableMatch = Prisma.MatchGetPayload<{ include: typeof PLAYABLE_MATCH_INCLUDE }>;
+
 const EVENT_TYPE_LABELS: Record<string, string> = {
   MENS_SINGLES: '男子单打',
   WOMENS_SINGLES: '女子单打',
@@ -160,6 +168,9 @@ const WARMUP_NOTE_PREFIX = 'WARMUP:';
 const FAULT_NOTE_PREFIX = 'BADMINTON_FAULT:';
 const CARD_NOTE_PREFIX = 'BADMINTON_CARD:';
 const COURT_SWAP_NOTE_PREFIX = 'COURT_SWAP:';
+// 自定义分数的比赛每局结束不自动换边，新一局开始前由裁判选择：选「换边」记一条 COURT_SWAP，
+// 选「不换边」记这一条。两种都记在新一局上，撤销回上一局时随该局的系统事件一起删掉。
+const COURT_KEEP_NOTE_PREFIX = 'COURT_KEEP:';
 const RETIRE_NOTE_PREFIX = 'RETIRE:';
 const BLACK_CARD_NOTE_PREFIX = 'BLACK_CARD:';
 const SERVING_STATE_NOTE_PREFIX = 'RS:';
@@ -413,7 +424,10 @@ export class ScoringService {
       where: {
         matchId,
         type: MatchEventType.SERVE_CHANGE,
-        note: { startsWith: COURT_SWAP_NOTE_PREFIX },
+        OR: [
+          { note: { startsWith: COURT_SWAP_NOTE_PREFIX } },
+          { note: { startsWith: COURT_KEEP_NOTE_PREFIX } },
+        ],
       },
       orderBy: { createdAt: 'asc' },
     });
@@ -423,7 +437,23 @@ export class ScoringService {
     });
     const pauseState = this.computePauseState(pauseEvents, match.finishedAt);
     const currentGame = match.games.find((game) => !game.winnerSide) ?? match.games.at(-1) ?? null;
-    const courtDisplayState = this.computeCourtDisplayState(courtEvents, currentGame?.gameNo ?? 1);
+    const customScoring = this.isCustomScoring(effectiveScoring);
+    const courtDisplayState = this.computeCourtDisplayState(courtEvents, currentGame?.gameNo ?? 1, !customScoring);
+    // 自定义分数：上一局刚结束、新一局还没开打，且裁判还没选过换不换边，就请裁判选择。
+    // 最后一局结束时比赛已决出胜方（winnerSide 有值），不会再问。
+    const courtSwapPrompt = customScoring
+      && match.status === MatchStatus.LIVE
+      && match.winnerSide === null
+      && currentGame
+      && currentGame.gameNo > 1
+      && !currentGame.winnerSide
+      && currentGame.side1Score === 0
+      && currentGame.side2Score === 0
+      && !courtEvents.some((event) =>
+        this.decodeCourtSwapNote(event.note) === currentGame.gameNo
+        || this.decodeCourtKeepNote(event.note) === currentGame.gameNo)
+      ? { gameNo: currentGame.gameNo }
+      : null;
     const servingState = this.buildServingState(
       match.games,
       servingEvents,
@@ -485,6 +515,9 @@ export class ScoringService {
       side1: side1View,
       side2: side2View,
       courtDisplayState,
+      /** false 时每局结束不自动换边（自定义分数）。 */
+      autoCourtChange: !customScoring,
+      courtSwapPrompt,
       side1Games,
       side2Games,
       games: match.games,
@@ -991,6 +1024,34 @@ export class ScoringService {
     return this.getMatchState(matchId, user);
   }
 
+  /** 自定义分数的比赛新一局开始前，裁判选「不换边」：只记下选择，左右不变。 */
+  async keepCourt(matchId: string, user: AuthUser) {
+    await this.ensureMatchAccess(matchId, user);
+    const match = await this.ensurePlayableMatch(matchId);
+    if (match.status !== MatchStatus.LIVE) {
+      throw new BadRequestException('只有进行中的比赛可以选择是否换边');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await this.teamCompetitionsService.prepareScoring(tx, matchId, { expectedUpdatedAt: match.updatedAt });
+      const games = await tx.game.findMany({ where: { matchId }, orderBy: { gameNo: 'asc' } });
+      const currentGame = games.find((game) => !game.winnerSide) ?? games.at(-1);
+      if (!currentGame) throw new BadRequestException('暂无比赛局');
+      await tx.matchEvent.create({
+        data: {
+          matchId,
+          type: MatchEventType.SERVE_CHANGE,
+          gameNo: currentGame.gameNo,
+          side1Score: currentGame.side1Score,
+          side2Score: currentGame.side2Score,
+          note: `${COURT_KEEP_NOTE_PREFIX}${currentGame.gameNo}`,
+        },
+      });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+
+    return this.getMatchState(matchId, user);
+  }
+
   /**
    * 撤销最近一分。传了 side 表示裁判点的是该方的「-1」：最近一分必须是这一方得的，
    * 否则拒绝，避免界面状态落后时把对方的分减掉。
@@ -1407,74 +1468,15 @@ export class ScoringService {
 
   async forfeitMatch(matchId: string, forfeitedSide: 1 | 2, user: AuthUser, reason?: string) {
     await this.ensureMatchAccess(matchId, user);
-    const match = await this.ensurePlayableMatch(matchId);
+    // 团体赛子项：缺人的一方填不出名单时也要能判弃权。
+    // 裁判只能看到名单已锁定的子项（ensureMatchAccess），未填名单的子项只有后台计分权限能判。
+    const match = await this.ensurePlayableMatch(matchId, { teamLineupOptional: true });
     if (match.status === MatchStatus.COMPLETED || match.status === MatchStatus.CANCELLED) {
       throw new BadRequestException('场次已结束,无法再判定弃权');
     }
 
-    const winnerSide: 1 | 2 = forfeitedSide === 1 ? 2 : 1;
-
     await this.prisma.$transaction(async (tx) => {
-      await this.teamCompetitionsService.prepareScoring(tx, matchId, { expectedUpdatedAt: match.updatedAt });
-      const existingGames = await tx.game.findMany({
-        where: { matchId },
-        orderBy: { gameNo: 'asc' },
-      });
-      const hasPlayedPoint = existingGames.some((game) => game.side1Score > 0 || game.side2Score > 0);
-      if (!hasPlayedPoint) {
-        const forfeitScoring = this.resolveMatchScoring(match);
-        const { target, gamesToWin } = this.ruleConfig(
-          forfeitScoring.scoringRule,
-          forfeitScoring,
-        );
-        for (let gameNo = 1; gameNo <= gamesToWin; gameNo += 1) {
-          await tx.game.upsert({
-            where: { matchId_gameNo: { matchId, gameNo } },
-            update: {
-              side1Score: winnerSide === 1 ? target : 0,
-              side2Score: winnerSide === 2 ? target : 0,
-              winnerSide,
-              completedAt: new Date(),
-            },
-            create: {
-              matchId,
-              gameNo,
-              side1Score: winnerSide === 1 ? target : 0,
-              side2Score: winnerSide === 2 ? target : 0,
-              winnerSide,
-              completedAt: new Date(),
-            },
-          });
-        }
-      }
-
-      await tx.match.update({
-        where: { id: matchId },
-        data: {
-          status: MatchStatus.COMPLETED,
-          winnerSide,
-          forfeitedSide,
-          forfeitReason: reason?.trim() || '选手未到场弃权',
-          finishedAt: new Date(),
-        },
-      });
-
-      await tx.matchEvent.create({
-        data: {
-          matchId,
-          type: MatchEventType.FORFEIT,
-          side: forfeitedSide,
-          note: reason?.trim() || '选手未到场弃权',
-        },
-      });
-
-      const secondStageSynced = await this.syncSecondStageFormalMatchResult(tx, match, winnerSide);
-      if (!secondStageSynced) {
-        await this.advanceSingleEliminationWinner(tx, match, winnerSide);
-        await this.fillPlayoffMatchesIfReady(tx, match.eventId);
-        await this.fillGroupKnockoutIfReady(tx, match.eventId);
-      }
-      await this.teamCompetitionsService.updateTeamMatchAggregate(tx, matchId);
+      await this.applyForfeit(tx, match, forfeitedSide, reason?.trim() || '选手未到场弃权', match.updatedAt);
     }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
 
     this.gateway.emitBracketUpdate({
@@ -1486,6 +1488,124 @@ export class ScoringService {
     return this.getMatchState(matchId, user);
   }
 
+  /** 在调用方的事务里判一方弃权；单项弃权和团体赛整队弃权共用。 */
+  private async applyForfeit(
+    tx: Prisma.TransactionClient,
+    match: PlayableMatch,
+    forfeitedSide: 1 | 2,
+    note: string,
+    expectedUpdatedAt?: Date,
+  ) {
+    const matchId = match.id;
+    const winnerSide: 1 | 2 = forfeitedSide === 1 ? 2 : 1;
+    await this.teamCompetitionsService.prepareScoring(tx, matchId, { forfeiting: true, expectedUpdatedAt });
+    const existingGames = await tx.game.findMany({
+      where: { matchId },
+      orderBy: { gameNo: 'asc' },
+    });
+    const hasPlayedPoint = existingGames.some((game) => game.side1Score > 0 || game.side2Score > 0);
+    if (!hasPlayedPoint) {
+      const forfeitScoring = this.resolveMatchScoring(match);
+      const { target, gamesToWin } = this.ruleConfig(
+        forfeitScoring.scoringRule,
+        forfeitScoring,
+      );
+      for (let gameNo = 1; gameNo <= gamesToWin; gameNo += 1) {
+        await tx.game.upsert({
+          where: { matchId_gameNo: { matchId, gameNo } },
+          update: {
+            side1Score: winnerSide === 1 ? target : 0,
+            side2Score: winnerSide === 2 ? target : 0,
+            winnerSide,
+            completedAt: new Date(),
+          },
+          create: {
+            matchId,
+            gameNo,
+            side1Score: winnerSide === 1 ? target : 0,
+            side2Score: winnerSide === 2 ? target : 0,
+            winnerSide,
+            completedAt: new Date(),
+          },
+        });
+      }
+    }
+
+    await tx.match.update({
+      where: { id: matchId },
+      data: {
+        status: MatchStatus.COMPLETED,
+        winnerSide,
+        forfeitedSide,
+        forfeitReason: note,
+        finishedAt: new Date(),
+      },
+    });
+
+    await tx.matchEvent.create({
+      data: {
+        matchId,
+        type: MatchEventType.FORFEIT,
+        side: forfeitedSide,
+        note,
+      },
+    });
+
+    const secondStageSynced = await this.syncSecondStageFormalMatchResult(tx, match, winnerSide);
+    if (!secondStageSynced) {
+      await this.advanceSingleEliminationWinner(tx, match, winnerSide);
+      await this.fillPlayoffMatchesIfReady(tx, match.eventId);
+      await this.fillGroupKnockoutIfReady(tx, match.eventId);
+    }
+    await this.teamCompetitionsService.updateTeamMatchAggregate(tx, matchId);
+  }
+
+  /**
+   * 团体赛整队弃权：一方整队未到场或退出本场团体对阵时，把尚未结束的子项按出场顺序依次判该队弃权，不要求填报名单。
+   * 对方先赢够场数后，未开启「胜负确定后继续比赛」时其余子项按原规则自动取消；开启时全部子项都判弃权。
+   * 整个过程在一个事务里，要么全部判完，要么都不改。
+   */
+  async forfeitTeamEncounter(teamMatchId: string, forfeitedSide: 1 | 2, user: AuthUser, reason?: string) {
+    const encounter = await this.prisma.teamMatch.findUnique({
+      where: { id: teamMatchId },
+      include: {
+        team1: true,
+        team2: true,
+        teamCompetition: { select: { id: true, tournamentId: true } },
+        matches: { select: { id: true }, orderBy: { matchNo: 'asc' } },
+      },
+    });
+    if (!encounter) throw new NotFoundException('团体对阵不存在');
+    if (!encounter.team1Id || !encounter.team2Id) throw new BadRequestException('双方队伍确定后才能判整队弃权');
+    if (encounter.status === MatchStatus.COMPLETED || encounter.status === MatchStatus.CANCELLED) {
+      throw new BadRequestException('团体对阵已结束，不能再判整队弃权');
+    }
+    for (const child of encounter.matches) await this.ensureMatchAccess(child.id, user);
+    const teamName = (forfeitedSide === 1 ? encounter.team1 : encounter.team2)?.name ?? '';
+    const note = reason?.trim() || `${teamName}整队弃权`;
+
+    const forfeitedMatchIds: string[] = [];
+    await this.prisma.$transaction(async (tx) => {
+      // 与 prepareScoring 相同的加锁顺序：团体赛 → 团体对阵 → 子项。
+      await tx.$queryRaw`SELECT id FROM TeamCompetition WHERE id = ${encounter.teamCompetition.id} FOR UPDATE`;
+      await tx.$queryRaw`SELECT id FROM TeamMatch WHERE id = ${teamMatchId} FOR UPDATE`;
+      for (const child of encounter.matches) {
+        const current = await tx.teamMatch.findUniqueOrThrow({ where: { id: teamMatchId }, select: { status: true } });
+        if (current.status === MatchStatus.COMPLETED || current.status === MatchStatus.CANCELLED) break;
+        const match = await tx.match.findUniqueOrThrow({ where: { id: child.id }, include: PLAYABLE_MATCH_INCLUDE });
+        if (match.status === MatchStatus.COMPLETED || match.status === MatchStatus.CANCELLED) continue;
+        await this.applyForfeit(tx, match, forfeitedSide, note);
+        forfeitedMatchIds.push(match.id);
+      }
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, timeout: 30000 });
+    if (!forfeitedMatchIds.length) throw new BadRequestException('本场团体对阵没有可判弃权的子项');
+
+    for (const matchId of forfeitedMatchIds) {
+      this.gateway.emitBracketUpdate({ tournamentId: encounter.teamCompetition.tournamentId, eventId: null, matchId });
+    }
+    return { teamMatchId, forfeitedMatchIds };
+  }
+
   async retireMatch(matchId: string, retiredSide: 1 | 2, user: AuthUser, reason?: string) {
     const cleanReason = reason?.trim() || '伤退/退赛';
     return this.forfeitMatch(matchId, retiredSide, user, `${RETIRE_NOTE_PREFIX}${cleanReason}`);
@@ -1493,13 +1613,13 @@ export class ScoringService {
 
   async forfeitBothSides(matchId: string, user: AuthUser, reason?: string) {
     await this.ensureMatchAccess(matchId, user);
-    const match = await this.ensurePlayableMatch(matchId);
+    const match = await this.ensurePlayableMatch(matchId, { teamLineupOptional: true });
     if (match.status === MatchStatus.COMPLETED || match.status === MatchStatus.CANCELLED) {
       throw new BadRequestException('场次已结束,无法再判定弃权');
     }
 
     await this.prisma.$transaction(async (tx) => {
-      await this.teamCompetitionsService.prepareScoring(tx, matchId, { expectedUpdatedAt: match.updatedAt });
+      await this.teamCompetitionsService.prepareScoring(tx, matchId, { forfeiting: true, expectedUpdatedAt: match.updatedAt });
       // 本场作废。forfeitedSide = 0 是哨兵值，表示双方都弃权。
       await tx.match.update({
         where: { id: matchId },
@@ -1807,13 +1927,15 @@ export class ScoringService {
    * 展示用的「哪一队在屏幕左侧」。
    * 每局结束双方就要换边，所以第 N 局的初始左右是 (N-1) 次隐性换边；
    * 开赛时裁判选的初始半场、以及比赛中手动点的「交换场地」都来自显式事件。
+   * 自定义分数（autoEndChanges=false）每局结束不自动换边，只认显式事件。
    */
   private computeCourtDisplayState(
     events: Array<{ note: string | null }>,
     currentGameNo = 1,
+    autoEndChanges = true,
   ): CourtDisplayState {
     const swapCount = events.filter((event) => this.decodeCourtSwapNote(event.note) !== null).length;
-    const endChanges = Math.max(0, currentGameNo - 1);
+    const endChanges = autoEndChanges ? Math.max(0, currentGameNo - 1) : 0;
     const swapped = (swapCount + endChanges) % 2 === 1;
     return {
       side1CourtSide: swapped ? 'right' : 'left',
@@ -1829,6 +1951,21 @@ export class ScoringService {
   private decodeCourtSwapNote(note?: string | null) {
     if (!note?.startsWith(COURT_SWAP_NOTE_PREFIX)) return null;
     return Number(note.slice(COURT_SWAP_NOTE_PREFIX.length)) || null;
+  }
+
+  private decodeCourtKeepNote(note?: string | null) {
+    if (!note?.startsWith(COURT_KEEP_NOTE_PREFIX)) return null;
+    return Number(note.slice(COURT_KEEP_NOTE_PREFIX.length)) || null;
+  }
+
+  /** 这场比赛实际生效的规则（含分阶段规则）是不是自定义分数；前台大屏据此决定每局结束是否自动换边。 */
+  usesCustomScoring(match: MatchScoringInput) {
+    return this.isCustomScoring(this.resolveMatchScoring(match));
+  }
+
+  /** 用了自定义每局分数、封顶分或局数，就算自定义分数（与裁判端「自定义：…」的显示一致）。 */
+  private isCustomScoring(config: { customGamePoint?: number | null; customGameCap?: number | null; customGamesToWin?: number | null }) {
+    return Boolean(config.customGamePoint || config.customGameCap || config.customGamesToWin);
   }
 
   private encodeFaultNote(faultType: string, playerIndex?: PlayerIndex) {
@@ -1870,13 +2007,19 @@ export class ScoringService {
     }
   }
 
-  private async ensurePlayableMatch(matchId: string) {
+  /**
+   * teamLineupOptional：团体赛子项判弃权时不要求填报名单（缺人或整队缺席的一方填不出名单），
+   * 双方队伍是否确定由 prepareScoring 的 forfeiting 分支检查。
+   */
+  private async ensurePlayableMatch(matchId: string, options: { teamLineupOptional?: boolean } = {}): Promise<PlayableMatch> {
     const match = await this.prisma.match.findUnique({
       where: { id: matchId },
-      include: { event: true, teamCompetitionItem: true, teamMatch: { include: { teamCompetition: true } } },
+      include: PLAYABLE_MATCH_INCLUDE,
     });
     if (!match) throw new NotFoundException('场次不存在');
-    if (!match.side1Id || !match.side2Id) throw new BadRequestException('轮空场次不需要记分');
+    if ((!match.side1Id || !match.side2Id) && !(options.teamLineupOptional && match.teamMatchId)) {
+      throw new BadRequestException('轮空场次不需要记分');
+    }
     return match;
   }
 

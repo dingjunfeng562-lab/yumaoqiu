@@ -228,5 +228,36 @@ describe('ScoringService 发球/接发站位', () => {
       const swapEvent = { note: 'COURT_SWAP:3' };
       expect(service.computeCourtDisplayState([swapEvent], 3).side1CourtSide).toBe('right');
     });
+
+    it('自定义分数每局结束不自动换边，只认裁判选的换边；选「不换边」不翻', () => {
+      const { service } = setup();
+      expect(service.computeCourtDisplayState([], 2, false).side1CourtSide).toBe('left');
+      expect(service.computeCourtDisplayState([{ note: 'COURT_KEEP:2' }], 2, false).side1CourtSide).toBe('left');
+      expect(service.computeCourtDisplayState([{ note: 'COURT_SWAP:2' }], 2, false).side1CourtSide).toBe('right');
+      expect(service.computeCourtDisplayState([{ note: 'COURT_SWAP:2' }, { note: 'COURT_KEEP:3' }], 3, false).side1CourtSide).toBe('right');
+    });
+
+    it('只要用了自定义每局分数、封顶分或局数之一就算自定义分数', () => {
+      const { service } = setup();
+      const preset = { customGamePoint: null, customGameCap: null, customGamesToWin: null };
+      expect(service.isCustomScoring(preset)).toBe(false);
+      expect(service.isCustomScoring({ ...preset, customGamePoint: 11 })).toBe(true);
+      expect(service.isCustomScoring({ ...preset, customGameCap: 25 })).toBe(true);
+      expect(service.isCustomScoring({ ...preset, customGamesToWin: 3 })).toBe(true);
+    });
+
+    it('按这场实际生效的分阶段规则判断，团体赛子项看团体赛设置', () => {
+      const { service } = setup();
+      const event = {
+        scoringRule: 'TWENTYONE_BO3', scoringMode: 'CAPPED_30',
+        customGamePoint: null, customGameCap: null, customGamesToWin: null,
+        stageScoringRules: { F: { customGamePoint: 15, customGamesToWin: 2 }, SF: { scoringRule: 'FIFTEEN_BO3' } },
+      };
+      expect(service.usesCustomScoring({ round: 'F', event })).toBe(true);
+      expect(service.usesCustomScoring({ round: 'SF', event })).toBe(false);
+      expect(service.usesCustomScoring({ round: 'QF', event })).toBe(false);
+      const teamCompetition = { scoringRule: 'TWENTYONE_BO3', scoringMode: 'CAPPED_30', customGamePoint: 11, customGameCap: null, customGamesToWin: null };
+      expect(service.usesCustomScoring({ round: 'A组第1轮', teamMatch: { teamCompetition } })).toBe(true);
+    });
   });
 });

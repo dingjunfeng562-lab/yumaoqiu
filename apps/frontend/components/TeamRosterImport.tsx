@@ -5,7 +5,7 @@ import { Alert, Input, Modal, Space, Table, Typography, message } from 'antd';
 import { apiFetch } from '@/lib/api';
 
 export type TeamImportCompetition = { id: string; name: string };
-type Row = { lineNumber: number; teamName: string; name: string; gender?: 'MALE' | 'FEMALE'; affiliation: string; contact: string; error?: string };
+type Row = { identityNumber?: string; lineNumber: number; teamName: string; name: string; gender?: 'MALE' | 'FEMALE'; affiliation: string; contact: string; error?: string };
 
 export function parseTeamRoster(text: string) {
   const rows: Row[] = [];
@@ -13,13 +13,13 @@ export function parseTeamRoster(text: string) {
     if (!line.trim()) continue;
     // Keep empty cells and spaces inside names/units when pasted from a spreadsheet.
     const cells = line.includes('\t') ? line.split('\t') : line.split(/[,，、]/);
-    const [teamName = '', name = '', genderText = '', affiliation = '', contact = ''] = cells.map(cell => cell.trim());
+    const [teamName = '', name = '', genderText = '', affiliation = '', contact = '', identityNumber = ''] = cells.map(cell => cell.trim());
     if (!rows.length && ['团体名称', '队伍名称'].includes(teamName) && name === '姓名' && genderText === '性别') continue;
     const normalized = genderText.toUpperCase();
     const gender = ['男', 'MALE', 'M'].includes(normalized) ? 'MALE' : ['女', 'FEMALE', 'F'].includes(normalized) ? 'FEMALE' : undefined;
-    const error = cells.length < 3 || cells.length > 5 ? '应为 3 至 5 列：团体名称、姓名、性别、单位、联系方式'
-      : !teamName || !name ? '团体名称和姓名必填' : !gender ? '性别请填写男或女' : undefined;
-    rows.push({ lineNumber: index + 1, teamName, name, gender, affiliation, contact, error });
+    const error = cells.length < 2 || cells.length > 6 ? '应为 2 至 6 列：团体名称、姓名、性别、单位、联系方式、身份证号'
+      : !teamName || !name ? '团体名称和姓名必填' : genderText && !gender ? '性别请填写男或女，也可留空' : undefined;
+    rows.push({ lineNumber: index + 1, teamName, name, gender, affiliation, contact, identityNumber: identityNumber || undefined, error });
   }
   const grouped = new Map<string, Row[]>();
   rows.forEach(row => grouped.set(row.teamName, [...(grouped.get(row.teamName) ?? []), row]));
@@ -36,14 +36,14 @@ export async function importTeamRoster(competition: TeamImportCompetition, text:
   const parsed = parseTeamRoster(text);
   if (!parsed.valid) throw new Error('请先修正导入预览中的行数据问题');
   return apiFetch<{ teamCount: number; playerCount: number; drawCleared?: boolean }>(`/team-competitions/${competition.id}/teams/batch-import`, {
-    method: 'POST', token, body: JSON.stringify({ players: parsed.rows.map(row => ({ teamName: row.teamName, name: row.name, gender: row.gender, affiliation: row.affiliation, contact: row.contact, lineNumber: row.lineNumber })) }),
+    method: 'POST', token, body: JSON.stringify({ players: parsed.rows.map(row => ({ teamName: row.teamName, name: row.name, gender: row.gender, affiliation: row.affiliation, contact: row.contact, identityNumber: row.identityNumber, lineNumber: row.lineNumber })) }),
   });
 }
 
 export function TeamRosterImportInput({ text, onChange }: { competition: TeamImportCompetition; text: string; onChange: (text: string) => void }) {
   const { rows, groups } = parseTeamRoster(text);
   return <Space orientation="vertical" size={12} style={{ width: '100%' }}>
-    <Alert type="info" showIcon title="团体名称、姓名、性别、单位、联系方式" description="每行一名队员，同名团体自动归为一队。前三列必填；单位和联系方式可留空。支持从 Excel 粘贴，可带表头，也可用逗号或顿号分隔。每队人数不限，不限制男女人数，出场项目赛前另行填报。" />
+    <Alert type="info" showIcon title="团体名称、姓名、性别、单位、联系方式、身份证号" description="每行一名队员，同名团体自动归为一队。前两列必填；性别和身份证号按组别配置可选填，资料不足时待资格核验。单位和联系方式可留空。支持从 Excel 粘贴，可带表头，也可用逗号或顿号分隔。每队人数不限，不限制男女人数，出场项目赛前另行填报。" />
     <Input.TextArea aria-label="团体队员数据" rows={8} value={text} onChange={event => onChange(event.target.value)} placeholder={'团体名称\t姓名\t性别\t单位\t联系方式\n飞羽队\t张三\t男\t第一学校\t13800000000\n飞羽队\t李四\t女\t第一学校\t13900000000'} />
     <Table size="small" rowKey="teamName" dataSource={groups} pagination={false} scroll={{ x: 560 }} columns={[
       { title: '团体名称', dataIndex: 'teamName' }, { title: '人数', render: (_, row) => `${row.count} 人（${row.male} 男 ${row.female} 女）` },

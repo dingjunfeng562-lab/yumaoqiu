@@ -89,12 +89,10 @@ export function useLiveBrackets(
       transports: ['polling', 'websocket'],
       withCredentials: true,
     });
-    let connectedBefore = false;
     socket.on('connect', () => {
       callbacksRef.current.onSocketState?.('synced');
       // Pushes sent while we were disconnected are lost; catch up once.
-      if (connectedBefore) void reload();
-      connectedBefore = true;
+      void reload();
     });
     socket.on('disconnect', () => callbacksRef.current.onSocketState?.('offline'));
     socket.on('connect_error', () => callbacksRef.current.onSocketState?.('offline'));

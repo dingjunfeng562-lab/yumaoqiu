@@ -8,12 +8,18 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  Max,
+  MaxLength,
   Min,
   MinLength,
   ValidateNested,
 } from 'class-validator';
 
 export class CompetitionRegistrationEventItemDto {
+  @IsOptional() @IsString() partnerIdentityNumber?: string;
+  // 搭档年龄（没填身份证时自报）和衣服尺寸，是否收集由组别字段规则决定。
+  @IsOptional() @IsInt() @Min(0) @Max(150) partnerAge?: number;
+  @IsOptional() @IsString() @MaxLength(32) partnerShirtSize?: string;
   @IsString()
   @MinLength(1)
   eventId: string;
@@ -56,7 +62,13 @@ export class CompetitionRegistrationEventItemDto {
 }
 
 export class SubmitCompetitionRegistrationDto {
-  // 学校组/社会组；旧客户端不传时按学校组处理。
+  @IsOptional() @IsString() groupId?: string;
+  @IsOptional() @IsString() identityNumber?: string;
+  // 本人年龄（没填身份证时自报）和衣服尺寸，是否收集由组别字段规则决定。
+  @IsOptional() @IsInt() @Min(0) @Max(150) age?: number;
+  @IsOptional() @IsString() @MaxLength(32) shirtSize?: string;
+
+  // 学生组 / 第三方（SOCIAL）；旧客户端不传时按学生组处理。第三方必须带 groupId。
   @IsOptional()
   @IsIn(['SCHOOL', 'SOCIAL'])
   entrantType?: 'SCHOOL' | 'SOCIAL';
@@ -82,8 +94,9 @@ export class SubmitCompetitionRegistrationDto {
   @MinLength(1)
   name: string;
 
+  @IsOptional()
   @IsIn(['MALE', 'FEMALE', '男', '女'])
-  gender: 'MALE' | 'FEMALE' | '男' | '女';
+  gender?: 'MALE' | 'FEMALE' | '男' | '女';
 
   @IsString()
   @MinLength(1)
@@ -116,6 +129,8 @@ export class SubmitCompetitionRegistrationDto {
 export class PublicCompetitionRegistrationDto extends SubmitCompetitionRegistrationDto {}
 
 export class AdminBatchCompetitionPlayerDto {
+  @IsOptional() @IsString() identityNumber?: string;
+  @IsOptional() @IsString() partnerIdentityNumber?: string;
   // 兼容旧导入：social=true 等同 entrantType=SOCIAL；新代码优先 entrantType。
   @IsOptional()
   @IsBoolean()
@@ -135,8 +150,9 @@ export class AdminBatchCompetitionPlayerDto {
   @MinLength(1)
   name: string;
 
+  @IsOptional()
   @IsIn(['MALE', 'FEMALE', '男', '女'])
-  gender: 'MALE' | 'FEMALE' | '男' | '女';
+  gender?: 'MALE' | 'FEMALE' | '男' | '女';
 
   // 学生必填由服务端按赛事字段规则校验。
   @IsOptional()

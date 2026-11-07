@@ -29,4 +29,5 @@ export const ADMIN_ACTIONS: Record<string, readonly string[]> = {
   ],
   EventsController: ['findByTournament', 'findOne'],
   ExportsController: ['download'],
+  AdminStatisticsController: ['tournamentStatistics'],
 };

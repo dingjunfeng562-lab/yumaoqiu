@@ -54,6 +54,18 @@ export default function TeamCompetitionsPage() {
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [form] = Form.useForm();
+  const tournamentId = Form.useWatch('tournamentId', form);
+  const [groups, setGroups] = useState<Array<{id: string; name: string; fieldTemplate: string}>>([]);
+  useEffect(() => {
+    let alive = true;
+    if (!open || !token || !tournamentId) return;
+    void apiFetch<Array<{id: string; name: string; fieldTemplate: string}>>(`/admin/competitions/${tournamentId}/groups`, { token }).then(data => {
+      if (!alive) return;
+      setGroups(data);
+      form.setFieldsValue({ groupId: data[0]?.id });
+    }).catch(error => message.error(error.message));
+    return () => { alive = false; };
+  }, [open, token, tournamentId, form]);
 
   const filteredCompetitions = useMemo(
     () => competitions.filter((item) => !selectedTournamentId || item.tournamentId === selectedTournamentId),
@@ -100,7 +112,7 @@ export default function TeamCompetitionsPage() {
       await apiFetch('/team-competitions', {
         method: 'POST',
         token,
-        body: JSON.stringify({ ...values, ...teamFormatPayload(values), items: values.items.map((item: { eventType: string }, index: number) => ({ eventType: item.eventType, sortOrder: index + 1 })) }),
+        body: JSON.stringify({ ...values, entrantType: groups.find(g => g.id === values.groupId)?.fieldTemplate === 'SCHOOL' ? 'SCHOOL' : 'SOCIAL', ...teamFormatPayload(values), items: values.items.map((item: { eventType: string }, index: number) => ({ eventType: item.eventType, sortOrder: index + 1 })) }),
       });
       message.success('团体赛已创建');
       setOpen(false);
@@ -156,7 +168,7 @@ export default function TeamCompetitionsPage() {
             width: 90,
             render: (_, row: TeamCompetition) => (
               <Tag color={row.entrantType === 'SOCIAL' ? 'orange' : 'geekblue'}>
-                {row.entrantType === 'SOCIAL' ? '社会组' : '学生组'}
+                {row.entrantType === 'SOCIAL' ? '第三方' : '学生组'}
               </Tag>
             ),
           },
@@ -199,13 +211,8 @@ export default function TeamCompetitionsPage() {
           <Form.Item name="tournamentId" label="所属赛事" rules={[{ required: true, message: '请选择赛事' }]}>
             <Select options={tournaments.map((item) => ({ value: item.id, label: item.name }))} />
           </Form.Item>
-          <Form.Item name="entrantType" label="组别" rules={[{ required: true }]} extra="一个赛事的学生组、社会组各可创建一条团体赛。">
-            <Select
-              options={[
-                { value: 'SCHOOL', label: '学生组' },
-                { value: 'SOCIAL', label: '社会组' },
-              ]}
-            />
+          <Form.Item name="groupId" label="参赛组别" rules={[{ required: true }]} extra="每个组别可独立创建一项团体赛。">
+            <Select options={groups.map(group => ({ value: group.id, label: group.name }))} />
           </Form.Item>
           <TeamCompetitionFields />
         </Form>

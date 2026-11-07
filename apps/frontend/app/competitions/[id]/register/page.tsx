@@ -1,11 +1,12 @@
 'use client';
 
 import Link from 'next/link';
+import GroupRegistrationForm, { GroupPicker } from '@/components/registration/GroupRegistrationForm';
+import type { RegistrationGroupInfo } from '@/lib/registration-groups';
 import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import { PortalFeaturePage } from '@/components/home/PortalFeaturePage';
-import SocialRegistrationForm, { type SocialCodeInfo } from '@/components/SocialRegistrationForm';
 import { RegistrationIntro, type RegistrationIntroInfo } from '@/components/registration/RegistrationIntro';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
@@ -187,13 +188,18 @@ function formFromRegistration(registration: ExistingRegistration): FormState {
   };
 }
 
-type RegistrationCodeInfo = RegistrationIntroInfo & {
+/** 报名码对应赛事里开放报名的一个组别。 */
+type CodeGroup = Pick<RegistrationGroupInfo, 'groupId' | 'groupName' | 'fieldTemplate' | 'groupFields' | 'ageRule' | 'ageRuleLabel' | 'events' | 'payment'>;
+
+type RegistrationCodeInfo = RegistrationIntroInfo & Partial<RegistrationGroupInfo> & {
   tournamentId: string;
+  // 一个赛事一个报名码：扫码后在这些组别里选；扫旧的组别码时预选该组。
+  groups?: CodeGroup[];
+  preselectedGroupId?: string | null;
   entrantType: 'SCHOOL' | 'SOCIAL';
   loginRequired: boolean;
   fieldRules?: {
     SCHOOL?: { studentId?: string; college?: string; majorGrade?: string };
-    SOCIAL?: { email?: string };
   };
   events: Array<{ id: string; type: string; label: string; isDouble: boolean }>;
 };
@@ -209,6 +215,23 @@ function paymentPageAfterSubmit(
   return `/competitions/${competitionId}/payment${guestToken ? `?token=${encodeURIComponent(guestToken)}` : ''}`;
 }
 
+/** 简介页按「一个赛事多个组别」展示：组别数、全部项目、各组收费说明。 */
+function introInfo(info: RegistrationCodeInfo): RegistrationIntroInfo {
+  const groups = info.groups ?? [];
+  if (!groups.length) return info;
+  if (groups.length === 1) {
+    return { ...info, entrantTypeLabel: groups[0].groupName, events: groups[0].events, payment: groups[0].payment ?? null };
+  }
+  return {
+    ...info,
+    entrantTypeLabel: `共 ${groups.length} 个组别`,
+    eventsTitle: '比赛项目',
+    events: groups.flatMap((group) => group.events),
+    payment: null,
+    feeNote: groups.some((group) => group.payment) ? '按组别收费，选择组别后查看' : undefined,
+  };
+}
+
 export default function CompetitionRegisterPage() {
   const params = useParams<{ id: string }>();
   const id = params?.id;
@@ -219,6 +242,7 @@ export default function CompetitionRegisterPage() {
   const [codeError, setCodeError] = useState('');
   // 报名码通过后先看赛事简介，点底部「立即报名」才进入选择组别。
   const [started, setStarted] = useState(false);
+  const [groupId, setGroupId] = useState<string | null>(null);
 
   // 扫二维码进入时链接里已带报名码：直接校验，第一屏就是赛事简介。
   useEffect(() => {
@@ -245,7 +269,10 @@ export default function CompetitionRegisterPage() {
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.message ?? '报名码无效');
-      setInfo(data as RegistrationCodeInfo);
+      const next = data as RegistrationCodeInfo;
+      setInfo(next);
+      // 只有一个组别时不用选；扫旧的组别码时预选该组。
+      setGroupId(next.preselectedGroupId ?? (next.groups?.length === 1 ? next.groups[0].groupId : null));
       setCode(normalized);
     } catch (err) {
       setCodeError(err instanceof Error ? err.message : '报名码校验失败');
@@ -258,10 +285,22 @@ export default function CompetitionRegisterPage() {
     return (
       <main className="mx-auto flex min-h-[70vh] max-w-xl items-center px-4">
         <section className="w-full rounded-xl border border-blue-100 bg-white p-6 shadow-sm">
+          {id ? (
+            <Link
+              href={`/competitions/${id}`}
+              title="返回赛事主页"
+              className="-ml-1 mb-3 inline-flex h-9 items-center gap-1 rounded-lg px-1 text-sm font-black text-blue-700 transition hover:text-blue-900"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" className="h-4 w-4" aria-hidden>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 5l-7 7 7 7" />
+              </svg>
+              返回上一级
+            </Link>
+          ) : null}
           <p className="text-xs font-black uppercase tracking-[0.18em] text-blue-600">Registration Code</p>
           <h1 className="mt-2 text-2xl font-black text-slate-950">输入赛事报名码</h1>
           <p className="mt-2 text-sm font-semibold text-slate-500">
-            报名码由组委会提供；学生组码进入学校报名，社会组码进入社会报名。
+            报名码由组委会提供，一个赛事一个报名码，输入后选择组别报名。
           </p>
           <div className="mt-5 flex gap-2">
             <input
@@ -303,9 +342,10 @@ export default function CompetitionRegisterPage() {
         eyebrow="Registration"
         title={info.title}
         description="先了解赛事简介和报名须知，准备好后点击底部「立即报名」。"
+        back={{ href: `/competitions/${id ?? info.tournamentId}`, label: '赛事主页' }}
       >
         <RegistrationIntro
-          info={info}
+          info={introInfo(info)}
           onStart={() => {
             setStarted(true);
             window.scrollTo({ top: 0 });
@@ -315,24 +355,27 @@ export default function CompetitionRegisterPage() {
     );
   }
 
-  if (info.entrantType === 'SOCIAL') {
-    return (
-      <PortalFeaturePage
-        activeHref="/competitions"
-        eyebrow="Social Registration"
-        title={`${info.title} · 社会组报名`}
-        description="社会组免登录报名；提交后凭报名编号查询审核结果。"
-      >
-        <SocialRegistrationForm
-          competitionId={info.tournamentId}
-          registrationCode={code}
-          info={info as SocialCodeInfo}
-          paymentPageFor={(status, guestToken) => paymentPageAfterSubmit(info.tournamentId, info, status, guestToken)}
-        />
-      </PortalFeaturePage>
-    );
+  if (info.groups?.length) {
+    const groups = info.groups;
+    const group = groups.find((item) => item.groupId === groupId);
+    if (!group) {
+      return <PortalFeaturePage activeHref="/competitions" eyebrow="Registration" title={info.title} description="请选择要报名的组别，再填写报名信息。" back={{ href: `/competitions/${info.tournamentId}`, label: '赛事主页' }}>
+        <GroupPicker groups={groups} onPick={setGroupId} />
+      </PortalFeaturePage>;
+    }
+    const groupInfo: RegistrationGroupInfo = {
+      ...group,
+      tournamentId: info.tournamentId,
+      title: info.title,
+      maxRegistrationEvents: info.maxRegistrationEvents,
+      registrationOpen: info.registrationOpen,
+    };
+    return <PortalFeaturePage activeHref="/competitions" eyebrow="Registration" title={`${info.title} · ${group.groupName}`} description={group.ageRuleLabel || '按组别规则填写报名信息'} back={{ href: `/competitions/${info.tournamentId}`, label: '赛事主页' }}>
+      <GroupRegistrationForm key={group.groupId} info={groupInfo} registrationCode={code} onBack={groups.length > 1 ? () => setGroupId(null) : undefined} />
+    </PortalFeaturePage>;
   }
 
+  // 没有组别记录的旧赛事只剩学生组报名码（默认社会组已取消）。
   return <SchoolRegisterPage registrationCode={code} codeInfo={info} />;
 }
 
@@ -552,14 +595,12 @@ function SchoolRegisterPage({
       eyebrow="Registration"
       title="赛事报名"
       description="先选择报名组别，再填写基本信息。待审核时不能修改，报名通过后可继续追加新的报名项目。"
+      back={{ href: `/competitions/${id}`, label: '赛事主页' }}
     >
       <div className="grid gap-4 sm:gap-6 lg:grid-cols-[0.9fr_1.1fr]">
         <section className="rounded-lg border border-blue-100 bg-white p-4 shadow-sm sm:p-6">
           <div className="mb-4 flex items-center justify-between gap-3 sm:mb-5">
             <h2 className="text-lg font-black text-slate-950 sm:text-xl">当前赛事</h2>
-            <Link href="/competitions" className="text-sm font-bold text-blue-700">
-              返回赛事列表
-            </Link>
           </div>
           {loading ? (
             <p className="text-sm font-semibold text-slate-500">赛事信息加载中...</p>

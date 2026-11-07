@@ -10,15 +10,10 @@ async function uniqueCode(): Promise<string> {
   for (let attempt = 0; attempt < 30; attempt += 1) {
     const code = generateRegistrationCode();
     const exists = await prisma.tournament.findFirst({
-      where: {
-        OR: [
-          { schoolRegistrationCode: code },
-          { socialRegistrationCode: code },
-        ],
-      },
+      where: { OR: [{ registrationCode: code }, { schoolRegistrationCode: code }] },
       select: { id: true },
     });
-    if (!exists) return code;
+    if (!exists && !await prisma.tournamentGroup.findUnique({ where: { registrationCode: code } })) return code;
   }
   throw new Error('报名码生成失败，请重试');
 }
@@ -29,17 +24,12 @@ async function main() {
   });
   let updated = 0;
   for (const tournament of tournaments) {
+    // 默认社会组已取消，赛事上只剩学生组的兼容报名码。
     const hasSchool = tournament.events.some((event) => event.entrantType === 'SCHOOL');
-    const hasSocial = tournament.events.some((event) => event.entrantType === 'SOCIAL');
-    const needSchool = hasSchool && !tournament.schoolRegistrationCode;
-    const needSocial = hasSocial && !tournament.socialRegistrationCode;
-    if (!needSchool && !needSocial) continue;
+    if (!hasSchool || tournament.schoolRegistrationCode) continue;
     await prisma.tournament.update({
       where: { id: tournament.id },
-      data: {
-        ...(needSchool ? { schoolRegistrationCode: await uniqueCode() } : {}),
-        ...(needSocial ? { socialRegistrationCode: await uniqueCode() } : {}),
-      },
+      data: { schoolRegistrationCode: await uniqueCode() },
     });
     updated += 1;
   }

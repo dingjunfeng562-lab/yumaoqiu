@@ -7,6 +7,7 @@ import { useSession } from 'next-auth/react';
 import { Button, Card, Popconfirm, Select, Space, Table, Tag, Typography, message, Modal, Input } from 'antd';
 import { CheckOutlined, CloseOutlined, TeamOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
+import { EligibilityReviewButton } from '@/components/admin/EligibilityReviewButton';
 import CompetitionEmailSettingsCard from '@/components/admin/CompetitionEmailSettingsCard';
 
 type Competition = {
@@ -15,6 +16,8 @@ type Competition = {
 };
 
 type RegistrationItem = {
+  partnerGender?: string | null;
+  eligibility?: { status?: string } | null;
   id: string;
   eventId: string;
   eventName: string;
@@ -23,10 +26,16 @@ type RegistrationItem = {
   partnerCollege?: string | null;
   partnerMajorGrade?: string | null;
   partnerClassName?: string | null;
+  partnerAge?: number | null;
+  partnerShirtSize?: string | null;
   teamName?: string | null;
 };
 
 type Registration = {
+  groupId?: string | null;
+  gender?: string | null;
+  eligibility?: { status?: string } | null;
+  identity?: { masked?: string; birthDate?: string } | null;
   id: string;
   email: string;
   guest?: boolean;
@@ -39,6 +48,9 @@ type Registration = {
   majorGrade?: string;
   phone: string;
   genderLabel: string;
+  // 年龄（身份证计算或自填）和衣服尺寸，只有组别设置了收集才有值。
+  age?: number | null;
+  shirtSize?: string | null;
   eventSummary: string;
   items: RegistrationItem[];
   createdAt: string;
@@ -182,7 +194,7 @@ export default function AdminCompetitionRegistrationsPage() {
       width: 84,
       render: (_: unknown, record: Registration) => (
         <Tag color={record.entrantType === 'SOCIAL' ? 'orange' : 'geekblue'}>
-          {record.entrantTypeLabel ?? (record.entrantType === 'SOCIAL' ? '社会组' : '学生组')}
+          {record.entrantTypeLabel ?? (record.entrantType === 'SOCIAL' ? '第三方' : '学生组')}
         </Tag>
       ),
     },
@@ -227,6 +239,19 @@ export default function AdminCompetitionRegistrationsPage() {
     { title: '联系方式', dataIndex: 'phone', key: 'phone', width: 130 },
     { title: '性别', dataIndex: 'genderLabel', key: 'genderLabel', width: 60 },
     {
+      title: '年龄 / 衣服尺寸',
+      key: 'ageShirt',
+      width: 120,
+      render: (_: unknown, record: Registration) =>
+        record.age == null && !record.shirtSize ? (
+          <Typography.Text type="secondary">-</Typography.Text>
+        ) : (
+          <Typography.Text>
+            {record.age != null ? `${record.age}岁` : '-'} / {record.shirtSize || '-'}
+          </Typography.Text>
+        ),
+    },
+    {
       title: '报名项目',
       key: 'eventSummary',
       width: 260,
@@ -240,6 +265,8 @@ export default function AdminCompetitionRegistrationsPage() {
                 {item.teamName ? ` · 队伍：${item.teamName}` : ''}
                 ：搭档 {item.partnerName}（{item.partnerStudentId || '未填学号'}）
                 {item.partnerClassName ? ` · 学院班级：${item.partnerClassName}` : ''}
+                {item.partnerAge != null ? ` · ${item.partnerAge}岁` : ''}
+                {item.partnerShirtSize ? ` · 衣服尺寸：${item.partnerShirtSize}` : ''}
               </Typography.Text>
             ) : null,
           )}
@@ -260,6 +287,7 @@ export default function AdminCompetitionRegistrationsPage() {
       render: (_: unknown, record: Registration) => (
         <Space direction="vertical" size={2}>
           <Tag color={STATUS_COLORS[record.status]}>{record.statusLabel}</Tag>
+          {record.eligibility?.status === 'PENDING' && <Tag color="gold">资格待核验</Tag>}
           {record.rejectReason ? (
             <Typography.Text type="danger" ellipsis={{ tooltip: record.rejectReason }} style={{ fontSize: 12 }}>
               {record.rejectReason}
@@ -278,17 +306,18 @@ export default function AdminCompetitionRegistrationsPage() {
             管理员录入，无需审核
           </Typography.Text>
         ) : canManage ? (
-          <Space>
+          <Space wrap>
+            {record.status === 'pending' && <EligibilityReviewButton registration={record} token={token} onSaved={loadData} />}
             <Popconfirm
               title="确认通过该报名？"
               onConfirm={() => approve(record.id)}
-              disabled={record.status === 'approved'}
+              disabled={record.status === 'approved' || record.items.some(i => i.eligibility?.status === 'PENDING')}
             >
               <Button
                 size="small"
                 type="primary"
                 icon={<CheckOutlined />}
-                disabled={record.status === 'approved'}
+                disabled={record.status === 'approved' || record.items.some(i => i.eligibility?.status === 'PENDING')}
               >
                 通过
               </Button>
@@ -345,7 +374,7 @@ export default function AdminCompetitionRegistrationsPage() {
             options={[
               { value: 'all', label: '全部组别' },
               { value: 'SCHOOL', label: '学生组' },
-              { value: 'SOCIAL', label: '社会组' },
+              { value: 'SOCIAL', label: '第三方' },
             ]}
           />
           <Tag color="orange">当前列表待审核：{pendingCount}</Tag>
@@ -371,8 +400,8 @@ export default function AdminCompetitionRegistrationsPage() {
           loading={loading}
           pagination={{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }}
           scroll={registrations.length
-            ? { x: 1450, y: 'calc(100vh - 440px)' }
-            : { x: 1450 }}
+            ? { x: 1570, y: 'calc(100vh - 440px)' }
+            : { x: 1570 }}
           tableLayout="fixed"
           size="middle"
           locale={{ emptyText: '暂无报名记录' }}

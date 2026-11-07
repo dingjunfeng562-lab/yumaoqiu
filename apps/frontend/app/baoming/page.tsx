@@ -12,9 +12,8 @@ type CodeInfo = {
   endDate: string;
   location?: string | null;
   registrationStatus?: string;
-  entrantType: 'SCHOOL' | 'SOCIAL';
-  entrantTypeLabel: string;
-  loginRequired: boolean;
+  // 一个赛事一个报名码：进入报名页后再选组别。
+  groups?: Array<{ groupId: string; groupName: string; ageRuleLabel: string }>;
 };
 
 function formatDate(value?: string | null) {
@@ -61,7 +60,7 @@ export default function BaomingPage() {
               赛事报名入口
             </Typography.Title>
             <Typography.Text type="secondary">
-              输入组委会提供的报名码。学生组报名码进入学校报名，社会组报名码进入社会报名。
+              输入组委会提供的报名码，查看赛事信息，进入后选择组别报名。
             </Typography.Text>
           </div>
           <Space.Compact style={{ width: '100%' }}>
@@ -86,7 +85,7 @@ export default function BaomingPage() {
             <Alert
               type="success"
               showIcon
-              message={`${info.title} · ${info.entrantTypeLabel}`}
+              message={info.title}
               description={
                 <Space direction="vertical" size={2}>
                   <span>
@@ -94,16 +93,19 @@ export default function BaomingPage() {
                   </span>
                   <span>比赛地点：{info.location || '待公布'}</span>
                   <span>报名状态：{info.registrationStatus || '待公布'}</span>
+                  {info.groups?.length ? (
+                    <span>可报组别：{info.groups.map((group) => group.groupName).join('、')}</span>
+                  ) : null}
                   <Button
                     type="primary"
                     style={{ marginTop: 8 }}
                     onClick={() =>
                       router.push(
-                        `/competitions/${info.tournamentId}/register?type=${info.entrantType.toLowerCase()}&code=${encodeURIComponent(code.trim().toUpperCase())}`,
+                        `/competitions/${info.tournamentId}/register?code=${encodeURIComponent(code.trim().toUpperCase())}`,
                       )
                     }
                   >
-                    {info.entrantType === 'SCHOOL' ? '填写学校报名' : '填写社会组报名'}
+                    进入报名
                   </Button>
                 </Space>
               }

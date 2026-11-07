@@ -96,7 +96,7 @@ export function PaymentGroupList({ groups, emptyText = '暂无报名记录' }: {
   if (!groups.length) return <Empty description={emptyText} />;
   return (
     <Space orientation="vertical" size={16} style={{ width: '100%' }}>
-      {groups.map((group) => <PaymentGroupCard key={`${group.competitionId}:${group.entrantType}`} group={group} />)}
+      {groups.map((group) => <PaymentGroupCard key={`${group.competitionId}:${group.groupId ?? group.entrantType}`} group={group} />)}
     </Space>
   );
 }

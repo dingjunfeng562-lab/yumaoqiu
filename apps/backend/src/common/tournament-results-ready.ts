@@ -54,6 +54,11 @@ export function teamResultsReady(competition: TeamResults): boolean {
     return count >= 2 && competition.teamMatches.length === count * (count - 1) / 2
       && competition.teamMatches.every(match => match.status === 'COMPLETED' && Boolean(match.winnerTeamId));
   }
+  // 小组赛（单组或多组循环）没有决赛：全部小组对阵结束并分出胜负即可确定名次。
+  if (competition.format === 'GROUP_ROUND_ROBIN') {
+    return competition.teamMatches.length > 0
+      && competition.teamMatches.every(match => match.status === 'COMPLETED' && Boolean(match.winnerTeamId));
+  }
   return competition.teamMatches.length > 0 && competition.teamMatches.every(terminal)
     && competition.teamMatches.some((match) => match.round === 'F' && match.status === 'COMPLETED' && Boolean(match.winnerTeamId));
 }

@@ -4,39 +4,25 @@ import Link from 'next/link';
 import { useCallback, useMemo, useState } from 'react';
 import type {
   BracketMatch,
-  BracketParticipant,
   KnockoutBracketData,
 } from '@/components/bracket/KnockoutBracket';
 import type { SecondStageData } from '@/components/bracket/SecondStageBracket';
 import { SecondStageCrossBracket } from '@/components/bracket/SecondStageCrossBracket';
+import {
+  isByeMatch,
+  normalizeStatus,
+  parseGames,
+  playerName,
+  playersFor,
+  roundTitle,
+  sideFor,
+  statusText,
+  type ParsedGame,
+} from '@/lib/match-display';
 import { useLiveBrackets } from '@/lib/use-live-brackets';
 
 type SocketState = 'connecting' | 'synced' | 'offline';
 type MatchFilter = 'ALL' | 'LIVE' | 'PENDING' | 'COMPLETED';
-
-const STATUS_LABELS: Record<string, string> = {
-  PENDING: '待开始',
-  LIVE: '进行中',
-  COMPLETED: '已完成',
-  CANCELLED: '已取消',
-  未开始: '待开始',
-  进行中: '进行中',
-  已结束: '已完成',
-  已完成: '已完成',
-};
-
-function normalizeStatus(status?: string | null) {
-  const raw = String(status || 'PENDING');
-  const upper = raw.toUpperCase();
-  if (upper === 'LIVE' || raw === '进行中') return 'LIVE';
-  if (upper === 'COMPLETED' || raw === '已结束' || raw === '已完成') return 'COMPLETED';
-  if (upper === 'CANCELLED' || raw === '已取消') return 'CANCELLED';
-  return 'PENDING';
-}
-
-function statusText(status?: string | null) {
-  return STATUS_LABELS[String(status)] ?? STATUS_LABELS[normalizeStatus(status)] ?? '待开始';
-}
 
 function formatTime(value?: string | null) {
   if (!value) return '待排时间';
@@ -51,52 +37,8 @@ function formatTime(value?: string | null) {
   });
 }
 
-type ParsedGame = { side1: number; side2: number };
-
-function parseGames(text: string) {
-  const games: ParsedGame[] = [];
-  for (const segment of text.split(/[/,]/)) {
-    const parts = segment.trim().match(/^(\d+)\s*[:：-]\s*(\d+)/);
-    if (parts) games.push({ side1: Number(parts[1]), side2: Number(parts[2]) });
-  }
-  return games;
-}
-
-function playerName(participant?: BracketParticipant | null) {
-  if (!participant || participant.isBye) return '待定';
-  return participant.name;
-}
-
-function playersFor(participant?: BracketParticipant | null) {
-  if (!participant || participant.isBye) return [];
-  return participant.members?.length ? participant.members : [participant.name];
-}
-
-function sideFor(bracket: KnockoutBracketData, id?: string | null) {
-  if (!id) return null;
-  return bracket.participants.find((participant) => participant.id === id) ?? null;
-}
-
-function isByeMatch(bracket: KnockoutBracketData, match: BracketMatch) {
-  const side1 = sideFor(bracket, match.side1Id);
-  const side2 = sideFor(bracket, match.side2Id);
-  if (side1?.isBye || side2?.isBye) return true;
-
-  const hasMissingSide = !match.side1Id || !match.side2Id;
-  if (!hasMissingSide) return false;
-
-  // 首轮没有上游场次，缺少任意一方即为轮空。后续轮次在选手尚未晋级时也会
-  // 暂时缺少一方，只有系统已经自动完赛/取消时才可确定为轮空或空场。
-  const status = normalizeStatus(String(match.status));
-  return match.roundNo <= 1 || status === 'COMPLETED' || status === 'CANCELLED';
-}
-
 function sortMatches(matches: BracketMatch[]) {
   return [...matches].sort((a, b) => a.roundNo - b.roundNo || a.matchNo - b.matchNo);
-}
-
-function roundTitle(match: BracketMatch) {
-  return match.roundLabel || (match as BracketMatch & { round?: string }).round || `第 ${match.roundNo} 轮`;
 }
 
 function groupMatches(matches: BracketMatch[]) {

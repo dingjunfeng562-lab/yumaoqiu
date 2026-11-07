@@ -55,6 +55,8 @@ type Tournament = { id: string; name: string };
 
 type Setting = {
   entrantType: EntrantType;
+  groupId?: string | null;
+  groupLabel?: string;
   enabled: boolean;
   singlesFee: number;
   doublesFee: number;
@@ -67,6 +69,8 @@ type Row = {
   kind: 'EVENT' | 'TEAM';
   id: string;
   entrantType: EntrantType;
+  groupId?: string | null;
+  groupLabel?: string;
   itemId: string;
   itemName: string;
   name: string;
@@ -84,6 +88,8 @@ type Row = {
 
 type Summary = {
   entrantType: EntrantType;
+  groupId?: string | null;
+  groupLabel?: string;
   enabled: boolean;
   total: number;
   paidCount: number;
@@ -98,8 +104,8 @@ type Overview = {
   editDeadline: string | null;
   fieldRules?: EditableFieldRules;
   settings: Setting[];
-  events: { id: string; type: string; isDouble: boolean; entrantType: EntrantType; label: string }[];
-  teamCompetitions: { id: string; name: string; entrantType: EntrantType }[];
+  events: { id: string; type: string; isDouble: boolean; entrantType: EntrantType; groupId?: string | null; label: string }[];
+  teamCompetitions: { id: string; name: string; entrantType: EntrantType; groupId?: string | null }[];
   summary: Summary[];
   rows: Row[];
 };
@@ -162,7 +168,7 @@ export default function AdminPaymentsPage() {
   const access = useCurrentAccess();
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
   const [competitionId, setCompetitionId] = useState('');
-  const [entrantType, setEntrantType] = useState<EntrantType>('SCHOOL');
+  const [entrantType, setEntrantType] = useState<string>('SCHOOL');
   const [overview, setOverview] = useState<Overview | null>(null);
   const [loading, setLoading] = useState(false);
   const [savingSetting, setSavingSetting] = useState(false);
@@ -239,8 +245,12 @@ export default function AdminPaymentsPage() {
     setSelectedKeys([]);
   }
 
-  const setting = overview?.settings.find((item) => item.entrantType === entrantType);
-  const summary = overview?.summary.find((item) => item.entrantType === entrantType);
+  useEffect(() => {
+    if (overview?.settings.length && !overview.settings.some(s => (s.groupId ?? s.entrantType) === entrantType)) setEntrantType(overview.settings[0].groupId ?? overview.settings[0].entrantType);
+  }, [overview, entrantType]);
+  const groupLabel = overview?.settings.find(s => (s.groupId ?? s.entrantType) === entrantType)?.groupLabel ?? '当前组别';
+  const setting = overview?.settings.find((item) => (item.groupId ?? item.entrantType) === entrantType);
+  const summary = overview?.summary.find((item) => (item.groupId ?? item.entrantType) === entrantType);
   const editLocked = isEditDeadlinePassed(overview?.editDeadline);
   const savedDeadline = overview?.editDeadline ? dayjs(overview.editDeadline) : null;
   const deadline = deadlineDraft === undefined ? savedDeadline : deadlineDraft;
@@ -258,8 +268,8 @@ export default function AdminPaymentsPage() {
 
   const itemOptions = useMemo(() => {
     if (!overview) return [];
-    const events = overview.events.filter((item) => item.entrantType === entrantType).map((item) => ({ value: item.id, label: item.label }));
-    const teams = overview.teamCompetitions.filter((item) => item.entrantType === entrantType).map((item) => ({ value: item.id, label: `团体赛 · ${item.name}` }));
+    const events = overview.events.filter((item) => (item.groupId ?? item.entrantType) === entrantType).map((item) => ({ value: item.id, label: item.label }));
+    const teams = overview.teamCompetitions.filter((item) => (item.groupId ?? item.entrantType) === entrantType).map((item) => ({ value: item.id, label: `团体赛 · ${item.name}` }));
     if (kindFilter === 'EVENT') return events;
     if (kindFilter === 'TEAM') return teams;
     return [...events, ...teams];
@@ -267,7 +277,7 @@ export default function AdminPaymentsPage() {
 
   const rows = useMemo(() => {
     const keyword = search.trim().toLowerCase();
-    return (overview?.rows ?? []).filter((row) => row.entrantType === entrantType
+    return (overview?.rows ?? []).filter((row) => (row.groupId ?? row.entrantType) === entrantType
       && (kindFilter === 'ALL' || row.kind === kindFilter)
       && (!itemFilter || row.itemId === itemFilter)
       && (statusFilter === 'ALL' || row.paymentStatus === statusFilter)
@@ -291,7 +301,7 @@ export default function AdminPaymentsPage() {
           instructions: values.instructions ?? '',
         }),
       });
-      message.success(`${ENTRANT_LABELS[entrantType]}收费设置已保存`);
+      message.success(`${groupLabel}收费设置已保存`);
       await loadOverview();
     } catch (error) {
       message.error(error instanceof Error ? error.message : '保存失败');
@@ -427,7 +437,7 @@ export default function AdminPaymentsPage() {
   async function exportRows() {
     const XLSX = await import('xlsx');
     const data = rows.map((row) => ({
-      组别: ENTRANT_LABELS[row.entrantType],
+      组别: row.groupLabel ?? ENTRANT_LABELS[row.entrantType],
       项目: row.itemName,
       参赛方: row.name,
       队员: row.members ?? '',
@@ -444,7 +454,7 @@ export default function AdminPaymentsPage() {
     const book = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(book, sheet, '缴费明细');
     const name = (overview?.competition.name ?? '赛事').replace(/[\\/:*?"<>|]/g, '-');
-    XLSX.writeFile(book, `${name}-${ENTRANT_LABELS[entrantType]}-缴费明细-${dayjs().format('YYYYMMDD')}.xlsx`);
+    XLSX.writeFile(book, `${name}-${groupLabel}-缴费明细-${dayjs().format('YYYYMMDD')}.xlsx`);
   }
 
   // 第一行是缴费状态操作，第二行是改报名信息和删除（仅管理员），操作列保持原来的宽度，不挡住状态列。
@@ -507,7 +517,7 @@ export default function AdminPaymentsPage() {
           <Segmented
             value={entrantType}
             onChange={(value) => changeEntrantType(value as EntrantType)}
-            options={[{ value: 'SCHOOL', label: '学生组' }, { value: 'SOCIAL', label: '社会组' }]}
+            options={(overview?.settings ?? []).map(s => ({ value: s.groupId ?? s.entrantType, label: s.groupLabel ?? ENTRANT_LABELS[s.entrantType] }))}
           />
         </Space>
         {overview && isAdmin ? (
@@ -541,7 +551,7 @@ export default function AdminPaymentsPage() {
       </Card>
 
       {competitionId && setting ? (
-        <Card title={`${ENTRANT_LABELS[entrantType]}收费设置`} loading={loading && !overview}>
+        <Card title={`${groupLabel}收费设置`} loading={loading && !overview}>
           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gap: 24, alignItems: 'start' }}>
             <Form form={form} layout="vertical" onFinish={saveSetting} requiredMark={false}>
               <Form.Item name="enabled" label="本组别收费" valuePropName="checked">
@@ -606,7 +616,7 @@ export default function AdminPaymentsPage() {
       {summary ? (
         <Card>
           {!summary.enabled ? (
-            <Alert type="info" showIcon style={{ marginBottom: 16 }} title={`${ENTRANT_LABELS[entrantType]}未开启收费，选手显示「无需缴费」，抽签编排不受影响。`} />
+            <Alert type="info" showIcon style={{ marginBottom: 16 }} title={`${groupLabel}未开启收费，选手显示「无需缴费」，抽签编排不受影响。`} />
           ) : null}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 16 }}>
             <Statistic title="需缴费" value={summary.total} suffix="项" />

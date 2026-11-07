@@ -68,38 +68,88 @@ describe('SchedulingService daily scheduling window', () => {
 describe('manual team court adjustments', () => {
   function setup() {
     const matches = [0, 10, 20].map((minutes, index) => ({
-      id: `m${index}`, matchNo: index + 1, teamMatchId: 'encounter', eventId: null,
-      status: 'PENDING', venueId: 'court1', durationMinutes: 10,
+      id: `m${index}`, matchNo: index + 1, roundNo: 1, round: 'F', teamMatchId: 'encounter', eventId: null,
+      teamMatch: { teamCompetitionId: 'competition', teamCompetition: { tournamentId: 't', group: null }, team1Id: 'team1', team2Id: 'team2' },
+      event: null, status: 'PENDING', startedAt: null, finishedAt: null, side1Id: null, side2Id: null,
+      venueId: 'court1', venue: { name: '1号场' }, durationMinutes: 10,
+      scheduleLocked: false, scheduleOverride: false, unscheduledReason: null,
       scheduledAt: new Date(Date.UTC(2026, 9, 22, 0, minutes)),
     }));
-    const tx = {
-      $queryRaw: jest.fn().mockResolvedValue([]),
-      match: { findMany: jest.fn().mockResolvedValue(matches), update: jest.fn().mockResolvedValue({}) },
-      tournament: { findUniqueOrThrow: jest.fn().mockResolvedValue({ breakMinutes: 10 }) },
-    };
     const prisma = {
-      match: { findUnique: jest.fn().mockResolvedValue(matches[0]) },
-      venue: { findUnique: jest.fn().mockResolvedValue({ id: 'court4', isActive: true, tournamentId: 't' }) },
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      match: {
+        findUnique: jest.fn().mockImplementation(({ where }) => matches.find(m => m.id === where.id)),
+        findMany: jest.fn().mockResolvedValue(matches),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      tournament: { findUnique: jest.fn().mockResolvedValue({ id: 't', breakMinutes: 10, startDate: new Date('2026-10-21T16:00:00Z'), endDate: new Date('2026-10-22T15:59:00Z'), dailyStartTime: '08:00', dailyEndTime: '18:00' }) },
+      venue: { findMany: jest.fn().mockResolvedValue(['court1', 'court4'].map(id => ({ id, name: id, isActive: true, tournamentId: 't' }))) },
       teamMatch: { findUnique: jest.fn().mockResolvedValue({ teamCompetition: { tournamentId: 't' } }) },
-      $transaction: jest.fn(async callback => callback(tx)),
+      teamCompetition: { findMany: jest.fn().mockResolvedValue([]) },
+      tournamentGroup: { findMany: jest.fn().mockResolvedValue([]) },
+      event: { count: jest.fn().mockResolvedValue(0) },
+      scheduleOperationLog: { create: jest.fn().mockResolvedValue({}) },
+      $transaction: jest.fn(),
     };
-    const service = new SchedulingService(prisma as unknown as PrismaService);
-    jest.spyOn(service, 'getSchedule').mockResolvedValue({} as never);
-    return { service, tx, matches };
+    prisma.$transaction.mockImplementation(callback => callback(prisma));
+    const gateway = { emitBracketUpdate: jest.fn() };
+    const service = new SchedulingService(prisma as unknown as PrismaService, gateway as never);
+    return { service, tx: prisma, matches, gateway };
   }
-  it('moves every pending child without rewriting its time on a court-only change', async () => {
-    const { service, tx } = setup();
+  it('moves every pending child while preserving times and fixes the entire encounter', async () => {
+    const { service, tx, matches, gateway } = setup();
     await service.updateMatchSchedule('m0', { venueId: 'court4' });
-    expect(tx.match.update).toHaveBeenCalledTimes(3);
-    for (const [update] of tx.match.update.mock.calls) {
+    expect(tx.match.updateMany).toHaveBeenCalledTimes(3);
+    for (const [index, [update]] of tx.match.updateMany.mock.calls.entries()) {
       expect(update.data.venueId).toBe('court4');
-      expect(update.data).not.toHaveProperty('scheduledAt');
+      expect(update.data.scheduledAt).toEqual(matches[index].scheduledAt);
+      expect(update.data.scheduleLocked).toBe(true);
     }
+    expect(gateway.emitBracketUpdate).toHaveBeenCalledTimes(1);
   });
   it('shifts times while preserving the zero-minute gap chosen in automatic scheduling', async () => {
     const { service, tx } = setup();
     await service.updateMatchSchedule('m0', { venueId: 'court4', scheduledAt: '2026-10-22T01:00:00.000Z' });
-    expect(tx.match.update.mock.calls.map(([update]) => update.data.scheduledAt.toISOString()))
+    expect(tx.match.updateMany.mock.calls.map(([update]) => update.data.scheduledAt.toISOString()))
       .toEqual(['2026-10-22T01:00:00.000Z', '2026-10-22T01:10:00.000Z', '2026-10-22T01:20:00.000Z']);
+  });
+  it('rejects changing courts after any child has started, without writes or broadcasts', async () => {
+    const { service, tx, matches, gateway } = setup();
+    matches[0].status = 'LIVE';
+    await expect(service.updateMatchSchedule('m1', { venueId: 'court4' })).rejects.toThrow('继续使用同一场地');
+    expect(tx.match.updateMany).not.toHaveBeenCalled();
+    expect(gateway.emitBracketUpdate).not.toHaveBeenCalled();
+  });
+  it('rejects moving remaining children before the started child', async () => {
+    const { service, tx, matches } = setup();
+    matches[0].status = 'LIVE';
+    for (const m of matches) m.scheduledAt = new Date(m.scheduledAt.getTime() + 30 * 60000);
+    await expect(service.updateMatchSchedule('m1', { scheduledAt: '2026-10-22T00:00:00.000Z' })).rejects.toThrow('后续团体子项');
+    expect(tx.match.updateMany).not.toHaveBeenCalled();
+  });
+  it('rejects an overlapping encounter on the destination court', async () => {
+    const { service, tx, matches } = setup();
+    matches.push({ ...matches[0], id: 'other', venueId: 'court4', teamMatchId: 'other-encounter', teamMatch: { ...matches[0].teamMatch, team1Id: 'other1', team2Id: 'other2' } });
+    await expect(service.updateMatchSchedule('m0', { venueId: 'court4' })).rejects.toThrow('同一时间段');
+    expect(tx.match.updateMany).not.toHaveBeenCalled();
+  });
+  it('detects shared participants across different courts', async () => {
+    const { service, tx, matches } = setup();
+    matches.push({ ...matches[0], id: 'other', teamMatchId: 'other-encounter' });
+    await expect(service.updateMatchSchedule('m0', { venueId: 'court4' })).rejects.toThrow('同一选手');
+    expect(tx.match.updateMany).not.toHaveBeenCalled();
+  });
+  it('preview never writes or broadcasts', async () => {
+    const { service, tx, gateway } = setup();
+    const result = await service.previewMatchSchedule('m0', { venueId: 'court4' });
+    expect(result.changes).toHaveLength(3);
+    expect(tx.match.updateMany).not.toHaveBeenCalled();
+    expect(gateway.emitBracketUpdate).not.toHaveBeenCalled();
+  });
+  it('does not publish a failed transaction', async () => {
+    const { service, tx, gateway } = setup();
+    tx.$transaction.mockRejectedValueOnce(new Error('rollback'));
+    await expect(service.updateMatchSchedule('m0', { venueId: 'court4' })).rejects.toThrow('rollback');
+    expect(gateway.emitBracketUpdate).not.toHaveBeenCalled();
   });
 });

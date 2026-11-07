@@ -5,7 +5,7 @@ export type PaymentStatus = 'UNPAID' | 'PAID' | 'WAIVED';
 export type PlayerPaymentStatus = PaymentStatus | 'NOT_REQUIRED' | 'PENDING_REVIEW' | 'REJECTED';
 export type EntrantType = 'SCHOOL' | 'SOCIAL';
 
-export const ENTRANT_LABELS: Record<EntrantType, string> = { SCHOOL: '学生组', SOCIAL: '社会组' };
+export const ENTRANT_LABELS: Record<EntrantType, string> = { SCHOOL: '学生组', SOCIAL: '第三方' };
 
 export const PAYMENT_STATUS_META: Record<PlayerPaymentStatus, { label: string; color: string }> = {
   UNPAID: { label: '待缴费', color: 'orange' },
@@ -28,6 +28,7 @@ export type PaymentItemView = {
 };
 
 export type PaymentGroupView = {
+  groupId?: string;
   competitionId: string;
   competitionName: string;
   entrantType: EntrantType;

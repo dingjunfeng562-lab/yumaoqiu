@@ -1,3 +1,4 @@
+import { legacyGroupId } from '../registration-groups/registration-groups.service';
 import { EntrantType, EventType, PaymentStatus, Prisma, PrismaClient, RegistrationStatus } from '@prisma/client';
 
 type Db = PrismaClient | Prisma.TransactionClient;
@@ -49,9 +50,9 @@ export function unpaidMessage(subject: string, names: string[]): string {
   return `以下${subject}未缴费：${shown}${more}。请先在「缴费管理」确认缴费或设为免缴，再进行抽签编排。`;
 }
 
-async function enabledSetting(db: Db, tournamentId: string, entrantType: EntrantType) {
+async function enabledSetting(db: Db, tournamentId: string, entrantType: EntrantType, groupId?: string | null) {
   const setting = await db.tournamentPaymentSetting.findUnique({
-    where: { tournamentId_entrantType: { tournamentId, entrantType } },
+    where: { tournamentId_groupId: { tournamentId, groupId: groupId ?? legacyGroupId(tournamentId, entrantType) } },
   });
   return setting?.enabled ? setting : null;
 }
@@ -59,9 +60,9 @@ async function enabledSetting(db: Db, tournamentId: string, entrantType: Entrant
 /** 单项中已通过审核但未缴费的报名。组别未收费或该类项目金额为 0 时不拦截。 */
 export async function unpaidEventEntrants(
   db: Db,
-  event: { id: string; tournamentId: string; entrantType: EntrantType; type: EventType },
+  event: { id: string; tournamentId: string; entrantType: EntrantType; groupId?: string | null; type: EventType },
 ) {
-  const setting = await enabledSetting(db, event.tournamentId, event.entrantType);
+  const setting = await enabledSetting(db, event.tournamentId, event.entrantType, event.groupId);
   if (feeAmount(setting, feeKindForEvent(event.type)) <= 0) return [];
   const rows = await db.registration.findMany({
     where: { eventId: event.id, status: RegistrationStatus.APPROVED, paymentStatus: PaymentStatus.UNPAID },
@@ -79,9 +80,9 @@ export async function unpaidEventEntrants(
 /** 团体赛中未缴费的队伍。 */
 export async function unpaidTeams(
   db: Db,
-  competition: { id: string; tournamentId: string; entrantType: EntrantType },
+  competition: { id: string; tournamentId: string; entrantType: EntrantType; groupId?: string | null },
 ) {
-  const setting = await enabledSetting(db, competition.tournamentId, competition.entrantType);
+  const setting = await enabledSetting(db, competition.tournamentId, competition.entrantType, competition.groupId);
   if (feeAmount(setting, 'TEAM') <= 0) return [];
   return db.team.findMany({
     where: { teamCompetitionId: competition.id, paymentStatus: PaymentStatus.UNPAID },

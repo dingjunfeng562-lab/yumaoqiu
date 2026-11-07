@@ -1,5 +1,6 @@
 import {
   ArrayMinSize,
+  ArrayMaxSize,
   IsBoolean,
   IsDateString,
   IsEnum,
@@ -17,6 +18,7 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { EventType, TournamentStatus, ScoringRule, ScoringMode } from '@prisma/client';
+import { SaveRegistrationGroupDto } from '../../registration-groups/registration-groups.dto';
 
 export type RegistrationFieldState = 'required' | 'optional' | 'hidden';
 
@@ -34,25 +36,21 @@ export class SchoolRegistrationFieldRulesDto {
   majorGrade?: RegistrationFieldState;
 }
 
-export class SocialRegistrationFieldRulesDto {
-  @IsOptional()
-  @IsIn(['required', 'optional', 'hidden'])
-  email?: RegistrationFieldState;
-}
-
 export class RegistrationFieldRulesDto {
   @IsOptional()
   @ValidateNested()
   @Type(() => SchoolRegistrationFieldRulesDto)
   SCHOOL?: SchoolRegistrationFieldRulesDto;
-
-  @IsOptional()
-  @ValidateNested()
-  @Type(() => SocialRegistrationFieldRulesDto)
-  SOCIAL?: SocialRegistrationFieldRulesDto;
 }
 
 export class CreateTournamentDto {
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(50)
+  @ValidateNested({ each: true })
+  @Type(() => SaveRegistrationGroupDto)
+  customGroups?: SaveRegistrationGroupDto[];
+
   @ValidateIf((_, value) => value !== undefined)
   @IsBoolean()
   teamPlayAllMatches?: boolean;
@@ -90,11 +88,6 @@ export class CreateTournamentDto {
   @IsArray()
   @IsEnum(EventType, { each: true })
   schoolEventTypes?: EventType[];
-
-  @IsOptional()
-  @IsArray()
-  @IsEnum(EventType, { each: true })
-  socialEventTypes?: EventType[];
 
   @IsBoolean()
   includeTeamCompetition: boolean;
@@ -143,10 +136,6 @@ export class CreateTournamentDto {
   @IsOptional()
   @IsBoolean()
   allowSchoolRegistration?: boolean;
-
-  @IsOptional()
-  @IsBoolean()
-  allowSocialRegistration?: boolean;
 
   @IsOptional()
   @ValidateNested()
@@ -267,17 +256,8 @@ export class UpdateTournamentDto {
   schoolEventTypes?: EventType[];
 
   @IsOptional()
-  @IsArray()
-  @IsEnum(EventType, { each: true })
-  socialEventTypes?: EventType[];
-
-  @IsOptional()
   @IsBoolean()
   allowSchoolRegistration?: boolean;
-
-  @IsOptional()
-  @IsBoolean()
-  allowSocialRegistration?: boolean;
 
   @IsOptional()
   @ValidateNested()

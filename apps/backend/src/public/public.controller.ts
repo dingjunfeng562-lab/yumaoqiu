@@ -70,6 +70,24 @@ export class PublicController {
     }
   }
 
+  // 前台对阵表里的团体赛：小组积分榜、团体对阵总比分和每个子项的比分。与 brackets 一样共用压缩好的结果。
+  @Get('team-board')
+  async getTeamBoard(
+    @Query('tournamentId') tournamentId: string | undefined,
+    @Req() req: Request,
+    @Res() res: Response,
+  ) {
+    const payload = await this.publicService.getTeamBoardPayload(typeof tournamentId === 'string' ? tournamentId : '');
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.vary('Accept-Encoding');
+    if (/\bgzip\b/i.test(String(req.headers['accept-encoding'] ?? ''))) {
+      res.setHeader('Content-Encoding', 'gzip');
+      res.end(payload.gzip);
+    } else {
+      res.end(payload.json);
+    }
+  }
+
   @Get('history')
   getHistory() {
     return this.publicService.getHistory();

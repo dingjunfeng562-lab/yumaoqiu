@@ -1,4 +1,5 @@
 import { AuthActor, tournamentScope } from '../auth/admin-scope';
+import { groupFields, normalizeAgeRule } from '../common/age-eligibility';
 import {
   BadRequestException,
   ConflictException,
@@ -44,8 +45,8 @@ import { SecondStageProgressService } from '../common/second-stage-progress.serv
 import { buildKnockoutSkeleton } from '../common/knockout-skeleton';
 
 type RegistrationWithPlayers = Registration & {
-  player1: { id: string; name: string; gender: string; affiliation: string };
-  player2: { id: string; name: string; gender: string; affiliation: string } | null;
+  player1: { id: string; name: string; gender: string | null; affiliation: string };
+  player2: { id: string; name: string; gender: string | null; affiliation: string } | null;
 };
 
 type MatchDraft = {
@@ -105,6 +106,14 @@ export class DrawsService {
 
   async createRegistration(eventId: string, dto: CreateRegistrationDto) {
     const event = await this.ensureEvent(eventId);
+    if (event.groupId) {
+      const group = await this.prisma.tournamentGroup.findUniqueOrThrow({ where: { id: event.groupId } });
+      if (normalizeAgeRule(group.ageRule).mode !== 'NONE' || groupFields(group.fieldRules).identityNumber === 'required') {
+        throw new BadRequestException('本组需要资格校验，请在参赛选手页新增报名，完成核验后再抽签');
+      }
+      const crossGroup = await this.prisma.registration.findFirst({ where: { status: 'APPROVED', event: { tournamentId: event.tournamentId, groupId: { not: event.groupId } }, OR: [{ player1Id: { in: [dto.player1Id, ...(dto.player2Id ? [dto.player2Id] : [])] } }, { player2Id: { in: [dto.player1Id, ...(dto.player2Id ? [dto.player2Id] : [])] } }] } });
+      if (crossGroup) throw new ConflictException('选手已在其他组别报名，请到参赛选手页办理转组');
+    }
     if (event.drawLocked) {
       throw new ConflictException('签表已冻结或对阵已发布，请先取消发布后再调整报名');
     }
@@ -126,6 +135,7 @@ export class DrawsService {
         eventId,
         player1Id: dto.player1Id,
         player2Id: dto.player2Id,
+        entrantType: event.entrantType,
         status: RegistrationStatus.APPROVED,
         isSeed: dto.isSeed ?? false,
         seedRank: dto.isSeed ? dto.seedRank : null,
@@ -146,6 +156,9 @@ export class DrawsService {
 
     const player1Id = dto.player1Id ?? registration.player1Id;
     const player2Id = dto.player2Id === undefined ? registration.player2Id : dto.player2Id;
+    if (registration.event.groupId && (player1Id !== registration.player1Id || player2Id !== registration.player2Id)) {
+      throw new BadRequestException('请到参赛选手页修改本人或搭档，以重新校验组别资格');
+    }
     await this.validateRegistrationPlayers(registration.event.type, player1Id, player2Id ?? undefined);
 
     return this.prisma.registration.update({

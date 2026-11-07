@@ -97,9 +97,14 @@ type ExportRegistration = {
   } | null;
   competitionRegistration: {
     school: string | null;
+    // 只有报名表导出查询这两列，其它导出不需要。
+    age?: number | null;
+    shirtSize?: string | null;
     eventItems: Array<{
       eventId: string;
       partnerStudentId: string | null;
+      partnerAge?: number | null;
+      partnerShirtSize?: string | null;
     }>;
   } | null;
 };
@@ -286,7 +291,7 @@ const GENDER_LABELS: Record<string, string> = {
 
 const ENTRANT_LABELS: Record<string, string> = {
   SCHOOL: '学生组',
-  SOCIAL: '社会组',
+  SOCIAL: '第三方',
 };
 
 function eventExportLabel(event: { type: string; groupLabel?: string | null; label?: string | null }) {
@@ -385,7 +390,12 @@ export class ExportsService {
             player1: { select: { name: true, gender: true, affiliation: true, contact: true } },
             player2: { select: { name: true, gender: true, affiliation: true, contact: true } },
             competitionRegistration: {
-              select: { school: true, eventItems: { select: { eventId: true, partnerStudentId: true } } },
+              select: {
+                school: true,
+                age: true,
+                shirtSize: true,
+                eventItems: { select: { eventId: true, partnerStudentId: true, partnerAge: true, partnerShirtSize: true } },
+              },
             },
           },
         },
@@ -590,12 +600,17 @@ export class ExportsService {
                   competitionRegistration: {
                     select: {
                       school: true,
+                      // 报名表末尾追加的年龄、衣服尺寸列。
+                      age: true,
+                      shirtSize: true,
                       eventItems: {
                         select: {
                           eventId: true,
                           partnerStudentId: true,
                           partnerCollege: true,
                           partnerMajorGrade: true,
+                          partnerAge: true,
+                          partnerShirtSize: true,
                         },
                       },
                     },
@@ -854,8 +869,8 @@ export class ExportsService {
 
   /**
    * 导出可回导的名单模板：
-   * - 学生组 9 列，和社会/学生导入模板一致；
-   * - 社会组 6 列；
+   * - 学生组 9 列，和学生导入模板一致；
+   * - 第三方 6 列，和第三方导入模板一致；
    * - 双打按两行导出，并合并「单位」列，导入时可直接按合并单元格配对。
    */
   private async buildRosterTemplate(
@@ -865,7 +880,7 @@ export class ExportsService {
     const isStudent = kind === 'roster-student';
     const entrantType = isStudent ? 'SCHOOL' : 'SOCIAL';
     const workbook = new ExcelJS.Workbook();
-    const sheet = workbook.addWorksheet(isStudent ? '学生组' : '社会组');
+    const sheet = workbook.addWorksheet(isStudent ? '学生组' : '第三方');
     const headers = isStudent
       ? ['序号', '姓名', '性别', '学号', '学院', '年级专业', '联系方式（电话号码）', '单位（学校/名字）', '项目']
       : ['序号', '姓名', '性别', '联系方式（电话号码）', '单位（学校/名字）', '项目'];
@@ -959,7 +974,7 @@ export class ExportsService {
     return {
       filename: this.exportFilename(
         tournament.name,
-        isStudent ? '学生组回导模板' : '社会组回导模板',
+        isStudent ? '学生组回导模板' : '第三方回导模板',
         'xlsx',
       ),
       content: Buffer.from(buffer),
@@ -1092,6 +1107,11 @@ export class ExportsService {
         '种子序',
         '分组',
         '报名时间',
+        // 前 18 列保持原格式，年龄和衣服尺寸追加在最后。
+        '年龄1',
+        '衣服尺寸1',
+        '年龄2',
+        '衣服尺寸2',
       ],
     ];
 
@@ -1121,6 +1141,10 @@ export class ExportsService {
           registration.seedRank ?? '',
           registration.groupName ?? '',
           this.formatDateTime(registration.createdAt),
+          registration.competitionRegistration?.age ?? '',
+          registration.competitionRegistration?.shirtSize ?? '',
+          registration.player2 ? this.partnerItem(registration)?.partnerAge ?? '' : '',
+          registration.player2 ? this.partnerItem(registration)?.partnerShirtSize ?? '' : '',
         ]);
       }
     }
@@ -1259,7 +1283,7 @@ export class ExportsService {
     if (kind === 'bracket') return '对阵表';
     if (kind === 'orderbook') return '秩序册';
     if (kind === 'roster-student') return '学生组回导模板';
-    if (kind === 'roster-social') return '社会组回导模板';
+    if (kind === 'roster-social') return '第三方回导模板';
     return '报名表';
   }
 
@@ -1311,6 +1335,10 @@ export class ExportsService {
     return team ? `${team}（${players}）` : players;
   }
 
+  private partnerItem(registration: ExportRegistration) {
+    return registration.competitionRegistration?.eventItems.find((item) => item.eventId === registration.eventId);
+  }
+
   private partnerStudentId(registration: ExportRegistration) {
     return (
       registration.competitionRegistration?.eventItems.find((item) => item.eventId === registration.eventId)
@@ -1320,7 +1348,7 @@ export class ExportsService {
     );
   }
 
-  /** 沿用旧报名表的「院系/班级1」列：学校组把学院+年级专业拼进去，社会组留空。 */
+  /** 沿用旧报名表的「院系/班级1」列：学校组把学院+年级专业拼进去，第三方留空。 */
   private registrationClassText(registration: ExportRegistration) {
     const combined = [registration.college, registration.majorGrade].filter(Boolean).join(' ');
     return combined || registration.className || '';

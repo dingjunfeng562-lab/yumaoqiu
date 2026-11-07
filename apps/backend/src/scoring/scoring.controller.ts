@@ -194,6 +194,15 @@ export class ScoringController {
     return state;
   }
 
+  /** 自定义分数的比赛新一局开始前，裁判选「不换边」。 */
+  @Roles(Role.ADMIN, Role.REFEREE)
+  @Post('matches/:id/keep-court')
+  async keepCourt(@Param('id') id: string, @Req() req: RequestWithUser) {
+    const state = await this.scoringService.keepCourt(id, req.user);
+    this.scoringGateway.emitMatchState(id, state);
+    return state;
+  }
+
   @Roles(Role.ADMIN, Role.REFEREE)
   @Post('matches/:id/forfeit')
   async forfeitMatch(
@@ -204,6 +213,21 @@ export class ScoringController {
     const state = await this.scoringService.forfeitMatch(id, dto.side, req.user, dto.reason);
     this.scoringGateway.emitMatchState(id, state);
     return state;
+  }
+
+  /** 团体赛整队弃权：只限后台管理员，不开放给裁判。 */
+  @Roles(Role.ADMIN, Role.ROOT)
+  @Post('team-matches/:id/forfeit')
+  async forfeitTeamMatch(
+    @Param('id') id: string,
+    @Body() dto: ForfeitMatchDto,
+    @Req() req: RequestWithUser,
+  ) {
+    const result = await this.scoringService.forfeitTeamEncounter(id, dto.side, req.user, dto.reason);
+    for (const matchId of result.forfeitedMatchIds) {
+      this.scoringGateway.emitMatchState(matchId, await this.scoringService.getMatchState(matchId, req.user));
+    }
+    return result;
   }
 
   @Roles(Role.ADMIN, Role.REFEREE)

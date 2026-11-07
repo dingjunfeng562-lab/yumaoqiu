@@ -8,6 +8,7 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   DatePicker,
   Divider,
   Drawer,
@@ -1123,6 +1124,8 @@ function MatchManageDrawer({
     venueId: match?.venue?.id ?? null,
     durationMinutes: match?.durationMinutes ?? 45,
     refereeId: match?.referee?.id ?? null,
+    scheduleLocked: true,
+    allowOutsideGroup: false,
   };
 
   async function saveBasic() {
@@ -1132,6 +1135,8 @@ function MatchManageDrawer({
       venueId?: string | null;
       durationMinutes?: number;
       refereeId?: string | null;
+      scheduleLocked?: boolean;
+      allowOutsideGroup?: boolean;
     };
     try {
       values = await form.validateFields();
@@ -1154,6 +1159,9 @@ function MatchManageDrawer({
       return;
     }
 
+    if (payload.venueId !== undefined || payload.scheduledAt !== undefined || payload.durationMinutes !== undefined) {
+      payload.scheduleLocked = values.scheduleLocked; payload.allowOutsideGroup = values.allowOutsideGroup;
+    }
     setSavingBasic(true);
     try {
       await apiFetch(`/match-management/matches/${match.id}`, {
@@ -1283,6 +1291,8 @@ function MatchManageDrawer({
 
           <Divider titlePlacement="left" style={{ margin: '18px 0 12px' }}>时间 / 场地 / 裁判</Divider>
           <Form form={form} layout="vertical" requiredMark={false} initialValues={initialValues}>
+            <Form.Item name="scheduleLocked" valuePropName="checked"><Checkbox>保留本次人工排程</Checkbox></Form.Item>
+            <Form.Item name="allowOutsideGroup" valuePropName="checked"><Checkbox>允许本场临时借用组别范围外的场地</Checkbox></Form.Item>
             <Form.Item name="scheduledAt" label="比赛时间">
               <DatePicker
                 showTime={{ format: 'HH:mm' }}

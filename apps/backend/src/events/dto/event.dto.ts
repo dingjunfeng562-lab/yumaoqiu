@@ -71,6 +71,7 @@ export class StageScoringRulesDto {
 }
 
 export class CreateEventDto {
+  @IsOptional() @IsString() groupId?: string;
   @IsString()
   tournamentId: string;
 
@@ -136,6 +137,7 @@ export class CreateEventDto {
 }
 
 export class UpdateEventDto {
+  @IsOptional() @IsString() groupId?: string;
   @IsOptional()
   @IsEnum(EventType)
   type?: EventType;

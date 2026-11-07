@@ -206,7 +206,7 @@ export default function MyRegistrationsPage() {
                         {meta.label}
                       </span>
                       <span className="ml-2 inline-block rounded-full bg-blue-50 px-2.5 py-0.5 text-[11px] font-black text-blue-700">
-                        {registration.entrantTypeLabel ?? (registration.entrantType === 'SOCIAL' ? '社会组' : '学生组')}
+                        {registration.entrantTypeLabel ?? (registration.entrantType === 'SOCIAL' ? '第三方' : '学生组')}
                       </span>
                       <h2 className="mt-2 text-lg font-black text-slate-900 sm:text-xl">
                         {registration.competition.title}

@@ -2,11 +2,11 @@
 //
 // 支持两个官方模板：
 //   学生模板 9 列：序号 / 姓名 / 性别 / 学号 / 学院 / 年级专业 / 联系方式 / 单位 / 项目
-//   社会模板 6 列：序号 / 姓名 / 性别 / 联系方式 / 单位 / 项目
+//   第三方模板 6 列：序号 / 姓名 / 性别 / 联系方式 / 单位 / 项目
 //
 // 识别原则：按表头指纹识别，不依赖文件名。
 //   - 基础 5 列：姓名、性别、联系方式、单位、项目；
-//   - 出现 学号/学院/年级专业 → 学生组；都没有 → 社会组；
+//   - 出现 学号/学院/年级专业 → 学生组；都没有 → 第三方；
 //   - 有学生字段但缺学号 → 报错；
 //   - 学生字段是否必填由赛事 registrationFieldRules 决定。
 //
@@ -134,7 +134,7 @@ const TYPE_LABELS: Record<string, string> = {
 
 const ENTRANT_LABELS: Record<RosterTemplateKind, string> = {
   SCHOOL: '学生组',
-  SOCIAL: '社会组',
+  SOCIAL: '第三方',
 };
 
 // 模板自带的示例行。即使使用者把「序号」一列的“示例”删掉，也按姓名 + 联系方式识别并跳过。
@@ -294,15 +294,16 @@ export function detectTemplate(
       if (studentHits.length < 3 && !error) {
         messages.push('学生模板缺少部分学生字段列，缺失字段将按赛事配置留空');
       }
-      if (title.includes('社会模板')) {
-        messages.push('标题写的是社会模板，但表头包含学生字段，已按学生模板处理');
+      // 旧模板文件标题仍写「社会模板」，与「第三方模板」等价。
+      if (title.includes('第三方模板') || title.includes('社会模板')) {
+        messages.push('标题写的是第三方模板，但表头包含学生字段，已按学生模板处理');
       }
     } else {
       if (title.includes('学生模板') && fieldRules.SCHOOL.studentId === 'required') {
         error = '标题是学生模板，但表头缺少学号/学院/年级专业列，请检查是否删列';
       }
       if (title.includes('学生模板') && !error) {
-        messages.push('标题写的是学生模板，但表头只有基础列；已按社会模板处理，请确认');
+        messages.push('标题写的是学生模板，但表头只有基础列；已按第三方模板处理，请确认');
       }
     }
 

@@ -5,6 +5,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { CompetitionsService } from './competitions.service';
+import { VerifyEligibilityDto } from '../registration-groups/registration-groups.dto';
 import { UpdateCompetitionRankingsDto } from './dto/competition-rankings.dto';
 import {
   AdminBatchCompetitionPlayersDto,
@@ -85,24 +86,18 @@ export class AdminCompetitionsController {
     return this.competitionsService.listAdminPlayers(id, eventId, entrantType, search);
   }
 
+  // 赛事报名码（一个赛事一个码）。旧客户端传的 entrantType 不再使用。
   @Post('competitions/:id/registration-code/regenerate')
-  regenerateRegistrationCode(
-    @Param('id') id: string,
-    @Body() body: { entrantType?: string },
-  ) {
-    return this.competitionsService.regenerateRegistrationCode(id, body?.entrantType ?? 'SCHOOL');
+  regenerateRegistrationCode(@Param('id') id: string) {
+    return this.competitionsService.regenerateRegistrationCode(id);
   }
 
   @Patch('competitions/:id/registration-code')
   setRegistrationCodeEnabled(
     @Param('id') id: string,
-    @Body() body: { entrantType?: string; enabled?: boolean },
+    @Body() body: { enabled?: boolean },
   ) {
-    return this.competitionsService.setRegistrationCodeEnabled(
-      id,
-      body?.entrantType ?? 'SCHOOL',
-      body?.enabled !== false,
-    );
+    return this.competitionsService.setRegistrationCodeEnabled(id, body?.enabled !== false);
   }
 
   @Roles(Role.ADMIN)
@@ -209,6 +204,12 @@ export class AdminCompetitionsController {
       registrationId,
       req.user?.id,
     );
+  }
+
+  @Roles(Role.ADMIN)
+  @Patch('competition-registrations/:registrationId/verify-eligibility')
+  verifyEligibility(@Param('registrationId') id: string, @Body() dto: VerifyEligibilityDto, @Req() req: AuthRequest) {
+    return this.competitionsService.verifyEligibility(id, dto, req.user?.id ?? '');
   }
 
   @Roles(Role.ADMIN)

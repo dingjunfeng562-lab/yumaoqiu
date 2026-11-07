@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { Alert, Input, Modal, Select, Space, Table, Tag, Typography, message } from 'antd';
 import { apiFetch } from '@/lib/api';
 
-// 社会人员批量导入：没有学号/学院班级，「单位」存为学校；每个项目单独导入。
+// 第三方人员批量导入：没有学号/学院班级，「单位」存为学校；每个项目单独导入。
 //   单打：单位、姓名、性别、联系方式
 //   双打：单位、姓名、性别、联系方式、队友姓名、队友性别、队友联系方式（队友单位同前）
 // 男单/男双必须为男，女单/女双必须为女，混双一男一女且前后顺序不限。
@@ -146,11 +146,11 @@ export default function SocialPlayerImportModal({
           })),
         }),
       });
-      message.success(`已新增 ${result.createdCount} 条社会人员参赛记录`);
+      message.success(`已新增 ${result.createdCount} 条第三方人员参赛记录`);
       close();
       await onImported();
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '社会人员导入失败');
+      message.error(error instanceof Error ? error.message : '第三方人员导入失败');
     } finally {
       setBusy(false);
     }
@@ -166,7 +166,7 @@ export default function SocialPlayerImportModal({
 
   return (
     <Modal
-      title="社会人员批量导入"
+      title="第三方人员批量导入"
       open={open}
       onCancel={close}
       onOk={save}

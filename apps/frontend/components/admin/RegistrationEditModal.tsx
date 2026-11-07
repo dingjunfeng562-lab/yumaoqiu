@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Alert, Form, Input, Modal, Segmented, Select, Spin, Typography, message } from 'antd';
 import dayjs from 'dayjs';
 import { apiFetch } from '@/lib/api';
+import type { GroupFields } from '@/lib/registration-groups';
 
 type FieldState = 'required' | 'optional' | 'hidden';
 type EntrantType = 'SCHOOL' | 'SOCIAL';
@@ -18,6 +19,9 @@ export type EditableEvent = {
   label: string;
   isDouble: boolean;
   entrantType?: EntrantType;
+  groupId?: string | null;
+  groupLabel?: string | null;
+  groupFields?: GroupFields | null;
 };
 
 export type RedrawEvent = { id: string; label: string };
@@ -33,9 +37,12 @@ type Detail = {
   id: string;
   eventId: string;
   entrantType: EntrantType;
+  groupId?: string;
+  identity?: { masked: string } | null;
+  partnerIdentity?: { masked: string } | null;
   primaryName?: string;
   name: string;
-  gender: 'MALE' | 'FEMALE';
+  gender: 'MALE' | 'FEMALE' | null;
   studentId: string;
   school: string;
   college: string;
@@ -45,7 +52,7 @@ type Detail = {
   teamName: string | null;
   partner: {
     name: string;
-    gender: 'MALE' | 'FEMALE';
+    gender: 'MALE' | 'FEMALE' | null;
     studentId: string;
     school: string;
     college: string;
@@ -57,10 +64,13 @@ type Detail = {
 };
 
 type FormValues = {
+  identityNumber?: string;
+  partnerIdentityNumber?: string;
   entrantType: EntrantType;
+  groupId?: string;
   eventId: string;
   name: string;
-  gender: 'MALE' | 'FEMALE';
+  gender: 'MALE' | 'FEMALE' | null;
   studentId?: string;
   school: string;
   college?: string;
@@ -85,7 +95,7 @@ const GENDER_OPTIONS = [
   { value: 'FEMALE', label: '女' },
 ];
 
-const GROUP_LABELS: Record<EntrantType, string> = { SCHOOL: '学生组', SOCIAL: '社会组' };
+const GROUP_LABELS: Record<EntrantType, string> = { SCHOOL: '学生组', SOCIAL: '第三方' };
 
 const grid = { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', columnGap: 12, marginTop: 8 } as const;
 
@@ -127,24 +137,24 @@ export function RegistrationEditModal({
   const [detail, setDetail] = useState<Detail | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const rules = { SCHOOL: { ...DEFAULT_RULES.SCHOOL, ...(fieldRules?.SCHOOL ?? {}) } };
   const locked = isEditDeadlinePassed(editDeadline);
-
-  const watchedGroup = Form.useWatch('entrantType', form);
+  const watchedGroup = Form.useWatch('groupId', form);
   const watchedEventId = Form.useWatch('eventId', form);
-  const group: EntrantType = watchedGroup ?? detail?.entrantType ?? 'SCHOOL';
-  const isSchool = group === 'SCHOOL';
-  const groupEvents = useMemo(
-    () => events.filter((event) => (event.entrantType ?? 'SCHOOL') === group),
-    [events, group],
-  );
-  const availableGroups = useMemo(
-    () => (['SCHOOL', 'SOCIAL'] as EntrantType[]).filter((type) => events.some((event) => (event.entrantType ?? 'SCHOOL') === type)),
-    [events],
-  );
+  const keyOf = (event: EditableEvent) => event.groupId || event.entrantType || 'SCHOOL';
+  const group = watchedGroup ?? detail?.groupId ?? detail?.entrantType ?? 'SCHOOL';
   const selectedEvent = events.find((event) => event.id === watchedEventId);
+  const isSchool = (selectedEvent?.entrantType ?? detail?.entrantType) === 'SCHOOL';
+  const fields = selectedEvent?.groupFields;
+  const rules = { SCHOOL: fields ?? { ...DEFAULT_RULES.SCHOOL, ...(fieldRules?.SCHOOL ?? {}) } };
+  const genderState = fields?.gender ?? 'required';
+  const identityState = fields?.identityNumber ?? 'hidden';
+  const groupEvents = events.filter(event => keyOf(event) === group);
+  const availableGroups = [...new Map(events.map(event => [keyOf(event), {
+    value: keyOf(event), label: event.groupLabel || GROUP_LABELS[event.entrantType ?? 'SCHOOL'],
+  }])).values()];
+  const groupLabel = availableGroups.find(item => item.value === group)?.label ?? group;
   const isDouble = Boolean(selectedEvent?.isDouble);
-  const groupChanged = Boolean(detail && group !== detail.entrantType);
+  const groupChanged = Boolean(detail && group !== (detail.groupId || detail.entrantType));
 
   useEffect(() => {
     if (!open || !registrationId || !token) return;
@@ -163,6 +173,7 @@ export function RegistrationEditModal({
         setDetail(data);
         form.setFieldsValue({
           entrantType: data.entrantType,
+          groupId: data.groupId || data.entrantType,
           eventId: data.eventId,
           name: data.primaryName || data.name,
           gender: data.gender,
@@ -173,7 +184,7 @@ export function RegistrationEditModal({
           contact: data.phone,
           teamName: data.teamName ?? undefined,
           partnerName: data.partner?.name,
-          partnerGender: data.partner?.gender,
+          partnerGender: data.partner?.gender ?? undefined,
           partnerStudentId: data.partner?.studentId || undefined,
           partnerSchool: data.partner?.school || undefined,
           partnerCollege: data.partner?.college || undefined,
@@ -196,11 +207,11 @@ export function RegistrationEditModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, registrationId, token, basePath, form]);
 
-  function changeGroup(next: EntrantType) {
+  function changeGroup(next: string) {
     // 换组别时默认选另一组的同名项目，没有同名项目就让管理员重新选。
     const current = events.find((event) => event.id === form.getFieldValue('eventId'));
-    const sameType = events.find((event) => (event.entrantType ?? 'SCHOOL') === next && event.type === current?.type);
-    form.setFieldsValue({ entrantType: next, eventId: sameType?.id });
+    const sameType = events.find((event) => keyOf(event) === next && event.type === current?.type);
+    form.setFieldsValue({ groupId: next, entrantType: sameType?.entrantType, eventId: sameType?.id });
   }
 
   function fieldRule(state: FieldState, label: string) {
@@ -215,13 +226,14 @@ export function RegistrationEditModal({
     } catch {
       return;
     }
-    const school = values.entrantType === 'SCHOOL';
+    const school = Boolean(fields) || isSchool;
     const trim = (value?: string) => value?.trim() || undefined;
-    const payload: Record<string, string | undefined> = {
-      entrantType: values.entrantType,
+    const payload: Record<string, string | null | undefined> = {
+      entrantType: selectedEvent?.entrantType ?? detail.entrantType,
+      identityNumber: values.identityNumber?.trim() || undefined,
       eventId: values.eventId,
       name: values.name.trim(),
-      gender: values.gender,
+      gender: values.gender ?? null,
       school: values.school.trim(),
       contact: values.contact.trim(),
       studentId: school ? trim(values.studentId) : undefined,
@@ -232,7 +244,8 @@ export function RegistrationEditModal({
       Object.assign(payload, {
         teamName: trim(values.teamName),
         partnerName: trim(values.partnerName),
-        partnerGender: values.partnerGender,
+        partnerGender: values.partnerGender ?? null,
+        partnerIdentityNumber: values.partnerIdentityNumber?.trim() || undefined,
         partnerContact: trim(values.partnerContact),
         // 搭档学校/单位、学院、年级专业不填时，后端按队员一的填写。
         partnerSchool: trim(values.partnerSchool),
@@ -266,17 +279,14 @@ export function RegistrationEditModal({
     if (groupChanged) {
       const others = detail.otherEvents;
       Modal.confirm({
-        title: `改为${GROUP_LABELS[values.entrantType]}？`,
+        title: `改为${groupLabel}？`,
         content: (
           <Typography.Paragraph style={{ marginBottom: 0 }}>
             {others.length
-              ? `该选手在本赛事还报名了 ${others.map((item) => item.label).join('、')}，将一起转到${GROUP_LABELS[values.entrantType]}的同名项目。`
-              : `将转到${GROUP_LABELS[values.entrantType]}。`}
+              ? `该选手在本赛事还报名了 ${others.map((item) => item.label).join('、')}，将一起转到${groupLabel}的同名项目。`
+              : `将转到${groupLabel}。`}
             缴费状态和已缴金额保持不变，如两组收费不同，请在缴费管理中核对差额。
-            {values.entrantType === 'SOCIAL' ? '社会组不保留学号、学院和年级专业。' : ''}
-            {values.entrantType === 'SCHOOL' && others.some((item) => events.find((event) => event.type === item.eventType)?.isDouble)
-              ? '一起转过去的双打项目，搭档的学号、学院请转组后再编辑该项目补填。'
-              : ''}
+
           </Typography.Paragraph>
         ),
         okText: '确认转组',
@@ -313,27 +323,27 @@ export function RegistrationEditModal({
         ) : null}
         <Form form={form} layout="vertical" disabled={locked}>
           {availableGroups.length > 1 ? (
-            <Form.Item label="组别" name="entrantType" rules={[{ required: true }]}>
+            <Form.Item label="组别" name="groupId" rules={[{ required: true }]}>
               <Segmented
-                options={availableGroups.map((type) => ({ value: type, label: GROUP_LABELS[type] }))}
-                onChange={(value) => changeGroup(value as EntrantType)}
+                options={availableGroups}
+                onChange={(value) => changeGroup(String(value))}
               />
             </Form.Item>
           ) : (
-            <Form.Item name="entrantType" hidden><Input /></Form.Item>
+            <Form.Item name="groupId" hidden><Input /></Form.Item>
           )}
           {groupChanged && detail?.otherEvents.length ? (
             <Alert
               type="info"
               showIcon
               style={{ marginBottom: 16 }}
-              title={`改组别时，${detail.otherEvents.map((item) => item.label).join('、')}也会一起转到${GROUP_LABELS[group]}。`}
+              title={`改组别时，${detail.otherEvents.map((item) => item.label).join('、')}也会一起转到${groupLabel}。`}
             />
           ) : null}
           <Form.Item label="参赛项目" name="eventId" rules={[{ required: true, message: '请选择参赛项目' }]}>
             <Select
               options={groupEvents.map((event) => ({ value: event.id, label: event.label }))}
-              placeholder={groupEvents.length ? '选择参赛项目' : `${GROUP_LABELS[group]}暂无项目`}
+              placeholder={groupEvents.length ? '选择参赛项目' : `${groupLabel}暂无项目`}
             />
           </Form.Item>
 
@@ -342,9 +352,12 @@ export function RegistrationEditModal({
             <Form.Item label="姓名" name="name" rules={[{ required: true, message: '请填写姓名' }]}>
               <Input maxLength={50} />
             </Form.Item>
-            <Form.Item label="性别" name="gender" rules={[{ required: true, message: '请选择性别' }]}>
-              <Select options={GENDER_OPTIONS} />
-            </Form.Item>
+            {genderState !== 'hidden' && <Form.Item label="性别" name="gender" rules={fieldRule(genderState, '性别')}>
+              <Select allowClear options={GENDER_OPTIONS} />
+            </Form.Item>}
+            {identityState !== 'hidden' && <Form.Item label="身份证号" name="identityNumber" extra={detail?.identity ? `已保存 ${detail.identity.masked}，留空保留原证件` : '填写后校验年龄，留空时按组别规则待核验'} rules={detail?.identity ? [] : fieldRule(identityState, '身份证号')}>
+              <Input maxLength={18} autoComplete="off" />
+            </Form.Item>}
             <Form.Item label="联系方式" name="contact" rules={[{ required: true, message: '请填写联系方式' }]}>
               <Input maxLength={50} />
             </Form.Item>
@@ -355,17 +368,17 @@ export function RegistrationEditModal({
             >
               <Input maxLength={191} />
             </Form.Item>
-            {isSchool && rules.SCHOOL.studentId !== 'hidden' ? (
+            {(fields || isSchool) && rules.SCHOOL.studentId !== 'hidden' ? (
               <Form.Item label="学号" name="studentId" rules={fieldRule(rules.SCHOOL.studentId, '学号')}>
                 <Input maxLength={50} />
               </Form.Item>
             ) : null}
-            {isSchool && rules.SCHOOL.college !== 'hidden' ? (
+            {(fields || isSchool) && rules.SCHOOL.college !== 'hidden' ? (
               <Form.Item label="学院" name="college" rules={fieldRule(rules.SCHOOL.college, '学院')}>
                 <Input maxLength={120} />
               </Form.Item>
             ) : null}
-            {isSchool && rules.SCHOOL.majorGrade !== 'hidden' ? (
+            {(fields || isSchool) && rules.SCHOOL.majorGrade !== 'hidden' ? (
               <Form.Item label="年级专业" name="majorGrade" rules={fieldRule(rules.SCHOOL.majorGrade, '年级专业')}>
                 <Input maxLength={120} />
               </Form.Item>
@@ -382,26 +395,29 @@ export function RegistrationEditModal({
                 <Form.Item label="搭档姓名" name="partnerName" rules={[{ required: true, message: '请填写搭档姓名' }]}>
                   <Input maxLength={50} />
                 </Form.Item>
-                <Form.Item label="搭档性别" name="partnerGender" rules={[{ required: true, message: '请选择搭档性别' }]}>
-                  <Select options={GENDER_OPTIONS} />
-                </Form.Item>
+                {genderState !== 'hidden' && <Form.Item label="搭档性别" name="partnerGender" rules={fieldRule(genderState, '搭档性别')}>
+                  <Select allowClear options={GENDER_OPTIONS} />
+                </Form.Item>}
+                {identityState !== 'hidden' && <Form.Item label="搭档身份证号" name="partnerIdentityNumber" extra={detail?.partnerIdentity ? `已保存 ${detail.partnerIdentity.masked}，留空保留原证件` : '填写后校验搭档年龄'} rules={detail?.partnerIdentity ? [] : fieldRule(identityState, '搭档身份证号')}>
+                  <Input maxLength={18} autoComplete="off" />
+                </Form.Item>}
                 <Form.Item label="搭档联系方式" name="partnerContact" rules={[{ required: true, message: '请填写搭档联系方式' }]}>
                   <Input maxLength={50} />
                 </Form.Item>
                 <Form.Item label={isSchool ? '搭档学校' : '搭档单位'} name="partnerSchool" extra="不填则与队员一相同">
                   <Input maxLength={191} />
                 </Form.Item>
-                {isSchool && rules.SCHOOL.studentId !== 'hidden' ? (
+                {(fields || isSchool) && rules.SCHOOL.studentId !== 'hidden' ? (
                   <Form.Item label="搭档学号" name="partnerStudentId" rules={fieldRule(rules.SCHOOL.studentId, '搭档学号')}>
                     <Input maxLength={50} />
                   </Form.Item>
                 ) : null}
-                {isSchool && rules.SCHOOL.college !== 'hidden' ? (
+                {(fields || isSchool) && rules.SCHOOL.college !== 'hidden' ? (
                   <Form.Item label="搭档学院" name="partnerCollege" extra="不填则与队员一相同">
                     <Input maxLength={120} />
                   </Form.Item>
                 ) : null}
-                {isSchool && rules.SCHOOL.majorGrade !== 'hidden' ? (
+                {(fields || isSchool) && rules.SCHOOL.majorGrade !== 'hidden' ? (
                   <Form.Item label="搭档年级专业" name="partnerMajorGrade" extra="不填则与队员一相同">
                     <Input maxLength={120} />
                   </Form.Item>

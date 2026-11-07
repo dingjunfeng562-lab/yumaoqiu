@@ -34,12 +34,10 @@ function buildTournament() {
     allowCrossEventRegistration: true,
     needsRegistrationReview: true,
     allowSchoolRegistration: true,
-    allowSocialRegistration: false,
     registrationFieldRules: null,
+    registrationCode: 'SCHOOL01',
     schoolRegistrationCode: 'SCHOOL01',
-    socialRegistrationCode: null,
     schoolRegistrationCodeEnabled: true,
-    socialRegistrationCodeEnabled: true,
     registrationCodeEnabled: true,
     isArchived: false,
     isPublished: true,
@@ -284,5 +282,27 @@ describe('CompetitionsService 赛事图片二维码', () => {
     const [updateArgs] = prisma.tournament.updateMany.mock.calls[0];
     expect(updateArgs.where).toEqual({ id: competitionId, photoAccessToken: null });
     expect(updateArgs.data.photoAccessToken).toMatch(/^[0-9a-f]{32}$/);
+  });
+});
+
+describe('CompetitionsService.recordView', () => {
+  it('adds one view to a public tournament with a single raw UPDATE (does not touch updatedAt)', async () => {
+    const executeRaw = jest.fn().mockResolvedValue(1);
+    const service = new CompetitionsService({ $executeRaw: executeRaw } as never, { send: jest.fn() } as never);
+
+    await expect(service.recordView('tournament-1')).resolves.toEqual({ counted: true });
+
+    expect(executeRaw).toHaveBeenCalledTimes(1);
+    const [strings, id] = executeRaw.mock.calls[0] as [TemplateStringsArray, string];
+    const sql = strings.join('?').replace(/\s+/g, ' ');
+    expect(sql).toContain('SET `viewCount` = `viewCount` + 1');
+    expect(sql).toContain('`isPublished` = true AND `isArchived` = false AND `approvalStatus` = \'APPROVED\'');
+    expect(sql).not.toContain('updatedAt');
+    expect(id).toBe('tournament-1');
+  });
+
+  it('reports not counted when the tournament is missing or not public', async () => {
+    const service = new CompetitionsService({ $executeRaw: jest.fn().mockResolvedValue(0) } as never, { send: jest.fn() } as never);
+    await expect(service.recordView('hidden')).resolves.toEqual({ counted: false });
   });
 });

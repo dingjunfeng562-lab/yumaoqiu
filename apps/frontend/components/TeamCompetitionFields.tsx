@@ -25,15 +25,22 @@ export const TEAM_FORMAT_OPTIONS = [
   { value: 'ROUND_ROBIN', label: '小组赛（单组循环）' },
 ];
 export const teamFormatLabel = (format?: string) => TEAM_FORMAT_OPTIONS.find(option => option.value === format)?.label ?? '单淘汰赛（兼容）';
-export const teamFormatPayload = (values: { format?: string; groupCount?: number; advancePerGroup?: number }) => ({
+export const TEAM_THIRD_PLACE_OPTIONS = [
+  { value: 'BY_RECORD', label: '不打季军赛，按成绩排第三、四名' },
+  { value: 'SHARED', label: '不打季军赛，两队并列第三' },
+  { value: 'PLAYOFF', label: '加赛季军赛' },
+];
+const hasKnockout = (format?: string) => format === 'SINGLE_ELIMINATION' || format === 'GROUP_PLUS_KNOCKOUT';
+export const teamFormatPayload = (values: { format?: string; groupCount?: number; advancePerGroup?: number; thirdPlaceMode?: string }) => ({
   format: values.format ?? 'SINGLE_ELIMINATION',
   groupCount: values.format === 'SINGLE_ELIMINATION' ? null : values.format === 'ROUND_ROBIN' ? 1 : values.groupCount ?? 1,
   advancePerGroup: values.format === 'GROUP_PLUS_KNOCKOUT' ? values.advancePerGroup ?? 2 : null,
+  thirdPlaceMode: values.thirdPlaceMode ?? 'BY_RECORD',
 });
 export const teamDefaults = {
   maxPlayerAppearances: 2, playAllMatches: false, winThreshold: 3, isPublished: false,
   scoringRule: 'TWENTYONE_BO3', scoringMode: 'CAPPED_30',
-  format: 'GROUP_ROUND_ROBIN', groupCount: 1, advancePerGroup: 2,
+  format: 'GROUP_ROUND_ROBIN', groupCount: 1, advancePerGroup: 2, thirdPlaceMode: 'BY_RECORD',
   items: TEAM_EVENT_OPTIONS.map(item => ({ eventType: item.value })),
 };
 
@@ -48,8 +55,11 @@ export default function TeamCompetitionFields({ formatLocked = false }: { format
     {format !== 'SINGLE_ELIMINATION' && <Form.Item name="groupCount" label="小组数量" rules={[{ required: format !== 'ROUND_ROBIN', message: '请填写小组数量' }]} extra={format === 'ROUND_ROBIN' ? '单组循环固定为 1 组。' : '填 1 为单组循环，填 2 或以上为多组循环；每组至少 2 支队伍。'}>
       <InputNumber disabled={formatLocked || format === 'ROUND_ROBIN'} min={1} precision={0} />
     </Form.Item>}
-    {format === 'GROUP_PLUS_KNOCKOUT' && <Form.Item name="advancePerGroup" label="每组晋级队数" rules={[{ required: true, message: '请填写晋级队数' }]} extra="晋级队数不能超过最小小组队数，总晋级队数至少为 2。">
+    {format === 'GROUP_PLUS_KNOCKOUT' && <Form.Item name="advancePerGroup" label="每组晋级队数" rules={[{ required: true, message: '请填写晋级队数' }]} extra="晋级队数不能超过最小小组队数，总晋级队数至少为 2。淘汰赛中小组第一优先轮空，同组队伍尽量分在不同半区、晚相遇。">
       <InputNumber disabled={formatLocked} min={1} precision={0} />
+    </Form.Item>}
+    {hasKnockout(format) && <Form.Item name="thirdPlaceMode" label="第三名" extra="加赛季军赛时，两场半决赛的负者再打一场团体对阵决出三、四名；须 4 队及以上进入淘汰赛。淘汰赛对阵生成后不能再增加或取消季军赛，另外两项随时可改。">
+      <Select options={TEAM_THIRD_PLACE_OPTIONS} />
     </Form.Item>}
     <Form.Item name="maxPlayerAppearances" label="兼项规则" rules={[{ required: true }]} extra="按同一场团体对阵计算，下一轮重新计算。每队人数不限，不限制男女人数；出场选手仍须符合各项目的性别要求。">
       <Select options={TEAM_APPEARANCE_OPTIONS} />

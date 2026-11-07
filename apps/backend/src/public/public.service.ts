@@ -6,6 +6,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { TeamCompetitionsService } from '../team-competitions/team-competitions.service';
 import { AnnouncementsService } from '../announcements/announcements.service';
 import { ScoringGateway } from '../scoring/scoring.gateway';
+import { ScoringService } from '../scoring/scoring.service';
 import { effectiveTournamentStatus } from '../tournaments/tournament-status';
 import { applyFinalRankings, limitRankings, teamStandings } from '../common/final-rankings';
 import { tournamentResultsReady } from '../common/tournament-results-ready';
@@ -126,6 +127,8 @@ const FORMAT_LABELS: Record<string, string> = {
 
 const COURT_SWAP_NOTE_PREFIX = 'COURT_SWAP:';
 const COURT_SWAP_REQUIRED_NOTE_PREFIX = 'COURT_SWAP_REQUIRED:';
+// 自定义分数的比赛裁判选「不换边」时记的事件，前台最近事件里不显示。
+const COURT_KEEP_NOTE_PREFIX = 'COURT_KEEP:';
 const RETIRE_NOTE_PREFIX = 'RETIRE:';
 const BLACK_CARD_NOTE_PREFIX = 'BLACK_CARD:';
 // 赛前练球只给裁判端看，前台的最近事件里不显示。
@@ -163,6 +166,8 @@ export class PublicService {
   // bracket / live-screen page refetches it on each scoreboard:update. Sharing
   // one build per data version keeps the cost flat no matter how many watch.
   private readonly bracketsCache = new VersionedCache<BracketsSnapshot>(BRACKETS_CACHE_TTL_MS);
+  // 前台团体赛对阵表，按赛事分别缓存；与 brackets 一样在每次计分广播前失效。
+  private readonly teamBoardCache = new VersionedCache<Map<string, Promise<PublicJsonPayload>>>(BRACKETS_CACHE_TTL_MS);
 
   private readonly logger = new Logger(PublicService.name);
 
@@ -178,9 +183,14 @@ export class PublicService {
     private announcementsService: AnnouncementsService,
     // Optional so the smoke test can construct the service without Nest.
     @Optional() scoringGateway?: ScoringGateway,
+    // 判断一场比赛是否用自定义分数（每局结束不自动换边）；测试里不传时按预设规则处理。
+    @Optional() private scoringService?: ScoringService,
   ) {
     if (!scoringGateway) return;
-    scoringGateway.publicDataChanges.subscribe(() => this.bracketsCache.invalidate());
+    scoringGateway.publicDataChanges.subscribe(() => {
+      this.bracketsCache.invalidate();
+      this.teamBoardCache.invalidate();
+    });
     // matchChanges fires after the write is committed and broadcast, so the
     // match is read back fresh.
     scoringGateway.matchChanges.subscribe((matchId) => {
@@ -564,6 +574,25 @@ export class PublicService {
     };
   }
 
+  /**
+   * 前台对阵表里的团体赛（小组积分榜、团体对阵总比分、子项每局比分）。
+   * 每个赛事一份，序列化和压缩一次后共用；同一数据版本最多缓存 100 个赛事，
+   * 再多的（多半是乱填的 id）每次现查，不占内存。
+   */
+  async getTeamBoardPayload(tournamentId: string): Promise<PublicJsonPayload> {
+    const payloads = await this.teamBoardCache.get(async () => new Map());
+    let payload = payloads.get(tournamentId);
+    if (!payload) {
+      payload = this.teamCompetitionsService.getPublicBoard(tournamentId)
+        .then((teamCompetitions) => toJsonPayload({ teamCompetitions }));
+      if (payloads.size < 100) {
+        payloads.set(tournamentId, payload);
+        payload.catch(() => payloads.delete(tournamentId));
+      }
+    }
+    return payload;
+  }
+
   async getAnnouncements() {
     return {
       announcements: await this.announcementsService.findPublished(50),
@@ -797,7 +826,7 @@ export class PublicService {
       },
       include: {
         teamCompetitions: {
-          include: { teams: true, teamMatches: { include: { matches: { include: { games: true } } } } },
+          include: { group: { select: { name: true } }, teams: true, teamMatches: { include: { matches: { include: { games: true } } } } },
           orderBy: { createdAt: 'asc' },
         },
         events: {
@@ -861,7 +890,7 @@ export class PublicService {
         const teamEvents = tournament.teamCompetitions
           .filter((competition) => competition.isPublished && competition.teams.length > 0)
           .map((competition) => ({
-            id: competition.id, type: 'TEAM', typeLabel: `${competition.entrantType === 'SOCIAL' ? '社会组' : '学生组'}团体赛 · ${competition.name}`,
+            id: competition.id, type: 'TEAM', typeLabel: `${competition.group?.name ?? (competition.entrantType === 'SOCIAL' ? '第三方' : '学生组')}团体赛 · ${competition.name}`,
             format: 'TEAM', registrations: competition.teams.length,
             matches: competition.teamMatches.length,
             completedMatches: competition.teamMatches.filter((match) => match.status === MatchStatus.COMPLETED).length,
@@ -1168,6 +1197,7 @@ export class PublicService {
   private computePublicCourtDisplayState(
     events: Array<{ note: string | null; createdAt: Date }>,
     currentGameNo = 1,
+    autoEndChanges = true,
   ): {
     side1CourtSide: CourtSide;
     side2CourtSide: CourtSide;
@@ -1178,7 +1208,8 @@ export class PublicService {
       .filter((event) => this.decodePublicCourtSwapNote(event.note) !== null)
       .length;
     // 每局结束双方换边，第 N 局的初始朝向 = 第 1 局翻转 (N-1) 次；局内换边来自显式事件。
-    const endChanges = Math.max(0, currentGameNo - 1);
+    // 自定义分数每局结束不自动换边，只认裁判选的换边。
+    const endChanges = autoEndChanges ? Math.max(0, currentGameNo - 1) : 0;
     const swapped = (swapCount + endChanges) % 2 === 1;
     return {
       side1CourtSide: swapped ? 'right' : 'left',
@@ -1188,7 +1219,8 @@ export class PublicService {
   }
 
   private isPublicCourtEvent(event: { note?: string | null }) {
-    return this.decodePublicCourtSwapNote(event.note) !== null || this.decodePublicCourtSwapRequiredNote(event.note) !== null;
+    return this.decodePublicCourtSwapNote(event.note) !== null || this.decodePublicCourtSwapRequiredNote(event.note) !== null
+      || Boolean(event.note?.startsWith(COURT_KEEP_NOTE_PREFIX));
   }
 
   private decodePublicCourtSwapNote(note?: string | null) {
@@ -1377,6 +1409,7 @@ export class PublicService {
     const courtDisplayState = this.computePublicCourtDisplayState(
       match.events ?? [],
       currentGame?.gameNo ?? 1,
+      !this.scoringService?.usesCustomScoring(match),
     );
     const forfeit = this.decodeForfeit(match.forfeitReason);
 

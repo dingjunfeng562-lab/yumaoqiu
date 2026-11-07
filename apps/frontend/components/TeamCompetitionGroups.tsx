@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, Button, Card, DatePicker, Empty, Form, Modal, Select, Space, Table, Tag, Typography, message } from 'antd';
+import { Alert, Button, Card, Checkbox, DatePicker, Empty, Form, Modal, Select, Space, Table, Tag, Typography, message } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { apiFetch } from '@/lib/api';
 import { useCurrentAccess } from '@/lib/use-current-role';
@@ -12,7 +12,7 @@ import TeamEncounterTable, { type TeamEncounter, type TeamEncounterChild } from 
 type Team = { id: string; name: string };
 type Standing = { teamId: string; teamName: string; wins: number; losses: number; matchesWon: number; matchesLost: number; netMatches: number; groupRank: number | null; advanced: boolean };
 type Group = { id: string; groupNo: number; groupName: string; standings: Standing[]; matches: TeamEncounter[] };
-type GroupData = { competition: { tournamentId: string; format: string; groupCount?: number | null; advancePerGroup?: number | null; winThreshold?: number; playAllMatches?: boolean }; groups: Group[]; knockout?: TeamEncounter[] };
+type GroupData = { competition: { tournamentId: string; format: string; groupCount?: number | null; advancePerGroup?: number | null; winThreshold?: number; playAllMatches?: boolean; thirdPlaceMode?: string }; groups: Group[]; knockout?: TeamEncounter[] };
 type ScheduleTarget = { encounter: TeamEncounter; child: TeamEncounterChild };
 
 /** 抽签编排页在比赛进行中保持打开，15 秒拉取一次即可看到每个子项的最新局分。 */
@@ -80,7 +80,11 @@ export default function TeamCompetitionGroups({ competitionId, token, teams, for
   const groups = data?.groups ?? [];
   const knockout = data?.knockout ?? [];
   const groupMatches = groups.flatMap(group => group.matches);
-  const completed = groupMatches.length > 0 && groupMatches.every(match => match.status === 'COMPLETED');
+  // 与后端一致：小组对阵没有未开始或进行中的，就可以生成淘汰赛。
+  const completed = groupMatches.length > 0 && groupMatches.every(match => match.status === 'COMPLETED' || match.status === 'CANCELLED');
+  // 超级管理员清除成绩后，淘汰赛只剩没有队伍的空签表，需要重新按小组名次生成。
+  const knockoutEmpty = knockout.every(encounter => !encounter.team1 && !encounter.team2);
+  const knockoutStarted = knockout.some(encounter => encounter.children.some(child => child.status !== 'PENDING' || (child.games?.length ?? 0) > 0));
   const playAllMatches = data?.competition.playAllMatches ?? false;
   const cancelledChildren = groupMatches.reduce(
     (total, match) =>
@@ -126,17 +130,17 @@ export default function TeamCompetitionGroups({ competitionId, token, teams, for
     setBusy(true);
     try {
       setVenues(await apiFetch(`/tournaments/${data.competition.tournamentId}/venues`, { token }));
-      scheduleForm.setFieldsValue({ venueId: child.venue?.id, scheduledAt: child.scheduledAt ? dayjs(child.scheduledAt) : null });
+      scheduleForm.setFieldsValue({ venueId: child.venue?.id, scheduledAt: child.scheduledAt ? dayjs(child.scheduledAt) : null, scheduleLocked: true, allowOutsideGroup: false });
       setEditingSchedule({ encounter, child });
     } catch (err) { message.error(err instanceof Error ? err.message : '加载场地失败'); }
     finally { setBusy(false); }
   }
-  async function saveSchedule(values: { venueId: string; scheduledAt: Dayjs }) {
+  async function saveSchedule(values: { venueId: string; scheduledAt: Dayjs; scheduleLocked: boolean; allowOutsideGroup: boolean }) {
     if (!editingSchedule) return;
     setBusy(true);
     try {
       const result = await apiFetch<{ conflicts: Array<unknown> }>(`/matches/${editingSchedule.child.id}/schedule`, {
-        method: 'PATCH', token, body: JSON.stringify({ venueId: values.venueId,
+        method: 'PATCH', token, body: JSON.stringify({ venueId: values.venueId, scheduleLocked: values.scheduleLocked, allowOutsideGroup: values.allowOutsideGroup,
           scheduledAt: values.scheduledAt.toISOString(), scheduledAtLocal: values.scheduledAt.format('YYYY-MM-DD HH:mm') }),
       });
       setEditingSchedule(null);
@@ -156,7 +160,7 @@ export default function TeamCompetitionGroups({ competitionId, token, teams, for
   </Space></div>}>
     {showDraw && hasDraw && <div style={{ marginBottom: 16 }}><TeamDrawActions key={competitionId} competitionId={competitionId} token={token} hasDraw={hasDraw} disabled={busy} revision={data} onChanged={async () => { await onChanged(); await load(); }} /></div>}
     {error && <Alert type="error" showIcon title={error} style={{ marginBottom: 12 }} />}
-    {isGroup && <Alert type="info" showIcon title={`${teamFormatLabel(format)} · ${data?.competition.groupCount ?? groups.length} 组${format === 'GROUP_PLUS_KNOCKOUT' ? ` · 每组晋级 ${data?.competition.advancePerGroup ?? 2} 队` : ''}`} description={format === 'ROUND_ROBIN' ? '全部团体在同一组，每两队交手一次，全部打完即结束比赛并确定各队名次。胜场为赢下的团体对阵数；胜次为正式子项获胜数；净胜分为正式子项每局得分减失分的合计。排名依次比较胜场、胜次、净胜分、两队相互胜负；仍无法区分时并列。各子项双方名单填齐并锁定后，才会显示在裁判端。' : '排名依次比较胜场（赢下团体对阵数）、胜次（正式子项获胜数）、净胜分（正式子项逐局得分减失分的合计）。补打不计入胜次和净胜分。'} style={{ marginBottom: 16 }} />}
+    {isGroup && <Alert type="info" showIcon title={`${teamFormatLabel(format)} · ${data?.competition.groupCount ?? groups.length} 组${format === 'GROUP_PLUS_KNOCKOUT' ? ` · 每组晋级 ${data?.competition.advancePerGroup ?? 2} 队` : ''}`} description={format === 'ROUND_ROBIN' ? '全部团体在同一组，每两队交手一次，全部打完即结束比赛并确定各队名次。胜场为赢下的团体对阵数；胜次为正式子项获胜数；净胜分为正式子项每局得分减失分的合计。排名依次比较胜场、胜次、净胜分、两队相互胜负；仍无法区分时并列。各子项双方名单填齐并锁定后，才会显示在裁判端。' : '排名依次比较胜场（赢下团体对阵数）、胜次（正式子项获胜数）、净胜分（正式子项逐局得分减失分的合计）；仍相同时比较同分队之间的相互战绩（两队即交手胜负，三队及以上只统计这几队之间的对阵），再比较负次。补打不计入胜次和净胜分。'} style={{ marginBottom: 16 }} />}
     {isGroup && <Alert type="success" showIcon title="每个子项的出场名单和每局比分都会显示在对阵下方，比赛进行中自动刷新。" description={`先赢 ${data?.competition.winThreshold ?? '规定'} 场时即计入胜场和排名；胜次、净胜分只统计到胜负确定的那一场，之后的补打只保留比分，不计排名。`} style={{ marginBottom: 16 }} />}
     {showPlayAllHint && (
       <Alert
@@ -211,20 +215,27 @@ export default function TeamCompetitionGroups({ competitionId, token, teams, for
     </Card>)}</Space>
     {knockout.length > 0 && <Card size="small" title="淘汰赛对阵" style={{ marginTop: 16 }}>
       <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>
-        每一轮对阵结束后，胜方会自动进入下一轮；展开任意一场可查看每个子项的出场名单和每局比分。
+        每一轮对阵结束后，胜方会自动进入下一轮{data?.competition.thirdPlaceMode === 'PLAYOFF' ? '，两场半决赛的负者进入季军赛' : ''}；展开任意一场可查看每个子项的出场名单和每局比分。
       </Typography.Text>
       <TeamEncounterTable encounters={knockout} busy={busy} canSchedule={access.can('SCHEDULING')} onSchedule={openSchedule} />
     </Card>}
     <Modal title="调整团体对阵场地与时间" open={Boolean(editingSchedule)} onCancel={() => setEditingSchedule(null)} onOk={() => scheduleForm.submit()} confirmLoading={busy} okText="保存排程" cancelText="取消" forceRender>
-      <Alert type="info" showIcon style={{ marginBottom: 16 }} title={`${editingSchedule?.encounter.team1?.name ?? ''} VS ${editingSchedule?.encounter.team2?.name ?? ''}`} description="可选择保留的空闲场地。本场团体对阵的所有未开始子项会使用同一场地，按顺序接续比赛；已有子项开赛后不能更换场地。重新自动排程会重排未开始场次。" />
+      <Alert type="info" showIcon style={{ marginBottom: 16 }} title={`${editingSchedule?.encounter.team1?.name ?? ''} VS ${editingSchedule?.encounter.team2?.name ?? ''}`} description="可选择保留的空闲场地。本场团体对阵的所有未开始子项会使用同一场地，按顺序接续比赛；已有子项开赛后不能更换场地。默认保留人工安排，重新自动排程时不会移动。保存后大屏同步更新。" />
       <Form form={scheduleForm} layout="vertical" onFinish={saveSchedule}>
         <Form.Item name="venueId" label="场地" rules={[{ required: true, message: '请选择场地' }]}><Select options={venues.filter(venue => venue.isActive).map(venue => ({ value: venue.id, label: venue.name }))} /></Form.Item>
         <Form.Item name="scheduledAt" label="第一个未开始子项的开始时间" rules={[{ required: true, message: '请选择开始时间' }]}><DatePicker showTime format="YYYY-MM-DD HH:mm" style={{ width: '100%' }} /></Form.Item>
+        <Form.Item name="scheduleLocked" valuePropName="checked"><Checkbox>保留人工安排，重新排程时保持场地与时间</Checkbox></Form.Item>
+        <Form.Item name="allowOutsideGroup" valuePropName="checked"><Checkbox>允许本场临时借用组别范围外场地</Checkbox></Form.Item>
       </Form>
     </Modal>
-    {format === 'GROUP_PLUS_KNOCKOUT' && groups.length > 0 && !knockout.length && <Space orientation="vertical" style={{ marginTop: 16 }}>
+    {format === 'GROUP_PLUS_KNOCKOUT' && groups.length > 0 && knockoutEmpty && <Space orientation="vertical" style={{ marginTop: 16 }}>
       {!completed && <Alert type="info" title="全部小组赛结束后，可按小组名次生成淘汰赛。" />}
       <Button type="primary" disabled={!completed} loading={busy} onClick={() => Modal.confirm({ title: '按小组排名生成淘汰赛？', content: '将使用每组达到晋级名次的队伍生成淘汰赛对阵。', okText: '生成淘汰赛', cancelText: '取消', onOk: () => run('knockout', { force: false }, '淘汰赛对阵已生成') })}>小组赛后生成淘汰赛</Button>
+      <Typography.Text type="secondary">同名次队伍按小组赛场均胜场、胜次、净胜分排种子，小组第一中战绩好的优先轮空；其余出线队伍调换签位，同组队伍尽量分在不同半区、晚相遇。</Typography.Text>
+    </Space>}
+    {format === 'GROUP_PLUS_KNOCKOUT' && !knockoutEmpty && !knockoutStarted && <Space orientation="vertical" style={{ marginTop: 16 }}>
+      <Button disabled={busy} onClick={() => Modal.confirm({ title: '按最新小组名次重新生成淘汰赛？', content: '小组赛成绩改动后，已生成的淘汰赛对阵不会自动更新。重新生成会删除现有淘汰赛对阵、出场名单和排程。淘汰赛已有子项开赛时不能重新生成。', okText: '重新生成', cancelText: '取消', onOk: () => run('knockout', { force: true }, '淘汰赛对阵已重新生成') })}>重新生成淘汰赛</Button>
+      <Typography.Text type="secondary">淘汰赛还没有子项开赛。小组赛成绩改过时，可按最新名次重新生成。</Typography.Text>
     </Space>}
   </Card>;
 }

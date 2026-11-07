@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -9,6 +9,7 @@ import {
   CreateVenueDto,
   UpdateMatchScheduleDto,
   UpdateVenueDto,
+  SaveGroupVenuesDto,
 } from './dto/scheduling.dto';
 import { SchedulingService } from './scheduling.service';
 
@@ -17,6 +18,26 @@ import { SchedulingService } from './scheduling.service';
 @Controller()
 export class SchedulingController {
   constructor(private schedulingService: SchedulingService) {}
+
+  @Get('tournaments/:tournamentId/group-venues')
+  groupVenues(@Param('tournamentId') tournamentId: string) {
+    return this.schedulingService.getGroupVenues(tournamentId);
+  }
+
+  @Patch('tournaments/:tournamentId/group-venues')
+  saveGroupVenues(@Param('tournamentId') tournamentId: string, @Body() dto: SaveGroupVenuesDto, @Req() req: { user: { id: string } }) {
+    return this.schedulingService.saveGroupVenues(tournamentId, dto, req.user.id);
+  }
+
+  @Get('tournaments/:tournamentId/schedule-logs')
+  scheduleLogs(@Param('tournamentId') tournamentId: string) {
+    return this.schedulingService.getScheduleLogs(tournamentId);
+  }
+
+  @Post('matches/:id/schedule-preview')
+  previewMatchSchedule(@Param('id') id: string, @Body() dto: UpdateMatchScheduleDto) {
+    return this.schedulingService.previewMatchSchedule(id, dto);
+  }
 
   @Get('tournaments/:tournamentId/venues')
   listVenues(@Param('tournamentId') tournamentId: string) {
@@ -44,17 +65,17 @@ export class SchedulingController {
   }
 
   @Post('scheduling/auto')
-  autoSchedule(@Body() dto: AutoScheduleDto) {
-    return this.schedulingService.autoSchedule(dto);
+  autoSchedule(@Body() dto: AutoScheduleDto, @Req() req: { user: { id: string } }) {
+    return this.schedulingService.autoSchedule(dto, req.user.id);
   }
 
   @Post('scheduling/clear')
-  clearSchedule(@Body() dto: ClearScheduleDto) {
-    return this.schedulingService.clearSchedule(dto);
+  clearSchedule(@Body() dto: ClearScheduleDto, @Req() req: { user: { id: string } }) {
+    return this.schedulingService.clearSchedule(dto, req.user.id);
   }
 
   @Patch('matches/:id/schedule')
-  updateMatchSchedule(@Param('id') id: string, @Body() dto: UpdateMatchScheduleDto) {
-    return this.schedulingService.updateMatchSchedule(id, dto);
+  updateMatchSchedule(@Param('id') id: string, @Body() dto: UpdateMatchScheduleDto, @Req() req: { user: { id: string } }) {
+    return this.schedulingService.updateMatchSchedule(id, dto, req.user.id);
   }
 }

@@ -50,6 +50,7 @@ import {
   WalletOutlined,
   ToolOutlined,
   WarningFilled,
+  BarChartOutlined,
 } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { canAccessAdminPage, firstAdminPage } from '@/lib/admin-permissions';
@@ -81,6 +82,7 @@ const MENU_SECTIONS = [
 
 const baseMenuItems: NavItem[] = [
   { key: '/nicaiyixiahh', section: 'overview', icon: <DashboardOutlined />, label: '仪表板' },
+  { key: '/nicaiyixiahh/statistics', section: 'overview', icon: <BarChartOutlined />, label: '赛事统计' },
   { key: '/nicaiyixiahh/approvals', section: 'competition', icon: <AuditOutlined />, label: '赛事审核' },
   { key: '/nicaiyixiahh/tournaments', section: 'competition', icon: <TrophyOutlined />, label: '赛事配置' },
   { key: '/nicaiyixiahh/competitions', section: 'competition', icon: <TrophyOutlined />, label: '赛事管理' },

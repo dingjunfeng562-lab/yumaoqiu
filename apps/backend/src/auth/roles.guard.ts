@@ -99,7 +99,7 @@ export class RolesGuard implements CanActivate {
       if (controller === 'PlayersController') await player(params.id);
       if (controller === 'EventsController') await event(params.id);
       if (controller === 'ScoringController') await match(params.id);
-      if (controller === 'SchedulingController') await (action === 'updateMatchSchedule' ? match : venue)(params.id);
+      if (controller === 'SchedulingController') await (['updateMatchSchedule', 'previewMatchSchedule'].includes(action) ? match : venue)(params.id);
       if (controller === 'TeamCompetitionsController') {
         const item = await this.prisma.teamCompetition.findUnique({ where: { id: params.id }, select: { tournamentId: true } });
         await tournament(item?.tournamentId);

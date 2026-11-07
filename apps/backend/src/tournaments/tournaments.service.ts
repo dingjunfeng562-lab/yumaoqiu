@@ -1,3 +1,5 @@
+import { ensureLegacyGroups, legacyGroupId, saveRegistrationGroup } from '../registration-groups/registration-groups.service';
+import { groupFields } from '../common/age-eligibility';
 import { hasPermission } from '../auth/permissions';
 import {
   BadRequestException,
@@ -5,6 +7,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import {
   EntrantType,
@@ -18,6 +21,7 @@ import {
   TournamentStatus,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { ScoringGateway } from '../scoring/scoring.gateway';
 import { TeamCompetitionsService } from '../team-competitions/team-competitions.service';
 import { CreateTournamentDto, UpdateTournamentDto } from './dto/tournament.dto';
 import { sanitizeAnnouncementContent } from '../announcements/announcement-content';
@@ -57,6 +61,7 @@ export class TournamentsService {
   constructor(
     private prisma: PrismaService,
     private teamCompetitionsService: TeamCompetitionsService,
+    @Optional() private scoringGateway?: ScoringGateway,
   ) {}
 
   async getScreenSettings(id: string) {
@@ -82,7 +87,7 @@ export class TournamentsService {
 
   async create(dto: CreateTournamentDto, user?: AuthUser) {
     const groups = this.resolveCreateGroups(dto);
-    this.validateTournamentInput(dto, undefined, groups);
+    this.validateTournamentInput(dto, undefined, groups, dto.customGroups?.some(group => group.eventTypes.length > 0));
     const superAdmin = isSuperAdmin(user);
     return this.prisma.$transaction(async (tx) => {
       // showOnHome 只留给已审核通过的赛事——新建后还在待审核的赛事
@@ -101,15 +106,12 @@ export class TournamentsService {
           allowSchoolRegistration: groups.school.length > 0
             ? dto.allowSchoolRegistration ?? true
             : false,
-          allowSocialRegistration: groups.social.length > 0
-            ? dto.allowSocialRegistration ?? true
-            : false,
           schoolRegistrationCode: groups.school.length
             ? await this.uniqueRegistrationCode(tx)
             : null,
-          socialRegistrationCode: groups.social.length
-            ? await this.uniqueRegistrationCode(tx)
-            : null,
+          // 赛事报名码：一个赛事一个码，扫码后报名人自己选组别。
+          registrationCode: await this.uniqueRegistrationCode(tx),
+          registrationCodeEnabled: true,
           // 超级管理员创建时直接审核通过；其他人新建的赛事进入待审核，
           // 审核通过前不对外显示。
           approvalStatus: superAdmin
@@ -123,7 +125,11 @@ export class TournamentsService {
         },
       });
 
-      await this.syncEvents(tx, tournament.id, groups.school, groups.social);
+      await ensureLegacyGroups(tx, tournament);
+      for (const group of dto.customGroups ?? []) {
+        await saveRegistrationGroup(tx, tournament.id, group);
+      }
+      await this.syncEvents(tx, tournament.id, groups.school);
       await this.syncVenues(tx, tournament.id, dto.venueNames);
       await this.syncTeamCompetition(tx, tournament.id, dto);
 
@@ -215,7 +221,23 @@ export class TournamentsService {
 
     // 只有审核通过的赛事才能发布 / 上首页。
     const isApproved = current.approvalStatus === TournamentApprovalStatus.APPROVED;
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM Tournament WHERE id = ${id} FOR UPDATE`;
+      if (dto.registrationFieldRules !== undefined) {
+        // 赛事表单只维护默认学生组的字段；其它组别在「组别设置」里各自配置。
+        const incoming = normalizeRegistrationFieldRules(dto.registrationFieldRules);
+        const group = await tx.tournamentGroup.findUnique({ where: { id: legacyGroupId(id, EntrantType.SCHOOL) } });
+        if (group) {
+          const currentFields = groupFields(group.fieldRules);
+          const nextFields = { ...currentFields, ...incoming.SCHOOL };
+          if (JSON.stringify(nextFields) !== JSON.stringify(currentFields)) {
+            if (await tx.competitionRegistration.count({ where: { groupId: group.id } }) || await tx.registration.count({ where: { event: { groupId: group.id } } }) || await tx.team.count({ where: { teamCompetition: { groupId: group.id } } })) {
+              throw new ConflictException(`${group.name}已有报名，不能直接改变报名字段规则；请在组别设置中新增组别`);
+            }
+            await tx.tournamentGroup.update({ where: { id: group.id }, data: { fieldRules: nextFields, ruleVersion: { increment: 1 } } });
+          }
+        }
+      }
       if (dto.showOnHome && isApproved) {
         await tx.tournament.updateMany({
           where: { id: { not: id } },
@@ -242,13 +264,9 @@ export class TournamentsService {
         },
       });
 
-      if (
-        dto.eventTypes !== undefined ||
-        dto.schoolEventTypes !== undefined ||
-        dto.socialEventTypes !== undefined
-      ) {
-        await this.syncEvents(tx, id, groups.school, groups.social);
-        await this.syncRegistrationCodes(tx, id, groups.school, groups.social, dto);
+      if (dto.eventTypes !== undefined || dto.schoolEventTypes !== undefined) {
+        await this.syncEvents(tx, id, groups.school);
+        await this.syncRegistrationCodes(tx, id, groups.school, dto);
       }
       if (dto.venueNames) {
         await this.syncVenues(tx, id, dto.venueNames);
@@ -257,12 +275,15 @@ export class TournamentsService {
         await this.syncTeamCompetition(tx, id, dto);
       }
 
+      await ensureLegacyGroups(tx, await tx.tournament.findUniqueOrThrow({ where: { id } }));
       const updated = await tx.tournament.findUniqueOrThrow({
         where: { id },
         include: this.detailInclude(),
       });
       return this.withEffectiveStatus(updated);
     });
+    if (dto.venueNames) this.scoringGateway?.emitBracketUpdate({ tournamentId: id });
+    return result;
   }
 
   async archive(id: string) {
@@ -313,7 +334,6 @@ export class TournamentsService {
     const data: Record<string, unknown> = { ...dto };
     delete data.eventTypes;
     delete data.schoolEventTypes;
-    delete data.socialEventTypes;
     delete data.includeTeamCompetition;
     delete data.teamWinThreshold;
     delete data.teamEventTypes;
@@ -324,6 +344,7 @@ export class TournamentsService {
     delete data.teamScoringRule;
     delete data.teamScoringMode;
     delete data.venueNames;
+    delete data.customGroups;
 
     if (dto.startDate) data.startDate = new Date(dto.startDate);
     if (dto.endDate) data.endDate = new Date(dto.endDate);
@@ -345,7 +366,8 @@ export class TournamentsService {
   private validateTournamentInput(
     dto: CreateTournamentDto | UpdateTournamentDto,
     current?: TournamentDetail,
-    groups?: { school: EventType[]; social: EventType[] },
+    groups?: { school: EventType[] },
+    hasNewCustomEvents = false,
   ) {
     const startDate = dto.startDate ? new Date(dto.startDate) : current?.startDate;
     const endDate = dto.endDate ? new Date(dto.endDate) : current?.endDate;
@@ -388,24 +410,23 @@ export class TournamentsService {
     }
 
     if (groups) {
-      if (!groups.school.length && !groups.social.length) {
-        throw new BadRequestException('请至少选择一个单项（学生组或社会组）');
+      if (!groups.school.length && !hasNewCustomEvents && !current?.events.some(e => e.groupId && e.groupId !== legacyGroupId(current.id, EntrantType.SCHOOL))) {
+        throw new BadRequestException('请至少为一个组别选择比赛项目');
       }
       this.ensureUnique(groups.school, '学生组包含的单项不能重复');
-      this.ensureUnique(groups.social, '社会组包含的单项不能重复');
     } else if (dto.eventTypes) {
       this.ensureUnique(dto.eventTypes, '包含的单项不能重复');
     }
 
     const schoolTeamCompetition = current?.teamCompetitions.find(
-      (item) => item.entrantType === EntrantType.SCHOOL,
+      (item) => item.entrantType === EntrantType.SCHOOL && (!item.groupId || item.groupId === legacyGroupId(current!.id, EntrantType.SCHOOL)),
     );
     const includeTeamCompetition = dto.includeTeamCompetition ?? Boolean(schoolTeamCompetition);
     if (includeTeamCompetition) {
       const selectedEvents = groups?.school
         ?? dto.eventTypes
         ?? current?.events
-          .filter((event) => event.entrantType === EntrantType.SCHOOL)
+          .filter((event) => event.entrantType === EntrantType.SCHOOL && (!event.groupId || event.groupId === legacyGroupId(current!.id, EntrantType.SCHOOL)))
           .map((event) => event.type)
         ?? [];
       const teamEventTypes = dto.teamEventTypes
@@ -430,23 +451,24 @@ export class TournamentsService {
     tx: Prisma.TransactionClient,
     tournamentId: string,
     schoolTypes: EventType[],
-    socialTypes: EventType[],
   ) {
     const school = [...new Set(schoolTypes)];
-    const social = [...new Set(socialTypes)];
-    if (!school.length && !social.length) {
-      throw new BadRequestException('请至少选择一个单项（学生组或社会组）');
+    if (!school.length && !await tx.event.count({ where: { tournamentId, group: { legacyType: null } } })) {
+      throw new BadRequestException('请至少选择一个单项（学生组或自定义组别）');
     }
-    const hasSocial = social.length > 0;
-    const groupLabelFor = (entrantType: EntrantType) =>
-      entrantType === EntrantType.SOCIAL ? '社会组' : hasSocial ? '学生组' : null;
-    const nextKeys = new Set([
-      ...school.map((type) => `${EntrantType.SCHOOL}:${type}`),
-      ...social.map((type) => `${EntrantType.SOCIAL}:${type}`),
-    ]);
+    const configuredGroups = await tx.tournamentGroup.findMany({ where: { tournamentId } });
+    const schoolLabel = configuredGroups.find(g => g.legacyType === EntrantType.SCHOOL)?.name ?? '学生组';
+    const nextKeys = new Set(school);
 
+    // 赛事表单只维护默认学生组的单项；自定义组别的单项在「组别设置」里维护。
     const existing = await tx.event.findMany({
-      where: { tournamentId },
+      where: {
+        tournamentId,
+        OR: [
+          { groupId: null, entrantType: EntrantType.SCHOOL },
+          { group: { legacyType: EntrantType.SCHOOL } },
+        ],
+      },
       include: {
         _count: {
           select: {
@@ -458,8 +480,8 @@ export class TournamentsService {
         },
       },
     });
-    const existingKeys = new Set(existing.map((event) => `${event.entrantType}:${event.type}`));
-    const removeEvents = existing.filter((event) => !nextKeys.has(`${event.entrantType}:${event.type}`));
+    const existingKeys = new Set(existing.map((event) => event.type));
+    const removeEvents = existing.filter((event) => !nextKeys.has(event.type));
     for (const event of removeEvents) {
       const linkedCount =
         event._count.registrations +
@@ -476,69 +498,52 @@ export class TournamentsService {
       await tx.event.deleteMany({ where: { id: { in: removeEvents.map((event) => event.id) } } });
     }
 
-    const createRows: Prisma.EventCreateManyInput[] = [];
-    for (const type of school) {
-      if (!existingKeys.has(`${EntrantType.SCHOOL}:${type}`)) {
-        createRows.push({
-          tournamentId,
-          type,
-          entrantType: EntrantType.SCHOOL,
-          groupLabel: groupLabelFor(EntrantType.SCHOOL),
-          format: Format.SINGLE_ELIMINATION,
-          scoringRule: ScoringRule.TWENTYONE_BO3,
-          scoringMode: ScoringMode.STANDARD_GOLDEN,
-        });
-      }
-    }
-    for (const type of social) {
-      if (!existingKeys.has(`${EntrantType.SOCIAL}:${type}`)) {
-        createRows.push({
-          tournamentId,
-          type,
-          entrantType: EntrantType.SOCIAL,
-          groupLabel: groupLabelFor(EntrantType.SOCIAL),
-          format: Format.SINGLE_ELIMINATION,
-          scoringRule: ScoringRule.TWENTYONE_BO3,
-          scoringMode: ScoringMode.STANDARD_GOLDEN,
-        });
-      }
-    }
+    const createRows: Prisma.EventCreateManyInput[] = school
+      .filter((type) => !existingKeys.has(type))
+      .map((type) => ({
+        tournamentId,
+        type,
+        entrantType: EntrantType.SCHOOL,
+        groupId: legacyGroupId(tournamentId, EntrantType.SCHOOL),
+        groupLabel: schoolLabel,
+        format: Format.SINGLE_ELIMINATION,
+        scoringRule: ScoringRule.TWENTYONE_BO3,
+        scoringMode: ScoringMode.STANDARD_GOLDEN,
+      }));
     if (createRows.length) {
+      // 默认学生组只在真正开设时才建（新赛事不开学生组时没有这条记录）。
+      if (!configuredGroups.some((group) => group.legacyType === EntrantType.SCHOOL)) {
+        await tx.tournamentGroup.create({ data: {
+          id: legacyGroupId(tournamentId, EntrantType.SCHOOL), tournamentId, name: '学生组', legacyType: EntrantType.SCHOOL,
+          fieldTemplate: 'SCHOOL', sortOrder: 0, fieldRules: groupFields({}, true, true), ageRule: { mode: 'NONE' },
+        } });
+      }
       await tx.event.createMany({ data: createRows });
     }
 
-    // 组名随“是否同时有社会组”变化：旧赛事只有学生组时保持 null，不改变原显示。
+    // 学生组改名后，已有单项的组名跟着更新。
     for (const event of existing) {
-      if (!nextKeys.has(`${event.entrantType}:${event.type}`)) continue;
-      const nextLabel = groupLabelFor(event.entrantType);
-      if (event.groupLabel !== nextLabel) {
-        await tx.event.update({
-          where: { id: event.id },
-          data: { groupLabel: nextLabel },
-        });
-      }
+      if (!nextKeys.has(event.type) || event.groupLabel === schoolLabel) continue;
+      await tx.event.update({
+        where: { id: event.id },
+        data: { groupLabel: schoolLabel },
+      });
     }
   }
 
   private resolveCreateGroups(dto: CreateTournamentDto) {
     return {
       school: [...new Set(dto.schoolEventTypes ?? dto.eventTypes ?? [])],
-      social: [...new Set(dto.socialEventTypes ?? [])],
     };
   }
 
   private resolveUpdateGroups(dto: UpdateTournamentDto, current: TournamentDetail) {
     const currentSchool = current.events
-      .filter((event) => event.entrantType === EntrantType.SCHOOL)
-      .map((event) => event.type);
-    const currentSocial = current.events
-      .filter((event) => event.entrantType === EntrantType.SOCIAL)
+      .filter((event) => event.entrantType === EntrantType.SCHOOL && (!event.groupId || event.groupId === legacyGroupId(current!.id, EntrantType.SCHOOL)))
       .map((event) => event.type);
     const school = dto.schoolEventTypes ?? dto.eventTypes ?? currentSchool;
-    const social = dto.socialEventTypes ?? currentSocial;
     return {
       school: [...new Set(school)],
-      social: [...new Set(social)],
     };
   }
 
@@ -546,60 +551,43 @@ export class TournamentsService {
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const code = generateRegistrationCode();
       const exists = await tx.tournament.findFirst({
-        where: {
-          OR: [
-            { schoolRegistrationCode: code },
-            { socialRegistrationCode: code },
-          ],
-        },
+        where: { OR: [{ registrationCode: code }, { schoolRegistrationCode: code }] },
         select: { id: true },
       });
-      if (!exists) return code;
+      if (!exists && !await tx.tournamentGroup.findUnique({ where: { registrationCode: code } })) return code;
     }
     throw new ConflictException('报名码生成失败，请重试');
   }
 
   /**
-   * 组别增加时补报名码；组别移除时清空报名码并关闭通道。
+   * 学生组有单项时补报名码；单项清空时清空报名码并关闭通道。
    * 已有码不重新生成，避免旧二维码失效。
    */
   private async syncRegistrationCodes(
     tx: Prisma.TransactionClient,
     tournamentId: string,
     school: EventType[],
-    social: EventType[],
     dto: UpdateTournamentDto,
   ) {
     const current = await tx.tournament.findUniqueOrThrow({
       where: { id: tournamentId },
       select: {
         schoolRegistrationCode: true,
-        socialRegistrationCode: true,
         allowSchoolRegistration: true,
-        allowSocialRegistration: true,
       },
     });
     const schoolCode = school.length
       ? current.schoolRegistrationCode ?? (await this.uniqueRegistrationCode(tx))
       : null;
-    const socialCode = social.length
-      ? current.socialRegistrationCode ?? (await this.uniqueRegistrationCode(tx))
-      : null;
     const schoolWasEmpty = !current.schoolRegistrationCode;
-    const socialWasEmpty = !current.socialRegistrationCode;
 
     await tx.tournament.update({
       where: { id: tournamentId },
       data: {
         schoolRegistrationCode: schoolCode,
-        socialRegistrationCode: socialCode,
         allowSchoolRegistration: school.length
           ? dto.allowSchoolRegistration ?? (schoolWasEmpty ? true : current.allowSchoolRegistration)
           : false,
-        allowSocialRegistration: social.length
-          ? dto.allowSocialRegistration ?? (socialWasEmpty ? true : current.allowSocialRegistration)
-          : false,
-        registrationCodeEnabled: true,
       },
     });
   }
@@ -638,8 +626,8 @@ export class TournamentsService {
     dto: Pick<UpdateTournamentDto, 'includeTeamCompetition' | 'teamWinThreshold' | 'teamEventTypes' | 'teamMaxPlayerAppearances' | 'teamPlayAllMatches' | 'teamScoringRule' | 'teamScoringMode' | 'name' | 'description'>,
   ) {
     const current = await tx.teamCompetition.findFirst({
-      // 赛事表单只维护学生组团体赛；社会组团体赛在“团体赛管理”页单独创建。
-      where: { tournamentId, entrantType: EntrantType.SCHOOL },
+      // 赛事表单只维护学生组团体赛；其它组别的团体赛在“团体赛管理”页单独创建。
+      where: { tournamentId, entrantType: EntrantType.SCHOOL, OR: [{ groupId: null }, { groupId: legacyGroupId(tournamentId, EntrantType.SCHOOL) }] },
       include: { items: true, _count: { select: { teams: true, teamMatches: true } } },
       orderBy: { createdAt: 'asc' },
     });
@@ -673,6 +661,7 @@ export class TournamentsService {
       await tx.teamCompetition.create({
         data: {
           tournamentId,
+          groupId: legacyGroupId(tournamentId, EntrantType.SCHOOL),
           entrantType: EntrantType.SCHOOL,
           ...data,
           items: {
@@ -751,6 +740,19 @@ export class TournamentsService {
         orderBy: { createdAt: 'asc' as const },
       },
       _count: { select: { events: true } },
+      // 列表「项目」列按组别分行显示；接口仅管理员可调。
+      registrationGroups: {
+        select: {
+          id: true,
+          name: true,
+          legacyType: true,
+          enabled: true,
+          registrationCode: true,
+          registrationCodeEnabled: true,
+          _count: { select: { events: true } },
+        },
+        orderBy: [{ sortOrder: 'asc' as const }, { createdAt: 'asc' as const }],
+      },
     };
   }
 

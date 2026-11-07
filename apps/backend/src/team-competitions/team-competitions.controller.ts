@@ -43,6 +43,11 @@ import { TeamCompetitionsService } from './team-competitions.service';
 export class TeamCompetitionsController {
   constructor(private readonly teamCompetitionsService: TeamCompetitionsService) {}
 
+  @Patch('teams/:teamId/members/:memberPlayerId/verify-eligibility')
+  verifyMemberEligibility(@Param('teamId') teamId: string, @Param('memberPlayerId') playerId: string, @Body() dto: { note: string; gender: 'MALE' | 'FEMALE' }, @Req() req: { user: AuthActor }) {
+    return this.teamCompetitionsService.verifyMemberEligibility(teamId, playerId, dto.note, dto.gender, req.user.id);
+  }
+
   @Post()
   create(@Body() dto: CreateTeamCompetitionDto) {
     return this.teamCompetitionsService.create(dto);

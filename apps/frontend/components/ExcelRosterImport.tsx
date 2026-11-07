@@ -317,15 +317,15 @@ export default function ExcelRosterImportModal({
         <Alert
           type="info"
           showIcon
-          title="上传学生模板或社会模板均可，系统会按表头自动识别组别、项目列和双打配对"
-          description={`支持 .xls / .xlsx。学生模板 9 列（含学号/学院/年级专业），社会模板 6 列；示例行会自动跳过；双打把两人的「单位」单元格合并表示一对。${fieldRuleText}。`}
+          title="上传学生模板或第三方模板均可，系统会按表头自动识别组别、项目列和双打配对"
+          description={`支持 .xls / .xlsx。学生模板 9 列（含学号/学院/年级专业），第三方模板 6 列；示例行会自动跳过；双打把两人的「单位」单元格合并表示一对。${fieldRuleText}。`}
           action={
             <Space>
               <Button size="small" icon={<DownloadOutlined />} href={SCHOOL_TEMPLATE_URL} download="羽动云赛报名批量导入学生模板.xls">
                 学生模板
               </Button>
-              <Button size="small" icon={<DownloadOutlined />} href={SOCIAL_TEMPLATE_URL} download="羽动云赛报名批量导入社会模板.xls">
-                社会模板
+              <Button size="small" icon={<DownloadOutlined />} href={SOCIAL_TEMPLATE_URL} download="羽动云赛报名批量导入第三方模板.xls">
+                第三方模板
               </Button>
             </Space>
           }

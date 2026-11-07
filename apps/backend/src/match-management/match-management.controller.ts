@@ -5,6 +5,7 @@ import {
   Param,
   Patch,
   Post,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import { Role } from '@prisma/client';
@@ -33,8 +34,8 @@ export class MatchManagementController {
   }
 
   @Patch('matches/:id')
-  updateMatch(@Param('id') id: string, @Body() dto: UpdateManagedMatchDto) {
-    return this.matchManagementService.updateMatch(id, dto);
+  updateMatch(@Param('id') id: string, @Body() dto: UpdateManagedMatchDto, @Req() req: { user: { id: string } }) {
+    return this.matchManagementService.updateMatch(id, dto, req.user.id);
   }
 
   @Patch('matches/:id/score')

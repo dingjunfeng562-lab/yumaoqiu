@@ -194,6 +194,10 @@ type ScoreState = {
   /** 服务器当前时间，用来校准手机时钟，倒计时按服务器时间算。 */
   serverNow?: string | null;
   courtDisplayState?: CourtDisplayState | null;
+  /** 自定义分数为 false：每局结束不自动换边。 */
+  autoCourtChange?: boolean;
+  /** 自定义分数的新一局开始前，等裁判选择是否换边。 */
+  courtSwapPrompt?: { gameNo: number } | null;
   events: MatchEventLog[];
   updatedAt?: string | null;
 };
@@ -586,9 +590,9 @@ export default function RefereeScoringPage() {
   const retireReasonText = decodeRetireReason(score?.forfeitReason);
   const pauseAlert = pauseAlertText(score);
 
-  async function loadScore() {
+  async function loadScore(background = false) {
     if (!token || !matchId) return;
-    setLoading(true);
+    if (!background) setLoading(true);
     try {
       const data = await apiFetch<ScoreState>(`/matches/${matchId}/score`, { token, redirectOnForbidden: false });
       applyScore(data);
@@ -716,6 +720,8 @@ export default function RefereeScoringPage() {
   const servePromptedForRef = useRef<number | null>(null);
   useEffect(() => {
     if (!score || score.status !== 'LIVE') return;
+    // 自定义分数先让裁判选完换不换边，再弹发球设置。
+    if (score.courtSwapPrompt) return;
     const state = score.servingState;
     if (state?.source !== 'system') return;
     if (currentSideScore(score, 1) !== 0 || currentSideScore(score, 2) !== 0) return;
@@ -747,6 +753,9 @@ export default function RefereeScoringPage() {
       socket.emit('joinMatch', { matchId });
       void loadScore();
     });
+    socket.on('bracket:update', (payload: { tournamentId?: string; matchId?: string }) => {
+      if ((!payload.matchId || payload.matchId === matchId) && (!score?.event.tournament?.id || payload.tournamentId === score.event.tournament.id)) void loadScore(true);
+    });
     socket.on('disconnect', () => setSocketStatus('已断开'));
     socket.on('match:update', (nextScore: ScoreState) => {
       if (nextScore.id === matchId) applyScore(nextScore);
@@ -755,7 +764,7 @@ export default function RefereeScoringPage() {
       socket.emit('leaveMatch', { matchId });
       socket.disconnect();
     };
-  }, [matchId, token, applyScore]);
+  }, [matchId, token, applyScore, score?.event.tournament?.id]);
 
   // 横屏兜底（RefereeLandscapeGate 用 CSS 旋转）时，视口高度要用它给的变量。
   const viewportHeight = { height: 'var(--referee-viewport-height, 100dvh)' };
@@ -815,7 +824,8 @@ export default function RefereeScoringPage() {
   const matchEnded = score.status === 'COMPLETED' || score.status === 'CANCELLED';
   const paused = live && Boolean(score.matchPaused);
   const busy = busyAction !== '';
-  const scoringLocked = !live || paused || Boolean(score.pendingFinish) || busy;
+  const courtSwapPrompt = live && !score.pendingFinish ? score.courtSwapPrompt ?? null : null;
+  const scoringLocked = !live || paused || Boolean(score.pendingFinish) || Boolean(courtSwapPrompt) || busy;
   // 撤销不受「待确认结束」限制：正是要用它改回最后一分。
   const lastPointSide = lastPointSideOf(score);
   const undoLocked = !live || paused || busy || lastPointSide === null;
@@ -823,6 +833,7 @@ export default function RefereeScoringPage() {
   const backHref = courtListHref(score);
   const undoPath = `/matches/${matchId}/undo`;
   const swapPath = `/matches/${matchId}/swap-court`;
+  const keepCourtPath = `/matches/${matchId}/keep-court`;
   const pausePath = `/matches/${matchId}/pause`;
   const resumePath = `/matches/${matchId}/resume`;
   const finishPath = `/matches/${matchId}/finish`;
@@ -933,7 +944,18 @@ export default function RefereeScoringPage() {
                   disabled: busy,
                 }],
               }
-            : null;
+            : courtSwapPrompt
+              ? {
+                  tone: 'amber',
+                  title: `第 ${courtSwapPrompt.gameNo - 1} 局结束，是否换边？`,
+                  description: '本场为自定义分数，每局结束不自动换边。换边后屏幕上双方左右对调；选好后开始第 '
+                    + `${courtSwapPrompt.gameNo} 局记分。`,
+                  actions: [
+                    { label: '不换边', run: 'keep-court', loading: busyAction === keepCourtPath, disabled: busy, secondary: true },
+                    { label: '换边', icon: <SyncOutlined />, run: 'swap', loading: busyAction === swapPath, disabled: busy },
+                  ],
+                }
+              : null;
 
   function runOverlayAction(run: CourtOverlayRun) {
     if (run === 'start') void startMatchNow();
@@ -941,6 +963,8 @@ export default function RefereeScoringPage() {
     else if (run === 'setup') openSetup();
     else if (run === 'warmup') void postAction(warmupPath, { seconds: warmupMinutes * 60 });
     else if (run === 'warmup-end') void postAction(warmupEndPath);
+    else if (run === 'swap') void postAction(swapPath);
+    else if (run === 'keep-court') void postAction(keepCourtPath);
     else void postAction(resumePath);
   }
 
@@ -1420,7 +1444,7 @@ function SideScore({ side, value }: { side: 1 | 2; value: number }) {
   );
 }
 
-type CourtOverlayRun = 'start' | 'finish' | 'setup' | 'resume' | 'warmup' | 'warmup-end';
+type CourtOverlayRun = 'start' | 'finish' | 'setup' | 'resume' | 'warmup' | 'warmup-end' | 'swap' | 'keep-court';
 
 /** 按钮要么跳转（href），要么交给页面按 run 执行；secondary 是描边的次要按钮。 */
 type CourtOverlayAction = {

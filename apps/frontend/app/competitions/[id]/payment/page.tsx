@@ -18,6 +18,7 @@ export default async function CompetitionPaymentPage({
       eyebrow="Payment"
       title="报名缴费"
       description="按收款方式转账后，等待组委会确认收款，确认后显示「缴费成功」。"
+      back={{ href: `/competitions/${id}`, label: '赛事主页' }}
     >
       <PaymentCheckout competitionId={id} guestToken={typeof token === 'string' ? token : undefined} />
     </PortalFeaturePage>

@@ -1,3 +1,8 @@
+import { decryptIdentity } from '../common/identity-vault';
+import { legacyGroupId } from '../registration-groups/registration-groups.service';
+import { groupFields, normalizeAgeRule, ageRuleLabel, checkGender } from '../common/age-eligibility';
+import { VerifyEligibilityDto } from '../registration-groups/registration-groups.dto';
+import { preparePerson, itemEligibility, identityView, isPendingEligibility, type PreparedPerson } from '../common/registration-eligibility';
 import { hasPermission } from '../auth/permissions';
 import {
   BadRequestException,
@@ -16,9 +21,11 @@ import {
   Role,
   ScoringMode,
   ScoringRule,
+  TournamentApprovalStatus,
   TournamentStatus,
+  TournamentGroup,
 } from '@prisma/client';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthActor, tournamentScope } from '../auth/admin-scope';
 import { EmailService } from '../mail/email.service';
@@ -84,6 +91,7 @@ type CompetitionWithRelations = Prisma.TournamentGetPayload<{
     events: {
       include: {
         registrations: true;
+        group: true;
       };
     };
     competitionRegistrations: {
@@ -140,8 +148,11 @@ type NormalizedAdminBatchPlayer = {
   social: boolean;
   entrantType: EntrantType;
   name: string;
-  gender: Gender;
-  // 社会组没有学号和学院；学生组按赛事字段配置决定是否必填。
+  gender: Gender | null;
+  identityData?: ReturnType<typeof preparePerson>['identity'];
+  partnerIdentityData?: ReturnType<typeof preparePerson>['identity'];
+  eligibility?: ReturnType<typeof itemEligibility>;
+  // 第三方没有学号和学院；学生组按赛事字段配置决定是否必填。
   studentId?: string;
   college?: string;
   majorGrade?: string;
@@ -150,7 +161,7 @@ type NormalizedAdminBatchPlayer = {
   contact: string;
   teamName?: string;
   partnerName?: string;
-  partnerGender?: Gender;
+  partnerGender?: Gender | null;
   partnerStudentId?: string;
   partnerSchool?: string;
   partnerCollege?: string;
@@ -174,6 +185,7 @@ export class CompetitionsService {
         events: {
           include: {
             registrations: true,
+            group: true,
           },
           orderBy: { type: 'asc' },
         },
@@ -199,15 +211,22 @@ export class CompetitionsService {
     return this.toCompetitionView(competition, true);
   }
 
+  /**
+   * 前台赛事主页被打开一次：浏览量 +1（每次打开都算，含刷新）。只统计前台能看到的赛事。
+   * 用一条原生 UPDATE 自增：并发打开不会丢计数，也不会像 prisma.update 那样顺带改掉
+   * updatedAt（那会让依赖赛事变动的逻辑，如报名表导出，每次浏览都被触发）。
+   */
+  async recordView(id: string) {
+    const count = await this.prisma.$executeRaw`
+      UPDATE \`Tournament\` SET \`viewCount\` = \`viewCount\` + 1
+      WHERE \`id\` = ${id} AND \`isPublished\` = true AND \`isArchived\` = false AND \`approvalStatus\` = 'APPROVED'`;
+    return { counted: count > 0 };
+  }
+
   async getMyRegistration(competitionId: string, userId: string) {
     await this.findCompetition(competitionId, false);
-    const registration = await this.prisma.competitionRegistration.findUnique({
-      where: {
-        competitionId_userId: {
-          competitionId,
-          userId,
-        },
-      },
+    const registration = await this.prisma.competitionRegistration.findFirst({
+      where: { competitionId, userId },
       include: {
         user: true,
         eventItems: {
@@ -226,82 +245,92 @@ export class CompetitionsService {
   }
 
   /**
-   * 公开报名码校验：码本身决定组别，前台据此渲染学生组/社会组表单。
-   * 与提交时的校验共用 registrationCodeFor / normalizeRegistrationCode。
+   * 公开报名码校验：一个赛事一个报名码，扫码后报名人自己选组别。
+   * 已发出的旧码（组别报名码、学生组报名码）仍然有效，进入后预选对应组别。
    */
   async verifyRegistrationCode(code: string) {
     const normalized = normalizeRegistrationCode(code);
     if (!normalized) throw new NotFoundException('报名码无效或已停用');
-    const tournament = await this.prisma.tournament.findFirst({
-      where: {
-        registrationCodeEnabled: true,
-        isPublished: true,
-        approvalStatus: 'APPROVED',
-        isArchived: false,
-        OR: [
-          { schoolRegistrationCode: normalized, schoolRegistrationCodeEnabled: true },
-          { socialRegistrationCode: normalized, socialRegistrationCodeEnabled: true },
-        ],
-      },
-      include: {
-        events: {
-          orderBy: [{ entrantType: 'asc' }, { type: 'asc' }],
-        },
-      },
-    });
+    const visible = { registrationCodeEnabled: true, isPublished: true, approvalStatus: TournamentApprovalStatus.APPROVED, isArchived: false };
+    const include = {
+      events: { orderBy: [{ entrantType: 'asc' as const }, { type: 'asc' as const }] },
+      registrationGroups: { orderBy: [{ sortOrder: 'asc' as const }, { createdAt: 'asc' as const }] },
+    };
+    let preselectedGroupId: string | null = null;
+    let tournament = await this.prisma.tournament.findFirst({ where: { ...visible, registrationCode: normalized }, include });
+    if (!tournament) {
+      const legacyGroup = await this.prisma.tournamentGroup.findUnique({ where: { registrationCode: normalized } });
+      tournament = await this.prisma.tournament.findFirst({
+        where: { ...visible, ...(legacyGroup ? { id: legacyGroup.tournamentId } : { schoolRegistrationCode: normalized }) },
+        include,
+      });
+      if (tournament) preselectedGroupId = legacyGroup?.id ?? legacyGroupId(tournament.id, EntrantType.SCHOOL);
+    }
     if (!tournament) {
       throw new NotFoundException('报名码无效或已停用，请向组委会确认');
     }
-    const entrantType = tournament.schoolRegistrationCode === normalized
-      ? EntrantType.SCHOOL
-      : EntrantType.SOCIAL;
-    const enabled = entrantType === EntrantType.SCHOOL
-      ? tournament.allowSchoolRegistration
-      : tournament.allowSocialRegistration;
-    if (!enabled) {
-      throw new ForbiddenException(
-        `${entrantTypeLabel(entrantType)}报名未开放，请向组委会确认`,
-      );
+    const found = tournament;
+    const groups = found.registrationGroups.filter((group) => group.enabled && found.events.some((event) => event.groupId === group.id));
+    // 极少数旧赛事没有组别记录，仍走原来的学生报名表。
+    const legacyEvents = found.events.filter((event) => !event.groupId && event.entrantType === EntrantType.SCHOOL);
+    if (!groups.length && !(found.allowSchoolRegistration && legacyEvents.length)) {
+      throw new ForbiddenException('本赛事暂未开放报名，请向组委会确认');
     }
-    const rules = normalizeRegistrationFieldRules(tournament.registrationFieldRules);
-    const payment = await this.prisma.tournamentPaymentSetting.findUnique({
-      where: { tournamentId_entrantType: { tournamentId: tournament.id, entrantType } },
-      select: { enabled: true, singlesFee: true, doublesFee: true },
+    const payments = await this.prisma.tournamentPaymentSetting.findMany({
+      where: { tournamentId: found.id },
+      select: { groupId: true, enabled: true, singlesFee: true, doublesFee: true },
+    });
+    // 本组别收费标准（分）；未开启时为 null。免审核且收费时，提交后直接进入缴费页。
+    const paymentFor = (groupId: string) => {
+      const payment = payments.find((item) => item.groupId === groupId);
+      return payment?.enabled ? { singlesFee: payment.singlesFee, doublesFee: payment.doublesFee } : null;
+    };
+    const eventView = (event: (typeof found.events)[number]) => ({
+      id: event.id,
+      type: event.type,
+      label: eventDisplayLabel(event),
+      isDouble: this.isDoubleEvent(event.type),
     });
     return {
-      tournamentId: tournament.id,
-      title: tournament.name,
-      subtitle: tournament.subtitle,
-      // 扫码报名先展示赛事简介，再进入报名表。
-      coverImageUrl: tournament.coverImageUrl,
-      organizer: tournament.organizer,
-      description: tournament.description ?? tournament.rules,
-      registrationNotice: tournament.registrationNotice,
-      maxRegistrationEvents: tournament.allowCrossEventRegistration ? tournament.maxRegistrationEvents : 1,
-      needsRegistrationReview: tournament.needsRegistrationReview,
-      registrationOpen: effectiveTournamentStatus(tournament) === TournamentStatus.REGISTRATION_OPEN,
-      // 本组别收费标准（分）；未开启时为 null。免审核且收费时，提交后直接进入缴费页。
-      payment: payment?.enabled
-        ? { singlesFee: payment.singlesFee, doublesFee: payment.doublesFee }
-        : null,
-      startDate: tournament.startDate.toISOString(),
-      endDate: tournament.endDate.toISOString(),
-      location: tournament.location,
-      registrationStatus: this.registrationStatusText(tournament),
-      registrationStartTime: tournament.registrationStartDate?.toISOString() ?? null,
-      registrationEndTime: tournament.registrationEndDate?.toISOString() ?? null,
-      entrantType,
-      entrantTypeLabel: entrantTypeLabel(entrantType),
+      tournamentId: found.id,
+      title: found.name,
+      subtitle: found.subtitle,
+      // 扫码报名先展示赛事简介，再选组别、填报名表。
+      coverImageUrl: found.coverImageUrl,
+      organizer: found.organizer,
+      description: found.description ?? found.rules,
+      registrationNotice: found.registrationNotice,
+      maxRegistrationEvents: found.allowCrossEventRegistration ? found.maxRegistrationEvents : 1,
+      needsRegistrationReview: found.needsRegistrationReview,
+      registrationOpen: effectiveTournamentStatus(found) === TournamentStatus.REGISTRATION_OPEN,
+      startDate: found.startDate.toISOString(),
+      endDate: found.endDate.toISOString(),
+      location: found.location,
+      registrationStatus: this.registrationStatusText(found),
+      registrationStartTime: found.registrationStartDate?.toISOString() ?? null,
+      registrationEndTime: found.registrationEndDate?.toISOString() ?? null,
+      groups: groups.map((group) => {
+        const rule = normalizeAgeRule(group.ageRule);
+        return {
+          groupId: group.id,
+          groupName: group.name,
+          fieldTemplate: group.fieldTemplate === 'SCHOOL' ? 'SCHOOL' : 'GENERAL',
+          groupFields: groupFields(group.fieldRules),
+          ageRule: rule,
+          ageRuleLabel: ageRuleLabel(rule),
+          events: found.events.filter((event) => event.groupId === group.id).map(eventView),
+          payment: paymentFor(group.id),
+        };
+      }),
+      preselectedGroupId: groups.some((group) => group.id === preselectedGroupId) ? preselectedGroupId : null,
+      // 以下字段只给没有组别记录的旧赛事（原学生报名表）使用。
+      groupId: null,
+      entrantType: EntrantType.SCHOOL,
+      entrantTypeLabel: found.name,
       loginRequired: false,
-      fieldRules: rules,
-      events: tournament.events
-        .filter((event) => event.entrantType === entrantType)
-        .map((event) => ({
-          id: event.id,
-          type: event.type,
-          label: eventDisplayLabel(event),
-          isDouble: this.isDoubleEvent(event.type),
-        })),
+      fieldRules: normalizeRegistrationFieldRules(found.registrationFieldRules),
+      events: legacyEvents.map(eventView),
+      payment: paymentFor(legacyGroupId(found.id, EntrantType.SCHOOL)),
     };
   }
 
@@ -322,44 +351,36 @@ export class CompetitionsService {
     return this.toCompetitionRegistrationView(registration);
   }
 
-  async regenerateRegistrationCode(competitionId: string, entrantType: string) {
-    const type = this.normalizeEntrantType(entrantType);
+  /** 重新生成赛事报名码（一个赛事一个码）：旧码和旧二维码立即失效，已提交的报名不受影响。 */
+  async regenerateRegistrationCode(competitionId: string) {
     await this.findCompetition(competitionId, true);
     const code = await this.uniqueRegistrationCode();
     await this.prisma.tournament.update({
       where: { id: competitionId },
-      data: type === EntrantType.SCHOOL
-        ? { schoolRegistrationCode: code, schoolRegistrationCodeEnabled: true }
-        : { socialRegistrationCode: code, socialRegistrationCodeEnabled: true },
+      data: { registrationCode: code, registrationCodeEnabled: true },
     });
-    return { entrantType: type, code };
+    return { code };
   }
 
-  async setRegistrationCodeEnabled(competitionId: string, entrantType: string, enabled: boolean) {
-    const type = this.normalizeEntrantType(entrantType);
+  /** 启停赛事报名码；停用后扫码和输入报名码都不能进入报名。 */
+  async setRegistrationCodeEnabled(competitionId: string, enabled: boolean) {
     await this.findCompetition(competitionId, true);
     await this.prisma.tournament.update({
       where: { id: competitionId },
-      data: type === EntrantType.SCHOOL
-        ? { schoolRegistrationCodeEnabled: enabled }
-        : { socialRegistrationCodeEnabled: enabled },
+      data: { registrationCodeEnabled: enabled },
     });
-    return { entrantType: type, enabled };
+    return { enabled };
   }
 
   private async uniqueRegistrationCode(): Promise<string> {
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const code = generateRegistrationCode();
       const exists = await this.prisma.tournament.findFirst({
-        where: {
-          OR: [
-            { schoolRegistrationCode: code },
-            { socialRegistrationCode: code },
-          ],
-        },
+        where: { OR: [{ registrationCode: code }, { schoolRegistrationCode: code }] },
         select: { id: true },
       });
-      if (!exists) return code;
+      const groupExists = this.prisma.tournamentGroup && await this.prisma.tournamentGroup.findUnique({ where: { registrationCode: code } });
+      if (!exists && !groupExists) return code;
     }
     throw new ConflictException('报名码生成失败，请重试');
   }
@@ -380,7 +401,7 @@ export class CompetitionsService {
   }
 
   /**
-   * 游客报名：学校组与社会组都可使用，凭报名码提交，不要求登录。
+   * 游客报名：各组别都可使用，凭报名码提交，不要求登录。
    * userId 为空，靠 guestToken 查询结果；已登录用户仍走 submitRegistration 以绑定账号。
    */
   async publicRegister(competitionId: string, dto: PublicCompetitionRegistrationDto) {
@@ -394,23 +415,48 @@ export class CompetitionsService {
     userId: string | null,
     dto: SubmitCompetitionRegistrationDto,
   ) {
-    const entrantType = this.normalizeEntrantType(dto.entrantType);
-    this.ensureRegistrationCode(competition, dto.registrationCode, entrantType);
-    this.ensureChannelOpen(competition, entrantType);
-    const rules = normalizeRegistrationFieldRules(competition.registrationFieldRules);
+    const group = this.prisma.tournamentGroup ? await this.prisma.tournamentGroup.findFirst({ where: {
+      tournamentId: competition.id, ...(dto.groupId ? { id: dto.groupId } : { legacyType: this.normalizeEntrantType(dto.entrantType) }),
+    } }) : null;
+    if (dto.groupId && !group) throw new BadRequestException('报名组别不存在');
+    if (!group && this.normalizeEntrantType(dto.entrantType) === EntrantType.SOCIAL) {
+      throw new BadRequestException('默认社会组已取消，请扫描组别报名码重新进入报名');
+    }
+    const entrantType = group ? (group.fieldTemplate === 'SCHOOL' ? EntrantType.SCHOOL : EntrantType.SOCIAL) : this.normalizeEntrantType(dto.entrantType);
+    if (group) {
+      // 一个赛事一个报名码；已发出的旧组别码、学生组码仍然有效。
+      const submittedCode = normalizeRegistrationCode(dto.registrationCode);
+      const codeValid = Boolean(submittedCode) && [competition.registrationCode, group.registrationCode, group.legacyType ? competition.schoolRegistrationCode : null].includes(submittedCode);
+      if (!competition.registrationCodeEnabled || !codeValid) throw new ForbiddenException('报名码无效或已停用');
+      if (!group.enabled) throw new ForbiddenException(`「${group.name}」报名未开放，请向组委会确认`);
+    } else {
+      this.ensureRegistrationCode(competition, dto.registrationCode, entrantType);
+      this.ensureChannelOpen(competition, entrantType);
+    }
+    const fields = groupFields(group?.fieldRules, entrantType === 'SCHOOL', !group);
+    const ageRule = normalizeAgeRule(group?.ageRule);
+    const own = preparePerson(dto, fields, ageRule);
+    // 年龄、衣服尺寸的「必填」只在线上报名时检查；后台录入和导入没有这两列，不拦。
+    const requireExtras = (person: PreparedPerson, label = '') => {
+      if (fields.age === 'required' && person.ageValue == null) throw new BadRequestException(`请填写${label}年龄，或填写身份证号自动计算`);
+      if (fields.shirtSize === 'required' && !person.shirtSize) throw new BadRequestException(`请填写${label}衣服尺寸`);
+    };
+    requireExtras(own);
+    if (fields.email === 'required' && !dto.guestEmail?.trim()) throw new BadRequestException('请填写邮箱');
+    const rules: RegistrationFieldRules = group ? { SCHOOL: fields, SOCIAL: fields } : normalizeRegistrationFieldRules(competition.registrationFieldRules);
 
     const contact = dto.contact?.trim() ?? '';
     if (!contact) throw new BadRequestException('请填写联系方式');
     const school = dto.school?.trim() ?? '';
     if (!school) throw new BadRequestException(entrantType === EntrantType.SOCIAL ? '请填写单位/俱乐部' : '请填写学校');
 
-    const studentId = entrantType === EntrantType.SCHOOL
+    const studentId = group || entrantType === EntrantType.SCHOOL
       ? this.resolveGroupField(dto.studentId, rules, EntrantType.SCHOOL, 'studentId', '学号')
       : null;
-    const college = entrantType === EntrantType.SCHOOL
+    const college = group || entrantType === EntrantType.SCHOOL
       ? this.resolveGroupField(dto.college, rules, EntrantType.SCHOOL, 'college', '学院')
       : null;
-    const majorGrade = entrantType === EntrantType.SCHOOL
+    const majorGrade = group || entrantType === EntrantType.SCHOOL
       ? this.resolveGroupField(dto.majorGrade, rules, EntrantType.SCHOOL, 'majorGrade', '年级专业')
       : null;
     const className = [college, majorGrade].filter(Boolean).join(' ') || null;
@@ -421,24 +467,11 @@ export class CompetitionsService {
     }
 
     const name = dto.name.trim();
-    const ownRegistration = userId
-      ? await this.prisma.competitionRegistration.findUnique({
-          where: {
-            competitionId_userId: {
-              competitionId: competition.id,
-              userId,
-            },
-          },
-          include: {
-            user: true,
-            eventItems: {
-              include: {
-                event: true,
-              },
-            },
-          },
-        })
-      : null;
+    const personKey = createHash('sha256').update(`${name}\0${normalizeContact(contact)}`).digest('hex');
+    const ownRegistration = userId ? await this.prisma.competitionRegistration.findFirst({
+      where: { competitionId: competition.id, userId, name, contact },
+      include: { user: true, eventItems: { include: { event: true } } },
+    }) : null;
     // 扫码报名大多是游客，没有账号可认人：同一赛事里姓名和联系方式都相同的游客报名视为同一个人，
     // 再次提交时与登录用户一样走「追加项目」，否则兼项永远报不上第二项。
     const existing = ownRegistration ?? await this.findGuestRegistration(competition.id, name, contact);
@@ -450,7 +483,7 @@ export class CompetitionsService {
     if (existing?.status === RegistrationStatus.PENDING) {
       throw new ConflictException('你已提交报名，正在等待审核；审核通过后可再次提交，追加新的项目');
     }
-    if (existing && existing.entrantType !== entrantType) {
+    if (existing && (existing.entrantType !== entrantType || (group && existing.groupId && existing.groupId !== group.id))) {
       throw new ConflictException(
         `你已报名${entrantTypeLabel(existing.entrantType)}，不能重复报名${entrantTypeLabel(entrantType)}`,
       );
@@ -481,11 +514,11 @@ export class CompetitionsService {
     if (events.length !== eventIds.length) {
       throw new BadRequestException('存在无效的报名项目');
     }
-    if (events.some((event) => event.entrantType !== entrantType)) {
+    if (events.some((event) => group ? event.groupId !== group.id : event.entrantType !== entrantType || (event.groupId && event.groupId !== legacyGroupId(competition.id, entrantType)))) {
       throw new BadRequestException('报名项目与报名组别不一致');
     }
 
-    const gender = this.normalizeGender(dto.gender);
+    const gender = own.gender;
     if (guestAppendTarget && gender !== guestAppendTarget.gender) {
       throw new BadRequestException(
         `性别与第一次报名时不一致（第一次报名填写的是${guestAppendTarget.gender === Gender.MALE ? '男' : '女'}）`,
@@ -500,12 +533,26 @@ export class CompetitionsService {
           className: guestAppendTarget.className,
         }
       : { school, college, majorGrade, className };
+    const qualifications = new Map<string, ReturnType<typeof itemEligibility>>();
+    const partners = new Map<string, ReturnType<typeof preparePerson>>();
     for (const item of dto.items) {
       const event = events.find((current) => current.id === item.eventId.trim());
       if (!event) {
         throw new BadRequestException('存在无效的报名项目');
       }
-      this.ensureRegistrationGender(event.type, gender, item.partnerGender);
+      const partner = this.isDoubleEvent(event.type) ? preparePerson({ gender: item.partnerGender ?? null, identityNumber: item.partnerIdentityNumber, age: item.partnerAge, shirtSize: item.partnerShirtSize }, fields, ageRule, '搭档') : null;
+      if (partner) {
+        if (!item.partnerName?.trim() || !item.partnerContact?.trim()) throw new BadRequestException('请填写搭档姓名和联系方式');
+        requireExtras(partner, '搭档');
+        partners.set(item.eventId.trim(), partner);
+        item.partnerGender = partner.gender ?? undefined;
+      }
+      qualifications.set(item.eventId.trim(), itemEligibility(event.type, own, partner, ageRule, group?.ruleVersion ?? 1));
+      if (group && partner) {
+        item.partnerStudentId = this.resolveGroupField(item.partnerStudentId, rules, entrantType, 'studentId', '搭档学号') ?? undefined;
+        item.partnerCollege = this.resolveGroupField(item.partnerCollege, rules, entrantType, 'college', '搭档学院') ?? undefined;
+        item.partnerMajorGrade = this.resolveGroupField(item.partnerMajorGrade, rules, entrantType, 'majorGrade', '搭档年级专业') ?? undefined;
+      }
       this.ensurePartnerFields(event.type, item, entrantType, rules, fallback);
     }
 
@@ -514,10 +561,22 @@ export class CompetitionsService {
       throw new ConflictException(`你已报名${this.eventItemLabels(existingApprovedItems)}，请选择新的报名项目`);
     }
 
-    const nextStatus = competition.needsRegistrationReview
+    const qualificationPending = [...qualifications.values()].some(q => q.status === 'PENDING');
+    const itemData = (item: SubmitCompetitionRegistrationDto['items'][number]) => ({
+      ...this.registrationItemData(item, entrantType, fallback, Boolean(group)),
+      partnerIdentityData: partners.get(item.eventId.trim())?.identity ?? Prisma.DbNull,
+      partnerAge: partners.get(item.eventId.trim())?.ageValue ?? null,
+      partnerShirtSize: partners.get(item.eventId.trim())?.shirtSize ?? null,
+      eligibility: qualifications.get(item.eventId.trim()),
+    });
+    const nextStatus = competition.needsRegistrationReview || qualificationPending
       ? RegistrationStatus.PENDING
       : RegistrationStatus.APPROVED;
     const baseData = {
+      groupId: group?.id ?? null,
+      personKey,
+      identityData: own.identity ?? Prisma.DbNull,
+      eligibility: { status: qualificationPending ? 'PENDING' : 'PASSED', ruleVersion: group?.ruleVersion ?? 1 },
       entrantType,
       studentId,
       college,
@@ -527,21 +586,28 @@ export class CompetitionsService {
       school,
       className,
       contact,
+      age: own.ageValue,
+      shirtSize: own.shirtSize,
       remark: dto.remark?.trim() || null,
-      guestEmail: entrantType === EntrantType.SOCIAL ? dto.guestEmail?.trim() || null : null,
+      guestEmail: fields.email === 'hidden' ? null : dto.guestEmail?.trim() || null,
     };
 
     const registration = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM Tournament WHERE id = ${competition.id} FOR UPDATE`;
+      const concurrent = await tx.competitionRegistration.findFirst({ where: { competitionId: competition.id, personKey, ...(existing ? { id: { not: existing.id } } : {}) } });
+      if (concurrent) throw new ConflictException('该选手已提交报名，请勿重复提交');
+      await this.ensureIdentityNotCrossGroup(tx, competition.id, group?.id ?? null, [own.identity, ...[...partners.values()].map(p => p.identity)].filter(Boolean).map(p => p!.fingerprint), existing?.id, submittedEventIds);
       if (existing) {
         if (existing.status === RegistrationStatus.APPROVED) {
           const updated = await tx.competitionRegistration.update({
             where: { id: existing.id },
             data: {
               ...(guestAppendTarget ? {} : baseData),
-              status: RegistrationStatus.APPROVED,
+              status: qualificationPending ? RegistrationStatus.PENDING : RegistrationStatus.APPROVED,
+              eligibility: { status: qualificationPending ? 'PENDING' : 'PASSED' },
               rejectReason: null,
               eventItems: {
-                create: newItems.map((item) => this.registrationItemData(item, entrantType, fallback)),
+                create: newItems.map((item) => itemData(item)),
               },
             },
             include: {
@@ -553,7 +619,7 @@ export class CompetitionsService {
               },
             },
           });
-          await this.createApprovedRegistrationRecords(
+          if (!qualificationPending) await this.createApprovedRegistrationRecords(
             tx,
             updated,
             existing.reviewedById ?? null,
@@ -587,7 +653,7 @@ export class CompetitionsService {
             reviewedAt: nextStatus === RegistrationStatus.APPROVED ? new Date() : null,
             reviewedById: null,
             eventItems: {
-              create: dto.items.map((item) => this.registrationItemData(item, entrantType, fallback)),
+              create: dto.items.map((item) => itemData(item)),
             },
           },
           include: {
@@ -614,7 +680,7 @@ export class CompetitionsService {
           status: nextStatus,
           reviewedAt: nextStatus === RegistrationStatus.APPROVED ? new Date() : undefined,
           eventItems: {
-            create: dto.items.map((item) => this.registrationItemData(item, entrantType, fallback)),
+            create: dto.items.map((item) => itemData(item)),
           },
         },
         include: {
@@ -649,7 +715,7 @@ export class CompetitionsService {
     return {
       message: appended
         ? '已追加报名项目。'
-        : competition.needsRegistrationReview ? '报名已提交，请等待管理员审核。' : '报名已提交并自动通过。',
+        : nextStatus === RegistrationStatus.PENDING ? '报名已提交，请等待管理员审核。' : '报名已提交并自动通过。',
       appended,
       registration: this.toCompetitionRegistrationView(registration),
       // 游客凭报名编号查询和缴费；追加到游客报名时仍是第一次报名的编号。
@@ -661,6 +727,25 @@ export class CompetitionsService {
    * 游客没有账号，靠「同一赛事 + 姓名 + 联系方式」认出同一个人。只对上学号不算，
    * 免得凭别人的学号就能往别人的报名里加项目。联系方式按缴费查询的规则去掉空格、横线再比。
    */
+  private async ensureIdentityNotCrossGroup(tx: Prisma.TransactionClient, tournamentId: string, groupId: string | null, fingerprints: string[], excludeId?: string, eventIds: string[] = [], excludeRegistrationIds: string[] = []) {
+    for (const fingerprint of new Set(fingerprints)) {
+      const applications = await tx.competitionRegistration.findMany({ where: { competitionId: tournamentId,
+        status: { notIn: ['REMOVED', 'REJECTED'] }, ...(excludeId ? { id: { not: excludeId } } : {}),
+        OR: [{ identityData: { path: '$.fingerprint', equals: fingerprint } }, { eventItems: { some: { partnerIdentityData: { path: '$.fingerprint', equals: fingerprint } } } }],
+      }, select: { groupId: true, eventItems: { select: { eventId: true } } } });
+      if (applications.some(row => row.eventItems.some(item => eventIds.includes(item.eventId)))) throw new ConflictException('该证件对应选手已报名相同项目');
+      if (applications.some(row => row.groupId !== groupId)) throw new ConflictException('该证件对应选手已在其他组别报名');
+      const entries = await tx.registration.findMany({ where: { event: { tournamentId }, status: 'APPROVED',
+        ...(excludeRegistrationIds.length ? { id: { notIn: excludeRegistrationIds } } : {}),
+        OR: [{ identityData: { path: '$.fingerprint', equals: fingerprint } }, { partnerIdentityData: { path: '$.fingerprint', equals: fingerprint } }],
+      }, include: { event: true } });
+      if (entries.some(row => row.competitionRegistrationId !== excludeId && eventIds.includes(row.eventId))) throw new ConflictException('该证件对应选手已报名相同项目');
+      if (entries.some(row => row.competitionRegistrationId !== excludeId && row.event.groupId !== groupId)) throw new ConflictException('该证件对应选手已在其他组别参赛');
+      const teams = await tx.teamMember.findMany({ where: { identityData: { path: '$.fingerprint', equals: fingerprint }, team: { teamCompetition: { tournamentId } } }, include: { team: { include: { teamCompetition: true } } } });
+      if (teams.some(row => row.team.teamCompetition.groupId !== groupId)) throw new ConflictException('该证件对应选手已在其他组别团体赛报名');
+    }
+  }
+
   private async findGuestRegistration(competitionId: string, name: string, contact: string) {
     const target = normalizeContact(contact);
     if (!name || !target) return null;
@@ -729,6 +814,7 @@ export class CompetitionsService {
         events: {
           include: {
             registrations: true,
+            group: true,
           },
           orderBy: [{ entrantType: 'asc' }, { type: 'asc' }],
         },
@@ -775,10 +861,9 @@ export class CompetitionsService {
       return {
         ...this.toCompetitionView(competition, true),
         // 报名码只给后台列表，公开接口不返回。
+        registrationCode: competition.registrationCode,
         schoolRegistrationCode: competition.schoolRegistrationCode,
-        socialRegistrationCode: competition.socialRegistrationCode,
         schoolRegistrationCodeEnabled: competition.schoolRegistrationCodeEnabled,
-        socialRegistrationCodeEnabled: competition.socialRegistrationCodeEnabled,
         registrationCodeEnabled: competition.registrationCodeEnabled,
         isArchived: competition.isArchived,
         isPublished: competition.isPublished,
@@ -818,7 +903,7 @@ export class CompetitionsService {
       },
       include: {
         events: {
-          include: { registrations: true },
+          include: { registrations: true, group: true },
         },
         competitionRegistrations: {
           include: {
@@ -842,7 +927,7 @@ export class CompetitionsService {
       data: { isPublished: false },
       include: {
         events: {
-          include: { registrations: true },
+          include: { registrations: true, group: true },
         },
         competitionRegistrations: {
           include: {
@@ -1065,8 +1150,9 @@ export class CompetitionsService {
     // 不会改动既有对阵图或比赛结果，需待下次重新抽签才纳入对阵。这样有结果的赛事也能继续补录选手而不必先清空结果。
 
     const rules = normalizeRegistrationFieldRules(competition.registrationFieldRules);
+    const group = event.groupId ? await this.prisma.tournamentGroup.findUnique({ where: { id: event.groupId } }) : null;
     const players = dto.players.map((item, index) =>
-      this.normalizeAdminBatchPlayer(item, index + 1, event, rules),
+      this.normalizeAdminBatchPlayer(item, index + 1, event, rules, group),
     );
     const mixedGroup = players.find((player) => player.entrantType !== event.entrantType);
     if (mixedGroup) {
@@ -1078,6 +1164,12 @@ export class CompetitionsService {
     await this.ensureNoExistingEventStudentIds(event.id, players);
     this.ensureBatchSocialContacts(players);
     await this.ensureNoExistingEventSocialContacts(event.id, players);
+
+    if (group) {
+      const rows = await this.createAdminGroupEntries(competition, event, group, players, reviewedById);
+      return { createdCount: rows.length, pendingCount: rows.filter(row => row.status === 'PENDING').length,
+        schoolCount: players.filter(p => p.entrantType === 'SCHOOL').length, socialCount: players.filter(p => p.entrantType === 'SOCIAL').length };
+    }
 
     // 预生成 id 后用两次 createMany 批量入库（选手 + 报名），而不是逐条 await。
     // 逐条创建会在一个交互式事务里堆叠数百次往返、轻易超过 Prisma 默认 5s 事务超时
@@ -1097,12 +1189,12 @@ export class CompetitionsService {
       });
 
       let secondaryPlayerId: string | null = null;
-      if (this.isDoubleEvent(event.type) && item.partnerName && item.partnerGender) {
+      if (this.isDoubleEvent(event.type) && item.partnerName) {
         secondaryPlayerId = randomUUID();
         playerRows.push({
           id: secondaryPlayerId,
           name: item.partnerName,
-          gender: item.partnerGender,
+          gender: item.partnerGender ?? null,
           affiliation: item.partnerSchool ?? item.school,
           contact: item.partnerContact ?? null,
           isTemporary: true,
@@ -1161,13 +1253,18 @@ export class CompetitionsService {
 
     // 复用批量录入的字段校验（单/双打必填项、性别合法性），单条按第 1 行处理。
     const rules = normalizeRegistrationFieldRules(competition.registrationFieldRules);
-    const player = this.normalizeAdminBatchPlayer(dto, 1, event, rules);
+    const group = event.groupId ? await this.prisma.tournamentGroup.findUnique({ where: { id: event.groupId } }) : null;
+    const player = this.normalizeAdminBatchPlayer(dto, 1, event, rules, group);
     if (player.entrantType !== event.entrantType) {
       throw new BadRequestException('报名组别与项目组别不一致');
     }
     await this.ensureNoExistingEventStudentIds(event.id, [player]);
     await this.ensureNoExistingEventSocialContacts(event.id, [player]);
 
+    if (group) {
+      const rows = await this.createAdminGroupEntries(competition, event, group, [player], reviewedById);
+      return this.toCompetitionRegistrationView(rows[0]);
+    }
     const isDouble = this.isDoubleEvent(event.type);
     const reviewedAt = new Date();
 
@@ -1183,11 +1280,11 @@ export class CompetitionsService {
       });
 
       let secondaryId: string | null = null;
-      if (isDouble && player.partnerName && player.partnerGender) {
+      if (isDouble && player.partnerName) {
         const secondary = await tx.player.create({
           data: {
             name: player.partnerName,
-            gender: player.partnerGender,
+            gender: player.partnerGender ?? null,
             affiliation: player.partnerSchool ?? player.school,
             contact: player.partnerContact ?? null,
             isTemporary: true,
@@ -1334,6 +1431,14 @@ export class CompetitionsService {
     if (!isDouble && player2) throw new BadRequestException('单打项目只能选择一位选手');
     const teamName = dto.teamName?.trim();
     if (isDouble && !teamName) throw new BadRequestException('双打项目需要填写队伍名称');
+    if (event.groupId) {
+      return this.createAdminPlayer(competitionId, {
+        eventId: event.id, entrantType: event.entrantType,
+        name: player1.name, gender: player1.gender ?? undefined, school: player1.affiliation, contact: player1.contact ?? '',
+        partnerName: player2?.name, partnerGender: player2?.gender ?? undefined,
+        partnerSchool: player2?.affiliation, partnerContact: player2?.contact ?? undefined, teamName: teamName ?? undefined,
+      }, reviewedById);
+    }
     this.ensureRegistrationGender(event.type, player1.gender, player2?.gender);
 
     const existing = await this.prisma.registration.findFirst({
@@ -1415,6 +1520,9 @@ export class CompetitionsService {
       : [];
     return {
       ...this.toRegistrationView(registration),
+      groupId: registration.event.groupId,
+      identity: identityView(registration.identityData),
+      partnerIdentity: identityView(registration.partnerIdentityData),
       otherEvents: others.map((item) => ({
         id: item.id,
         eventId: item.eventId,
@@ -1468,21 +1576,36 @@ export class CompetitionsService {
     if (!targetEvent) throw new BadRequestException('请选择当前赛事下的参赛项目');
 
     const rules = normalizeRegistrationFieldRules(competition.registrationFieldRules);
-    const player = this.normalizeAdminBatchPlayer(dto, 1, targetEvent, rules);
+    const group = targetEvent.groupId ? await this.prisma.tournamentGroup.findUnique({ where: { id: targetEvent.groupId } }) : null;
+    // 未提交证件字段表示保留旧资料；显式空字符串表示清空，重新进入资格核验。
+    const editDto = { ...dto };
+    if (editDto.identityNumber === undefined && registration.identityData) editDto.identityNumber = this.savedIdentityNumber(registration.identityData);
+    if (editDto.partnerIdentityNumber === undefined && registration.partnerIdentityData) editDto.partnerIdentityNumber = this.savedIdentityNumber(registration.partnerIdentityData);
+    const player = this.normalizeAdminBatchPlayer(editDto, 1, targetEvent, rules, group);
     if (player.entrantType !== targetEvent.entrantType) {
       throw new BadRequestException('报名组别与项目组别不一致');
     }
 
     const application = registration.competitionRegistration;
     const siblings = application?.registrations ?? [];
-    const groupChanging = registration.event.entrantType !== targetEvent.entrantType;
+    const groupChanging = (registration.event.groupId ?? registration.event.entrantType) !== (targetEvent.groupId ?? targetEvent.entrantType);
     const changingEvent = targetEvent.id !== registration.eventId;
+    const keepManual = (original: typeof registration, next: NormalizedAdminBatchPlayer, eventUnchanged: boolean) => {
+      const snapshot = original.eligibility;
+      if (!groupChanging && eventUnchanged && snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot) && snapshot.status === 'MANUAL'
+        && next.name === original.player1.name && next.gender === original.player1.gender
+        && (next.partnerName ?? '') === (original.player2?.name ?? '') && (next.partnerGender ?? null) === (original.player2?.gender ?? null)
+        && dto.identityNumber === undefined && dto.partnerIdentityNumber === undefined) {
+        next.eligibility = snapshot as unknown as ReturnType<typeof itemEligibility>;
+      }
+    };
+    keepManual(registration, player, !changingEvent);
 
     // 同一份报名表里的其他项目：改组别时转到另一组的同名项目，否则留在原项目。
     const siblingTargets = siblings.map((sibling) => {
       if (!groupChanging) return { sibling, target: sibling.event };
       const target = competition.events.find(
-        (event) => event.entrantType === targetEvent.entrantType && event.type === sibling.event.type,
+        (event) => (event.groupId ?? event.entrantType) === (targetEvent.groupId ?? targetEvent.entrantType) && event.type === sibling.event.type,
       );
       if (!target) {
         throw new BadRequestException(
@@ -1499,7 +1622,7 @@ export class CompetitionsService {
     for (const { sibling, target } of siblingTargets) {
       if (sibling.player1.gender === player.gender) continue;
       try {
-        this.ensureRegistrationGender(target.type, player.gender, sibling.player2?.gender);
+        checkGender(target.type, player.gender, sibling.player2?.gender ?? null);
       } catch (error) {
         const reason = error instanceof Error ? error.message : '性别不符合项目要求';
         throw new BadRequestException(`该选手还报名了${eventDisplayLabel(target)}：${reason}`);
@@ -1522,8 +1645,23 @@ export class CompetitionsService {
       await this.ensureNoExistingEventSocialContacts(target.id, [person], sibling.id);
     }
 
+    const siblingQualifications = new Map<string, NormalizedAdminBatchPlayer>();
+    for (const { sibling, target } of siblingTargets) {
+      const normalized = this.normalizeAdminBatchPlayer({ ...editDto, entrantType: target.entrantType,
+        partnerName: sibling.player2?.name, partnerGender: sibling.player2?.gender ?? undefined,
+        partnerContact: sibling.player2?.contact ?? sibling.partnerPhone ?? undefined,
+        partnerIdentityNumber: sibling.partnerIdentityData ? this.savedIdentityNumber(sibling.partnerIdentityData) : undefined,
+        partnerStudentId: sibling.partnerStudentId ?? undefined, partnerCollege: sibling.partnerCollege ?? undefined,
+        partnerMajorGrade: sibling.partnerMajorGrade ?? undefined, partnerSchool: sibling.partnerSchool ?? undefined,
+      }, 1, target, rules, group);
+      keepManual({ ...registration, ...sibling }, normalized, target.id === sibling.eventId);
+      siblingQualifications.set(sibling.id, normalized);
+    }
+    const qualificationPending = player.eligibility?.status === 'PENDING' || [...siblingQualifications.values()].some(p => p.eligibility?.status === 'PENDING');
+    if (qualificationPending && !application) throw new BadRequestException('历史手工报名转入本组时，请补充符合规则的证件和性别；也可通过本组报名入口重新提交并人工核验');
     const movedSiblings = siblingTargets.filter(({ sibling, target }) => sibling.eventId !== target.id);
     const changedEventIds = [
+      ...(qualificationPending ? [registration.eventId, ...siblings.map(s => s.eventId)] : []),
       ...(changingEvent ? [registration.eventId, targetEvent.id] : []),
       ...movedSiblings.flatMap(({ sibling, target }) => [sibling.eventId, target.id]),
     ];
@@ -1531,6 +1669,8 @@ export class CompetitionsService {
     const logAction = groupChanging ? 'GROUP_CHANGE' : 'EVENT_CHANGE';
 
     const { updated, redrawEvents } = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM Tournament WHERE id = ${competitionId} FOR UPDATE`;
+      await this.ensureIdentityNotCrossGroup(tx, competitionId, targetEvent.groupId, [player.identityData?.fingerprint, player.partnerIdentityData?.fingerprint, ...[...siblingQualifications.values()].map(p => p.partnerIdentityData?.fingerprint)].filter(Boolean) as string[], application?.id, targetEventIds, [registration.id, ...siblings.map(s => s.id)]);
       await lockEvents(tx, changedEventIds);
       const redraw = await checkEventsForEntrantChange(tx, changedEventIds, '调整报名项目或组别');
 
@@ -1545,13 +1685,13 @@ export class CompetitionsService {
       });
 
       let secondaryId: string | null = null;
-      if (isDouble && player.partnerName && player.partnerGender) {
+      if (isDouble && player.partnerName) {
         if (registration.player2Id) {
           await tx.player.update({
             where: { id: registration.player2Id },
             data: {
               name: player.partnerName,
-              gender: player.partnerGender,
+              gender: player.partnerGender ?? null,
               affiliation: player.partnerSchool ?? player.school,
               contact: player.partnerContact ?? null,
             },
@@ -1561,7 +1701,7 @@ export class CompetitionsService {
           const secondary = await tx.player.create({
             data: {
               name: player.partnerName,
-              gender: player.partnerGender,
+              gender: player.partnerGender ?? null,
               affiliation: player.partnerSchool ?? player.school,
               contact: player.partnerContact ?? null,
               isTemporary: true,
@@ -1575,6 +1715,10 @@ export class CompetitionsService {
       await tx.registration.update({
         where: { id: registration.id },
         data: {
+          identityData: player.identityData ?? Prisma.DbNull,
+          partnerIdentityData: player.partnerIdentityData ?? Prisma.DbNull,
+          eligibility: player.eligibility,
+          status: player.eligibility?.status === 'PENDING' ? RegistrationStatus.PENDING : RegistrationStatus.APPROVED,
           eventId: targetEvent.id,
           player2Id: secondaryId,
           name: primaryName,
@@ -1613,6 +1757,10 @@ export class CompetitionsService {
         await tx.registration.update({
           where: { id: sibling.id },
           data: {
+            identityData: player.identityData ?? Prisma.DbNull,
+            partnerIdentityData: siblingQualifications.get(sibling.id)?.partnerIdentityData ?? Prisma.DbNull,
+            eligibility: siblingQualifications.get(sibling.id)?.eligibility,
+            status: siblingQualifications.get(sibling.id)?.eligibility?.status === 'PENDING' ? RegistrationStatus.PENDING : RegistrationStatus.APPROVED,
             eventId: target.id,
             entrantType: target.entrantType,
             eventName: eventDisplayLabel(target),
@@ -1623,7 +1771,7 @@ export class CompetitionsService {
             className: player.className ?? null,
             phone: player.contact,
             gender: player.gender,
-            // 社会组没有学号、学院和年级专业。
+            // 第三方没有学号、学院和年级专业。
             ...(toSchool
               ? {}
               : { partnerStudentId: null, partnerCollege: null, partnerMajorGrade: null, partnerClassName: null }),
@@ -1637,6 +1785,11 @@ export class CompetitionsService {
         await tx.competitionRegistration.update({
           where: { id: application.id },
           data: {
+            groupId: targetEvent.groupId,
+            personKey: createHash('sha256').update(`${player.name}\0${normalizeContact(player.contact)}`).digest('hex'),
+            identityData: player.identityData ?? Prisma.DbNull,
+            eligibility: { status: qualificationPending ? 'PENDING' : 'PASSED' },
+            status: qualificationPending ? RegistrationStatus.PENDING : RegistrationStatus.APPROVED,
             entrantType: player.entrantType,
             studentId: player.studentId ?? null,
             college: player.college ?? null,
@@ -1661,6 +1814,8 @@ export class CompetitionsService {
         };
 
         const partnerData = {
+          partnerIdentityData: player.partnerIdentityData ?? Prisma.DbNull,
+          eligibility: player.eligibility,
           partnerName: secondaryId ? player.partnerName ?? null : null,
           partnerGender: secondaryId ? player.partnerGender ?? null : null,
           partnerStudentId: secondaryId ? player.partnerStudentId ?? null : null,
@@ -1682,7 +1837,7 @@ export class CompetitionsService {
             data: { competitionRegistrationId: application.id, eventId: targetEvent.id, ...partnerData },
           });
         }
-        for (const { sibling, target } of movedSiblings) {
+        for (const { sibling, target } of siblingTargets) {
           const item = findItem(sibling.eventId);
           if (!item) continue;
           const toSchool = target.entrantType === EntrantType.SCHOOL;
@@ -1690,6 +1845,8 @@ export class CompetitionsService {
             where: { id: item.id },
             data: {
               eventId: target.id,
+              partnerIdentityData: siblingQualifications.get(sibling.id)?.partnerIdentityData ?? Prisma.DbNull,
+              eligibility: siblingQualifications.get(sibling.id)?.eligibility,
               ...(toSchool
                 ? {}
                 : { partnerStudentId: null, partnerCollege: null, partnerMajorGrade: null, partnerClassName: null }),
@@ -1895,10 +2052,40 @@ export class CompetitionsService {
     }
   }
 
+  async verifyEligibility(id: string, dto: VerifyEligibilityDto, operatorId: string) {
+    if (!dto.note.trim()) throw new BadRequestException('请填写线下核验依据');
+    const result = await this.prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM CompetitionRegistration WHERE id = ${id} FOR UPDATE`;
+      const application = await tx.competitionRegistration.findUnique({ where: { id }, include: { user: true, eventItems: { include: { event: true } } } });
+      if (!application) throw new NotFoundException('报名不存在');
+      if (application.status !== RegistrationStatus.PENDING) throw new BadRequestException('仅待审核报名可进行资格核验');
+      const gender = dto.gender ?? application.gender;
+      for (const item of application.eventItems) {
+        const partnerGender = dto.partnerGenders?.[item.id] ?? item.partnerGender;
+        if (checkGender(item.event.type, gender, partnerGender) === 'PENDING') throw new BadRequestException('请确认本人及双打搭档的性别');
+        const previous = item.eligibility && typeof item.eligibility === 'object' && !Array.isArray(item.eligibility) ? item.eligibility : {};
+        await tx.competitionRegistrationEventItem.update({ where: { id: item.id }, data: {
+          partnerGender,
+          eligibility: { ...previous, status: 'MANUAL', gender: 'MANUAL',
+            age: previous.age === 'PENDING' ? 'MANUAL' : previous.age ?? 'NOT_REQUIRED',
+            partnerAge: previous.partnerAge === 'PENDING' ? 'MANUAL' : previous.partnerAge ?? 'NOT_REQUIRED',
+            verifiedBy: operatorId, verifiedAt: new Date().toISOString(), note: dto.note.trim() },
+        } });
+      }
+      return tx.competitionRegistration.update({ where: { id }, data: { gender, eligibility: { status: 'MANUAL', verifiedBy: operatorId, verifiedAt: new Date().toISOString() } },
+        include: { user: true, eventItems: { include: { event: true } } } });
+    });
+    return this.toCompetitionRegistrationView(result);
+  }
+
   async approveRegistration(competitionRegistrationId: string, reviewedById?: string) {
     const competitionRegistration = await this.ensureCompetitionRegistration(competitionRegistrationId);
+    if (competitionRegistration.eventItems.some(item => isPendingEligibility(item.eligibility))) throw new BadRequestException('存在待核验的年龄或性别，请先完成资格核验');
 
     const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM CompetitionRegistration WHERE id = ${competitionRegistration.id} FOR UPDATE`;
+      const latest = await tx.competitionRegistration.findUniqueOrThrow({ where: { id: competitionRegistration.id }, include: { eventItems: true } });
+      if (latest.eventItems.some(item => isPendingEligibility(item.eligibility))) throw new BadRequestException('请先完成资格核验');
       const registration = await tx.competitionRegistration.update({
         where: { id: competitionRegistration.id },
         data: {
@@ -1921,6 +2108,15 @@ export class CompetitionsService {
         where: { competitionRegistrationId: competitionRegistration.id },
       });
 
+      for (const entry of existingRegularRegistrations) {
+        const item = registration.eventItems.find(item => item.eventId === entry.eventId);
+        if (!item) continue;
+        await tx.player.update({ where: { id: entry.player1Id }, data: { gender: registration.gender } });
+        if (entry.player2Id) await tx.player.update({ where: { id: entry.player2Id }, data: { gender: item.partnerGender } });
+        await tx.registration.update({ where: { id: entry.id }, data: { gender: registration.gender,
+          identityData: registration.identityData ?? Prisma.DbNull, partnerIdentityData: item.partnerIdentityData ?? Prisma.DbNull,
+          eligibility: item.eligibility ?? Prisma.DbNull } });
+      }
       if (existingRegularRegistrations.length) {
         await tx.registration.updateMany({
           where: { competitionRegistrationId: competitionRegistration.id },
@@ -1931,9 +2127,9 @@ export class CompetitionsService {
             rejectReason: null,
           },
         });
-      } else {
-        await this.createApprovedRegistrationRecords(tx, registration, reviewedById ?? null);
       }
+      const missingEventIds = registration.eventItems.filter(item => !existingRegularRegistrations.some(r => r.eventId === item.eventId)).map(item => item.eventId);
+      if (missingEventIds.length) await this.createApprovedRegistrationRecords(tx, registration, reviewedById ?? null, missingEventIds);
 
       return registration;
     });
@@ -1950,6 +2146,7 @@ export class CompetitionsService {
         where: { id: competitionRegistration.id },
         data: {
           status: RegistrationStatus.REJECTED,
+          personKey: null,
           reviewedAt: new Date(),
           reviewedById: reviewedById ?? null,
           rejectReason: rejectReason?.trim() || null,
@@ -1991,6 +2188,7 @@ export class CompetitionsService {
         where: { id: competitionRegistration.id },
         data: {
           status: RegistrationStatus.REMOVED,
+          personKey: null,
           reviewedAt: new Date(),
           reviewedById: reviewedById ?? null,
           rejectReason: null,
@@ -2026,7 +2224,7 @@ export class CompetitionsService {
     templateKey: 'registration_submitted' | 'registration_approved' | 'registration_rejected',
     rejectReason?: string | null,
   ) {
-    // 社会组游客没有账号，跳过邮件；不能因为 user 为空抛错。
+    // 第三方游客没有账号，跳过邮件；不能因为 user 为空抛错。
     const to = registration.user?.email ?? registration.guestEmail ?? '';
     if (!to.trim()) return;
     void this.emailService.sendRegistrationNotification({
@@ -2050,6 +2248,7 @@ export class CompetitionsService {
         events: {
           include: {
             registrations: true,
+            group: true,
           },
           orderBy: { type: 'asc' },
         },
@@ -2131,17 +2330,16 @@ export class CompetitionsService {
   ) {
     // 未启用报名码的旧赛事保持可直接报名。
     if (!competition.registrationCodeEnabled) return;
-    const enabled = entrantType === EntrantType.SCHOOL
-      ? competition.schoolRegistrationCodeEnabled
-      : competition.socialRegistrationCodeEnabled;
+    const enabled = entrantType === EntrantType.SCHOOL && competition.schoolRegistrationCodeEnabled;
     if (!enabled) {
       throw new ForbiddenException(`${entrantTypeLabel(entrantType)}报名已关闭`);
     }
     const expected = registrationCodeFor(competition, entrantType);
-    if (!expected) {
+    if (!expected && !competition.registrationCode) {
       throw new ForbiddenException(`${entrantTypeLabel(entrantType)}报名未开放`);
     }
-    if (normalizeRegistrationCode(code) !== expected) {
+    // 赛事报名码和旧的学生组报名码都认。
+    if (![expected, competition.registrationCode].includes(normalizeRegistrationCode(code))) {
       throw new ForbiddenException('报名码无效或已停用，请向组委会确认');
     }
   }
@@ -2149,9 +2347,6 @@ export class CompetitionsService {
   private ensureChannelOpen(competition: CompetitionWithRelations, entrantType: EntrantType) {
     if (entrantType === EntrantType.SCHOOL && !competition.allowSchoolRegistration) {
       throw new ForbiddenException('本赛事未开放学生组报名');
-    }
-    if (entrantType === EntrantType.SOCIAL && !competition.allowSocialRegistration) {
-      throw new ForbiddenException('本赛事未开放社会组报名');
     }
     if (!competition.events.some((event) => event.entrantType === entrantType)) {
       throw new BadRequestException(`本赛事未配置${entrantTypeLabel(entrantType)}项目`);
@@ -2190,23 +2385,24 @@ export class CompetitionsService {
     item: SubmitCompetitionRegistrationDto['items'][number],
     entrantType: EntrantType,
     fallback: { school: string; college: string | null; majorGrade: string | null; className: string | null },
+    customFields = false,
   ) {
     const hasPartner = Boolean(item.partnerName?.trim() || item.partnerContact?.trim());
     return {
       eventId: item.eventId.trim(),
       partnerName: item.partnerName?.trim() || null,
       partnerGender: item.partnerGender ? this.normalizeGender(item.partnerGender) : null,
-      partnerStudentId: hasPartner && entrantType === EntrantType.SCHOOL
+      partnerStudentId: hasPartner && (customFields || entrantType === EntrantType.SCHOOL)
         ? item.partnerStudentId?.trim() || null
         : null,
       partnerSchool: hasPartner ? item.partnerSchool?.trim() || fallback.school : null,
-      partnerCollege: hasPartner && entrantType === EntrantType.SCHOOL
+      partnerCollege: hasPartner && (customFields || entrantType === EntrantType.SCHOOL)
         ? item.partnerCollege?.trim() || fallback.college
         : null,
-      partnerMajorGrade: hasPartner && entrantType === EntrantType.SCHOOL
+      partnerMajorGrade: hasPartner && (customFields || entrantType === EntrantType.SCHOOL)
         ? item.partnerMajorGrade?.trim() || fallback.majorGrade
         : null,
-      partnerClassName: hasPartner && entrantType === EntrantType.SCHOOL
+      partnerClassName: hasPartner && (customFields || entrantType === EntrantType.SCHOOL)
         ? item.partnerClassName?.trim() || fallback.className
         : null,
       partnerContact: hasPartner ? item.partnerContact?.trim() || null : null,
@@ -2332,7 +2528,7 @@ export class CompetitionsService {
         const secondaryPlayer = await tx.player.create({
           data: {
             name: item.partnerName,
-            gender: item.partnerGender ?? this.resolvePartnerGender(item.event.type, registration.gender),
+            gender: item.partnerGender ?? null,
             affiliation: item.partnerSchool?.trim() || schoolName,
             contact: item.partnerContact?.trim() || null,
             notes: null,
@@ -2344,6 +2540,9 @@ export class CompetitionsService {
       await tx.registration.create({
         data: {
           competitionRegistrationId: registration.id,
+          identityData: registration.identityData ?? Prisma.DbNull,
+          partnerIdentityData: item.partnerIdentityData ?? Prisma.DbNull,
+          eligibility: item.eligibility ?? Prisma.DbNull,
           eventId: item.eventId,
           player1Id: primaryPlayer.id,
           player2Id: secondaryPlayerId,
@@ -2372,12 +2571,55 @@ export class CompetitionsService {
     }
   }
 
+  private savedIdentityNumber(value: Prisma.JsonValue): string | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.encrypted !== 'string') return undefined;
+    return decryptIdentity(value.encrypted);
+  }
+
+  private async createAdminGroupEntries(competition: CompetitionWithRelations, event: CompetitionWithRelations['events'][number], group: TournamentGroup, players: NormalizedAdminBatchPlayer[], operatorId?: string) {
+    return this.prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM Tournament WHERE id = ${competition.id} FOR UPDATE`;
+      const results: CompetitionRegistrationWithRelations[] = [];
+      for (const player of players) {
+        const personKey = createHash('sha256').update(`${player.name}\0${normalizeContact(player.contact)}`).digest('hex');
+        const previous = await tx.competitionRegistration.findFirst({ where: { competitionId: competition.id, status: { notIn: ['REMOVED', 'REJECTED'] }, OR: [{ personKey }, { name: player.name, contact: player.contact }] }, include: { eventItems: true } });
+        if (previous && previous.groupId !== group.id) throw new ConflictException(`第${player.row}行：选手已在其他组别报名`);
+        if (previous?.eventItems.some(item => item.eventId === event.id)) throw new ConflictException(`第${player.row}行：该项目已报名`);
+        const max = competition.allowCrossEventRegistration ? competition.maxRegistrationEvents : 1;
+        if ((previous?.eventItems.length ?? 0) >= max) throw new BadRequestException(`第${player.row}行：超过兼项数量限制`);
+        await this.ensureIdentityNotCrossGroup(tx, competition.id, group.id, [player.identityData?.fingerprint, player.partnerIdentityData?.fingerprint].filter(Boolean) as string[], previous?.id, [event.id]);
+        const pending = player.eligibility?.status === 'PENDING' || previous?.status === 'PENDING';
+        const item = { eventId: event.id, partnerName: player.partnerName ?? null, partnerGender: player.partnerGender ?? null,
+          partnerContact: player.partnerContact ?? null, partnerSchool: player.partnerSchool ?? null, partnerStudentId: player.partnerStudentId ?? null,
+          partnerCollege: player.partnerCollege ?? null, partnerMajorGrade: player.partnerMajorGrade ?? null, partnerClassName: player.partnerClassName ?? null,
+          teamName: player.teamName ?? null, partnerIdentityData: player.partnerIdentityData ?? Prisma.DbNull, eligibility: player.eligibility };
+        const data = { groupId: group.id, personKey, entrantType: player.entrantType, name: player.name, gender: player.gender, school: player.school,
+          studentId: player.studentId ?? null, college: player.college ?? null, majorGrade: player.majorGrade ?? null,
+          className: player.className ?? null, contact: player.contact, identityData: player.identityData ?? Prisma.DbNull,
+          status: pending ? RegistrationStatus.PENDING : RegistrationStatus.APPROVED, eligibility: { status: pending ? 'PENDING' : 'PASSED' },
+          reviewedAt: pending ? null : new Date(), reviewedById: pending ? null : operatorId ?? null };
+        const include = { user: true, eventItems: { include: { event: true } } } as const;
+        const application = previous
+          ? await tx.competitionRegistration.update({ where: { id: previous.id }, data: { ...data, eventItems: { create: item } }, include })
+          : await tx.competitionRegistration.create({ data: { ...data, competitionId: competition.id, guestToken: randomBytes(24).toString('base64url'), eventItems: { create: item } }, include });
+        if (!pending) await this.createApprovedRegistrationRecords(tx, application, operatorId ?? null, [event.id]);
+        results.push(application);
+      }
+      return results;
+    }, { timeout: 30000, maxWait: 10000 });
+  }
+
   private normalizeAdminBatchPlayer(
     item: AdminBatchCompetitionPlayerDto,
     rowNumber: number,
     event: { type: EventType; entrantType: EntrantType },
     rules: RegistrationFieldRules,
+    group?: TournamentGroup | null,
   ): NormalizedAdminBatchPlayer {
+    const fields = groupFields(group?.fieldRules, event.entrantType === 'SCHOOL', !group);
+    const ageRule = normalizeAgeRule(group?.ageRule);
+    const own = preparePerson(item, fields, ageRule);
+    if (group) rules = { SCHOOL: fields, SOCIAL: fields };
     const entrantType = item.entrantType
       ? this.normalizeEntrantType(item.entrantType)
       : item.social
@@ -2385,13 +2627,13 @@ export class CompetitionsService {
         : event.entrantType;
     const row = item.row ?? rowNumber;
     const name = this.requiredBatchField(item.name, row, '姓名');
-    const gender = this.normalizeBatchGender(item.gender, row, '性别');
+    const gender = own.gender;
     const school = this.requiredBatchField(item.school, row, entrantType === EntrantType.SOCIAL ? '单位' : '学校');
     const contact = this.requiredBatchField(item.contact, row, '联系方式');
     const isSchool = entrantType === EntrantType.SCHOOL;
-    const studentId = isSchool ? this.batchGroupField(item.studentId, rules, 'studentId', '学号', row) : undefined;
-    const college = isSchool ? this.batchGroupField(item.college, rules, 'college', '学院', row) : undefined;
-    const majorGrade = isSchool ? this.batchGroupField(item.majorGrade, rules, 'majorGrade', '年级专业', row) : undefined;
+    const studentId = isSchool || group ? this.batchGroupField(item.studentId, rules, 'studentId', '学号', row) : undefined;
+    const college = isSchool || group ? this.batchGroupField(item.college, rules, 'college', '学院', row) : undefined;
+    const majorGrade = isSchool || group ? this.batchGroupField(item.majorGrade, rules, 'majorGrade', '年级专业', row) : undefined;
     const className = [college, majorGrade].filter(Boolean).join(' ')
       || item.className?.trim()
       || undefined;
@@ -2399,6 +2641,8 @@ export class CompetitionsService {
     const base: NormalizedAdminBatchPlayer = {
       social: !isSchool,
       entrantType,
+      identityData: own.identity,
+      eligibility: undefined,
       name,
       gender,
       school,
@@ -2412,7 +2656,7 @@ export class CompetitionsService {
 
     if (!this.isDoubleEvent(event.type)) {
       try {
-        this.ensureRegistrationGender(event.type, gender);
+        base.eligibility = itemEligibility(event.type, own, null, ageRule, group?.ruleVersion ?? 1);
       } catch (error) {
         const message = error instanceof Error ? error.message : '性别填写有误';
         throw new BadRequestException(`第 ${row} 行：${message}`);
@@ -2421,14 +2665,15 @@ export class CompetitionsService {
     }
 
     const partnerName = this.requiredBatchField(item.partnerName, row, isSchool ? '搭档姓名' : '队友姓名');
-    const partnerGender = this.normalizeBatchGender(item.partnerGender, row, isSchool ? '搭档性别' : '队友性别');
+    const partner = preparePerson({ gender: item.partnerGender ?? null, identityNumber: item.partnerIdentityNumber }, fields, ageRule, '搭档');
+    const partnerGender = partner.gender;
     const partnerContact = this.requiredBatchField(item.partnerContact, row, isSchool ? '搭档联系方式' : '队友联系方式');
     const partnerSchool = item.partnerSchool?.trim() || school;
     let partnerStudentId: string | undefined;
     let partnerCollege: string | undefined;
     let partnerMajorGrade: string | undefined;
     let partnerClassName: string | undefined;
-    if (isSchool) {
+    if (isSchool || group) {
       partnerStudentId = this.batchGroupField(item.partnerStudentId, rules, 'studentId', '搭档学号', row);
       partnerCollege = this.batchGroupField(
         item.partnerCollege?.trim() || college,
@@ -2450,7 +2695,7 @@ export class CompetitionsService {
     }
 
     try {
-      this.ensureRegistrationGender(event.type, gender, partnerGender);
+      base.eligibility = itemEligibility(event.type, own, partner, ageRule, group?.ruleVersion ?? 1);
     } catch (error) {
       const message = error instanceof Error ? error.message : '双打性别填写有误';
       throw new BadRequestException(`第 ${row} 行：${message}`);
@@ -2458,6 +2703,7 @@ export class CompetitionsService {
 
     return {
       ...base,
+      partnerIdentityData: partner.identity,
       teamName: item.teamName?.trim() || undefined,
       partnerName,
       partnerGender,
@@ -2479,6 +2725,7 @@ export class CompetitionsService {
   ): string | undefined {
     const state = this.fieldState(rules, EntrantType.SCHOOL, field);
     const trimmed = value?.trim();
+    if (state === 'hidden') return undefined;
     if (trimmed) return trimmed;
     if (state === 'required') {
       throw new BadRequestException(`第 ${row} 行缺少${label}`);
@@ -2486,7 +2733,7 @@ export class CompetitionsService {
     return undefined;
   }
 
-  // 社会人员没有学号，同一项目内按「姓名 + 联系方式」判重。
+  // 第三方人员没有学号，同一项目内按「姓名 + 联系方式」判重。
   private socialPeople(player: NormalizedAdminBatchPlayer) {
     if (!player.social) return [];
     return [
@@ -2539,14 +2786,14 @@ export class CompetitionsService {
     throw new ConflictException(`${hit?.name ?? '该选手'}（${hit?.contact ?? ''}）已在该项目报名`);
   }
 
-  private requiredBatchField(value: string | undefined, rowNumber: number, label: string) {
+  private requiredBatchField(value: string | null | undefined, rowNumber: number, label: string) {
     const trimmed = value?.trim();
     if (!trimmed) throw new BadRequestException(`第 ${rowNumber} 行缺少${label}`);
     return trimmed;
   }
 
   private normalizeBatchGender(
-    value: string | undefined,
+    value: string | null | undefined,
     rowNumber: number,
     label: string,
   ) {
@@ -2664,6 +2911,9 @@ export class CompetitionsService {
         type: event.type,
         entrantType: event.entrantType,
         groupLabel: event.groupLabel,
+        groupId: event.groupId,
+        groupFields: event.group ? groupFields(event.group.fieldRules) : null,
+        ageRule: event.group ? normalizeAgeRule(event.group.ageRule) : null,
         label: eventDisplayLabel(event),
         isDouble: this.isDoubleEvent(event.type),
       })),
@@ -2673,7 +2923,6 @@ export class CompetitionsService {
       allowCrossEventRegistration: competition.allowCrossEventRegistration,
       needsRegistrationReview: competition.needsRegistrationReview,
       allowSchoolRegistration: competition.allowSchoolRegistration,
-      allowSocialRegistration: competition.allowSocialRegistration,
       fieldRules,
       channels: [
         {
@@ -2681,13 +2930,6 @@ export class CompetitionsService {
           label: entrantTypeLabel(EntrantType.SCHOOL),
           enabled: competition.allowSchoolRegistration
             && competition.events.some((event) => event.entrantType === EntrantType.SCHOOL),
-          loginRequired: false,
-        },
-        {
-          entrantType: EntrantType.SOCIAL,
-          label: entrantTypeLabel(EntrantType.SOCIAL),
-          enabled: competition.allowSocialRegistration
-            && competition.events.some((event) => event.entrantType === EntrantType.SOCIAL),
           loginRequired: false,
         },
       ],
@@ -2698,6 +2940,7 @@ export class CompetitionsService {
       registrationStartTime: competition.registrationStartDate?.toISOString() ?? null,
       registrationEndTime: competition.registrationEndDate?.toISOString() ?? null,
       registeredCount: approvedCount,
+      viewCount: competition.viewCount ?? 0,
       // 后台用：过了这个时间不能再改报名信息和组别。
       registrationEditDeadline: detailed ? competition.registrationEditDeadline?.toISOString() ?? null : undefined,
       createdAt: detailed ? competition.createdAt.toISOString() : undefined,
@@ -2714,23 +2957,30 @@ export class CompetitionsService {
       guest: !registration.userId,
       email: registration.user?.email ?? registration.guestEmail ?? '',
       entrantType: registration.entrantType,
-      entrantTypeLabel: entrantTypeLabel(registration.entrantType),
+      groupId: registration.groupId,
+      eligibility: registration.eligibility,
+      identity: identityView(registration.identityData),
+      entrantTypeLabel: registration.eventItems[0]?.event.groupLabel ?? entrantTypeLabel(registration.entrantType),
       studentId: registration.studentId ?? '',
       college: registration.college ?? '',
       majorGrade: registration.majorGrade ?? '',
       name: registration.name,
       gender: registration.gender,
-      genderLabel: registration.gender === Gender.MALE ? '男' : '女',
+      genderLabel: registration.gender === Gender.MALE ? '男' : registration.gender === Gender.FEMALE ? '女' : '未填写',
       school: registration.school ?? '',
       className: registration.className ?? '',
       contact: registration.contact ?? '',
       phone: registration.contact ?? '',
+      age: registration.age ?? null,
+      shirtSize: registration.shirtSize ?? '',
       remark: registration.remark ?? '',
       items: registration.eventItems.map((item) => ({
         id: item.id,
         eventId: item.eventId,
         eventType: item.event.type,
         eventName: eventDisplayLabel(item.event),
+        eligibility: item.eligibility,
+        partnerIdentity: identityView(item.partnerIdentityData),
         partnerName: item.partnerName,
         partnerGender: item.partnerGender,
         partnerGenderLabel: item.partnerGender === Gender.MALE ? '男' : item.partnerGender === Gender.FEMALE ? '女' : null,
@@ -2740,6 +2990,8 @@ export class CompetitionsService {
         partnerMajorGrade: item.partnerMajorGrade,
         partnerClassName: item.partnerClassName,
         partnerContact: item.partnerContact,
+        partnerAge: item.partnerAge ?? null,
+        partnerShirtSize: item.partnerShirtSize ?? '',
         teamName: item.teamName,
       })),
       eventNames: registration.eventItems.map((item) => eventDisplayLabel(item.event)),
@@ -2779,22 +3031,25 @@ export class CompetitionsService {
           name: registration.player2.name,
           studentId: registration.partnerStudentId ?? eventItem?.partnerStudentId ?? '',
           gender: registration.player2.gender,
-          genderLabel: registration.player2.gender === Gender.MALE ? '男' : '女',
+          genderLabel: registration.player2.gender === Gender.MALE ? '男' : registration.player2.gender === Gender.FEMALE ? '女' : '未填写',
           school: registration.partnerSchool ?? eventItem?.partnerSchool ?? registration.player2.affiliation ?? school,
           college: registration.partnerCollege ?? eventItem?.partnerCollege ?? '',
           majorGrade: registration.partnerMajorGrade ?? eventItem?.partnerMajorGrade ?? '',
           className: registration.partnerClassName ?? eventItem?.partnerClassName ?? '',
           phone: registration.partnerPhone ?? eventItem?.partnerContact ?? registration.player2.contact ?? '',
+          age: eventItem?.partnerAge ?? null,
+          shirtSize: eventItem?.partnerShirtSize ?? '',
         }
       : null;
     return {
       id: registration.id,
       competitionRegistrationId: registration.competitionRegistrationId,
       competitionId: registration.event.tournamentId,
+      groupId: registration.event.groupId,
       eventId: registration.eventId,
       email: registration.competitionRegistration?.user?.email ?? registration.competitionRegistration?.guestEmail ?? '',
       entrantType,
-      entrantTypeLabel: entrantTypeLabel(entrantType),
+      entrantTypeLabel: registration.event.groupLabel || entrantTypeLabel(entrantType),
       name: registration.name ?? primaryName,
       // Always expose the primary player's individual name so doubles lists can
       // show each team member on their own row.
@@ -2809,8 +3064,11 @@ export class CompetitionsService {
       school,
       className,
       phone: registration.phone ?? registration.player1.contact ?? '',
+      // 年龄、衣服尺寸只在线上报名里收集，后台直接录入的选手为空。
+      age: registration.competitionRegistration?.age ?? null,
+      shirtSize: registration.competitionRegistration?.shirtSize ?? '',
       gender,
-      genderLabel: gender === Gender.MALE ? '男' : '女',
+      genderLabel: gender === Gender.MALE ? '男' : gender === Gender.FEMALE ? '女' : '未填写',
       eventName: registration.eventName ?? eventDisplayLabel(registration.event),
       eventType: registration.event.type,
       eventGroupLabel: registration.event.groupLabel,
@@ -2839,7 +3097,7 @@ export class CompetitionsService {
     }
     return {
       players,
-      // 新前端按 eventId 分组，学生组/社会组同项目不会混在一起。
+      // 新前端按 eventId 分组，不同组别的同名项目不会混在一起。
       eventGroups: [...eventGroupMap.values()],
       // 旧字段保留一个版本，避免未更新的页面直接报错。
       groups: {
@@ -2927,7 +3185,7 @@ export class CompetitionsService {
     );
   }
 
-  private ensureRegistrationGender(eventType: EventType, primaryGender: Gender, partnerGenderValue?: string) {
+  private ensureRegistrationGender(eventType: EventType, primaryGender: Gender | null, partnerGenderValue?: string | null) {
     const partnerGender = partnerGenderValue ? this.normalizeGender(partnerGenderValue) : null;
     if (eventType === EventType.MENS_SINGLES && primaryGender !== Gender.MALE) {
       throw new BadRequestException('男子单打报名性别必须为男');
@@ -2959,8 +3217,8 @@ export class CompetitionsService {
     if (!this.isDoubleEvent(eventType)) {
       return;
     }
-    if (!item.partnerName?.trim() || !item.partnerGender || !item.partnerContact?.trim()) {
-      throw new BadRequestException('双打项目必须填写搭档姓名、性别和联系方式');
+    if (!item.partnerName?.trim() || !item.partnerContact?.trim()) {
+      throw new BadRequestException('双打项目必须填写搭档姓名和联系方式');
     }
     if (entrantType !== EntrantType.SCHOOL) return;
     const partnerStudentId = item.partnerStudentId?.trim() ?? '';

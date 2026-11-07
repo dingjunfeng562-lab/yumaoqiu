@@ -1,7 +1,11 @@
+import { groupFields, normalizeAgeRule } from '../common/age-eligibility';
+import { preparePerson, identityView, isPendingEligibility } from '../common/registration-eligibility';
+import { decryptIdentity } from '../common/identity-vault';
+import { legacyGroupId } from '../registration-groups/registration-groups.service';
 import { AuthActor, playerScope, tournamentScope } from '../auth/admin-scope';
 import { validateTeamRoster } from './team-roster';
-import { rankTeamRoundRobin } from '../common/team-round-robin-ranking';
-import { hasOfficialTeamResult, withOfficialTeamResult, type TeamResult } from '../common/team-official-result';
+import { rankTeamGroup } from '../common/team-group-ranking';
+import { withOfficialTeamResult, type TeamResult } from '../common/team-official-result';
 import {
   BadRequestException,
   ConflictException,
@@ -25,6 +29,7 @@ import {
   TeamDrawClearRequestStatus,
   TeamLineup,
   TeamMatch,
+  TeamThirdPlaceMode,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { unpaidMessage, unpaidTeams } from '../payments/payment-rules';
@@ -56,9 +61,7 @@ import {
   validateRoundRobin,
   TeamSlot,
 } from './group-round-robin';
-import {
-  calculateGroupStandings,
-} from './group-standings';
+import { nextPowerOfTwo, seedGroupQualifiers } from './knockout-seeding';
 
 type TeamWithMembers = Prisma.TeamGetPayload<{
   include: {
@@ -73,6 +76,7 @@ type TeamWithMembers = Prisma.TeamGetPayload<{
 type TeamCompetitionDetail = Prisma.TeamCompetitionGetPayload<{
   include: {
     tournament: true;
+    group: true;
     items: true;
     teams: {
       include: {
@@ -170,20 +174,21 @@ export class TeamCompetitionsService {
 
   async create(dto: CreateTeamCompetitionDto) {
     await this.ensureTournament(dto.tournamentId);
-    const entrantType = dto.entrantType ?? EntrantType.SCHOOL;
+    const groupId = dto.groupId ?? legacyGroupId(dto.tournamentId, dto.entrantType ?? EntrantType.SCHOOL);
+    const group = await this.prisma.tournamentGroup.findFirst({ where: { id: groupId, tournamentId: dto.tournamentId } });
+    if (!group) throw new NotFoundException('赛事组别不存在');
+    const entrantType = group.fieldTemplate === 'SCHOOL' ? EntrantType.SCHOOL : EntrantType.SOCIAL;
     const existing = await this.prisma.teamCompetition.findUnique({
       where: {
-        tournamentId_entrantType: {
+        tournamentId_groupId: {
           tournamentId: dto.tournamentId,
-          entrantType,
+          groupId,
         },
       },
     });
     if (existing) {
       throw new ConflictException(
-        entrantType === EntrantType.SCHOOL
-          ? '该赛事已有学生组团体赛'
-          : '该赛事已有社会组团体赛',
+        `该赛事的${group.name}已有团体赛`,
       );
     }
     const items = this.normalizeItems(dto.items);
@@ -193,12 +198,14 @@ export class TeamCompetitionsService {
     return this.prisma.teamCompetition.create({
       data: {
         tournamentId: dto.tournamentId,
+        groupId,
         entrantType,
         name: dto.name,
         description: dto.description,
         winThreshold: dto.winThreshold,
         maxPlayerAppearances: dto.maxPlayerAppearances ?? 2,
         playAllMatches: dto.playAllMatches ?? false,
+        thirdPlaceMode: dto.thirdPlaceMode ?? TeamThirdPlaceMode.BY_RECORD,
         ...this.formatData(dto),
         ...this.scoringData(dto),
         isPublished: dto.isPublished ?? false,
@@ -208,6 +215,7 @@ export class TeamCompetitionsService {
       },
       include: {
         tournament: true,
+        group: true,
         items: { orderBy: { sortOrder: 'asc' } },
       },
     });
@@ -218,6 +226,7 @@ export class TeamCompetitionsService {
       where: { tournamentId, entrantType, tournament: tournamentScope(actor) },
       include: {
         tournament: true,
+        group: true,
         items: { orderBy: { sortOrder: 'asc' } },
         _count: { select: { teams: true, teamMatches: true } },
       },
@@ -247,6 +256,14 @@ export class TeamCompetitionsService {
     if ((rulesChanged || itemsChanged) && await this.prisma.teamMatch.count({ where: { teamCompetitionId: id } })) {
       throw new ConflictException('已生成对阵后不能修改赛制、兼项、胜场、计分规则或项目顺序');
     }
+    // 是否加赛季军赛决定淘汰赛签表里有没有季军赛对阵，淘汰赛生成后不能再改；
+    // 「并列第三」与「按成绩排定」只影响名次计算，随时可改。
+    const nextThirdPlace = dto.thirdPlaceMode ?? current.thirdPlaceMode;
+    if (nextThirdPlace !== current.thirdPlaceMode
+      && (nextThirdPlace === TeamThirdPlaceMode.PLAYOFF || current.thirdPlaceMode === TeamThirdPlaceMode.PLAYOFF)
+      && await this.prisma.teamMatch.count({ where: { teamCompetitionId: id, stage: 'KNOCKOUT' } })) {
+      throw new ConflictException('淘汰赛对阵已生成，不能再增加或取消季军赛；如需调整，请先取消对阵');
+    }
     // 「胜负确定后继续比赛」不影响签表结构，抽签后仍可开启；开启时把此前因胜负已定
     // 取消、且尚未开赛的剩余子项恢复为未开始，让这些子项可以补录。
     // reopenCancelledChildren 供已开启该选项、但历史数据仍被取消时手动恢复。
@@ -263,6 +280,7 @@ export class TeamCompetitionsService {
           ...(dto.winThreshold !== undefined ? { winThreshold: dto.winThreshold } : {}),
           ...(dto.maxPlayerAppearances !== undefined ? { maxPlayerAppearances: dto.maxPlayerAppearances } : {}),
           ...(dto.playAllMatches !== undefined ? { playAllMatches: dto.playAllMatches } : {}),
+          ...(dto.thirdPlaceMode !== undefined ? { thirdPlaceMode: dto.thirdPlaceMode } : {}),
           ...this.formatData(dto),
           ...this.scoringData(dto),
           ...(dto.isPublished !== undefined ? { isPublished: dto.isPublished } : {}),
@@ -349,7 +367,7 @@ export class TeamCompetitionsService {
   }
 
   async createTeam(teamCompetitionId: string, dto: CreateTeamDto, actor?: AuthActor) {
-    await this.ensureCompetition(teamCompetitionId);
+    const competition = await this.ensureCompetition(teamCompetitionId);
     const playerIds = this.uniquePlayerIds(dto.playerIds);
     const players = await this.loadPlayers(playerIds, actor);
     validateTeamRoster(players);
@@ -357,8 +375,10 @@ export class TeamCompetitionsService {
     const name = this.normalizeTeamName(dto.name);
 
     return this.prisma.$transaction(async tx => {
+      if (competition.groupId) await tx.$queryRaw`SELECT id FROM Tournament WHERE id = ${competition.tournamentId} FOR UPDATE`;
       await tx.$queryRaw`SELECT id FROM TeamCompetition WHERE id = ${teamCompetitionId} FOR UPDATE`;
       await this.ensureTeamNameAvailable(tx, teamCompetitionId, name);
+      const qualified = competition.groupId ? await Promise.all(players.map(p => this.prepareTeamMember(tx, competition.id, p))) : players.map(() => ({}));
       await this.clearDraftDrawForRosterChange(tx, teamCompetitionId);
       return tx.team.create({
         data: {
@@ -367,7 +387,7 @@ export class TeamCompetitionsService {
           affiliation: dto.affiliation,
           notes: dto.notes,
           members: {
-            create: playerIds.map((playerId) => ({ playerId })),
+            create: playerIds.map((playerId) => ({ playerId, ...qualified[players.findIndex(p => p.id === playerId)] })),
           },
         },
         include: {
@@ -386,8 +406,10 @@ export class TeamCompetitionsService {
 
   private async assertTeamsPaid(
     db: Prisma.TransactionClient,
-    competition: { id: string; tournamentId: string; entrantType: EntrantType },
+    competition: { id: string; tournamentId: string; entrantType: EntrantType; groupId?: string | null },
   ) {
+    const pending = await db.teamMember.findFirst({ where: { team: { teamCompetitionId: competition.id }, eligibility: { path: '$.status', equals: 'PENDING' } }, include: { player: true } });
+    if (pending) throw new BadRequestException(`队员${pending.player.name}资格待核验，请先完成资格核验再抽签`);
     const unpaid = await unpaidTeams(db, competition);
     if (unpaid.length) throw new BadRequestException(unpaidMessage('队伍', unpaid.map((team) => team.name)));
   }
@@ -409,9 +431,9 @@ export class TeamCompetitionsService {
     // 优先只返回该组报名选手；还没有报名数据时保留原来的全量选手库，避免旧流程突然空列表。
     const registrations = await this.prisma.registration.findMany({
       where: {
-        event: { tournamentId: competition.tournamentId },
+        event: { tournamentId: competition.tournamentId, ...(competition.groupId ? { groupId: competition.groupId } : {}) },
         entrantType: competition.entrantType,
-        status: { not: RegistrationStatus.REMOVED },
+          status: RegistrationStatus.APPROVED,
       },
       select: { player1Id: true, player2Id: true },
     });
@@ -420,9 +442,8 @@ export class TeamCompetitionsService {
     )];
     return this.prisma.player.findMany({
       where: {
-        ...playerScope(actor),
-        isTemporary: false,
-        ...(playerIds.length ? { id: { in: playerIds } } : {}),
+          ...(competition.groupId ? {} : { ...playerScope(actor), isTemporary: false }),
+        ...(competition.groupId || playerIds.length ? { id: { in: playerIds } } : {}),
       },
       select: { id: true, name: true, gender: true, affiliation: true },
       orderBy: { createdAt: 'desc' },
@@ -458,6 +479,7 @@ export class TeamCompetitionsService {
     const team = await this.ensureTeam(teamId);
     const playerIds = this.uniquePlayerIds(dto.playerIds);
     const players = await this.loadPlayers(playerIds, actor);
+    const qualified = await Promise.all(players.map(p => this.prepareTeamMember(this.prisma, team.teamCompetitionId, p)));
     this.ensureSingleCompetitionMembership(players, team.teamCompetitionId, team.id);
 
     await this.prisma.$transaction(async (tx) => {
@@ -473,7 +495,7 @@ export class TeamCompetitionsService {
       }
       await tx.teamMember.deleteMany({ where: { teamId } });
       await tx.teamMember.createMany({
-        data: playerIds.map((playerId) => ({ teamId, playerId })),
+        data: playerIds.map((playerId) => ({ teamId, playerId, ...qualified[players.findIndex(p => p.id === playerId)] })),
       });
       await tx.team.update({ where: { id: teamId }, data: { rosterOverrideConfirmed: true } });
     }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
@@ -488,11 +510,15 @@ export class TeamCompetitionsService {
 
   async addTeamPlayers(teamId: string, dto: AddTeamPlayersDto, actor: AuthActor) {
     if (!dto.overrideConfirmed) throw new ConflictException('临时补充队员须先确认例外调整');
-    await this.ensureTeam(teamId);
+    const team = await this.ensureTeam(teamId);
+    const competition = await this.ensureCompetition(team.teamCompetitionId);
     await this.prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM Tournament WHERE id = ${competition.tournamentId} FOR UPDATE`;
       for (const player of dto.players) {
-        const created = await tx.player.create({ data: { ...player, ownerId: actor.id } });
-        await tx.teamMember.create({ data: { teamId, playerId: created.id } });
+        const qualification = await this.prepareTeamMember(tx, team.teamCompetitionId, player);
+        const { identityNumber: _identityNumber, ...profile } = player;
+        const created = await tx.player.create({ data: { ...profile, gender: player.gender ?? null, ownerId: actor.id } });
+        await tx.teamMember.create({ data: { teamId, playerId: created.id, ...qualification } });
       }
       await tx.team.update({ where: { id: teamId }, data: { rosterOverrideConfirmed: true } });
     });
@@ -571,28 +597,35 @@ export class TeamCompetitionsService {
   }
 
   async importTeamPlayers(teamCompetitionId: string, dto: ImportTeamPlayersDto, actor?: AuthActor) {
-    await this.ensureCompetition(teamCompetitionId);
+    const competition = await this.ensureCompetition(teamCompetitionId);
     validateTeamRoster(dto.players);
     const teamName = this.normalizeTeamName(dto.teamName);
 
     return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM Tournament WHERE id = ${competition.tournamentId} FOR UPDATE`;
       await tx.$queryRaw`SELECT id FROM TeamCompetition WHERE id = ${teamCompetitionId} FOR UPDATE`;
       await this.ensureTeamNameAvailable(tx, teamCompetitionId, teamName);
       const drawCleared = await this.clearDraftDrawForRosterChange(tx, teamCompetitionId);
-      const createdPlayers = [] as Array<{ id: string }>;
+      const createdPlayers: Array<{ id: string; qualification: Awaited<ReturnType<TeamCompetitionsService['prepareTeamMember']>> }> = [];
+      const seenIdentities = new Set<string>();
       for (const player of dto.players) {
+        const qualification = await this.prepareTeamMember(tx, teamCompetitionId, player);
+        const identity = qualification.identityData;
+        const fingerprint = identity && typeof identity === 'object' && 'fingerprint' in identity ? String(identity.fingerprint) : null;
+        if (fingerprint && seenIdentities.has(fingerprint)) throw new ConflictException('同一队伍不能重复使用同一身份证号');
+        if (fingerprint) seenIdentities.add(fingerprint);
         const created = await tx.player.create({
           data: {
             name: player.name,
             ownerId: actor?.id,
-            gender: player.gender,
+            gender: player.gender ?? null,
             affiliation: player.affiliation,
             contact: player.contact,
             notes: player.notes,
           },
           select: { id: true },
         });
-        createdPlayers.push(created);
+        createdPlayers.push({ ...created, qualification });
       }
 
       const team = await tx.team.create({
@@ -602,7 +635,7 @@ export class TeamCompetitionsService {
           affiliation: dto.affiliation,
           notes: dto.notes,
           members: {
-            create: createdPlayers.map((player) => ({ playerId: player.id })),
+            create: createdPlayers.map((player) => ({ playerId: player.id, ...player.qualification })),
           },
         },
         include: {
@@ -614,8 +647,10 @@ export class TeamCompetitionsService {
   }
 
   async batchImportTeams(teamCompetitionId: string, dto: BatchImportTeamsDto, actor: AuthActor) {
-    // Share the competition lock with draw generation; validate the entire batch before writing.
+    const competition = await this.ensureCompetition(teamCompetitionId);
+    // Share the tournament lock with individual registration and the competition lock with draw generation.
     return this.prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM Tournament WHERE id = ${competition.tournamentId} FOR UPDATE`;
       await tx.$queryRaw`SELECT id FROM TeamCompetition WHERE id = ${teamCompetitionId} FOR UPDATE`;
       // 未发布的对阵视为草稿：改名单时直接清空；已发布的须先“取消对阵”。
       const drawCleared = await this.clearDraftDrawForRosterChange(tx, teamCompetitionId);
@@ -638,8 +673,9 @@ export class TeamCompetitionsService {
       for (const [name, rows] of groups) {
         const team = await tx.team.create({ data: { teamCompetitionId, name, affiliation: rows.find(row => row.affiliation?.trim())?.affiliation?.trim() || name } });
         for (const row of rows) {
-          const player = await tx.player.create({ data: { name: row.name, gender: row.gender, affiliation: row.affiliation?.trim() || team.affiliation, contact: row.contact?.trim() || null, ownerId: actor.id } });
-          await tx.teamMember.create({ data: { teamId: team.id, playerId: player.id } });
+          const qualification = await this.prepareTeamMember(tx, teamCompetitionId, row);
+          const player = await tx.player.create({ data: { name: row.name, gender: row.gender ?? null, affiliation: row.affiliation?.trim() || team.affiliation, contact: row.contact?.trim() || null, ownerId: actor.id } });
+          await tx.teamMember.create({ data: { teamId: team.id, playerId: player.id, ...qualification } });
         }
       }
       return { teamCount: groups.size, playerCount: dto.players.length, drawCleared };
@@ -695,7 +731,7 @@ export class TeamCompetitionsService {
       await tx.teamMatch.deleteMany({ where: { teamCompetitionId } });
       await tx.teamGroup.deleteMany({ where: { teamCompetitionId } });
       const shuffled = this.shuffle(teams);
-      const size = this.nextPowerOfTwo(shuffled.length);
+      const size = nextPowerOfTwo(shuffled.length);
       const byes = size - shuffled.length;
       let slots = this.byeSlots(shuffled.map(team => team.id), size, byes);
       let roundNo = 1;
@@ -716,8 +752,25 @@ export class TeamCompetitionsService {
         slots = next;
         roundNo++;
       }
+      // 4 队及以上两场半决赛都有真实对手，才能加赛季军赛。
+      if (competition.thirdPlaceMode === TeamThirdPlaceMode.PLAYOFF && teams.length >= 4) {
+        await this.upsertBronzeEncounter(tx, teamCompetitionId, roundNo - 1);
+      }
     }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
     return this.findOne(teamCompetitionId);
+  }
+
+  /** 季军赛对阵与决赛同一轮次、第 2 场（与单项赛一致），双方在两场半决赛结束后由负者填入。 */
+  private async upsertBronzeEncounter(tx: Prisma.TransactionClient, teamCompetitionId: string, finalRoundNo: number) {
+    const data = {
+      teamCompetitionId, round: 'BRONZE', roundNo: finalRoundNo, matchNo: 2, stage: 'KNOCKOUT',
+      team1Id: null, team2Id: null, winnerTeamId: null, status: MatchStatus.PENDING,
+    };
+    await tx.teamMatch.upsert({
+      where: { teamCompetitionId_roundNo_matchNo: { teamCompetitionId, roundNo: finalRoundNo, matchNo: 2 } },
+      create: data,
+      update: { ...data, team1Wins: 0, team2Wins: 0, lineupLocked: false },
+    });
   }
 
   /**
@@ -904,6 +957,18 @@ export class TeamCompetitionsService {
     const key = encounter.matchNo % 2 === 1 ? 'team1Id' : 'team2Id';
     const updated = await tx.teamMatch.update({ where: { id: next.id }, data: { [key]: winnerTeamId } });
     if (updated.team1Id && updated.team2Id) await this.createEncounterMatches(tx, updated, items);
+
+    // 半决赛（下一场是决赛）的负者进入同一轮第 2 场的季军赛。
+    if (next.round !== 'F') return;
+    const loserTeamId = encounter.team1Id === winnerTeamId ? encounter.team2Id : encounter.team1Id;
+    if (!loserTeamId) return;
+    const bronze = await tx.teamMatch.findUnique({ where: { teamCompetitionId_roundNo_matchNo: {
+      teamCompetitionId: encounter.teamCompetitionId, roundNo: next.roundNo, matchNo: 2,
+    } } });
+    if (!bronze || bronze.round !== 'BRONZE') return;
+    await this.lockEncounter(tx, bronze.id);
+    const filled = await tx.teamMatch.update({ where: { id: bronze.id }, data: { [key]: loserTeamId } });
+    if (filled.team1Id && filled.team2Id) await this.createEncounterMatches(tx, filled, items);
   }
 
   async getTeamMatchLineups(teamMatchId: string) {
@@ -960,6 +1025,7 @@ export class TeamCompetitionsService {
         const players = [selection.player1Id, selection.player2Id].filter(Boolean).map(id => {
           const member = members.find(m => m.teamId === selection.teamId && m.playerId === id);
           if (!member) throw new BadRequestException('出场选手必须属于对应队伍');
+          if (isPendingEligibility(member.eligibility)) throw new BadRequestException(`${member.player.name}资格待核验，不能出场`);
           return member.player;
         });
         const genders = players.map(p => p.gender);
@@ -1009,7 +1075,7 @@ export class TeamCompetitionsService {
     await tx.$queryRaw`SELECT id FROM TeamMatch WHERE id = ${teamMatchId} FOR UPDATE`;
   }
 
-  async prepareScoring(tx: Prisma.TransactionClient, matchId: string, options: { starting?: boolean; correcting?: boolean; expectedUpdatedAt?: Date } = {}) {
+  async prepareScoring(tx: Prisma.TransactionClient, matchId: string, options: { starting?: boolean; correcting?: boolean; forfeiting?: boolean; expectedUpdatedAt?: Date } = {}) {
     const ref = await tx.match.findUnique({ where: { id: matchId }, select: { teamMatchId: true, eventId: true, teamMatch: { select: { teamCompetitionId: true } } } });
     if (!ref) throw new NotFoundException('场次不存在');
     // Use the same lock order as result reset, then revalidate the state read
@@ -1030,6 +1096,11 @@ export class TeamCompetitionsService {
     }
     if (match.status === MatchStatus.CANCELLED) throw new ConflictException('本项已取消，无需比赛');
     if (!options.correcting && match.status === MatchStatus.COMPLETED) throw new ConflictException('本项已结束');
+    if (options.forfeiting) {
+      // 判弃权不要求填报名单：缺人（如没有女队员打女单）或整队缺席的一方本来就填不出名单。
+      if (!encounter.team1Id || !encounter.team2Id) throw new ConflictException('双方队伍确定后才能判弃权');
+      return;
+    }
     if (!match.lineupLocked || !match.side1Id || !match.side2Id) throw new ConflictException('请先填齐并锁定本项双方名单');
     if (options.starting) {
       if (match.status !== MatchStatus.PENDING) throw new ConflictException('本项已开始或结束');
@@ -1069,6 +1140,7 @@ export class TeamCompetitionsService {
       },
       include: {
         tournament: true,
+        group: true,
         items: { orderBy: { sortOrder: 'asc' } },
         teams: {
           include: { members: true },
@@ -1095,6 +1167,124 @@ export class TeamCompetitionsService {
     });
 
     return competitions.map((competition) => this.toPublicCompetitionView(competition));
+  }
+
+  /**
+   * 前台对阵表：一个赛事里已公开的团体赛，含小组积分榜、每场团体对阵的正式总比分和每个子项的每局比分。
+   * 只给出队名、单位和出场选手姓名；子项名单锁定或已开赛后才显示出场选手，避免提前泄露排兵布阵。
+   */
+  async getPublicBoard(tournamentId: string) {
+    const competitions = await this.prisma.teamCompetition.findMany({
+      where: {
+        tournamentId,
+        isPublished: true,
+        tournament: { isPublished: true, approvalStatus: 'APPROVED', isArchived: false },
+      },
+      include: {
+        group: true,
+        items: { orderBy: { sortOrder: 'asc' } },
+        teams: { select: { id: true, name: true, affiliation: true }, orderBy: { createdAt: 'asc' } },
+        groups: { include: { teams: { include: { team: { select: { name: true } } } } }, orderBy: { groupNo: 'asc' } },
+        teamMatches: { include: TEAM_ENCOUNTER_DETAIL_INCLUDE, orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }] },
+      },
+      orderBy: [{ entrantType: 'asc' }, { createdAt: 'asc' }],
+    });
+
+    return competitions.map((competition) => {
+      const teamById = new Map(competition.teams.map(team => [team.id, team]));
+      const publicTeam = (teamId: string | null) => {
+        const team = teamId ? teamById.get(teamId) : null;
+        return team ? { id: team.id, name: team.name, affiliation: team.affiliation } : null;
+      };
+      const encounters = competition.teamMatches.map((encounter) => {
+        const official = withOfficialTeamResult(encounter, competition.winThreshold);
+        const players = (teamId: string | null, itemId: string | null) => {
+          const lineup = encounter.lineups.find(row => row.teamId === teamId && row.teamCompetitionItemId === itemId);
+          return lineup ? [lineup.player1.name, lineup.player2?.name].filter((name): name is string => Boolean(name)) : [];
+        };
+        const firstOpen = encounter.matches.find(match => match.status === MatchStatus.PENDING || match.status === MatchStatus.LIVE)
+          ?? encounter.matches[0];
+        return {
+          id: encounter.id,
+          stage: encounter.stage,
+          groupId: encounter.groupId,
+          round: encounter.round,
+          roundNo: encounter.roundNo,
+          matchNo: encounter.matchNo,
+          status: encounter.status,
+          team1: publicTeam(encounter.team1Id),
+          team2: publicTeam(encounter.team2Id),
+          team1Wins: official.team1Wins,
+          team2Wins: official.team2Wins,
+          winnerTeamId: official.winnerTeamId,
+          resultDecided: official.resultDecided,
+          scheduledAt: firstOpen?.scheduledAt?.toISOString() ?? null,
+          venueName: firstOpen?.venue?.name ?? null,
+          children: encounter.matches.map((match) => {
+            const showLineup = match.lineupLocked || match.status !== MatchStatus.PENDING;
+            return {
+              id: match.id,
+              matchNo: match.matchNo,
+              eventType: match.teamCompetitionItem?.eventType ?? null,
+              label: match.teamCompetitionItem ? EVENT_TYPE_LABELS[match.teamCompetitionItem.eventType] : `第 ${match.matchNo} 项`,
+              status: match.status,
+              isSupplemental: official.supplementalMatchIds.includes(match.id),
+              side1Players: showLineup ? players(encounter.team1Id, match.teamCompetitionItemId) : [],
+              side2Players: showLineup ? players(encounter.team2Id, match.teamCompetitionItemId) : [],
+              winnerSide: match.winnerSide,
+              forfeitedSide: match.forfeitedSide,
+              scheduledAt: match.scheduledAt?.toISOString() ?? null,
+              venueName: match.venue?.name ?? null,
+              games: match.games.map(game => ({
+                gameNo: game.gameNo, side1Score: game.side1Score, side2Score: game.side2Score, winnerSide: game.winnerSide,
+              })),
+            };
+          }),
+        };
+      });
+
+      const groups = competition.groups.map((group) => {
+        const matches = competition.teamMatches.filter(encounter => encounter.groupId === group.id);
+        const advanced = new Map(group.teams.map(member => [member.teamId, member.advanced]));
+        const standings = this.calculateGroupRankings(group.teams, matches, competition)
+          .map(row => ({
+            teamId: row.teamId,
+            teamName: row.teamName,
+            affiliation: teamById.get(row.teamId)?.affiliation ?? '',
+            rank: row.groupRank,
+            wins: row.wins,
+            losses: row.losses,
+            matchesWon: row.matchesWon,
+            matchesLost: row.matchesLost,
+            netMatches: row.netMatches,
+            advanced: advanced.get(row.teamId) ?? false,
+          }))
+          .sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity));
+        return { id: group.id, groupNo: group.groupNo, groupName: group.groupName, standings };
+      });
+
+      return {
+        id: competition.id,
+        tournamentId: competition.tournamentId,
+        name: competition.name,
+        description: competition.description,
+        entrantTypeLabel: competition.group?.name ?? (competition.entrantType === EntrantType.SOCIAL ? '第三方' : '学生组'),
+        format: competition.format,
+        groupCount: competition.groupCount,
+        advancePerGroup: competition.advancePerGroup,
+        winThreshold: competition.winThreshold,
+        playAllMatches: competition.playAllMatches,
+        thirdPlaceMode: competition.thirdPlaceMode,
+        scoringRule: competition.scoringRule,
+        customGamePoint: competition.customGamePoint,
+        customGameCap: competition.customGameCap,
+        customGamesToWin: competition.customGamesToWin,
+        items: competition.items.map(item => ({ id: item.id, eventType: item.eventType, label: EVENT_TYPE_LABELS[item.eventType] })),
+        teamCount: competition.teams.length,
+        groups,
+        encounters,
+      };
+    });
   }
 
   async updateTeamMatchAggregate(tx: Prisma.TransactionClient, matchId: string) {
@@ -1271,6 +1461,7 @@ export class TeamCompetitionsService {
       where: { id },
       include: {
         tournament: true,
+        group: true,
         items: { orderBy: { sortOrder: 'asc' } },
         teams: {
           include: {
@@ -1346,6 +1537,37 @@ export class TeamCompetitionsService {
     if (dto.customGameCap && dto.customGameCap < point) {
       throw new BadRequestException('封顶分不能小于目标分');
     }
+  }
+
+  private async prepareTeamMember(db: Prisma.TransactionClient, teamCompetitionId: string, input: { id?: string; name: string; gender?: string | null; identityNumber?: string }) {
+    const competition = await db.teamCompetition.findUniqueOrThrow({ where: { id: teamCompetitionId }, include: { group: true } });
+    const group = competition.group;
+    const previous = input.id ? await db.teamMember.findFirst({ where: { playerId: input.id, team: { teamCompetitionId } } }) : null;
+    if (previous) return { identityData: previous.identityData ?? Prisma.DbNull, eligibility: previous.eligibility ?? Prisma.DbNull };
+    const entry = input.id ? await db.registration.findFirst({ where: { status: 'APPROVED', event: { tournamentId: competition.tournamentId, groupId: competition.groupId }, OR: [{ player1Id: input.id }, { player2Id: input.id }] } }) : null;
+    const stored = entry ? entry.player1Id === input.id ? entry.identityData : entry.partnerIdentityData : null;
+    const saved = stored && typeof stored === 'object' && !Array.isArray(stored) && typeof stored.encrypted === 'string' ? decryptIdentity(stored.encrypted) : undefined;
+    const person = preparePerson({ ...input, identityNumber: input.identityNumber ?? saved }, groupFields(group?.fieldRules, competition.entrantType === 'SCHOOL', !group), normalizeAgeRule(group?.ageRule), input.name);
+    if (person.identity) {
+      const duplicate = await db.teamMember.findFirst({ where: { identityData: { path: '$.fingerprint', equals: person.identity.fingerprint }, team: { teamCompetition: { tournamentId: competition.tournamentId } } } });
+      if (duplicate) throw new ConflictException(`${input.name}已作为团体队员报名，请勿重复导入`);
+      const otherGroup = await db.competitionRegistration.findFirst({ where: { competitionId: competition.tournamentId, groupId: { not: competition.groupId }, status: { notIn: ['REJECTED', 'REMOVED'] }, OR: [{ identityData: { path: '$.fingerprint', equals: person.identity.fingerprint } }, { eventItems: { some: { partnerIdentityData: { path: '$.fingerprint', equals: person.identity.fingerprint } } } }] } });
+      if (otherGroup) throw new ConflictException(`${input.name}已在其他组别报名`);
+    }
+    const inherited = entry?.eligibility && typeof entry.eligibility === 'object' && !Array.isArray(entry.eligibility) && entry.eligibility.status === 'MANUAL';
+    return { identityData: person.identity ?? Prisma.DbNull, eligibility: { status: inherited ? 'MANUAL' : person.age.status === 'PENDING' || !person.gender ? 'PENDING' : 'PASSED', age: person.age.status, ruleVersion: group?.ruleVersion ?? 1 } };
+  }
+
+  async verifyMemberEligibility(teamId: string, playerId: string, note: string, gender: 'MALE' | 'FEMALE', operatorId: string) {
+    if (!note?.trim() || note.length > 500 || !['MALE','FEMALE'].includes(gender)) throw new BadRequestException('请填写核验依据及确认性别');
+    await this.ensureTeam(teamId);
+    return this.prisma.$transaction(async tx => {
+      const member = await tx.teamMember.findFirst({ where: { teamId, playerId } });
+      if (!member) throw new NotFoundException('队员不存在');
+      await tx.player.update({ where: { id: playerId }, data: { gender } });
+      await tx.teamMember.update({ where: { id: member.id }, data: { eligibility: { status: 'MANUAL', verifiedBy: operatorId, verifiedAt: new Date().toISOString(), note: note.trim() } } });
+      return { success: true };
+    });
   }
 
   private uniquePlayerIds(playerIds: string[]) {
@@ -1504,22 +1726,6 @@ export class TeamCompetitionsService {
     };
   }
 
-  /** 标准种子位：size=4 → [1,4,2,3]，size=8 → [1,8,4,5,2,7,3,6] */
-  private seedPositions(size: number) {
-    let order = [1];
-    while (order.length < size) {
-      const total = order.length * 2 + 1;
-      order = order.flatMap(seed => [seed, total - seed]);
-    }
-    return order;
-  }
-
-  private nextPowerOfTwo(value: number) {
-    let size = 1;
-    while (size < value) size *= 2;
-    return size;
-  }
-
   private roundLabel(slotCount: number) {
     if (slotCount === 2) return 'F';
     if (slotCount === 4) return 'SF';
@@ -1574,12 +1780,14 @@ export class TeamCompetitionsService {
       tournamentId: competition.tournamentId,
       tournament: competition.tournament,
       entrantType: competition.entrantType,
-      entrantTypeLabel: competition.entrantType === EntrantType.SOCIAL ? '社会组' : '学生组',
+        groupId: competition.groupId,
+      entrantTypeLabel: competition.group?.name ?? (competition.entrantType === EntrantType.SOCIAL ? '第三方' : '学生组'),
       name: competition.name,
       description: competition.description,
       winThreshold: competition.winThreshold,
       maxPlayerAppearances: competition.maxPlayerAppearances,
       playAllMatches: competition.playAllMatches,
+      thirdPlaceMode: competition.thirdPlaceMode,
       format: competition.format,
       groupCount: competition.groupCount,
       advancePerGroup: competition.advancePerGroup,
@@ -1625,6 +1833,8 @@ export class TeamCompetitionsService {
           lineupLocked: match.lineupLocked,
           teamCompetitionItemId: match.teamCompetitionItemId,
           winnerSide: match.winnerSide,
+          forfeitedSide: match.forfeitedSide,
+          forfeitReason: match.forfeitReason,
           side1Id: match.side1Id,
           side2Id: match.side2Id,
           referee: match.referee,
@@ -1653,6 +1863,7 @@ export class TeamCompetitionsService {
       memberCount: team.members.length,
       rosterOverrideConfirmed: team.rosterOverrideConfirmed,
       members: team.members.map((member) => ({
+        eligibility: member.eligibility,
         id: member.player.id,
         name: member.player.name,
         gender: member.player.gender,
@@ -1700,12 +1911,14 @@ export class TeamCompetitionsService {
       tournamentName: competition.tournament.name,
       tournamentEdition: competition.tournament.edition,
       entrantType: competition.entrantType,
-      entrantTypeLabel: competition.entrantType === EntrantType.SOCIAL ? '社会组' : '学生组',
+        groupId: competition.groupId,
+      entrantTypeLabel: competition.group?.name ?? (competition.entrantType === EntrantType.SOCIAL ? '第三方' : '学生组'),
       name: competition.name,
       description: competition.description,
       winThreshold: competition.winThreshold,
       maxPlayerAppearances: competition.maxPlayerAppearances,
       playAllMatches: competition.playAllMatches,
+      thirdPlaceMode: competition.thirdPlaceMode,
       format: competition.format,
       groupCount: competition.groupCount,
       advancePerGroup: competition.advancePerGroup,
@@ -1736,8 +1949,9 @@ export class TeamCompetitionsService {
         roundNo: teamMatch.roundNo,
         matchNo: teamMatch.matchNo,
         status: teamMatch.status,
-        team1: teamMatch.team1,
-        team2: teamMatch.team2,
+        // 公开接口只给队名和单位，不带缴费等内部字段。
+        team1: teamMatch.team1 ? { id: teamMatch.team1.id, name: teamMatch.team1.name, affiliation: teamMatch.team1.affiliation } : null,
+        team2: teamMatch.team2 ? { id: teamMatch.team2.id, name: teamMatch.team2.name, affiliation: teamMatch.team2.affiliation } : null,
         winnerTeamId: teamMatch.winnerTeamId,
         resultDecided: teamMatch.resultDecided,
         winnerTeamName: [teamMatch.team1, teamMatch.team2].find(team => team?.id === teamMatch.winnerTeamId)?.name ?? null,
@@ -1960,6 +2174,7 @@ export class TeamCompetitionsService {
         advancePerGroup: competition.advancePerGroup,
         winThreshold: competition.winThreshold,
         playAllMatches: competition.playAllMatches,
+        thirdPlaceMode: competition.thirdPlaceMode,
       },
       groups: groups.map(group => {
         const matches = groupEncounters.get(group.id) ?? [];
@@ -2017,6 +2232,7 @@ export class TeamCompetitionsService {
           ? EVENT_TYPE_LABELS[match.teamCompetitionItem.eventType as EventType]
           : null,
         winnerSide: match.winnerSide,
+        forfeitedSide: match.forfeitedSide,
         side1Name: lineupName(encounter.team1Id, match.teamCompetitionItemId),
         side2Name: lineupName(encounter.team2Id, match.teamCompetitionItemId),
         referee: match.referee?.username ?? null,
@@ -2098,47 +2314,13 @@ export class TeamCompetitionsService {
     }
   }
 
+  /** 与最终名次共用 rankTeamGroup，小组积分榜、出线和成绩榜的口径保持一致。 */
   private calculateGroupRankings(
     members: Array<{ teamId: string; team: { name: string } }>,
     matches: TeamResult[],
     competition: { format: string; winThreshold: number },
   ) {
-    const encounters = matches.map(match => withOfficialTeamResult(match, competition.winThreshold)).filter(hasOfficialTeamResult);
-
-    const stats = new Map(members.map(m => [m.teamId, {
-      teamId: m.teamId, teamName: m.team.name, wins: 0, losses: 0, matchesWon: 0, matchesLost: 0, netMatches: 0,
-    }]));
-    const h2h = new Map<string, { teamId: string; opponentId: string; wins: number; losses: number; matchesWon: number; matchesLost: number; netMatches: number }>();
-    const record = (teamId: string, opponentId: string, won: boolean, forCount: number, againstCount: number, pointDiff: number) => {
-      const row = stats.get(teamId);
-      if (row) {
-        row.wins += won ? 1 : 0;
-        row.losses += won ? 0 : 1;
-        row.matchesWon += forCount;
-        row.matchesLost += againstCount;
-        row.netMatches += pointDiff;
-      }
-      const key = `${teamId}:${opponentId}`;
-      const pair = h2h.get(key) ?? { teamId, opponentId, wins: 0, losses: 0, matchesWon: 0, matchesLost: 0, netMatches: 0 };
-      pair.wins += won ? 1 : 0;
-      pair.losses += won ? 0 : 1;
-      pair.matchesWon += forCount;
-      pair.matchesLost += againstCount;
-      pair.netMatches += pointDiff;
-      h2h.set(key, pair);
-    };
-    for (const e of encounters) {
-      if (!e.team1Id || !e.team2Id) continue;
-      record(e.team1Id, e.team2Id, e.winnerTeamId === e.team1Id, e.team1Wins, e.team2Wins, e.team1PointDiff);
-      record(e.team2Id, e.team1Id, e.winnerTeamId === e.team2Id, e.team2Wins, e.team1Wins, -e.team1PointDiff);
-    }
-
-    const ranked = competition.format === TeamCompetitionFormat.ROUND_ROBIN
-      ? rankTeamRoundRobin([...stats.values()].map(row => ({ ...row, id: row.teamId, gameDiff: row.netMatches })), encounters)
-        .map(row => ({ ...row, groupRank: row.rank }))
-      : calculateGroupStandings([...stats.values()], [...h2h.values()]);
-    const hasResults = encounters.length > 0;
-    return ranked.map(row => ({ ...row, groupRank: hasResults ? row.groupRank : null }));
+    return rankTeamGroup(members.map(member => ({ teamId: member.teamId, teamName: member.team.name })), matches, competition);
   }
 
   /**
@@ -2222,6 +2404,10 @@ export class TeamCompetitionsService {
         throw new BadRequestException('只有小组+淘汰赛模式才能生成淘汰赛');
       }
 
+      // 先按最新成绩重算各组名次，再读取名次决定出线（原来先读后算，读到的可能是旧名次）。
+      const groupsToRank = await tx.teamGroup.findMany({ where: { teamCompetitionId }, select: { id: true } });
+      for (const group of groupsToRank) await this.recalculateGroupRankings(tx, group.id);
+
       // 获取所有小组
       const groups = await tx.teamGroup.findMany({
         where: { teamCompetitionId },
@@ -2270,28 +2456,41 @@ export class TeamCompetitionsService {
         where: { teamCompetitionId, stage: 'KNOCKOUT' },
       });
 
-      // 确定晋级队伍：先按名次、再按组号排成种子序列（A1, B1, ..., A2, B2, ...）
-      const groupsToRank = await tx.teamGroup.findMany({ where: { teamCompetitionId }, select: { id: true } });
-      for (const group of groupsToRank) await this.recalculateGroupRankings(tx, group.id);
+      // 确定晋级队伍：每组按小组名次取前 advancePerGroup 名
       const advancePerGroup = competition.advancePerGroup || 2;
       await tx.teamGroupMember.updateMany({ where: { group: { teamCompetitionId } }, data: { advanced: false } });
-      const seeds: string[] = [];
-      for (let rank = 1; rank <= advancePerGroup; rank++) {
-        for (const group of groups) {
+      const qualifiers: string[][] = [];
+      for (const group of groups) {
+        const advancing: string[] = [];
+        for (let rank = 1; rank <= advancePerGroup; rank++) {
           const member = group.teams.find(m => m.groupRank === rank);
           if (!member) continue;
-          seeds.push(member.teamId);
+          advancing.push(member.teamId);
           await tx.teamGroupMember.update({ where: { id: member.id }, data: { advanced: true } });
         }
+        qualifiers.push(advancing);
       }
+      const seedCount = qualifiers.reduce((total, teams) => total + teams.length, 0);
 
-      if (seeds.length < 2) {
+      if (seedCount < 2) {
         throw new BadRequestException('晋级队伍不足，无法生成淘汰赛');
       }
 
-      // 标准种子位：同组的第一、二名分在两个半区，小组第一优先获得轮空
-      const size = this.nextPowerOfTwo(seeds.length);
-      let slots: Array<{ id: string | null; resolved: boolean }> = this.seedPositions(size).map(seed => ({ id: seeds[seed - 1] ?? null, resolved: true }));
+      // 同名次（各组第一、各组第二……）之间按小组赛场均胜场、场均胜次、场均净胜分排种子，
+      // 战绩好的种子靠前、优先轮空；完全相同时按组号。口径与最终名次里跨组比较一致（各组队数可能不同，所以看场均）。
+      const memberById = new Map(groups.flatMap(group => group.teams.map(member => [member.teamId, member] as const)));
+      const perEncounter = (teamId: string, field: 'wins' | 'matchesWon' | 'netMatches') => {
+        const member = memberById.get(teamId);
+        const played = member ? member.wins + member.losses : 0;
+        return played ? member![field] / played : 0;
+      };
+      const compareRecord = (a: string, b: string) =>
+        perEncounter(b, 'wins') - perEncounter(a, 'wins')
+        || perEncounter(b, 'matchesWon') - perEncounter(a, 'matchesWon')
+        || perEncounter(b, 'netMatches') - perEncounter(a, 'netMatches');
+
+      // 小组第一按标准种子位排位并优先轮空；其余名次调换签位，让同组队伍尽量晚相遇、分在两个半区。
+      let slots: Array<{ id: string | null; resolved: boolean }> = seedGroupQualifiers(qualifiers, compareRecord).map(id => ({ id, resolved: true }));
 
       // 淘汰赛轮次编号接在小组赛之后，避免与小组赛 (roundNo, matchNo) 冲突，
       // 也让 advanceTeamWinner 的 roundNo + 1 查找停留在淘汰赛内部。
@@ -2327,11 +2526,15 @@ export class TeamCompetitionsService {
           if (a.id && b.id) {
             await this.createEncounterMatches(tx, encounter, competition.items);
           }
-          
+
           next.push({ id: winner, resolved: bye });
         }
         slots = next;
         roundNo++;
+      }
+      // 4 队及以上出线时两场半决赛都有真实对手，才能加赛季军赛。
+      if (competition.thirdPlaceMode === TeamThirdPlaceMode.PLAYOFF && seedCount >= 4) {
+        await this.upsertBronzeEncounter(tx, teamCompetitionId, roundNo - 1);
       }
     }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
 

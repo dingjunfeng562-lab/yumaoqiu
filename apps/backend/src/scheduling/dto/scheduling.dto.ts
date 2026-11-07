@@ -54,6 +54,13 @@ export class UpdateVenueDto {
 export class AutoScheduleDto {
   @IsOptional()
   @IsBoolean()
+  preview?: boolean;
+
+  @IsOptional()
+  @IsString()
+  fingerprint?: string;
+  @IsOptional()
+  @IsBoolean()
   adjustTeamVenueCount?: boolean;
 
   @IsString()
@@ -121,6 +128,9 @@ export class AutoScheduleDto {
 }
 
 export class ClearScheduleDto {
+  @IsOptional()
+  @IsBoolean()
+  includeLocked?: boolean;
   @IsString()
   tournamentId: string;
 
@@ -130,6 +140,17 @@ export class ClearScheduleDto {
 }
 
 export class UpdateMatchScheduleDto {
+  @IsOptional()
+  @IsBoolean()
+  scheduleLocked?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  allowOutsideGroup?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  findNextAvailable?: boolean;
   @IsOptional()
   @IsString()
   venueId?: string | null;
@@ -147,4 +168,24 @@ export class UpdateMatchScheduleDto {
   @IsInt()
   @Min(1)
   durationMinutes?: number;
+}
+
+export class GroupVenueRuleDto {
+  @IsString()
+  groupId: string;
+
+  @IsBoolean()
+  restrictVenues: boolean;
+
+  @IsArray()
+  @IsString({ each: true })
+  venueIds: string[];
+}
+
+export class SaveGroupVenuesDto {
+  @IsArray()
+  @ArrayMaxSize(500)
+  @ValidateNested({ each: true })
+  @Type(() => GroupVenueRuleDto)
+  groups: GroupVenueRuleDto[];
 }

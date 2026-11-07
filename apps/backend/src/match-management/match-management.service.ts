@@ -391,15 +391,17 @@ export class MatchManagementService {
     };
   }
 
-  async updateMatch(matchId: string, dto: UpdateManagedMatchDto) {
+  async updateMatch(matchId: string, dto: UpdateManagedMatchDto, actorId?: string) {
     const target = await this.requireMatchRef(matchId);
     const hasScheduleChange =
       dto.scheduledAt !== undefined ||
       dto.venueId !== undefined ||
-      dto.durationMinutes !== undefined;
+      dto.durationMinutes !== undefined || dto.scheduleLocked !== undefined;
 
     if (hasScheduleChange) {
       await this.scheduling.updateMatchSchedule(matchId, {
+        allowOutsideGroup: dto.allowOutsideGroup,
+        scheduleLocked: dto.scheduleLocked,
         ...(dto.scheduledAt !== undefined
           ? { scheduledAt: dto.scheduledAt }
           : {}),
@@ -407,7 +409,7 @@ export class MatchManagementService {
         ...(dto.durationMinutes !== undefined
           ? { durationMinutes: dto.durationMinutes }
           : {}),
-      });
+      }, actorId);
     }
 
     if (dto.refereeId !== undefined) {

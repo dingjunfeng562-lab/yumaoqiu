@@ -1,3 +1,6 @@
+import { APP_INTERCEPTOR } from '@nestjs/core';
+import { IdentityResponseInterceptor } from './common/identity-response.interceptor';
+import { RegistrationGroupsModule } from './registration-groups/registration-groups.module';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { join } from 'node:path';
@@ -25,6 +28,7 @@ import { PhotoActivitiesModule } from './photo-activities/photo-activities.modul
 import { MatchManagementModule } from './match-management/match-management.module';
 import { PaymentsModule } from './payments/payments.module';
 import { MaintenanceModule } from './maintenance/maintenance.module';
+import { StatisticsModule } from './statistics/statistics.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ResultsResetModule } from './common/results-reset.module';
@@ -47,6 +51,7 @@ import { ResultsResetModule } from './common/results-reset.module';
     ExportsModule,
     TeamCompetitionsModule,
     CompetitionsModule,
+    RegistrationGroupsModule,
     AnnouncementsModule,
     PhotosModule,
     MailModule,
@@ -58,8 +63,9 @@ import { ResultsResetModule } from './common/results-reset.module';
     MatchManagementModule,
     PaymentsModule,
     MaintenanceModule,
+    StatisticsModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [AppService, { provide: APP_INTERCEPTOR, useClass: IdentityResponseInterceptor }],
 })
 export class AppModule {}

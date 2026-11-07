@@ -1,8 +1,10 @@
 import { EntrantType, EventType } from '@prisma/client';
 
+// SOCIAL 是内部值：非学生、免登录的报名方式，界面统一叫「第三方」。
+// 默认社会组已取消，SOCIAL 只用于字段模板为「第三方」的自定义组别。
 export const ENTRANT_TYPE_LABELS: Record<EntrantType, string> = {
   [EntrantType.SCHOOL]: '学生组',
-  [EntrantType.SOCIAL]: '社会组',
+  [EntrantType.SOCIAL]: '第三方',
 };
 
 export const EVENT_TYPE_LABELS: Record<EventType, string> = {

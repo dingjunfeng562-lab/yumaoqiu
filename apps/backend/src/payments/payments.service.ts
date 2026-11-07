@@ -1,3 +1,5 @@
+import { groupFields } from '../common/age-eligibility';
+import { legacyGroupId } from '../registration-groups/registration-groups.service';
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { EntrantType, EventType, PaymentStatus, Prisma, RegistrationStatus, TournamentPaymentSetting } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -24,7 +26,7 @@ import {
 
 type Actor = { id: string; username?: string | null };
 
-type SettingView = Omit<TournamentPaymentSetting, 'id' | 'createdAt' | 'updatedAt'>;
+type SettingView = Omit<TournamentPaymentSetting, 'id' | 'createdAt' | 'updatedAt'> & { groupLabel?: string };
 
 /** 选手端看到的状态：除三种缴费状态外，还有「无需缴费」和「待审核」。 */
 export type PlayerPaymentStatus = PaymentStatus | 'NOT_REQUIRED' | 'PENDING_REVIEW' | 'REJECTED';
@@ -42,6 +44,7 @@ export type PaymentItemView = {
 };
 
 export type PaymentGroupView = {
+  groupId?: string;
   competitionId: string;
   competitionName: string;
   entrantType: EntrantType;
@@ -73,12 +76,14 @@ export class PaymentsService {
   async getSettings(competitionId: string): Promise<SettingView[]> {
     await this.ensureCompetition(competitionId);
     const settings = await this.settingMap([competitionId]);
-    return ENTRANT_TYPES.map((type) => this.settingView(settings, competitionId, type));
+    const groups = await this.prisma.tournamentGroup.findMany({ where: { tournamentId: competitionId }, orderBy: { sortOrder: 'asc' } });
+    return groups.map(group => ({ ...this.settingView(settings, competitionId, group.id), groupLabel: group.name }));
   }
 
   async updateSetting(competitionId: string, entrantType: string, dto: UpdatePaymentSettingDto) {
     await this.ensureCompetition(competitionId);
-    const type = this.entrantType(entrantType);
+    const group = await this.resolveGroup(competitionId, entrantType);
+    const type = group.fieldTemplate === 'SCHOOL' ? EntrantType.SCHOOL : EntrantType.SOCIAL;
     const data = {
       enabled: dto.enabled,
       singlesFee: dto.singlesFee,
@@ -87,24 +92,26 @@ export class PaymentsService {
       instructions: dto.instructions?.trim() || null,
     };
     return this.prisma.tournamentPaymentSetting.upsert({
-      where: { tournamentId_entrantType: { tournamentId: competitionId, entrantType: type } },
-      create: { tournamentId: competitionId, entrantType: type, ...data },
+      where: { tournamentId_groupId: { tournamentId: competitionId, groupId: group.id } },
+      create: { tournamentId: competitionId, groupId: group.id, entrantType: type, ...data },
       update: data,
     });
   }
 
   async setQrImage(competitionId: string, entrantType: string, qrImageUrl: string | null) {
     await this.ensureCompetition(competitionId);
-    const type = this.entrantType(entrantType);
+    const group = await this.resolveGroup(competitionId, entrantType);
+    const type = group.fieldTemplate === 'SCHOOL' ? EntrantType.SCHOOL : EntrantType.SOCIAL;
     return this.prisma.tournamentPaymentSetting.upsert({
-      where: { tournamentId_entrantType: { tournamentId: competitionId, entrantType: type } },
-      create: { tournamentId: competitionId, entrantType: type, qrImageUrl },
+      where: { tournamentId_groupId: { tournamentId: competitionId, groupId: group.id } },
+      create: { tournamentId: competitionId, groupId: group.id, entrantType: type, qrImageUrl },
       update: { qrImageUrl },
     });
   }
 
   /** 赛事缴费总览：两个组别的设置、全部已通过报名与团体赛队伍、按组别汇总。 */
   async overview(competitionId: string) {
+    const groups = await this.prisma.tournamentGroup.findMany({ where: { tournamentId: competitionId }, orderBy: { sortOrder: 'asc' } });
     const competition = await this.ensureCompetition(competitionId);
     const tournament = await this.prisma.tournament.findUniqueOrThrow({
       where: { id: competitionId },
@@ -115,7 +122,7 @@ export class PaymentsService {
       this.prisma.registration.findMany({
         where: { status: RegistrationStatus.APPROVED, event: { tournamentId: competitionId } },
         include: {
-          event: { select: { id: true, type: true, groupLabel: true, entrantType: true } },
+          event: { select: { id: true, type: true, groupLabel: true, entrantType: true, groupId: true } },
           player1: playerName,
           player2: playerName,
         },
@@ -124,19 +131,19 @@ export class PaymentsService {
       this.prisma.team.findMany({
         where: { teamCompetition: { tournamentId: competitionId } },
         include: {
-          teamCompetition: { select: { id: true, name: true, entrantType: true } },
+          teamCompetition: { select: { id: true, name: true, entrantType: true, groupId: true } },
           members: { include: { player: playerName }, orderBy: { createdAt: 'asc' } },
         },
         orderBy: { createdAt: 'asc' },
       }),
       this.prisma.event.findMany({
         where: { tournamentId: competitionId },
-        select: { id: true, type: true, groupLabel: true, entrantType: true },
+        select: { id: true, type: true, groupLabel: true, entrantType: true, groupId: true },
         orderBy: [{ entrantType: 'asc' }, { type: 'asc' }],
       }),
       this.prisma.teamCompetition.findMany({
         where: { tournamentId: competitionId },
-        select: { id: true, name: true, entrantType: true },
+        select: { id: true, name: true, entrantType: true, groupId: true },
       }),
     ]);
 
@@ -150,11 +157,13 @@ export class PaymentsService {
 
     const rows = [
       ...registrations.map((row) => {
-        const setting = settings.get(this.key(competitionId, row.event.entrantType));
+        const setting = settings.get(this.key(competitionId, row.event.groupId ?? row.event.entrantType));
         return {
           kind: 'EVENT' as const,
           id: row.id,
           entrantType: row.event.entrantType,
+          groupId: row.event.groupId,
+          groupLabel: row.event.groupLabel,
           itemId: row.event.id,
           itemName: eventDisplayLabel(row.event),
           name: registrationDisplayName(row),
@@ -170,11 +179,13 @@ export class PaymentsService {
         };
       }),
       ...teams.map((team) => {
-        const setting = settings.get(this.key(competitionId, team.teamCompetition.entrantType));
+        const setting = settings.get(this.key(competitionId, team.teamCompetition.groupId ?? team.teamCompetition.entrantType));
         return {
           kind: 'TEAM' as const,
           id: team.id,
           entrantType: team.teamCompetition.entrantType,
+          groupId: team.teamCompetition.groupId,
+          groupLabel: team.teamCompetition.name,
           itemId: team.teamCompetition.id,
           itemName: `团体赛 · ${team.teamCompetition.name}`,
           name: team.name,
@@ -192,14 +203,17 @@ export class PaymentsService {
       }),
     ];
 
-    const summary = ENTRANT_TYPES.map((type) => {
-      const groupRows = rows.filter((row) => row.entrantType === type);
+    const summary = groups.map((group) => {
+      const type = group.fieldTemplate === 'SCHOOL' ? EntrantType.SCHOOL : EntrantType.SOCIAL;
+      const groupRows = rows.filter((row) => row.groupId === group.id);
       const charged = groupRows.filter((row) => row.amountDue > 0 || row.paymentStatus !== PaymentStatus.UNPAID);
       const unpaid = charged.filter((row) => row.paymentStatus === PaymentStatus.UNPAID);
       const paid = charged.filter((row) => row.paymentStatus === PaymentStatus.PAID);
       return {
         entrantType: type,
-        enabled: !!settings.get(this.key(competitionId, type))?.enabled,
+        groupId: group.id,
+        groupLabel: group.name,
+        enabled: !!settings.get(this.key(competitionId, group.id))?.enabled,
         total: charged.length,
         paidCount: paid.length,
         waivedCount: charged.filter((row) => row.paymentStatus === PaymentStatus.WAIVED).length,
@@ -214,12 +228,15 @@ export class PaymentsService {
       // 报名信息修改截止时间；过了这个时间不能再编辑报名信息和组别，删除不受影响。
       editDeadline: tournament.registrationEditDeadline,
       fieldRules: normalizeRegistrationFieldRules(tournament.registrationFieldRules),
-      settings: ENTRANT_TYPES.map((type) => this.settingView(settings, competitionId, type)),
+      settings: groups.map(group => ({ ...this.settingView(settings, competitionId, group.id), groupLabel: group.name })),
       events: events.map((event) => ({
         id: event.id,
         type: event.type,
         isDouble: DOUBLES_TYPES.has(event.type),
         entrantType: event.entrantType,
+        groupId: event.groupId,
+        groupLabel: groups.find(g => g.id === event.groupId)?.name ?? event.groupLabel,
+        groupFields: groupFields(groups.find(g => g.id === event.groupId)?.fieldRules),
         label: eventDisplayLabel(event),
       })),
       teamCompetitions,
@@ -264,7 +281,7 @@ export class PaymentsService {
     await this.prisma.$transaction(async (tx) => {
       for (const row of registrations) {
         if (row.paymentStatus === status) continue;
-        const amount = this.recordedAmount(status, settings.get(this.key(competitionId, row.event.entrantType)), feeKindForEvent(row.event.type));
+        const amount = this.recordedAmount(status, settings.get(this.key(competitionId, row.event.groupId ?? row.event.entrantType)), feeKindForEvent(row.event.type));
         await tx.registration.update({ where: { id: row.id }, data: this.statusData(status, amount, actor.id, note) });
         await tx.paymentLog.create({
           data: {
@@ -285,7 +302,7 @@ export class PaymentsService {
       }
       for (const team of teams) {
         if (team.paymentStatus === status) continue;
-        const amount = this.recordedAmount(status, settings.get(this.key(competitionId, team.teamCompetition.entrantType)), 'TEAM');
+        const amount = this.recordedAmount(status, settings.get(this.key(competitionId, team.teamCompetition.groupId ?? team.teamCompetition.entrantType)), 'TEAM');
         await tx.team.update({ where: { id: team.id }, data: this.statusData(status, amount, actor.id, note) });
         await tx.paymentLog.create({
           data: {
@@ -498,6 +515,8 @@ export class PaymentsService {
     for (const row of pendingMatches) {
       for (const item of row.eventItems) {
         builder.add(row.competition, item.event.entrantType, {
+          groupId: item.event.groupId,
+          groupLabel: item.event.groupLabel,
           id: item.id,
           kind: 'EVENT',
           itemName: eventDisplayLabel(item.event),
@@ -511,6 +530,8 @@ export class PaymentsService {
     }
     for (const row of registrations) {
       builder.add(row.event.tournament, row.event.entrantType, {
+          groupId: row.event.groupId,
+          groupLabel: row.event.groupLabel,
         id: row.id,
         kind: 'EVENT',
         itemName: eventDisplayLabel(row.event),
@@ -523,6 +544,8 @@ export class PaymentsService {
     }
     for (const team of teams) {
       builder.add(team.teamCompetition.tournament, team.teamCompetition.entrantType, {
+          groupId: team.teamCompetition.groupId,
+          groupLabel: team.teamCompetition.name,
         id: team.id,
         kind: 'TEAM',
         itemName: `团体赛 · ${team.teamCompetition.name}`,
@@ -563,6 +586,8 @@ export class PaymentsService {
       if (row.status !== RegistrationStatus.APPROVED) {
         for (const item of row.eventItems) {
           builder.add(row.competition, item.event.entrantType, {
+          groupId: item.event.groupId,
+          groupLabel: item.event.groupLabel,
             id: item.id,
             kind: 'EVENT',
             itemName: eventDisplayLabel(item.event),
@@ -575,6 +600,8 @@ export class PaymentsService {
       }
       for (const entry of row.registrations) {
         builder.add(row.competition, entry.event.entrantType, {
+          groupId: entry.event.groupId,
+          groupLabel: entry.event.groupLabel,
           id: entry.id,
           kind: 'EVENT',
           itemName: eventDisplayLabel(entry.event),
@@ -604,14 +631,15 @@ export class PaymentsService {
   private async settingMap(competitionIds: string[]) {
     if (!competitionIds.length) return new Map<string, TournamentPaymentSetting>();
     const rows = await this.prisma.tournamentPaymentSetting.findMany({ where: { tournamentId: { in: competitionIds } } });
-    return new Map(rows.map((row) => [this.key(row.tournamentId, row.entrantType), row]));
+    return new Map(rows.map((row) => [this.key(row.tournamentId, row.groupId ?? row.entrantType), row]));
   }
 
-  private settingView(settings: Map<string, TournamentPaymentSetting>, competitionId: string, type: EntrantType): SettingView {
+  private settingView(settings: Map<string, TournamentPaymentSetting>, competitionId: string, type: string): SettingView {
     const row = settings.get(this.key(competitionId, type));
     return {
       tournamentId: competitionId,
-      entrantType: type,
+      groupId: row?.groupId ?? (type === 'SCHOOL' || type === 'SOCIAL' ? legacyGroupId(competitionId, type) : type),
+      entrantType: row?.entrantType ?? (type === 'SCHOOL' ? EntrantType.SCHOOL : EntrantType.SOCIAL),
       enabled: row?.enabled ?? false,
       singlesFee: row?.singlesFee ?? 0,
       doublesFee: row?.doublesFee ?? 0,
@@ -621,13 +649,20 @@ export class PaymentsService {
     };
   }
 
-  private key(competitionId: string, type: EntrantType) {
-    return `${competitionId}:${type}`;
+  private key(competitionId: string, type: string) {
+    return `${competitionId}:${type === 'SCHOOL' || type === 'SOCIAL' ? legacyGroupId(competitionId, type) : type}`;
+  }
+
+  private async resolveGroup(tournamentId: string, value: string) {
+    const id = value === 'SCHOOL' || value === 'SOCIAL' ? legacyGroupId(tournamentId, value) : value;
+    const group = await this.prisma.tournamentGroup.findFirst({ where: { id, tournamentId } });
+    if (!group) throw new NotFoundException('组别不存在');
+    return group;
   }
 
   private entrantType(value: string): EntrantType {
     if (value === EntrantType.SCHOOL || value === EntrantType.SOCIAL) return value;
-    throw new BadRequestException('组别只能是学生组或社会组');
+    throw new BadRequestException('组别只能是学生组或第三方');
   }
 
   private async ensureCompetition(competitionId: string) {
@@ -641,6 +676,8 @@ export class PaymentsService {
 }
 
 type BuilderItem = {
+  groupId?: string | null;
+  groupLabel?: string | null;
   id: string;
   kind: 'EVENT' | 'TEAM';
   itemName: string;
@@ -661,15 +698,16 @@ export class GroupBuilder {
   constructor(private settings: Map<string, TournamentPaymentSetting>) {}
 
   add(competition: { id: string; name: string }, entrantType: EntrantType, item: BuilderItem) {
-    const key = `${competition.id}:${entrantType}`;
-    const setting = this.settings.get(key);
+    const key = `${competition.id}:${item.groupId ?? legacyGroupId(competition.id, entrantType)}`;
+    const setting = this.settings.get(key) ?? (!item.groupId ? this.settings.get(`${competition.id}:${entrantType}`) : undefined);
     let group = this.groups.get(key);
     if (!group) {
       group = {
         competitionId: competition.id,
         competitionName: competition.name,
         entrantType,
-        groupLabel: entrantTypeLabel(entrantType),
+        groupId: item.groupId ?? legacyGroupId(competition.id, entrantType),
+        groupLabel: item.groupLabel ?? entrantTypeLabel(entrantType),
         required: false,
         instructions: null,
         qrImageUrl: null,

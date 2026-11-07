@@ -83,7 +83,7 @@ export default function RegistrationStatusPage() {
               报名状态查询
             </Typography.Title>
             <Typography.Text type="secondary">
-              社会组报名凭报名编号查询；编号在提交成功页只显示一次，请妥善保存。
+              免登录报名凭报名编号查询；编号在提交成功页只显示一次，请妥善保存。
             </Typography.Text>
           </div>
           <Space.Compact style={{ width: '100%' }}>

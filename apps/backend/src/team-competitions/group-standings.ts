@@ -33,8 +33,11 @@ export interface HeadToHeadRecord {
  * 1. 胜场数（团体赛维度）
  * 2. 胜次（正式子项获胜数）
  * 3. 正式子项逐局净胜分
- * 4. 相互战绩
- * 
+ * 4. 同分队之间的相互战绩：两队同分即比较两队交手胜负；三队及以上同分时，
+ *    只统计这几队相互之间的对阵，依次比较胜场、胜次、净胜分（小循环），避免甲胜乙、乙胜丙、丙胜甲时排序前后矛盾
+ * 5. 总负次（正式子项失利数，少者列前）
+ * 6. 仍相同时保持原顺序
+ *
  * @param standings 小组积分数据
  * @param headToHeadRecords 相互战绩记录（可选）
  * @returns 排序后的积分榜
@@ -47,85 +50,49 @@ export function calculateGroupStandings(
     return [];
   }
 
-  // 排序算法
-  const sorted = [...standings].sort((a, b) => {
-    // 1. 胜场数（降序）
-    if (a.wins !== b.wins) {
-      return b.wins - a.wins;
-    }
+  // 1-3：胜场、胜次、净胜分（均降序）
+  const overall = (a: Omit<TeamStanding, 'groupRank' | 'advanced'>, b: Omit<TeamStanding, 'groupRank' | 'advanced'>) =>
+    b.wins - a.wins || b.matchesWon - a.matchesWon || b.netMatches - a.netMatches;
+  const sorted = [...standings].sort(overall);
 
-    // 2. 胜次（降序）
-    if (a.matchesWon !== b.matchesWon) {
-      return b.matchesWon - a.matchesWon;
+  // 4-6：对 1-3 完全相同的一组队伍做小循环
+  const ordered: typeof sorted = [];
+  for (let start = 0; start < sorted.length;) {
+    let end = start + 1;
+    while (end < sorted.length && overall(sorted[start], sorted[end]) === 0) end++;
+    const tied = sorted.slice(start, end);
+    if (tied.length > 1) {
+      const mini = miniLeague(tied.map(team => team.teamId), headToHeadRecords ?? []);
+      tied.sort((a, b) => {
+        const x = mini.get(a.teamId)!, y = mini.get(b.teamId)!;
+        return y.wins - x.wins || y.matchesWon - x.matchesWon || y.netMatches - x.netMatches
+          || a.matchesLost - b.matchesLost;
+      });
     }
-
-    // 3. 净胜分（降序）
-    if (a.netMatches !== b.netMatches) {
-      return b.netMatches - a.netMatches;
-    }
-
-    // 4. 相互战绩（如果提供）
-    if (headToHeadRecords) {
-      const headToHead = getHeadToHeadComparison(
-        a.teamId,
-        b.teamId,
-        headToHeadRecords,
-      );
-      if (headToHead !== 0) {
-        // getHeadToHeadComparison 返回 >0 表示 A 更优；sort 比较器需要负数才把 A 排前
-        return -headToHead;
-      }
-    }
-
-    // 5. 总输局数（升序）
-    if (a.matchesLost !== b.matchesLost) {
-      return a.matchesLost - b.matchesLost;
-    }
-
-    // 6. 如果还是相同，保持原顺序（稳定排序）
-    return 0;
-  });
+    ordered.push(...tied);
+    start = end;
+  }
 
   // 分配排名
-  return sorted.map((team, index) => ({
+  return ordered.map((team, index) => ({
     ...team,
     groupRank: index + 1,
     advanced: false, // 晋级状态需要单独设置
   }));
 }
 
-/**
- * 获取两队之间的相互战绩比较结果
- * 
- * @param teamAId 队伍A的ID
- * @param teamBId 队伍B的ID
- * @param records 所有相互战绩记录
- * @returns >0 表示A优于B，<0 表示B优于A，0 表示持平
- */
-function getHeadToHeadComparison(
-  teamAId: string,
-  teamBId: string,
-  records: HeadToHeadRecord[],
-): number {
-  // 查找A vs B的记录
-  const aVsB = records.find(
-    r => r.teamId === teamAId && r.opponentId === teamBId,
-  );
-  const bVsA = records.find(
-    r => r.teamId === teamBId && r.opponentId === teamAId,
-  );
-
-  if (!aVsB || !bVsA) {
-    return 0; // 没有交手记录
+/** 只统计 teamIds 这几队相互之间的对阵（两队时即两队交手战绩）。 */
+function miniLeague(teamIds: string[], records: HeadToHeadRecord[]) {
+  const ids = new Set(teamIds);
+  const result = new Map(teamIds.map(teamId => [teamId, { wins: 0, matchesWon: 0, netMatches: 0 }]));
+  for (const record of records) {
+    if (!ids.has(record.teamId) || !ids.has(record.opponentId)) continue;
+    const row = result.get(record.teamId)!;
+    row.wins += record.wins;
+    row.matchesWon += record.matchesWon;
+    row.netMatches += record.netMatches;
   }
-
-  // 比较胜场数
-  if (aVsB.wins !== bVsA.wins) {
-    return aVsB.wins - bVsA.wins;
-  }
-
-  // 比较胜次、正式子项逐局净胜分
-  return aVsB.matchesWon - bVsA.matchesWon || aVsB.netMatches - bVsA.netMatches;
+  return result;
 }
 
 /**

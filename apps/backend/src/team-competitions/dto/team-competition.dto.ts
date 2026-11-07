@@ -15,13 +15,18 @@ import {
   ValidateIf,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { EntrantType, EventType, Gender, ScoringMode, ScoringRule, TeamCompetitionFormat } from '@prisma/client';
+import { EntrantType, EventType, Gender, ScoringMode, ScoringRule, TeamCompetitionFormat, TeamThirdPlaceMode } from '@prisma/client';
 
 // 团体赛赛制：SINGLE_ELIMINATION 单淘汰 / ROUND_ROBIN 单组循环 /
 // GROUP_ROUND_ROBIN 多组循环 / GROUP_PLUS_KNOCKOUT 小组+淘汰
-export { TeamCompetitionFormat };
+export { TeamCompetitionFormat, TeamThirdPlaceMode };
 
 export class TeamScoringDto {
+  /** 淘汰赛第三名：BY_RECORD 按成绩排定 / SHARED 并列第三 / PLAYOFF 加赛季军赛。新建和修改共用。 */
+  @IsOptional()
+  @IsEnum(TeamThirdPlaceMode)
+  thirdPlaceMode?: TeamThirdPlaceMode;
+
   @ValidateIf((_, value) => value !== undefined)
   @IsBoolean()
   playAllMatches?: boolean;
@@ -64,6 +69,7 @@ export class TeamCompetitionItemDto {
 }
 
 export class CreateTeamCompetitionDto extends TeamScoringDto {
+  @IsOptional() @IsString() groupId?: string;
   @ValidateIf((_, value) => value !== undefined)
   @IsIn([0, 1, 2])
   maxPlayerAppearances?: 0 | 1 | 2;
@@ -216,12 +222,14 @@ export class UpdateTeamCompetitionDto extends TeamScoringDto {
 }
 
 export class TeamPlayerInputDto {
+  @IsOptional() @IsString() identityNumber?: string;
   @IsString()
   @MinLength(1)
   name: string;
 
+  @IsOptional()
   @IsEnum(Gender)
-  gender: Gender;
+  gender?: Gender;
 
   @IsString()
   @MinLength(1)
@@ -314,6 +322,7 @@ export class ImportTeamPlayersDto {
 }
 
 export class BatchTeamPlayerDto {
+  @IsOptional() @IsString() identityNumber?: string;
   @IsString()
   @MinLength(1)
   @MaxLength(120)
@@ -324,8 +333,9 @@ export class BatchTeamPlayerDto {
   @MaxLength(120)
   name: string;
 
+  @IsOptional()
   @IsEnum(Gender)
-  gender: Gender;
+  gender?: Gender;
 
   @IsOptional()
   @IsString()

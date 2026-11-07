@@ -17,10 +17,10 @@ import {
   InputNumber,
   Modal,
   Popconfirm,
-  QRCode,
   Radio,
   Select,
   Space,
+  Spin,
   Switch,
   Table,
   Tag,
@@ -30,7 +30,7 @@ import {
   Upload,
   message,
 } from 'antd';
-import type { MenuProps, UploadFile, UploadProps } from 'antd';
+import type { FormInstance, MenuProps, UploadFile, UploadProps } from 'antd';
 import {
   ArrowDownOutlined,
   ArrowUpOutlined,
@@ -46,6 +46,16 @@ import {
 } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { RichTextEditor } from '@/components/RichTextEditor';
+import { RegistrationQrModal, qrUsability, type RegistrationQrTarget } from '@/components/admin/RegistrationQrModal';
+import {
+  GroupConfigFields,
+  groupPayload,
+  groupToFormValues,
+  isStudentGroup,
+  newGroupValues,
+  type GroupFormValues,
+  type GroupSource,
+} from '@/components/admin/GroupConfigFields';
 import dayjs, { Dayjs } from 'dayjs';
 import locale from 'antd/locale/zh_CN';
 import 'dayjs/locale/zh-cn';
@@ -80,27 +90,18 @@ type EventType = (typeof EVENT_OPTIONS)[number]['value'];
 type EntrantType = 'SCHOOL' | 'SOCIAL';
 type FieldState = 'required' | 'optional' | 'hidden';
 
+// 赛事表单只配置默认学生组的字段；其它组别在「组别设置」里各自配置。
 type RegistrationFieldRules = {
   SCHOOL: {
     studentId: FieldState;
     college: FieldState;
     majorGrade: FieldState;
   };
-  SOCIAL: {
-    email: FieldState;
-  };
 };
 
 const DEFAULT_FIELD_RULES: RegistrationFieldRules = {
   SCHOOL: { studentId: 'required', college: 'required', majorGrade: 'optional' },
-  SOCIAL: { email: 'optional' },
 };
-
-const FIELD_STATE_OPTIONS = [
-  { value: 'required', label: '必填' },
-  { value: 'optional', label: '选填' },
-  { value: 'hidden', label: '不收集' },
-];
 
 interface Tournament {
   id: string;
@@ -133,18 +134,28 @@ interface Tournament {
   approvedById?: string | null;
   approvedAt?: string | null;
   rejectReason?: string | null;
-  events: Array<{ id: string; type: EventType; entrantType?: EntrantType; groupLabel?: string | null }>;
+  events: Array<{ id: string; type: EventType; groupId?: string | null; entrantType?: EntrantType; groupLabel?: string | null }>;
   registrationFieldRules?: RegistrationFieldRules | null;
   allowSchoolRegistration?: boolean;
-  allowSocialRegistration?: boolean;
   schoolRegistrationCode?: string | null;
-  socialRegistrationCode?: string | null;
   schoolRegistrationCodeEnabled?: boolean;
-  socialRegistrationCodeEnabled?: boolean;
+  // 赛事报名码：一个赛事一个码，扫码后报名人自己选组别。
+  registrationCode?: string | null;
+  registrationCodeEnabled?: boolean;
+  registrationGroups?: Array<{
+    id: string;
+    name: string;
+    legacyType?: EntrantType | null;
+    enabled: boolean;
+    registrationCode?: string | null;
+    registrationCodeEnabled: boolean;
+    _count?: { events: number };
+  }>;
   venues: Array<{ id: string; name: string; isActive: boolean; sortOrder: number }>;
   teamCompetitions: Array<{
     id: string;
     entrantType?: EntrantType;
+    groupId?: string | null;
     winThreshold: number;
     maxPlayerAppearances: number;
     playAllMatches: boolean;
@@ -167,7 +178,6 @@ type TournamentFormValues = {
   endDate: Dayjs;
   description?: string;
   eventTypes: EventType[];
-  socialEventTypes: EventType[];
   registrationFieldRules: RegistrationFieldRules;
   includeTeamCompetition: boolean;
   teamWinThreshold: 2 | 3;
@@ -183,6 +193,8 @@ type TournamentFormValues = {
   needsRegistrationReview: boolean;
   registrationNotice?: string;
   venueNames: Array<{ name: string }>;
+  // 参赛组别：每个组别依次是 组别和年龄 → 比赛项目 → 报名字段 → 报名设置，学生组也是其中一个组别。
+  groups?: GroupFormValues[];
   defaultMatchMinutes: number;
   breakMinutes: number;
   dailyTimes: [Dayjs, Dayjs];
@@ -222,21 +234,63 @@ function dateRangeText(start: string, end: string) {
   )}`;
 }
 
-function eventGroups(record: {
-  events: Array<{ type: EventType; entrantType?: EntrantType }>;
-}) {
-  const school = sortEventTypes(
-    record.events
-      .filter((event) => !event.entrantType || event.entrantType === 'SCHOOL')
-      .map((event) => event.type),
-  );
-  const social = sortEventTypes(
-    record.events.filter((event) => event.entrantType === 'SOCIAL').map((event) => event.type),
-  );
-  return { school, social };
+/** 列表「项目」列：按组别分行，组名取组别设置里的名称。 */
+function eventGroups(record: Tournament): Array<{ key: string; label: string; types: EventType[] }> {
+  const groups = record.registrationGroups ?? [];
+  const schoolId = groups.find((group) => group.legacyType === 'SCHOOL')?.id ?? `${record.id}_SCHOOL`;
+  const rows = new Map<string, { key: string; label: string; types: EventType[] }>();
+  for (const group of groups) rows.set(group.id, { key: group.id, label: group.name, types: [] });
+  for (const event of record.events) {
+    // 没有组别 ID 的旧单项都属于默认学生组。
+    const key = event.groupId ?? schoolId;
+    if (!rows.has(key)) rows.set(key, { key, label: event.groupLabel || '学生组', types: [] });
+    rows.get(key)!.types.push(event.type);
+  }
+  return [...rows.values()]
+    .filter((row) => row.types.length)
+    .map((row) => ({ ...row, types: sortEventTypes(row.types) }));
+}
+
+/** 有没有开放报名、且配了项目的组别。 */
+function hasOpenGroup(record: Tournament) {
+  const groups = record.registrationGroups ?? [];
+  return groups.length
+    ? groups.some((group) => group.enabled && (group._count?.events ?? 0) > 0)
+    : record.allowSchoolRegistration !== false && record.events.length > 0;
+}
+
+function qrTargetFor(record: Tournament): RegistrationQrTarget {
+  return {
+    tournamentId: record.id,
+    tournamentName: record.name,
+    code: record.registrationCode ?? '',
+    ...qrUsability({
+      archived: record.isArchived,
+      published: record.isPublished && record.approvalStatus === 'APPROVED',
+      groupOpen: hasOpenGroup(record),
+      codeEnabled: record.registrationCodeEnabled !== false,
+    }),
+  };
 }
 
 const CELL_TEXT: React.CSSProperties = { fontSize: 12, lineHeight: '20px' };
+
+// 团体赛选项暂时从「比赛项目」里移除，代码保留；改为 true 即恢复学生组团体赛设置。
+const SHOW_TEAM_COMPETITION_OPTION = false;
+
+/** 组别卡片标题：组别序号、名称，以及按是否收集学号自动判断的「学生 / 第三方」。 */
+function GroupCardTitle({ form, index }: { form: FormInstance<TournamentFormValues>; index: number }) {
+  const name = Form.useWatch(['groups', index, 'name'], form) as string | undefined;
+  const fieldRules = Form.useWatch(['groups', index, 'fieldRules'], form) as GroupFormValues['fieldRules'] | undefined;
+  const legacy = Form.useWatch(['groups', index, 'legacy'], form) as boolean | undefined;
+  const student = isStudentGroup({ legacy, fieldRules });
+  return (
+    <Space size={6}>
+      <span>{`组别 ${index + 1}`}{name?.trim() ? ` · ${name.trim()}` : ''}</span>
+      <Tag color={student ? 'geekblue' : 'orange'} style={{ marginInlineEnd: 0 }}>{student ? '学生' : '第三方'}</Tag>
+    </Space>
+  );
+}
 
 const ROOT_ROLE = 'ROOT';
 
@@ -290,12 +344,12 @@ export default function TournamentsPage() {
   const [reviewBusy, setReviewBusy] = useState(false);
   const [statusUpdatingId, setStatusUpdatingId] = useState('');
   const [codeUpdatingKey, setCodeUpdatingKey] = useState('');
-  const [qrTarget, setQrTarget] = useState<{
-    record: Tournament;
-    entrantType: 'SCHOOL' | 'SOCIAL';
-    code: string;
-    enabled: boolean;
-  } | null>(null);
+  const [qrTarget, setQrTarget] = useState<RegistrationQrTarget | null>(null);
+  // 编辑赛事时已保存的组别 ID（用来判断哪些被移除）、加载状态，以及没开设的默认学生组（「添加学生组」时复用）。
+  const [editingGroupIds, setEditingGroupIds] = useState<string[]>([]);
+  const [groupsLoading, setGroupsLoading] = useState(false);
+  const [uPickerKey, setUPickerKey] = useState(0);
+  const [hiddenLegacyGroup, setHiddenLegacyGroup] = useState<GroupSource | null>(null);
 
   const eventTypes = Form.useWatch('eventTypes', form) ?? [];
   const includeTeamCompetition = Form.useWatch('includeTeamCompetition', form);
@@ -303,6 +357,8 @@ export default function TournamentsPage() {
   const teamEventTypes = Form.useWatch('teamEventTypes', form) ?? [];
   const allowCrossEventRegistration = Form.useWatch('allowCrossEventRegistration', form);
   const startDate = Form.useWatch('startDate', form);
+  // 组别年龄的参照日期默认取赛事开始日。
+  const groupRefDate = startDate ? startDate.format('YYYY-MM-DD') : undefined;
 
   const availableTeamOptions = useMemo(
     () => EVENT_OPTIONS.filter((item) => eventTypes.includes(item.value)),
@@ -372,8 +428,9 @@ export default function TournamentsPage() {
     form.setFieldsValue({
       showOnHome: true,
       status: 'REGISTRATION_NOT_STARTED',
-      eventTypes: ['MENS_SINGLES', 'WOMENS_SINGLES'],
-      socialEventTypes: [],
+      // 学生组默认不开；需要时点「添加学生组」，和其它组别一样设置。
+      groups: [],
+      eventTypes: [],
       registrationFieldRules: DEFAULT_FIELD_RULES,
       includeTeamCompetition: false,
       teamWinThreshold: 2,
@@ -390,6 +447,8 @@ export default function TournamentsPage() {
       breakMinutes: 10,
       dailyTimes: [dayjs('09:00', 'HH:mm'), dayjs('18:00', 'HH:mm')],
     });
+    setEditingGroupIds([]);
+    setHiddenLegacyGroup(null);
     setModalOpen(true);
   }, [form]);
 
@@ -416,7 +475,7 @@ export default function TournamentsPage() {
     );
 
     const teamCompetition = tournament.teamCompetitions.find(
-      (item) => !item.entrantType || item.entrantType === 'SCHOOL',
+      (item) => (!item.entrantType || item.entrantType === 'SCHOOL') && (!item.groupId || item.groupId === `${tournament.id}_SCHOOL`),
     );
     form.setFieldsValue({
       name: tournament.name,
@@ -431,12 +490,7 @@ export default function TournamentsPage() {
       description: tournament.description ?? undefined,
       eventTypes: sortEventTypes(
         tournament.events
-          .filter((event) => !event.entrantType || event.entrantType === 'SCHOOL')
-          .map((event) => event.type),
-      ),
-      socialEventTypes: sortEventTypes(
-        tournament.events
-          .filter((event) => event.entrantType === 'SOCIAL')
+          .filter((event) => (!event.entrantType || event.entrantType === 'SCHOOL') && (!event.groupId || event.groupId === `${tournament.id}_SCHOOL`))
           .map((event) => event.type),
       ),
       registrationFieldRules: tournament.registrationFieldRules ?? DEFAULT_FIELD_RULES,
@@ -462,9 +516,33 @@ export default function TournamentsPage() {
         dayjs(tournament.dailyStartTime || '09:00', 'HH:mm'),
         dayjs(tournament.dailyEndTime || '18:00', 'HH:mm'),
       ],
+      groups: [],
     });
+    setEditingGroupIds([]);
+    setHiddenLegacyGroup(null);
     setModalOpen(true);
-  }, [form]);
+    // 组别从组别接口读取，和赛事一起编辑、一起保存。没开设（没有项目）的默认学生组不显示。
+    setGroupsLoading(true);
+    const refDate = dayjs(tournament.startDate).format('YYYY-MM-DD');
+    apiFetch<GroupSource[]>(`/admin/competitions/${tournament.id}/groups`, { token })
+      .then((list) => {
+        const shown = list.filter((group) => !group.legacyType || group.events.length > 0);
+        form.setFieldValue('groups', shown.map((group) => groupToFormValues(group, refDate)));
+        setEditingGroupIds(shown.map((group) => group.id));
+        setHiddenLegacyGroup(list.find((group) => group.legacyType && group.events.length === 0) ?? null);
+      })
+      .catch((error) => message.error(error instanceof Error ? error.message : '组别读取失败'))
+      .finally(() => setGroupsLoading(false));
+  }, [form, token]);
+
+  /** 「添加学生组」：编辑时如果有没开设的默认学生组，就把它重新加回来（不能再建一个同名组）。 */
+  function studentPresetValues(): GroupFormValues {
+    const current: GroupFormValues[] = form.getFieldValue('groups') ?? [];
+    if (hiddenLegacyGroup && !current.some((group) => group.id === hiddenLegacyGroup.id)) {
+      return { ...groupToFormValues(hiddenLegacyGroup, groupRefDate), enabled: true, eventTypes: [] };
+    }
+    return newGroupValues(groupRefDate, { kind: 'STUDENT' });
+  }
 
   // 从「场地排程 → 编辑赛程设置」跳转过来时，直接打开对应赛事的编辑弹窗，
   // 而不是停在赛事列表让用户自己再找一次。
@@ -539,7 +617,9 @@ export default function TournamentsPage() {
 
   async function submitValues(values: TournamentFormValues) {
     const venueNames = values.venueNames.map((item) => item.name?.trim()).filter(Boolean);
-    const payload = {
+    const groups: GroupFormValues[] = values.groups ?? [];
+    const groupPayloads = groups.map((group) => groupPayload(group));
+    const common = {
       name: values.name.trim(),
       organizer: values.organizer.trim(),
       subtitle: values.subtitle?.trim() || undefined,
@@ -551,17 +631,6 @@ export default function TournamentsPage() {
       endDate: values.endDate.endOf('day').toISOString(),
       description: values.description?.trim() || undefined,
       rules: values.description?.trim() || undefined,
-      eventTypes: values.eventTypes,
-      schoolEventTypes: values.eventTypes,
-      socialEventTypes: values.socialEventTypes ?? [],
-      registrationFieldRules: values.registrationFieldRules ?? DEFAULT_FIELD_RULES,
-      includeTeamCompetition: Boolean(values.includeTeamCompetition),
-      teamWinThreshold: values.includeTeamCompetition ? values.teamWinThreshold : undefined,
-      teamEventTypes: values.includeTeamCompetition ? values.teamEventTypes : [],
-      teamMaxPlayerAppearances: values.includeTeamCompetition ? values.teamMaxPlayerAppearances : undefined,
-      teamPlayAllMatches: values.includeTeamCompetition ? values.teamPlayAllMatches : undefined,
-      teamScoringRule: values.includeTeamCompetition ? values.teamScoringRule : undefined,
-      teamScoringMode: values.includeTeamCompetition ? values.teamScoringMode : undefined,
       maxRegistrationEvents: values.allowCrossEventRegistration ? Number(values.maxRegistrationEvents) : 1,
       allowCrossEventRegistration: Boolean(values.allowCrossEventRegistration),
       registrationStartDate: values.registrationStartDate.toISOString(),
@@ -573,30 +642,72 @@ export default function TournamentsPage() {
       breakMinutes: Number(values.breakMinutes),
       dailyStartTime: values.dailyTimes[0].format('HH:mm'),
       dailyEndTime: values.dailyTimes[1].format('HH:mm'),
-      projectText: [
-        ...values.eventTypes.map((type) => eventLabel(type)),
-        ...(values.socialEventTypes ?? []).map((type) => `社会组·${eventLabel(type)}`),
-      ].join(' / '),
-      formatText: values.includeTeamCompetition
-        ? `单项赛 + 团体赛（${values.teamWinThreshold === 3 ? '5 项 3 胜' : '3 项 2 胜'}）`
-        : '单项赛',
+      projectText: groupPayloads
+        .flatMap((group) => group.eventTypes.map((type) => `${group.name}·${eventLabel(type as EventType)}`))
+        .join(' / '),
+      // 团体赛选项暂时隐藏，新建赛事只有单项赛。
+      formatText: '单项赛',
     };
 
     setSubmitting(true);
     try {
-      if (editing) {
-        await apiFetch(`/tournaments/${editing.id}`, {
-          method: 'PATCH',
-          body: JSON.stringify(payload),
+      if (!editing) {
+        // 所有组别（包括学生组）都作为组别随赛事一起创建；不再有单独的「学生组单项」。
+        await apiFetch('/tournaments', {
+          method: 'POST',
           token,
+          body: JSON.stringify({ ...common, eventTypes: [], schoolEventTypes: [], includeTeamCompetition: false, customGroups: groupPayloads }),
         });
-        message.success('赛事已更新');
-      } else {
-        await apiFetch('/tournaments', { method: 'POST', body: JSON.stringify(payload), token });
         message.success('赛事已创建');
+        setModalOpen(false);
+        await fetchTournaments();
+        return;
       }
-      setModalOpen(false);
+
+      // 编辑：赛事和组别一起保存。不传单项和团体赛参数，已有的学生组单项、团体赛不受影响。
+      await apiFetch(`/tournaments/${editing.id}`, { method: 'PATCH', token, body: JSON.stringify(common) });
+      const base = `/admin/competitions/${editing.id}/groups`;
+      const savedIds = new Set(editingGroupIds);
+      const keptIds = new Set(groups.map((group) => group.id).filter(Boolean));
+      const failures: string[] = [];
+      const reason = (error: unknown) => (error instanceof Error ? error.message : '保存失败');
+      // 先删、再改、再加，避免改名或新增时和要删的组别撞名。
+      for (const id of editingGroupIds.filter((groupId) => !keptIds.has(groupId))) {
+        try {
+          await apiFetch(`${base}/${id}`, { method: 'DELETE', token });
+          savedIds.delete(id);
+        } catch (error) {
+          failures.push(reason(error));
+        }
+      }
+      for (const [index, group] of groups.entries()) {
+        if (!group.id) continue;
+        try {
+          await apiFetch(`${base}/${group.id}`, { method: 'PATCH', token, body: JSON.stringify(groupPayloads[index]) });
+        } catch (error) {
+          failures.push(`「${group.name}」：${reason(error)}`);
+        }
+      }
+      for (const [index, group] of groups.entries()) {
+        if (group.id) continue;
+        try {
+          const created = await apiFetch<{ id: string }>(base, { method: 'POST', token, body: JSON.stringify(groupPayloads[index]) });
+          // 记下新建组别的 ID：保存失败重试时不会重复创建。
+          form.setFieldValue(['groups', index, 'id'], created.id);
+          savedIds.add(created.id);
+        } catch (error) {
+          failures.push(`「${group.name}」：${reason(error)}`);
+        }
+      }
+      setEditingGroupIds([...savedIds]);
       await fetchTournaments();
+      if (failures.length) {
+        // 保留弹窗和已填写的内容，改好后可以再次保存。
+        Modal.error({ title: '赛事已保存，但部分组别没有保存', content: failures.join('；'), okText: '知道了' });
+        return;
+      }
+      message.success('赛事已更新');
+      setModalOpen(false);
     } finally {
       setSubmitting(false);
     }
@@ -608,7 +719,7 @@ export default function TournamentsPage() {
       if (editing) {
         Modal.confirm({
           title: '确认修改赛事配置？',
-          content: '如果赛事已经开始报名或已抽签，修改单项、报名上限、团体赛或场地可能影响已有数据。',
+          content: '组别会和赛事一起保存。如果赛事已经开始报名或已抽签，修改组别、项目、报名上限或场地可能影响已有数据；已有报名或比赛数据的组别不能删除。',
           okText: '确认修改',
           cancelText: '取消',
           onOk: () => submitValues(values).catch((error) => {
@@ -715,18 +826,16 @@ export default function TournamentsPage() {
     }
   };
 
-  async function regenerateRegistrationCode(record: Tournament, entrantType: 'SCHOOL' | 'SOCIAL') {
+  function regenerateRegistrationCode(record: Tournament) {
+    const action = record.registrationCode ? '重新生成' : '生成';
     Modal.confirm({
-      title: `重新生成${entrantType === 'SCHOOL' ? '学生组' : '社会组'}报名码？`,
-      content: '旧报名码和旧二维码会立即失效，已提交的报名不受影响。',
-      okText: '重新生成',
+      title: `${action}「${record.name}」的报名码？`,
+      content: record.registrationCode ? '旧报名码和旧二维码会立即失效，已提交的报名不受影响。' : '一个赛事一个报名码，报名人扫码后自己选组别。',
+      okText: action,
       cancelText: '取消',
       onOk: async () => {
         try {
-          const result = await apiFetch<{ code: string }>(
-            `/admin/competitions/${record.id}/registration-code/regenerate`,
-            { method: 'POST', token, body: JSON.stringify({ entrantType }) },
-          );
+          const result = await apiFetch<{ code: string }>(`/admin/competitions/${record.id}/registration-code/regenerate`, { method: 'POST', token });
           message.success(`新报名码：${result.code}`);
           await fetchTournaments();
         } catch (error) {
@@ -736,26 +845,16 @@ export default function TournamentsPage() {
     });
   }
 
-  function registrationEntryUrl(record: Tournament, entrantType: 'SCHOOL' | 'SOCIAL', code: string) {
-    return `${window.location.origin}/competitions/${record.id}/register?type=${entrantType.toLowerCase()}&code=${encodeURIComponent(code)}`;
-  }
-
-  function codeEnabled(record: Tournament, entrantType: 'SCHOOL' | 'SOCIAL') {
-    return entrantType === 'SCHOOL'
-      ? record.schoolRegistrationCodeEnabled !== false
-      : record.socialRegistrationCodeEnabled !== false;
-  }
-
-  async function toggleRegistrationCode(record: Tournament, entrantType: 'SCHOOL' | 'SOCIAL') {
-    const enabled = !codeEnabled(record, entrantType);
-    setCodeUpdatingKey(`${record.id}:${entrantType}`);
+  async function toggleRegistrationCode(record: Tournament) {
+    const enabled = record.registrationCodeEnabled === false;
+    setCodeUpdatingKey(record.id);
     try {
       await apiFetch(`/admin/competitions/${record.id}/registration-code`, {
         method: 'PATCH',
         token,
-        body: JSON.stringify({ entrantType, enabled }),
+        body: JSON.stringify({ enabled }),
       });
-      message.success(`${entrantType === 'SCHOOL' ? '学生组' : '社会组'}报名码已${enabled ? '启用' : '停用'}`);
+      message.success(`报名码已${enabled ? '启用' : '停用'}`);
       await fetchTournaments();
     } catch (error) {
       message.error(error instanceof Error ? error.message : '报名码状态修改失败');
@@ -763,6 +862,7 @@ export default function TournamentsPage() {
       setCodeUpdatingKey('');
     }
   }
+
 
   // 「归档 / 恢复 / 删除」放在每行的「更多」里，避免操作列被四五个按钮挤满。
   function rowMenuItems(record: Tournament): NonNullable<MenuProps['items']> {
@@ -879,11 +979,7 @@ export default function TournamentsPage() {
       key: 'events',
       width: 205,
       render: (_: unknown, record: Tournament) => {
-        const { school, social } = eventGroups(record);
-        const rows = [
-          school.length ? { label: '学生', types: school } : null,
-          social.length ? { label: '社会', types: social } : null,
-        ].filter(Boolean) as Array<{ label: string; types: EventType[] }>;
+        const rows = eventGroups(record);
         if (!rows.length) {
           return (
             <Typography.Text type="secondary" style={CELL_TEXT}>
@@ -894,8 +990,8 @@ export default function TournamentsPage() {
         return (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             {rows.map((row) => (
-              <div key={row.label} style={{ display: 'flex', gap: 6 }}>
-                <span style={{ ...CELL_TEXT, flex: 'none', color: '#94a3b8' }}>{row.label}</span>
+              <div key={row.key} style={{ display: 'flex', gap: 6 }}>
+                <span style={{ ...CELL_TEXT, flex: 'none', maxWidth: 72, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#94a3b8' }} title={row.label}>{row.label}</span>
                 <span style={{ ...CELL_TEXT, color: '#334155' }}>
                   {row.types.map((type) => eventLabel(type)).join('·')}
                 </span>
@@ -908,90 +1004,44 @@ export default function TournamentsPage() {
     {
       title: '报名码',
       key: 'registrationCode',
-      width: 240,
+      width: 230,
       render: (_: unknown, record: Tournament) => {
-        const { school, social } = eventGroups(record);
-        const rows = [
-          {
-            label: '学生',
-            type: 'SCHOOL' as const,
-            code: record.schoolRegistrationCode,
-            hasGroup: school.length > 0,
-          },
-          {
-            label: '社会',
-            type: 'SOCIAL' as const,
-            code: record.socialRegistrationCode,
-            hasGroup: social.length > 0,
-          },
-        ];
+        const code = record.registrationCode;
+        const enabled = record.registrationCodeEnabled !== false;
+        const busy = codeUpdatingKey === record.id;
         return (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            {rows.map((item) => {
-              const code = item.code;
-              const enabled = codeEnabled(record, item.type);
-              const busy = codeUpdatingKey === `${record.id}:${item.type}`;
-              return (
-                <div
-                  key={item.type}
-                  style={{ display: 'flex', alignItems: 'center', gap: 6, minHeight: 26 }}
-                >
-                  <span style={{ width: 24, flex: 'none', fontSize: 12, color: '#94a3b8' }}>
-                    {item.label}
-                  </span>
-                  <span style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center' }}>
-                    {code ? (
-                      <Typography.Text
-                        code
-                        copyable={{ text: code }}
-                        style={{ fontSize: 12, whiteSpace: 'nowrap' }}
-                      >
-                        {code}
-                      </Typography.Text>
-                    ) : (
-                      <Tooltip title={item.hasGroup ? '尚未生成报名码，点击右侧按钮生成' : '该组别未开放报名'}>
-                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                          {item.hasGroup ? '未生成' : '未开放'}
-                        </Typography.Text>
-                      </Tooltip>
-                    )}
-                  </span>
-                  {code ? (
-                    <>
-                      <Tooltip title={enabled ? '报名码启用中，点击停用' : '报名码已停用，点击启用'}>
-                        <Switch
-                          size="small"
-                          checked={enabled}
-                          loading={busy}
-                          checkedChildren="启用"
-                          unCheckedChildren="停用"
-                          onChange={() => void toggleRegistrationCode(record, item.type)}
-                        />
-                      </Tooltip>
-                      <Tooltip title="查看报名二维码">
-                        <Button
-                          type="text"
-                          size="small"
-                          icon={<QrcodeOutlined />}
-                          onClick={() => setQrTarget({ record, entrantType: item.type, code, enabled })}
-                        />
-                      </Tooltip>
-                    </>
-                  ) : null}
-                  {item.hasGroup ? (
-                    <Tooltip title={code ? '重新生成报名码' : '生成报名码'}>
-                      <Button
-                        type="text"
-                        size="small"
-                        icon={<ReloadOutlined />}
-                        loading={busy}
-                        onClick={() => void regenerateRegistrationCode(record, item.type)}
-                      />
-                    </Tooltip>
-                  ) : null}
-                </div>
-              );
-            })}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, minHeight: 26 }}>
+            <span style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center' }}>
+              {code ? (
+                <Typography.Text code copyable={{ text: code }} style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
+                  {code}
+                </Typography.Text>
+              ) : (
+                <Tooltip title="尚未生成报名码，点击右侧按钮生成">
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>未生成</Typography.Text>
+                </Tooltip>
+              )}
+            </span>
+            {code ? (
+              <>
+                <Tooltip title={enabled ? '报名码启用中，点击停用' : '报名码已停用，点击启用'}>
+                  <Switch
+                    size="small"
+                    checked={enabled}
+                    loading={busy}
+                    checkedChildren="启用"
+                    unCheckedChildren="停用"
+                    onChange={() => void toggleRegistrationCode(record)}
+                  />
+                </Tooltip>
+                <Tooltip title="查看、下载报名二维码（扫码后选择组别报名）">
+                  <Button type="text" size="small" icon={<QrcodeOutlined />} onClick={() => setQrTarget(qrTargetFor(record))} />
+                </Tooltip>
+              </>
+            ) : null}
+            <Tooltip title={code ? '重新生成报名码' : '生成报名码'}>
+              <Button type="text" size="small" icon={<ReloadOutlined />} loading={busy} onClick={() => regenerateRegistrationCode(record)} />
+            </Tooltip>
           </div>
         );
       },
@@ -1054,6 +1104,7 @@ export default function TournamentsPage() {
             >
               编辑
             </Button>
+            <Button size="small" href={`/nicaiyixiahh/tournaments/${record.id}/groups`}>组别设置</Button>
             {menuItems.length ? (
               <Dropdown
                 trigger={['click']}
@@ -1128,7 +1179,7 @@ export default function TournamentsPage() {
           dataSource={tournaments}
           loading={loading}
           pagination={false}
-          scroll={{ x: 1105 }}
+          scroll={{ x: 1155 }}
           tableLayout="fixed"
           size="middle"
           locale={{ emptyText: '暂无赛事，点击右上角「新建赛事」开始配置' }}
@@ -1229,46 +1280,14 @@ export default function TournamentsPage() {
             ) : null}
           </Card>
 
-          <Card title="赛事内容设置" size="small" style={{ marginBottom: 16 }}>
-            <Form.Item
-              name="eventTypes"
-              label="学生组单项"
-              rules={[
-                {
-                  validator: (_, value: EventType[]) =>
-                    value?.length || form.getFieldValue('socialEventTypes')?.length
-                      ? Promise.resolve()
-                      : Promise.reject(new Error('请至少选择一个单项（学生组或社会组）')),
-                },
-              ]}
-            >
-              <Checkbox.Group options={EVENT_OPTIONS as unknown as Array<{ label: string; value: string }>} />
-            </Form.Item>
-            <Form.Item name="socialEventTypes" label="社会组单项" extra="两组各自独立的单项、抽签、成绩；社会组可单独配置，不选则不开放社会组。">
-              <Checkbox.Group options={EVENT_OPTIONS as unknown as Array<{ label: string; value: string }>} />
-            </Form.Item>
-            <Card size="small" title="学生组报名字段" style={{ marginBottom: 16 }}>
-              <Space wrap>
-                <Form.Item name={['registrationFieldRules', 'SCHOOL', 'studentId']} label="学号" style={{ marginBottom: 0 }}>
-                  <Select options={FIELD_STATE_OPTIONS} style={{ width: 110 }} />
-                </Form.Item>
-                <Form.Item name={['registrationFieldRules', 'SCHOOL', 'college']} label="学院" style={{ marginBottom: 0 }}>
-                  <Select options={FIELD_STATE_OPTIONS} style={{ width: 110 }} />
-                </Form.Item>
-                <Form.Item name={['registrationFieldRules', 'SCHOOL', 'majorGrade']} label="年级专业" style={{ marginBottom: 0 }}>
-                  <Select options={FIELD_STATE_OPTIONS} style={{ width: 110 }} />
-                </Form.Item>
-              </Space>
-            </Card>
-            <Card size="small" title="社会组报名字段" style={{ marginBottom: 16 }}>
-              <Form.Item name={['registrationFieldRules', 'SOCIAL', 'email']} label="邮箱" style={{ marginBottom: 0 }} extra="仅用于接收审核结果，导入模板不含邮箱。">
-                <Select options={FIELD_STATE_OPTIONS.filter((item) => item.value !== 'required')} style={{ width: 110 }} />
+          <Card title="参赛组别与比赛项目" size="small" style={{ marginBottom: 16 }}>
+            {/* 团体赛选项暂时隐藏（代码保留）：打开 SHOW_TEAM_COMPETITION_OPTION 即恢复。 */}
+            {SHOW_TEAM_COMPETITION_OPTION && eventTypes.length > 0 && (
+              <Form.Item name="includeTeamCompetition" label="是否包含学生组团体赛" valuePropName="checked">
+                <Switch checkedChildren="是" unCheckedChildren="否" />
               </Form.Item>
-            </Card>
-            <Form.Item name="includeTeamCompetition" label="是否包含学生组团体赛" valuePropName="checked">
-              <Switch checkedChildren="是" unCheckedChildren="否" />
-            </Form.Item>
-            {includeTeamCompetition && (
+            )}
+            {SHOW_TEAM_COMPETITION_OPTION && includeTeamCompetition && eventTypes.length > 0 && (
               <>
                 <Form.Item name="teamMaxPlayerAppearances" label="团体赛兼项规则" rules={[{ required: true }]} extra="按同一场团体对阵计算，下一轮重新计算。每队人数不限，不限制男女人数。">
                   <Select options={TEAM_APPEARANCE_OPTIONS} />
@@ -1344,6 +1363,60 @@ export default function TournamentsPage() {
                 </Form.Item>
               </>
             )}
+            <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+              每个组别依次设置：① 组别和年龄要求 → ② 比赛项目 → ③ 报名字段 → ④ 报名设置。一个赛事一个报名码，报名人扫码后自己选组别。各组可用场地在「场地排程」中分配。
+            </Typography.Paragraph>
+            <Form.List
+              name="groups"
+              rules={[{
+                validator: async (_, groups?: GroupFormValues[]) => {
+                  if (!groups?.length) throw new Error('请至少添加一个组别');
+                },
+              }]}
+            >
+              {(fields, { add, remove }, { errors }) => (
+                <>
+                  <Spin spinning={groupsLoading}>
+                    {fields.map(({ key, name }) => (
+                      <Card
+                        key={key}
+                        size="small"
+                        title={<GroupCardTitle form={form} index={name} />}
+                        style={{ marginBottom: 12 }}
+                        extra={form.getFieldValue(['groups', name, 'locked']) ? (
+                          <Tooltip title="本组已有报名，不能移除；可以在「报名设置」里关闭本组报名">
+                            <Button type="text" danger disabled>移除</Button>
+                          </Tooltip>
+                        ) : (
+                          <Button type="text" danger onClick={() => remove(name)}>移除</Button>
+                        )}
+                      >
+                        <GroupConfigFields form={form} prefix={[name]} path={['groups', name]} refDate={groupRefDate} />
+                      </Card>
+                    ))}
+                  </Spin>
+                  <Space wrap style={{ marginBottom: 8 }}>
+                    <Button type="dashed" icon={<PlusOutlined />} disabled={fields.length >= 50} onClick={() => add(newGroupValues(groupRefDate))}>
+                      添加组别
+                    </Button>
+                    <Button disabled={fields.length >= 50} onClick={() => add(studentPresetValues())}>添加学生组</Button>
+                    {/* 选完即重新挂载，下拉框回到占位文字，可以连续添加多个 U 系列组别。 */}
+                    <Select
+                      key={uPickerKey}
+                      placeholder="添加 U 系列组别"
+                      style={{ width: 170 }}
+                      disabled={fields.length >= 50}
+                      options={Array.from({ length: 13 }, (_, index) => ({ value: index + 6, label: `U${index + 6}（未满 ${index + 7} 岁）` }))}
+                      onChange={(age: number) => {
+                        add(newGroupValues(groupRefDate, { kind: 'U', age }));
+                        setUPickerKey((value) => value + 1);
+                      }}
+                    />
+                  </Space>
+                  <Form.ErrorList errors={errors} />
+                </>
+              )}
+            </Form.List>
             <Space style={{ display: 'flex' }} align="start">
               <Form.Item name="allowCrossEventRegistration" label="是否允许跨项目报名" valuePropName="checked" style={{ flex: 1 }}>
                 <Switch checkedChildren="允许" unCheckedChildren="不允许" />
@@ -1498,33 +1571,7 @@ export default function TournamentsPage() {
         />
       </Modal>
 
-      <Modal
-        title={qrTarget ? `${qrTarget.entrantType === 'SCHOOL' ? '学生组' : '社会组'}报名二维码` : '报名二维码'}
-        open={Boolean(qrTarget)}
-        onCancel={() => setQrTarget(null)}
-        footer={null}
-        width={420}
-        destroyOnHidden
-      >
-        {qrTarget ? (
-          <Space direction="vertical" size={12} style={{ width: '100%', alignItems: 'center' }}>
-            <QRCode
-              value={registrationEntryUrl(qrTarget.record, qrTarget.entrantType, qrTarget.code)}
-              size={260}
-              bordered={false}
-            />
-            <Tag color={qrTarget.enabled ? 'green' : 'default'}>
-              {qrTarget.enabled ? '报名码启用中' : '报名码已停用，扫码无法报名'}
-            </Tag>
-            <Typography.Text code copyable={{ text: registrationEntryUrl(qrTarget.record, qrTarget.entrantType, qrTarget.code) }}>
-              {registrationEntryUrl(qrTarget.record, qrTarget.entrantType, qrTarget.code)}
-            </Typography.Text>
-            <Typography.Text type="secondary" style={{ textAlign: 'center' }}>
-              扫码后先校验报名码，再进入{qrTarget.entrantType === 'SCHOOL' ? '学校组登录报名' : '社会组免登录报名'}。
-            </Typography.Text>
-          </Space>
-        ) : null}
-      </Modal>
+      <RegistrationQrModal target={qrTarget} onClose={() => setQrTarget(null)} />
     </div>
   );
 }

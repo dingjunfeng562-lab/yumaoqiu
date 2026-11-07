@@ -22,6 +22,10 @@ export type RegistrationIntroInfo = {
   needsRegistrationReview?: boolean;
   payment?: { singlesFee: number; doublesFee: number } | null;
   events: Array<{ id: string; label: string; isDouble: boolean }>;
+  /** 多个组别收费不同时显示的报名费说明。 */
+  feeNote?: string;
+  /** 项目区块标题，默认「{entrantTypeLabel}项目」。 */
+  eventsTitle?: string;
 };
 
 function formatDate(value?: string | null) {
@@ -39,6 +43,7 @@ function formatDateTime(value?: string | null) {
 }
 
 function feeText(info: RegistrationIntroInfo) {
+  if (info.feeNote) return info.feeNote;
   if (!info.payment) return '免费';
   const { singlesFee, doublesFee } = info.payment;
   const parts = [];
@@ -81,10 +86,10 @@ export function RegistrationIntro({ info, onStart }: { info: RegistrationIntroIn
           <Fact label="报名规则">每人最多报名 {info.maxRegistrationEvents ?? 1} 个项目</Fact>
           <Fact label="审核方式">{info.needsRegistrationReview ? '提交后由组委会审核' : '提交后自动通过'}</Fact>
           <Fact label="报名费">
-            <span className={info.payment ? 'font-black text-amber-600' : ''}>{feeText(info)}</span>
+            <span className={info.payment || info.feeNote ? 'font-black text-amber-600' : ''}>{feeText(info)}</span>
           </Fact>
         </dl>
-        {info.payment ? (
+        {info.payment || info.feeNote ? (
           <p className="mt-4 rounded-lg bg-amber-50 px-3 py-2 text-xs font-bold leading-5 text-amber-800">
             {info.needsRegistrationReview
               ? '报名审核通过后再缴费，可在首页「报名查询」查看收款方式和缴费状态。'
@@ -115,7 +120,7 @@ export function RegistrationIntro({ info, onStart }: { info: RegistrationIntroIn
       ) : null}
 
       <section className="rounded-xl border border-blue-100 bg-white p-5 shadow-sm sm:p-6">
-        <h3 className="text-lg font-black text-slate-900">{info.entrantTypeLabel}项目</h3>
+        <h3 className="text-lg font-black text-slate-900">{info.eventsTitle ?? `${info.entrantTypeLabel}项目`}</h3>
         {info.events.length ? (
           <ul className="mt-4 flex flex-wrap gap-2">
             {info.events.map((event) => (

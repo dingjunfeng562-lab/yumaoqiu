@@ -3,11 +3,14 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import { Format, MatchStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TeamCompetitionsService } from '../team-competitions/team-competitions.service';
-import { AutoScheduleDto, ClearScheduleDto, CreateVenueDto, UpdateMatchScheduleDto, UpdateVenueDto } from './dto/scheduling.dto';
+import { AutoScheduleDto, ClearScheduleDto, CreateVenueDto, UpdateMatchScheduleDto, UpdateVenueDto, SaveGroupVenuesDto } from './dto/scheduling.dto';
+import { ScoringGateway } from '../scoring/scoring.gateway';
 import {
   SECOND_STAGE_FORMAL_ROUND_NO_BASE,
   isSecondStageFormalRoundNo,
@@ -34,6 +37,12 @@ type RegistrationView = {
 
 type ScheduleMatch = {
   id: string;
+  groupId: string | null;
+  groupName: string | null;
+  scheduleLocked: boolean;
+  scheduleOverride: boolean;
+  unscheduledReason: string | null;
+  allowedVenueIds: string[] | null;
   team1Id?: string | null;
   team2Id?: string | null;
   teamMatchId?: string | null;
@@ -64,7 +73,7 @@ type ScheduleMatch = {
 };
 
 type ConflictItem = {
-  type: 'VENUE' | 'PLAYER' | 'DEPENDENCY' | 'UNSCHEDULED';
+  type: 'VENUE' | 'PLAYER' | 'DEPENDENCY' | 'UNSCHEDULED' | 'GROUP_VENUE';
   matchIds: string[];
   message: string;
 };
@@ -100,7 +109,65 @@ const scheduleDateTimeFormatter = new Intl.DateTimeFormat('en-CA', {
 
 @Injectable()
 export class SchedulingService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService, @Optional() private gateway?: ScoringGateway) {}
+
+  // Every schedule mutation in a tournament is serialized. Notifications run
+  // only after commit, so subscribers never fetch a partially applied schedule.
+  private async withScheduleTransaction<T>(tournamentId: string, work: (service: SchedulingService) => Promise<T>, notify = true) {
+    const result = await this.prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM Tournament WHERE id = ${tournamentId} FOR UPDATE`;
+      return work(new SchedulingService(tx as PrismaService));
+    }, { maxWait: 10000, timeout: 60000 });
+    if (notify) this.gateway?.emitBracketUpdate({ tournamentId });
+    return result;
+  }
+
+  private async audit(tournamentId: string, action: string, before: unknown, after: unknown, actorId?: string) {
+    await this.prisma.scheduleOperationLog.create({ data: {
+      tournamentId, action, actorId,
+      before: JSON.parse(JSON.stringify(before)) as Prisma.InputJsonValue,
+      after: JSON.parse(JSON.stringify(after)) as Prisma.InputJsonValue,
+    } });
+  }
+
+  async getScheduleLogs(tournamentId: string) {
+    const logs = await this.prisma.scheduleOperationLog.findMany({ where: { tournamentId }, orderBy: { createdAt: 'desc' }, take: 50 });
+    const users = await this.prisma.user.findMany({ where: { id: { in: [...new Set(logs.flatMap(log => log.actorId ? [log.actorId] : []))] } }, select: { id: true, username: true } });
+    return logs.map(log => ({ ...log, actorName: log.actorId ? users.find(user => user.id === log.actorId)?.username ?? '已删除用户' : '系统' }));
+  }
+
+  async getGroupVenues(tournamentId: string) {
+    await this.ensureTournament(tournamentId);
+    const groups = await this.prisma.tournamentGroup.findMany({
+      where: { tournamentId }, include: { allowedVenues: true }, orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
+    });
+    return groups.map(group => ({
+      groupId: group.id, name: group.name, restrictVenues: group.restrictVenues,
+      venueIds: group.allowedVenues.map(v => v.venueId).sort(),
+    }));
+  }
+
+  async saveGroupVenues(tournamentId: string, dto: SaveGroupVenuesDto, actorId?: string) {
+    return this.withScheduleTransaction(tournamentId, async service => {
+      const before = await service.getGroupVenues(tournamentId);
+      const venues = await service.listVenues(tournamentId);
+      const groupIds = new Set(before.map(group => group.groupId));
+      if (new Set(dto.groups.map(g => g.groupId)).size !== dto.groups.length) throw new BadRequestException('组别不能重复');
+      for (const rule of dto.groups) {
+        if (!groupIds.has(rule.groupId)) throw new BadRequestException('组别必须属于当前赛事');
+        if (rule.restrictVenues && !rule.venueIds.length) throw new BadRequestException('指定场地模式至少选择一片场地');
+        if (rule.venueIds.some(id => !venues.some(v => v.id === id && v.isActive))) throw new BadRequestException('请选择当前赛事已启用的场地');
+        await service.prisma.tournamentGroup.update({ where: { id: rule.groupId }, data: { restrictVenues: rule.restrictVenues } });
+        await service.prisma.groupVenue.deleteMany({ where: { groupId: rule.groupId } });
+        if (rule.restrictVenues) await service.prisma.groupVenue.createMany({ data: [...new Set(rule.venueIds)].map(venueId => ({ groupId: rule.groupId, venueId })) });
+      }
+      const groups = await service.getGroupVenues(tournamentId);
+      const matches = await service.loadScheduleMatches(tournamentId);
+      const affected = matches.filter(m => m.status === MatchStatus.PENDING && m.venueId && m.allowedVenueIds && !m.allowedVenueIds.includes(m.venueId) && !m.scheduleOverride);
+      await service.audit(tournamentId, 'GROUP_VENUES', before, groups, actorId);
+      return { groups, affectedMatchCount: affected.length };
+    }, false);
+  }
 
   listVenues(tournamentId: string) {
     return this.prisma.venue.findMany({
@@ -110,43 +177,39 @@ export class SchedulingService {
   }
 
   async createVenue(tournamentId: string, dto: CreateVenueDto) {
-    await this.ensureTournament(tournamentId);
-    return this.prisma.venue.create({
-      data: {
-        tournamentId,
-        name: dto.name,
-        sortOrder: dto.sortOrder ?? 0,
-      },
+    return this.withScheduleTransaction(tournamentId, async service => {
+      await service.ensureTournament(tournamentId);
+      return service.prisma.venue.create({ data: { tournamentId, name: dto.name, sortOrder: dto.sortOrder ?? 0 } });
     });
   }
 
   async updateVenue(id: string, dto: UpdateVenueDto) {
-    await this.ensureVenue(id);
-    return this.prisma.venue.update({
+    const venue = await this.ensureVenue(id);
+    return this.withScheduleTransaction(venue.tournamentId, service => service.prisma.venue.update({
       where: { id },
       data: dto,
-    });
+    }));
   }
 
   async removeVenue(id: string) {
     const venue = await this.ensureVenue(id);
-    const linkedMatches = await this.prisma.match.count({ where: { venueId: id } });
-    if (linkedMatches > 0) {
-      return this.prisma.venue.update({
-        where: { id },
-        data: { isActive: false },
-      });
-    }
-    return this.prisma.venue.delete({ where: { id: venue.id } });
+    return this.withScheduleTransaction(venue.tournamentId, async service => {
+      const linkedMatches = await service.prisma.match.count({ where: { venueId: id } });
+      if (linkedMatches > 0) return service.prisma.venue.update({ where: { id }, data: { isActive: false } });
+      return service.prisma.venue.delete({ where: { id: venue.id } });
+    });
   }
 
   async getSchedule(tournamentId: string, eventId?: string) {
     await this.ensureTournament(tournamentId);
-    const [venues, matches] = await Promise.all([
+    const [venues, allMatches, groups] = await Promise.all([
       this.listVenues(tournamentId),
-      this.loadScheduleMatches(tournamentId, eventId),
+      this.loadScheduleMatches(tournamentId),
+      this.getGroupVenues(tournamentId),
     ]);
-    const conflicts = this.detectConflicts(matches);
+    const matches = eventId ? allMatches.filter(m => m.eventId === eventId) : allMatches;
+    const visibleIds = new Set(matches.map(m => m.id));
+    const conflicts = this.detectConflicts(allMatches).filter(c => c.matchIds.some(id => visibleIds.has(id)));
     const conflictMap = new Map<string, ConflictItem[]>();
     for (const conflict of conflicts) {
       for (const matchId of conflict.matchIds) {
@@ -157,6 +220,7 @@ export class SchedulingService {
     }
 
     return {
+      groups,
       teamCourtLimits: eventId ? [] : await this.teamCourtLimits(tournamentId),
       venues,
       matches: matches.map((match) => ({
@@ -181,7 +245,11 @@ export class SchedulingService {
         maxCourts: Math.floor(c._count.teams / 2), canAdjust: competitions.length === 1 && eventCount === 0 }));
   }
 
-  async autoSchedule(dto: AutoScheduleDto) {
+  async autoSchedule(dto: AutoScheduleDto, actorId?: string) {
+    return this.withScheduleTransaction(dto.tournamentId, service => service.autoScheduleInternal(dto, actorId), !dto.preview);
+  }
+
+  private async autoScheduleInternal(dto: AutoScheduleDto, actorId?: string) {
     const tournament = await this.prisma.tournament.findUnique({
       where: { id: dto.tournamentId },
       select: {
@@ -203,7 +271,7 @@ export class SchedulingService {
       dto.dailyEndTime ?? tournament.dailyEndTime,
       dto.breakPeriods,
     );
-    if (this.longestPlayableMinutes(dailyWindow) < matchMinutes) {
+    if (dto.overrideMatchMinutes && this.longestPlayableMinutes(dailyWindow) < matchMinutes) {
       throw new BadRequestException('每日可排程时段不足以安排一场比赛，请调整起止时间或休息时段');
     }
     const earliestScheduleStart = Math.max(
@@ -227,19 +295,12 @@ export class SchedulingService {
 
     const scopeMatches = await this.prisma.match.findMany({
       where: this.tournamentMatches(dto.tournamentId, dto.eventId),
-      include: { event: true, teamMatch: true },
+      include: { event: true, teamMatch: { include: { teamCompetition: true } } },
       orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }],
     });
     if (!scopeMatches.length) throw new BadRequestException('暂无可排程场次，请先完成抽签编排');
     const courtLimits = dto.eventId ? [] : await this.teamCourtLimits(dto.tournamentId);
     const limitsByCompetition = new Map(courtLimits.map(limit => [limit.competitionId, limit.maxCourts]));
-    const adjustment = dto.adjustTeamVenueCount && courtLimits.length === 1 && courtLimits[0].canAdjust ? courtLimits[0] : null;
-    const unusedVenueIds = adjustment ? venues.slice(adjustment.maxCourts).map(venue => venue.id) : [];
-    // 场地已使用时保留配置；本次团体排程仍只使用容量以内的场地。
-    const canDisable = unusedVenueIds.length > 0 && !await this.prisma.match.count({
-      where: { venueId: { in: unusedVenueIds }, OR: [{ status: { not: MatchStatus.PENDING } }, { startedAt: { not: null } }] },
-    });
-
     const scheduleStage: ScheduleStage = dto.scheduleStage ?? 'all';
     const targetMatches = scopeMatches.filter((match) =>
       this.isScheduleStageMatch(match.event?.format ?? null, match.roundNo, scheduleStage),
@@ -259,44 +320,24 @@ export class SchedulingService {
         .filter((match) => match.eventId)
         .map((match) => [this.matchKey(match.eventId!, match.roundNo, match.matchNo), match]),
     );
-    const invalidCompletedIds = scopeMatches
-      .filter(
-        (match) =>
-          targetMatches.some((target) => target.id === match.id) &&
-          match.status === MatchStatus.COMPLETED && !this.dependenciesReady(match, matchMap),
-      )
-      .map((match) => match.id);
+    const groups = await this.getGroupVenues(dto.tournamentId);
+    const groupMap = new Map(groups.map(group => [group.groupId, group]));
+    const groupFor = (match: (typeof scopeMatches)[number]) => groupMap.get(match.event?.groupId ?? match.teamMatch?.teamCompetition.groupId ?? '');
+    const eligibleVenues = (match: (typeof scopeMatches)[number]) => {
+      const rule = groupFor(match);
+      return venues.filter(venue => !rule?.restrictVenues || rule.venueIds.includes(venue.id));
+    };
     const allScheduled = await this.loadScheduleMatches(dto.tournamentId);
-    const adjustableIds = new Set(
-      [
-        ...targetMatches
-          .filter((match) => match.status === MatchStatus.PENDING)
-          .map((match) => match.id),
-        ...invalidCompletedIds,
-      ],
-    );
-    const anchors = allScheduled.filter(
-      (match) => !adjustableIds.has(match.id) && Boolean(match.scheduledAt),
-    );
-
-    // 借场:本次排程限定了「固定场地」(venueIds)时,其余启用场地里已经被其他项目占用、
-    // 之后空出来的时段可供本次溢出的场次借用——前提仍是落在每日时段内且选手不冲突。
-    // 只借「已经有其他项目落位」的场地(anchoredVenueIds),避免把尚未排程项目预留的空场抢走。
-    const homeVenueIds = new Set(venues.map((venue) => venue.id));
-    const anchoredVenueIds = new Set(
-      anchors.map((anchor) => anchor.venueId).filter((id): id is string => Boolean(id)),
-    );
-    const borrowVenues = dto.venueIds?.length
-      ? (
-          await this.prisma.venue.findMany({
-            where: { tournamentId: dto.tournamentId, isActive: true },
-            orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
-          })
-        ).filter((venue) => !homeVenueIds.has(venue.id) && anchoredVenueIds.has(venue.id))
-      : [];
-
+    const fingerprint = createHash('sha256').update(JSON.stringify({ tournament, groups, venues,
+      matches: allScheduled, scopeMatches,
+      options: { ...dto, preview: undefined, fingerprint: undefined },
+    })).digest('hex');
+    if (dto.fingerprint && dto.fingerprint !== fingerprint) throw new ConflictException('赛程、场地或规则已变化，请重新预览后应用');
+    const adjustableIds = new Set(targetMatches.filter(match => match.status === MatchStatus.PENDING && !match.startedAt && !match.scheduleLocked).map(match => match.id));
+    const anchors = allScheduled.filter(match => !adjustableIds.has(match.id) && Boolean(match.scheduledAt) && match.status !== MatchStatus.CANCELLED);
+    const reasons = new Map<string, string>();
     const venueBusy = new Map<string, BusyInterval[]>(
-      [...venues, ...borrowVenues].map((venue) => [venue.id, []]),
+      (await this.listVenues(dto.tournamentId)).map((venue) => [venue.id, []]),
     );
     const playerBusy = new Map<string, BusyInterval[]>();
     for (const anchor of anchors) {
@@ -324,19 +365,10 @@ export class SchedulingService {
     const roundRelease = new Map<string, number>();
     const teamVenue = new Map<string, string>();
     const targetTeamMatchIds = new Set(targetMatches.map(match => match.teamMatchId).filter(Boolean));
-    for (const fixed of allScheduled.filter(match => match.teamMatchId && targetTeamMatchIds.has(match.teamMatchId) && match.venueId && (match.status === MatchStatus.LIVE || match.status === MatchStatus.COMPLETED))) {
+    for (const fixed of allScheduled.filter(match => match.teamMatchId && targetTeamMatchIds.has(match.teamMatchId) && match.venueId && (match.status === MatchStatus.LIVE || match.status === MatchStatus.COMPLETED || match.scheduleLocked))) {
       const currentVenue = teamVenue.get(fixed.teamMatchId!);
       if (currentVenue && currentVenue !== fixed.venueId) throw new ConflictException('同一团体对阵的已开赛子项使用了不同场地，请先核对原排程');
       teamVenue.set(fixed.teamMatchId!, fixed.venueId!);
-    }
-    const competitionCourts = new Map<string, typeof venues>();
-    for (const limit of courtLimits) {
-      const fixedIds = new Set(scopeMatches.filter(m => m.teamMatch?.teamCompetitionId === limit.competitionId)
-        .map(m => m.teamMatchId ? teamVenue.get(m.teamMatchId) : undefined).filter(Boolean));
-      if (fixedIds.size > limit.maxCourts) throw new ConflictException('已开赛团体占用场地超出循环赛容量，请先核对场地安排');
-      competitionCourts.set(limit.competitionId, [
-        ...venues.filter(v => fixedIds.has(v.id)), ...venues.filter(v => !fixedIds.has(v.id)),
-      ].slice(0, limit.maxCourts));
     }
     const scopeById = new Map(scopeMatches.map(match => [match.id, match]));
     for (const anchor of anchors) {
@@ -354,7 +386,7 @@ export class SchedulingService {
     }
 
     const schedulableMatches = targetMatches
-      .filter((match) => match.status === MatchStatus.PENDING)
+      .filter((match) => adjustableIds.has(match.id))
       .sort((a, b) => {
         const stagePriority = (dto.prioritizeSecondStage ?? true)
           ? Number(!isSecondStageFormalRoundNo(a.roundNo)) -
@@ -362,31 +394,40 @@ export class SchedulingService {
           : 0;
         const aRank = eventTypeRank.get(a.event?.type ?? '') ?? Number.MAX_SAFE_INTEGER;
         const bRank = eventTypeRank.get(b.event?.type ?? '') ?? Number.MAX_SAFE_INTEGER;
-        return stagePriority || aRank - bRank || a.roundNo - b.roundNo
+        return stagePriority || aRank - bRank || a.roundNo - b.roundNo || eligibleVenues(a).length - eligibleVenues(b).length
           || (a.teamMatchId ?? '').localeCompare(b.teamMatchId ?? '') || a.matchNo - b.matchNo;
       });
 
     const updates: Array<{ matchId: string; venueId: string; scheduledAt: Date; minutes: number }> = [];
-    for (const match of schedulableMatches) {
+    // Topological selection preserves dependencies even when stage priority
+    // places a later round first. Never place a dependent whose upstream did not fit.
+    const remaining = [...schedulableMatches];
+    while (remaining.length) {
+      const index = remaining.findIndex(item => !this.dependencyMatches(item, matchMap).some(dep => remaining.some(m => m.id === dep.id)));
+      if (index < 0) { for (const item of remaining) reasons.set(item.id, '前置比赛依赖异常，请核对签表'); break; }
+      const [match] = remaining.splice(index, 1);
+      const missingDependency = this.dependencyMatches(match, matchMap).some(dep =>
+        dep.status !== MatchStatus.COMPLETED && !scheduledEndByKey.has(this.matchKey(dep.eventId!, dep.roundNo, dep.matchNo)));
+      if (missingDependency) { reasons.set(match.id, '前置比赛尚未排入，请先安排前置比赛'); continue; }
       const playerIds = [
         ...this.playerIds(registrationMap.get(match.side1Id!)),
         ...this.playerIds(registrationMap.get(match.side2Id!)),
         ...[match.teamMatch?.team1Id, match.teamMatch?.team2Id].filter(Boolean).map(id => `team:${id}`),
       ];
-      const perMatchMinutes = matchMinutes;
+      const perMatchMinutes = dto.overrideMatchMinutes ? matchMinutes : match.durationMinutes ?? match.event?.defaultMatchMinutes ?? matchMinutes;
+      if (this.longestPlayableMinutes(dailyWindow) < perMatchMinutes) { reasons.set(match.id, '每日连续可用时段不足以容纳本场比赛'); continue; }
       const dependencyReleaseTime = this.dependencyReleaseTime(match, matchMap, scheduledEndByKey);
       const competitionId = match.teamMatch?.teamCompetitionId;
       const courtLimit = competitionId ? limitsByCompetition.get(competitionId) : undefined;
       const previousRoundEnd = competitionId && courtLimit ? roundRelease.get(`${competitionId}:${match.roundNo - 1}`) ?? 0 : 0;
       const earliestMatchStart = Math.max(earliestScheduleStart, dependencyReleaseTime, previousRoundEnd, match.teamMatchId ? teamRelease.get(match.teamMatchId) ?? 0 : 0);
       const fixedVenue = match.teamMatchId ? teamVenue.get(match.teamMatchId) : undefined;
-      if (fixedVenue && ![...venues, ...borrowVenues].some(venue => venue.id === fixedVenue)) {
-        throw new ConflictException('团体对阵已有子项开赛，请将该对阵使用的场地纳入本次排程');
-      }
-      const candidates = [
-        ...(competitionId ? competitionCourts.get(competitionId) ?? venues : venues).map((venue) => ({ venue, isBorrow: false })),
-        ...(courtLimit ? [] : borrowVenues).map((venue) => ({ venue, isBorrow: true })),
-      ]
+      const allowed = eligibleVenues(match);
+      // Already-started team encounters remain on their original court even
+      // after a group rule changes; preserve that explicit historical exception.
+      const fixed = fixedVenue ? (await this.listVenues(dto.tournamentId)).find(v => v.id === fixedVenue && v.isActive) : undefined;
+      const candidates = (fixedVenue ? (fixed ? [fixed] : []) : allowed)
+        .map(venue => ({ venue, isBorrow: false }))
         .filter(({ venue }) => !fixedVenue || venue.id === fixedVenue)
         .map(({ venue, isBorrow }) => ({
           venue,
@@ -409,11 +450,14 @@ export class SchedulingService {
           ): candidate is { venue: (typeof venues)[number]; isBorrow: boolean; startTime: number } =>
             candidate.startTime !== null,
         );
-      // 借场后仍排不下(超出赛事结束日期)的场次留空,交由冲突检测标记为「待排程」,不再中断整批排程。
-      if (!candidates.length) continue;
-      // 先比「最早能排到哪一天」:固定场地只要当天还排得下,就优先用固定场地;
-      // 只有当固定场地会把这场挤到更晚的某一天、而借用场地当天还排得下时,才借场。
-      // 同一天内再优先固定场地、然后比最早时间、最后比场地序号。
+      // 排不入指定场地的比赛保留待排程并给出原因。
+      if (!candidates.length) {
+        reasons.set(match.id, !allowed.length && !fixedVenue
+          ? `${groupFor(match)?.name ?? '本组'}指定场地与本次启用场地无交集，请调整场地范围`
+          : '指定场地在赛事日期和可用时段内已无空位，请增加场地或延长时间');
+        continue;
+      }
+      // 同一可用范围内优先最早时间，再按场地序号稳定排序。
       candidates.sort(
         (a, b) =>
           this.dayKey(a.startTime) - this.dayKey(b.startTime) ||
@@ -452,37 +496,46 @@ export class SchedulingService {
       }
     }
 
-    const resetData: Prisma.MatchUncheckedUpdateManyInput = {
-      venueId: null,
-      scheduledAt: null,
-      durationMinutes: matchMinutes,
+    const projected = allScheduled.map(match => {
+      if (!adjustableIds.has(match.id)) return match;
+      const update = updates.find(item => item.matchId === match.id);
+      return { ...match, venueId: update?.venueId ?? null, scheduledAt: update?.scheduledAt ?? null,
+        venueName: venues.find(v => v.id === update?.venueId)?.name ?? match.venueName,
+        durationMinutes: update?.minutes ?? match.durationMinutes,
+        scheduleLocked: false, scheduleOverride: Boolean(update && match.allowedVenueIds && !match.allowedVenueIds.includes(update.venueId)),
+        unscheduledReason: reasons.get(match.id) ?? null };
+    });
+    // A locked downstream match must not be invalidated by a rebuilt upstream.
+    const hardConflicts = this.detectPlacementConflicts(projected, breakMinutes)
+      .filter(c => c.matchIds.some(id => adjustableIds.has(id)));
+    if (hardConflicts.length) throw new ConflictException(hardConflicts[0].message);
+    const summary = groups.map(group => {
+      const items = projected.filter(m => m.groupId === group.groupId && (!dto.eventId || m.eventId === dto.eventId));
+      return { ...group, scheduled: items.filter(m => m.scheduledAt && m.venueId).length,
+        unscheduled: items.filter(m => m.status === MatchStatus.PENDING && (!m.scheduledAt || !m.venueId)).length,
+        estimatedEnd: items.some(m => m.scheduledAt) ? new Date(Math.max(...items.filter(m => m.scheduledAt).map(m => this.endTime(m).getTime()))).toISOString() : null };
+    });
+    const preview = { fingerprint, groups: summary, scheduledCount: updates.length,
+      preservedCount: targetMatches.filter(m => m.scheduleLocked).length,
+      unscheduled: [...reasons].map(([matchId, reason]) => ({ matchId, reason })),
+      matches: projected.filter(m => !dto.eventId || m.eventId === dto.eventId).map(m => ({ ...m, scheduledAt: m.scheduledAt?.toISOString() ?? null })),
     };
-
-    await this.prisma.$transaction([
-      ...(canDisable ? [this.prisma.venue.updateMany({ where: { id: { in: unusedVenueIds }, tournamentId: dto.tournamentId }, data: { isActive: false } })] : []),
-      this.prisma.match.updateMany({
-        where: { id: { in: [...adjustableIds] } },
-        data: resetData,
-      }),
-      this.prisma.match.updateMany({
-        where: { id: { in: invalidCompletedIds } },
-        data: {
-          status: MatchStatus.PENDING,
-          winnerSide: null,
-        },
-      }),
-      ...updates.map((update) =>
-        this.prisma.match.update({
-          where: { id: update.matchId },
-          data: {
-            venueId: update.venueId,
-            scheduledAt: update.scheduledAt,
-            durationMinutes: update.minutes,
-          },
-        }),
-      ),
-    ]);
-
+    if (dto.preview) return { preview };
+    for (const match of projected.filter(m => adjustableIds.has(m.id))) {
+      const original = scopeMatches.find(m => m.id === match.id)!;
+      const changed = await this.prisma.match.updateMany({
+        where: { id: match.id, status: MatchStatus.PENDING, startedAt: null, updatedAt: original.updatedAt },
+        data: { venueId: match.venueId, scheduledAt: match.scheduledAt, durationMinutes: match.durationMinutes,
+          scheduleLocked: false, scheduleOverride: match.scheduleOverride, unscheduledReason: match.unscheduledReason },
+      });
+      if (changed.count !== 1) throw new ConflictException('比赛状态已变化，请重新预览');
+    }
+    await this.prisma.tournament.update({ where: { id: dto.tournamentId }, data: {
+      schedulingSettings: { dailyStartTime: dto.dailyStartTime ?? tournament.dailyStartTime,
+        dailyEndTime: dto.dailyEndTime ?? tournament.dailyEndTime, breakMinutes, breakPeriods: (dto.breakPeriods ?? []).map(p => ({ startTime: p.startTime, durationMinutes: p.durationMinutes })) },
+    } });
+    await this.audit(dto.tournamentId, 'AUTO', allScheduled.filter(m => adjustableIds.has(m.id)).map(m => this.placement(m)),
+      projected.filter(m => adjustableIds.has(m.id)).map(m => this.placement(m)), actorId);
     return this.getSchedule(dto.tournamentId, dto.eventId);
   }
 
@@ -491,111 +544,167 @@ export class SchedulingService {
    * 自动排程的逆操作。只清空 PENDING 场次,已完赛 / 进行中的场次(及其结果、所在场地)保持不动,
    * 这样清空后重新自动排程时它们仍作为锚点被避让。durationMinutes(单场预估时长)保留。
    */
-  async clearSchedule(dto: ClearScheduleDto) {
-    await this.ensureTournament(dto.tournamentId);
-    const matches = await this.prisma.match.findMany({
-      where: {
-        status: MatchStatus.PENDING,
-        ...this.tournamentMatches(dto.tournamentId, dto.eventId),
-      },
-      select: { id: true },
-    });
-    const ids = matches.map((match) => match.id);
-    if (ids.length) {
-      await this.prisma.match.updateMany({
-        where: { id: { in: ids } },
-        data: { venueId: null, scheduledAt: null },
+  async clearSchedule(dto: ClearScheduleDto, actorId?: string) {
+    return this.withScheduleTransaction(dto.tournamentId, async service => {
+      await service.ensureTournament(dto.tournamentId);
+      const matches = await service.prisma.match.findMany({ where: {
+        ...service.tournamentMatches(dto.tournamentId, dto.eventId), status: MatchStatus.PENDING, startedAt: null,
+        ...(dto.includeLocked ? {} : { scheduleLocked: false }),
+      } });
+      const result = await service.prisma.match.updateMany({
+        where: { id: { in: matches.map(m => m.id) }, status: MatchStatus.PENDING, startedAt: null,
+          ...(dto.includeLocked ? {} : { scheduleLocked: false }) },
+        data: { venueId: null, scheduledAt: null, scheduleLocked: false, scheduleOverride: false, unscheduledReason: null },
       });
-    }
-    return this.getSchedule(dto.tournamentId, dto.eventId);
+      if (result.count !== matches.length) throw new ConflictException('比赛状态已变化，请刷新后重试');
+      await service.audit(dto.tournamentId, 'CLEAR', matches.map(m => service.placement(m)), { includeLocked: dto.includeLocked ?? false, count: result.count }, actorId);
+      return service.getSchedule(dto.tournamentId, dto.eventId);
+    });
   }
 
-  async updateMatchSchedule(matchId: string, dto: UpdateMatchScheduleDto) {
-    const match = await this.prisma.match.findUnique({
-      where: { id: matchId },
-      include: { event: true },
-    });
+  private placement(match: { id: string; venueId: string | null; scheduledAt: Date | null; durationMinutes: number; scheduleLocked: boolean }) {
+    return { matchId: match.id, venueId: match.venueId, scheduledAt: match.scheduledAt, durationMinutes: match.durationMinutes, scheduleLocked: match.scheduleLocked };
+  }
+
+  private async matchTournamentId(matchId: string) {
+    const match = await this.prisma.match.findUnique({ where: { id: matchId }, include: { event: true } });
     if (!match) throw new NotFoundException('场次不存在');
-    const tournamentId = match.event?.tournamentId ?? await this.resolveTeamMatchTournamentId(match.teamMatchId);
-
-    if (dto.venueId) {
-      const venue = await this.prisma.venue.findUnique({ where: { id: dto.venueId } });
-      if (!venue || !venue.isActive || venue.tournamentId !== tournamentId) {
-        throw new BadRequestException('请选择当前赛事下已启用的场地');
-      }
-    }
-
-    const scheduledAt =
-      dto.scheduledAt !== undefined || dto.scheduledAtLocal !== undefined
-        ? this.parseNullableScheduleDate(dto.scheduledAt, dto.scheduledAtLocal, '比赛时间无效')
-        : undefined;
-
-    if (match.teamMatchId) {
-      await this.updateTeamEncounterSchedule(match.teamMatchId, matchId, tournamentId, dto, scheduledAt);
-    } else await this.prisma.match.update({
-      where: { id: matchId },
-      data: {
-        ...(dto.venueId !== undefined ? { venueId: dto.venueId } : {}),
-        ...(scheduledAt !== undefined ? { scheduledAt } : {}),
-        ...(dto.durationMinutes !== undefined ? { durationMinutes: dto.durationMinutes } : {}),
-      },
-    });
-
-    const fallbackTournamentId = match.event?.tournamentId ?? (await this.resolveTeamMatchTournamentId(match.teamMatchId));
-    return this.getSchedule(fallbackTournamentId, match.eventId ?? undefined);
+    return match.event?.tournamentId ?? this.resolveTeamMatchTournamentId(match.teamMatchId);
   }
 
-  private async updateTeamEncounterSchedule(teamMatchId: string, matchId: string, tournamentId: string, dto: UpdateMatchScheduleDto, scheduledAt: Date | null | undefined) {
-    await this.prisma.$transaction(async tx => {
-      await tx.$queryRaw`SELECT id FROM TeamMatch WHERE id = ${teamMatchId} FOR UPDATE`;
-      const matches = await tx.match.findMany({ where: { teamMatchId }, orderBy: { matchNo: 'asc' } });
-      const selected = matches.find(match => match.id === matchId);
-      if (!selected || selected.status !== MatchStatus.PENDING) throw new ConflictException('只能调整尚未开始的团体子项排程');
-      const pending = matches.filter(match => match.status === MatchStatus.PENDING);
-      const fixed = matches.filter(match => match.status === MatchStatus.LIVE || match.status === MatchStatus.COMPLETED);
-      const fixedVenues = new Set(fixed.map(match => match.venueId).filter(Boolean));
-      if (fixedVenues.size > 1) throw new ConflictException('已开赛子项使用了不同场地，请先核对原排程');
-      const fixedVenue = [...fixedVenues][0];
-      if (fixedVenue && dto.venueId !== undefined && dto.venueId !== fixedVenue) {
-        throw new ConflictException('团体对阵已有子项开赛，后续子项须继续使用同一场地');
+  async previewMatchSchedule(matchId: string, dto: UpdateMatchScheduleDto) {
+    const tournamentId = await this.matchTournamentId(matchId);
+    const plan = await this.manualPlan(tournamentId, matchId, dto);
+    return this.manualPreview(plan);
+  }
+
+  private manualPreview(plan: Awaited<ReturnType<SchedulingService['manualPlan']>>) {
+    return { changes: plan.changes.map(m => ({ ...this.placement(m), venueName: m.venueName,
+      scheduledAtLocal: m.scheduledAt ? this.formatScheduleDateTime(m.scheduledAt) : null })),
+      conflicts: plan.conflicts, outsideGroup: plan.outsideGroup, venues: plan.venueOptions };
+  }
+
+  async updateMatchSchedule(matchId: string, dto: UpdateMatchScheduleDto, actorId?: string) {
+    if (dto.findNextAvailable) throw new BadRequestException('请先预览可用时间，再保存明确的场地和时间');
+    const tournamentId = await this.matchTournamentId(matchId);
+    return this.withScheduleTransaction(tournamentId, async service => {
+      const plan = await service.manualPlan(tournamentId, matchId, dto);
+      if (plan.conflicts.length) throw new ConflictException(plan.conflicts[0].message);
+      if (plan.outsideGroup && !dto.allowOutsideGroup) throw new BadRequestException('所选场地超出组别范围，请勾选“允许本场临时借场”后保存');
+      for (const match of plan.changes) {
+        const original = plan.before.find(m => m.id === match.id)!;
+        const result = await service.prisma.match.updateMany({ where: {
+          id: match.id, status: MatchStatus.PENDING, startedAt: null,
+          venueId: original.venueId, scheduledAt: original.scheduledAt, durationMinutes: original.durationMinutes,
+          scheduleLocked: original.scheduleLocked,
+        }, data: { venueId: match.venueId, scheduledAt: match.scheduledAt, durationMinutes: match.durationMinutes,
+          scheduleLocked: match.scheduleLocked, scheduleOverride: match.scheduleOverride, unscheduledReason: null } });
+        if (result.count !== 1) throw new ConflictException('比赛安排或状态已变化，请刷新后重试');
       }
-      const venueId = dto.venueId !== undefined ? dto.venueId : fixedVenue ?? pending.find(match => match.venueId)?.venueId;
-      const tournament = await tx.tournament.findUniqueOrThrow({ where: { id: tournamentId }, select: { breakMinutes: true } });
-      // 手工调整沿用已排程的子项间隔（可能与赛事默认值不同，也可能跨午休）。
-      // 只换场地时保留所有原时间，不因默认间隔不同而挤占下一轮。
-      const gaps = new Map(matches.map((item, index) => {
-        const next = matches[index + 1];
-        const gap = item.scheduledAt && next?.scheduledAt
-          ? (next.scheduledAt.getTime() - item.scheduledAt.getTime()) / 60_000 - item.durationMinutes
-          : tournament.breakMinutes;
-        return [item.id, Math.max(0, gap)];
-      }));
-      const reflow = scheduledAt !== undefined || (dto.durationMinutes !== undefined && dto.durationMinutes !== selected.durationMinutes);
-      let cursor = scheduledAt !== undefined ? scheduledAt : pending[0]?.scheduledAt;
-      const fixedEnd = Math.max(0, ...fixed.filter(match => match.scheduledAt).map(match => this.addMinutes(match.scheduledAt!, match.durationMinutes + (gaps.get(match.id) ?? tournament.breakMinutes)).getTime()));
-      if (reflow && cursor && cursor.getTime() < fixedEnd) {
-        if (scheduledAt) throw new ConflictException('后续子项的开始时间不能早于已开赛子项的预估结束时间');
-        cursor = new Date(fixedEnd);
-      }
-      for (const item of pending) {
-        const durationMinutes = item.id === matchId ? dto.durationMinutes ?? item.durationMinutes : item.durationMinutes;
-        await tx.match.update({ where: { id: item.id }, data: {
-          ...(venueId !== undefined ? { venueId } : {}),
-          ...(reflow && cursor !== undefined ? { scheduledAt: cursor } : {}),
-          durationMinutes,
-        } });
-        if (cursor) cursor = this.addMinutes(cursor, durationMinutes + (gaps.get(item.id) ?? tournament.breakMinutes));
-      }
+      await service.audit(tournamentId, 'MANUAL', plan.before.map(m => service.placement(m)), plan.changes.map(m => ({ ...service.placement(m), scheduleOverride: m.scheduleOverride })), actorId);
+      return service.getSchedule(tournamentId);
     });
+  }
+
+  private async manualPlan(tournamentId: string, matchId: string, dto: UpdateMatchScheduleDto) {
+    const [tournament, all, venues] = await Promise.all([
+      this.ensureTournament(tournamentId), this.loadScheduleMatches(tournamentId), this.listVenues(tournamentId),
+    ]);
+    const selected = all.find(m => m.id === matchId);
+    if (!selected) throw new NotFoundException('场次不存在');
+    if (selected.status !== MatchStatus.PENDING || selected.startedAt) throw new ConflictException('只能调整尚未开始的比赛');
+    const related = (selected.teamMatchId ? all.filter(m => m.teamMatchId === selected.teamMatchId) : [selected]).sort((a,b) => a.matchNo - b.matchNo);
+    const before = related.filter(m => m.status === MatchStatus.PENDING && !m.startedAt);
+    const fixed = related.filter(m => m.status === MatchStatus.LIVE || m.status === MatchStatus.COMPLETED || m.startedAt);
+    const fixedIds = new Set(fixed.map(m => m.venueId).filter(Boolean));
+    if (fixedIds.size > 1) throw new ConflictException('已开赛团体子项使用不同场地，请核对原排程');
+    const fixedVenue = [...fixedIds][0];
+    const venueId = dto.venueId !== undefined ? dto.venueId : fixedVenue ?? selected.venueId;
+    if (fixedVenue && venueId !== fixedVenue) throw new ConflictException('团体对阵已有子项开赛，后续子项须继续使用同一场地');
+    if (venueId && !venues.some(v => v.id === venueId && v.isActive)) throw new BadRequestException('请选择当前赛事已启用的场地');
+    const settings = (tournament.schedulingSettings ?? {}) as { dailyStartTime?: string; dailyEndTime?: string; breakMinutes?: number; breakPeriods?: AutoScheduleDto['breakPeriods'] };
+    const gap = settings.breakMinutes ?? tournament.breakMinutes;
+    const window = this.parseDailyWindow(settings.dailyStartTime ?? tournament.dailyStartTime, settings.dailyEndTime ?? tournament.dailyEndTime, settings.breakPeriods);
+    const parsed = dto.scheduledAt !== undefined || dto.scheduledAtLocal !== undefined
+      ? this.parseNullableScheduleDate(dto.scheduledAt, dto.scheduledAtLocal, '比赛时间无效') : undefined;
+    const reflow = parsed !== undefined || (dto.durationMinutes !== undefined && dto.durationMinutes !== selected.durationMinutes);
+    const gaps = new Map(before.map((m, i) => {
+      const next = before[i + 1];
+      return [m.id, m.scheduledAt && next?.scheduledAt ? Math.max(0, (next.scheduledAt.getTime() - this.endTime(m).getTime()) / 60000) : gap];
+    }));
+    const ids = new Set(before.map(m => m.id));
+    const others = all.filter(m => !ids.has(m.id));
+    const lockOnly = dto.venueId === undefined && dto.scheduledAt === undefined && dto.scheduledAtLocal === undefined && dto.durationMinutes === undefined && dto.scheduleLocked !== undefined;
+    const project = (court: string | null, start: Date | null | undefined, forceReflow = reflow) => {
+      let cursor = start === undefined ? before[0].scheduledAt : start;
+      return before.map(item => {
+        const durationMinutes = item.id === matchId ? dto.durationMinutes ?? item.durationMinutes : item.durationMinutes;
+        const scheduledAt = forceReflow ? cursor ?? null : item.scheduledAt;
+        const full = Boolean(court && scheduledAt);
+        const outside = Boolean(court && item.allowedVenueIds && !item.allowedVenueIds.includes(court));
+        const match = { ...item, venueId: court, venueName: venues.find(v => v.id === court)?.name ?? null, scheduledAt, durationMinutes,
+          scheduleLocked: full && (dto.scheduleLocked ?? true), scheduleOverride: outside && (dto.allowOutsideGroup === true || (item.scheduleOverride && item.venueId === court)), unscheduledReason: null };
+        if (cursor) cursor = this.addMinutes(cursor, durationMinutes + (gaps.get(item.id) ?? gap));
+        return match;
+      });
+    };
+    const validate = (changes: ScheduleMatch[]): ConflictItem[] => {
+      if (lockOnly) return [];
+      const conflicts = this.detectPlacementConflicts([...others, ...changes], gap).filter(c => c.matchIds.some(id => ids.has(id)));
+      if (selected.teamMatchId && changes[0]?.scheduledAt) {
+        const lastFixed = fixed.filter(m => m.scheduledAt).sort((a, b) => this.endTime(b).getTime() - this.endTime(a).getTime())[0];
+        const preservedGap = lastFixed?.scheduledAt && before[0]?.scheduledAt
+          ? Math.max(0, before[0].scheduledAt.getTime() - this.endTime(lastFixed).getTime()) : gap * 60000;
+        if (lastFixed && changes[0].scheduledAt.getTime() < this.endTime(lastFixed).getTime() + preservedGap) {
+          conflicts.push({ type: 'DEPENDENCY', matchIds: [lastFixed.id, changes[0].id], message: '后续团体子项不能早于已开赛子项结束时间及原有间隔' });
+        }
+      }
+      for (const m of changes) {
+        if (!m.scheduledAt) continue;
+        const t = m.scheduledAt.getTime();
+        if (t < this.withMinutesOfDay(tournament.startDate, window.startMinutes).getTime() || this.endTime(m).getTime() > this.endOfDay(tournament.endDate).getTime() ||
+          this.longestPlayableMinutes(window) < m.durationMinutes || this.normalizeToDailyWindow(t, m.durationMinutes, window) !== t) {
+          conflicts.push({ type: 'DEPENDENCY', matchIds: [m.id], message: '比赛时间超出赛事日期、每日可用时段或跨越休息时段' });
+        }
+      }
+      return conflicts;
+    };
+    let start = parsed;
+    if (dto.findNextAvailable) {
+      if (!venueId) throw new BadRequestException('请先选择场地');
+      const minutes = before.reduce((sum, item, i) => sum + (item.id === matchId ? dto.durationMinutes ?? item.durationMinutes : item.durationMinutes) + (i < before.length - 1 ? gaps.get(item.id) ?? gap : 0), 0);
+      if (minutes > this.longestPlayableMinutes(window)) throw new BadRequestException('本场团体对阵无法连续排入每日可用时段，请手动调整子项时间');
+      const venueBusy = new Map<string, BusyInterval[]>([[venueId, []]]);
+      const playerBusy = new Map<string, BusyInterval[]>();
+      for (const m of others.filter(m => m.scheduledAt && m.status !== MatchStatus.CANCELLED)) {
+        const interval = { start: m.scheduledAt!.getTime(), end: this.endTime(m).getTime() + gap * 60000 };
+        if (m.venueId === venueId) this.addBusyInterval(venueBusy, venueId, interval);
+        for (const player of this.matchPlayerIds(m)) this.addBusyInterval(playerBusy, player, interval);
+      }
+      const dependencyIds = before.flatMap(m => m.dependencyMatchIds);
+      const dependencyEnd = Math.max(0, ...others.filter(m => dependencyIds.includes(m.id) || (selected.teamMatchId && m.teamMatchId === selected.teamMatchId)).filter(m => m.scheduledAt).map(m => this.endTime(m).getTime() + gap * 60000));
+      const earliest = Math.max((parsed ?? before[0].scheduledAt ?? tournament.startDate).getTime(), this.withMinutesOfDay(tournament.startDate, window.startMinutes).getTime(), dependencyEnd);
+      const found = this.findEarliestStart(venueId, earliest, minutes, gap, window, tournament.endDate, before.flatMap(m => this.matchPlayerIds(m)), venueBusy, playerBusy);
+      if (found === null) throw new BadRequestException('赛事时间内无可用时段，请更换场地或延长时间');
+      start = new Date(found);
+    }
+    const changes = project(venueId, start, reflow || dto.findNextAvailable);
+    const conflicts = validate(changes);
+    const outsideGroup = !lockOnly && changes.some(m => m.venueId && m.allowedVenueIds && !m.allowedVenueIds.includes(m.venueId) && !(before.find(b => b.id === m.id)?.scheduleOverride && before.find(b => b.id === m.id)?.venueId === m.venueId));
+    const venueOptions = venues.filter(v => v.isActive).map(v => {
+      const unavailable = fixedVenue && fixedVenue !== v.id ? '团体对阵已开赛，不能换场' : validate(project(v.id, start, reflow || dto.findNextAvailable))[0]?.message;
+      return { id: v.id, name: v.name, inGroup: !selected.allowedVenueIds || selected.allowedVenueIds.includes(v.id), available: !unavailable, reason: unavailable ?? null };
+    });
+    return { before, changes, conflicts, outsideGroup, venueOptions };
   }
 
   private async loadScheduleMatches(tournamentId: string, eventId?: string) {
     const matches = await this.prisma.match.findMany({
       where: this.tournamentMatches(tournamentId, eventId),
       include: {
-        event: true,
+        event: { include: { group: { include: { allowedVenues: true } } } },
         teamCompetitionItem: true,
-        teamMatch: { include: { team1: true, team2: true } },
+        teamMatch: { include: { team1: true, team2: true, teamCompetition: { include: { group: { include: { allowedVenues: true } } } } } },
         venue: true,
       },
       orderBy: [
@@ -637,8 +746,15 @@ export class SchedulingService {
         venueOrder = (venueSequence.get(match.venueId) ?? 0) + 1;
         venueSequence.set(match.venueId, venueOrder);
       }
+      const group = match.event?.group ?? match.teamMatch?.teamCompetition.group;
       return {
         id: match.id,
+        groupId: group?.id ?? null,
+        groupName: group?.name ?? null,
+        allowedVenueIds: group?.restrictVenues ? group.allowedVenues.map(v => v.venueId) : null,
+        scheduleLocked: match.scheduleLocked,
+        scheduleOverride: match.scheduleOverride,
+        unscheduledReason: match.unscheduledReason,
         teamMatchId: match.teamMatchId,
         team1Id: match.teamMatch?.team1Id,
         team2Id: match.teamMatch?.team2Id,
@@ -685,6 +801,9 @@ export class SchedulingService {
       }
 
       if (match.status !== MatchStatus.PENDING) continue;
+      if (match.venueId && match.allowedVenueIds && !match.allowedVenueIds.includes(match.venueId) && !match.scheduleOverride) {
+        conflicts.push({ type: 'GROUP_VENUE', matchIds: [match.id], message: `${match.groupName ?? '本组'}的场地规则已变化，本场需调整或明确设置为临时借场` });
+      }
 
       // Future-round matches are allowed to lack side1/side2 — they will be
       // filled by advanceSingleEliminationWinner once upstream finishes. Only
@@ -695,12 +814,12 @@ export class SchedulingService {
         conflicts.push({
           type: 'UNSCHEDULED',
           matchIds: [match.id],
-          message: `${match.eventTypeLabel} ${match.round} 第${match.matchNo}场尚未分配时间和场地`,
+          message: match.unscheduledReason ?? `${match.eventTypeLabel} ${match.round} 第${match.matchNo}场尚未分配时间和场地`,
         });
       }
     }
 
-    const scheduled = matches.filter((match) => match.scheduledAt && match.venueId);
+    const scheduled = matches.filter((match) => match.scheduledAt && match.venueId && match.status !== MatchStatus.CANCELLED);
 
     for (let i = 0; i < scheduled.length; i += 1) {
       for (let j = i + 1; j < scheduled.length; j += 1) {
@@ -729,6 +848,33 @@ export class SchedulingService {
       }
     }
 
+    return conflicts;
+  }
+
+  private detectPlacementConflicts(matches: ScheduleMatch[], gap: number): ConflictItem[] {
+    const conflicts = this.detectConflicts(matches).filter(c => c.type === 'VENUE' || c.type === 'PLAYER');
+    const scheduled = matches.filter(m => m.scheduledAt && m.venueId && m.status !== MatchStatus.CANCELLED);
+    for (const match of scheduled) {
+      for (const dependencyId of match.dependencyMatchIds) {
+        const dependency = matches.find(m => m.id === dependencyId);
+        if (dependency && dependency.status !== MatchStatus.COMPLETED && !dependency.scheduledAt) {
+          conflicts.push({ type: 'DEPENDENCY', matchIds: [dependency.id, match.id], message: '前置比赛尚未安排时间，不能安排后续比赛' });
+        } else if (dependency?.scheduledAt && match.scheduledAt!.getTime() < this.endTime(dependency).getTime() + gap * 60000) {
+          conflicts.push({ type: 'DEPENDENCY', matchIds: [dependency.id, match.id], message: '后续比赛早于前置比赛结束或未留足场间间隔，请调整时间或取消人工固定' });
+        }
+      }
+    }
+    for (let i = 0; i < scheduled.length; i++) {
+      for (let j = i + 1; j < scheduled.length; j++) {
+        const a = scheduled[i], b = scheduled[j];
+        // Existing team encounter gaps are preserved by manual adjustments.
+        const sameEncounter = a.teamMatchId && a.teamMatchId === b.teamMatchId;
+        const overlapsWithGap = a.scheduledAt!.getTime() < this.endTime(b).getTime() + gap * 60000 && b.scheduledAt!.getTime() < this.endTime(a).getTime() + gap * 60000;
+        if (!sameEncounter && a.venueId === b.venueId && overlapsWithGap && !this.overlaps(a,b)) {
+          conflicts.push({ type: 'VENUE', matchIds: [a.id,b.id], message: `${a.venueName ?? '所选场地'}未留足场间间隔` });
+        }
+      }
+    }
     return conflicts;
   }
 
