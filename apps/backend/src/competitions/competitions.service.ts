@@ -3083,8 +3083,9 @@ export class CompetitionsService {
   }
 
   /**
-   * 前台参赛名单（无需登录）只公开姓名、性别和打码后的联系方式。
-   * 学号、学校、学院、邮箱、年龄、衣服尺寸、备注等一律不返回——接口返回的数据任何人都能看到，
+   * 前台参赛名单（无需登录）只公开姓名、性别、单位和打码后的联系方式。
+   * 单位：学生组是学校，第三方是报名时填的单位。
+   * 学号、学院、年级、邮箱、年龄、衣服尺寸、备注等一律不返回——接口返回的数据任何人都能看到，
    * 不能只靠页面不显示。
    */
   private toPublicPlayerView(registration: RegistrationWithRelations) {
@@ -3098,9 +3099,16 @@ export class CompetitionsService {
       primaryName: view.primaryName,
       gender: view.gender,
       genderLabel: view.genderLabel,
+      unit: view.school.trim(),
       phone: maskContact(view.phone),
       partner: view.partner
-        ? { name: view.partner.name, gender: view.partner.gender, genderLabel: view.partner.genderLabel, phone: maskContact(view.partner.phone) }
+        ? {
+            name: view.partner.name,
+            gender: view.partner.gender,
+            genderLabel: view.partner.genderLabel,
+            unit: view.partner.school.trim(),
+            phone: maskContact(view.partner.phone),
+          }
         : null,
     };
   }

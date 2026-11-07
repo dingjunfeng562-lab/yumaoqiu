@@ -34,10 +34,12 @@ type Competition = {
   eventOptions?: EventOption[];
 };
 
-// 公开名单只有姓名、性别和打码后的联系方式（后端接口也只返回这几项）。
+// 公开名单只有姓名、性别、单位和打码后的联系方式（后端接口也只返回这几项）。
+// 单位：学生组是学校，第三方是报名时填的单位。
 type Partner = {
   name: string;
   genderLabel?: string;
+  unit?: string;
   phone?: string;
 };
 
@@ -46,6 +48,7 @@ type Player = {
   name: string;
   primaryName?: string;
   partner?: Partner | null;
+  unit?: string;
   phone?: string;
   genderLabel?: string;
   eventId?: string;
@@ -216,17 +219,20 @@ function PlayersTableHead() {
       <tr>
         <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">姓名</th>
         <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">性别</th>
+        <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">单位</th>
         <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">联系方式</th>
       </tr>
     </thead>
   );
 }
 
-function PersonCells({ name, genderLabel, phone }: { name: string; genderLabel?: string; phone?: string }) {
+function PersonCells({ name, genderLabel, unit, phone }: { name: string; genderLabel?: string; unit?: string; phone?: string }) {
   return (
     <>
       <td className={`${CELL} font-bold text-slate-900`}>{name}</td>
       <td className={`${CELL} text-slate-600`}>{genderLabel ?? '-'}</td>
+      {/* 单位名称可能很长，允许换行，避免手机上把表格撑得很宽 */}
+      <td className="min-w-[7rem] px-4 py-3 font-semibold text-slate-700 sm:px-4 sm:py-4">{unit || '-'}</td>
       <td className={`${CELL} tabular-nums text-slate-600`}>{phone || '-'}</td>
     </>
   );
@@ -240,7 +246,7 @@ function SinglesTable({ players }: { players: Player[] }) {
         <tbody>
           {players.map((player) => (
             <tr key={player.id} className="border-t border-blue-50">
-              <PersonCells name={player.primaryName || player.name} genderLabel={player.genderLabel} phone={player.phone} />
+              <PersonCells name={player.primaryName || player.name} genderLabel={player.genderLabel} unit={player.unit} phone={player.phone} />
             </tr>
           ))}
         </tbody>
@@ -259,11 +265,11 @@ function DoublesTable({ players }: { players: Player[] }) {
           {players.map((player) => (
             <Fragment key={player.id}>
               <tr className="border-t-2 border-blue-100">
-                <PersonCells name={player.primaryName || player.name} genderLabel={player.genderLabel} phone={player.phone} />
+                <PersonCells name={player.primaryName || player.name} genderLabel={player.genderLabel} unit={player.unit} phone={player.phone} />
               </tr>
               {player.partner ? (
                 <tr className="border-t border-blue-50/60 bg-blue-50/30">
-                  <PersonCells name={player.partner.name} genderLabel={player.partner.genderLabel} phone={player.partner.phone} />
+                  <PersonCells name={player.partner.name} genderLabel={player.partner.genderLabel} unit={player.partner.unit || player.unit} phone={player.partner.phone} />
                 </tr>
               ) : null}
             </Fragment>
