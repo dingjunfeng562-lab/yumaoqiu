@@ -51,9 +51,9 @@ export const DEFAULT_EMAIL_TEMPLATES: Record<EmailTemplateKey, EmailTemplateDefa
     enabled: true,
     defaultEventEnabled: false,
     body: `
-<p style="font-size:16px;line-height:1.8;margin:0 0 16px;">亲爱的 <strong>{{name}}</strong> 同学：</p>
+<p style="font-size:16px;line-height:1.8;margin:0 0 16px;"><strong>{{name}}</strong>，你好：</p>
 <p style="font-size:16px;line-height:1.8;margin:0 0 20px;">
-  你好！你报名的赛事 <strong>{{eventTitle}}</strong> 已提交成功，正在等待管理员审核。
+  你报名的赛事 <strong>{{eventTitle}}</strong> 已提交成功，正在等待管理员审核。
 </p>
 ${INFO_CARD}
 <p style="font-size:15px;line-height:1.8;margin:0 0 16px;color:#333;">
@@ -67,21 +67,15 @@ ${INFO_CARD}
     enabled: true,
     defaultEventEnabled: true,
     body: `
-<p style="font-size:16px;line-height:1.8;margin:0 0 16px;">亲爱的 <strong>{{name}}</strong> 同学：</p>
+<p style="font-size:16px;line-height:1.8;margin:0 0 16px;"><strong>{{name}}</strong>，你好：</p>
 <p style="font-size:16px;line-height:1.8;margin:0 0 20px;">
-  你好！你报名的赛事 <strong>{{eventTitle}}</strong> 已通过管理员审核，恭喜你成功获得参赛资格。
+  你在羽动云赛提交的「{{eventTitle}}」报名已审核通过，报名信息如下：
 </p>
 ${INFO_CARD}
 <p style="font-size:15px;line-height:1.8;margin:0 0 16px;color:#333;">
-  请你提前关注比赛安排，按时到达比赛现场，并按照工作人员指引完成签到。
-  如后续赛程、分组或对阵信息有调整，请以平台公告和现场通知为准。
+  请留意赛程安排，按时到场并按工作人员指引签到。赛程、分组或对阵如有调整，以平台公告和现场通知为准。
 </p>
-<div style="text-align:center;margin:30px 0;">
-  <div style="display:inline-block;background:#1f7aff;color:#ffffff;padding:12px 28px;border-radius:999px;font-size:15px;font-weight:600;">
-    审核已通过
-  </div>
-</div>
-<p style="font-size:15px;line-height:1.8;margin:0;color:#333;">感谢你对本次赛事的支持，期待你在赛场上展现风采！</p>`,
+<p style="font-size:15px;line-height:1.8;margin:0;color:#333;">如需查看报名信息，请登录平台「我的报名」。</p>`,
   },
   registration_rejected: {
     name: '报名审核未通过通知',
@@ -89,9 +83,9 @@ ${INFO_CARD}
     enabled: true,
     defaultEventEnabled: true,
     body: `
-<p style="font-size:16px;line-height:1.8;margin:0 0 16px;">亲爱的 <strong>{{name}}</strong> 同学：</p>
+<p style="font-size:16px;line-height:1.8;margin:0 0 16px;"><strong>{{name}}</strong>，你好：</p>
 <p style="font-size:16px;line-height:1.8;margin:0 0 20px;">
-  你好！很遗憾，你报名的赛事 <strong>{{eventTitle}}</strong> 未通过管理员审核。
+  很遗憾，你报名的赛事 <strong>{{eventTitle}}</strong> 未通过管理员审核。
 </p>
 <div style="background:#fff7f5;border:1px solid #fecaca;border-radius:12px;padding:18px 20px;margin:24px 0;">
   <p style="margin:0;font-size:15px;"><strong>未通过原因：</strong>{{rejectReason}}</p>
@@ -107,7 +101,7 @@ ${INFO_CARD}
     enabled: true,
     defaultEventEnabled: false,
     body: `
-<p style="font-size:16px;line-height:1.8;margin:0 0 16px;">亲爱的 <strong>{{name}}</strong> 同学：</p>
+<p style="font-size:16px;line-height:1.8;margin:0 0 16px;"><strong>{{name}}</strong>，你好：</p>
 <p style="font-size:16px;line-height:1.8;margin:0 0 20px;">
   你报名参加的赛事 <strong>{{eventTitle}}</strong> 即将开始，请提前做好参赛准备。
 </p>
@@ -125,7 +119,7 @@ ${INFO_CARD}
     defaultEventEnabled: false,
     reserved: true,
     body: `
-<p style="font-size:16px;line-height:1.8;margin:0 0 16px;">亲爱的 <strong>{{name}}</strong> 同学：</p>
+<p style="font-size:16px;line-height:1.8;margin:0 0 16px;"><strong>{{name}}</strong>，你好：</p>
 <p style="font-size:16px;line-height:1.8;margin:0;">
   你参加的赛事 <strong>{{eventTitle}}</strong> 比赛结果已公布，请登录平台查看详情。
 </p>`,
@@ -137,7 +131,7 @@ ${INFO_CARD}
     defaultEventEnabled: false,
     reserved: true,
     body: `
-<p style="font-size:16px;line-height:1.8;margin:0 0 16px;">亲爱的 <strong>{{name}}</strong> 同学：</p>
+<p style="font-size:16px;line-height:1.8;margin:0 0 16px;"><strong>{{name}}</strong>，你好：</p>
 <p style="font-size:16px;line-height:1.8;margin:0;">这是一条来自 <strong>{{eventTitle}}</strong> 组委会的通知。</p>`,
   },
 };
