@@ -1,6 +1,6 @@
 import { ageForRule, ageOn, ageRuleLabel, birthRangeFromAges, checkAge, checkGender, checkReportedAge, cnDate, groupFields, normalizeAgeRule, parseIdentity } from './age-eligibility';
 import { preparePerson } from './registration-eligibility';
-import { decryptIdentity, encryptIdentity, identityFingerprint } from './identity-vault';
+import { identityFingerprint } from './identity-vault';
 import { stripIdentityStorage } from './identity-response.interceptor';
 import { StreamableFile } from '@nestjs/common';
 import { Readable } from 'node:stream';
@@ -42,14 +42,28 @@ describe('自定义组别资格规则', () => {
     expect(parseIdentity('11010519491231002x','2026-11-06').birthDate).toBe('1949-12-31');
     for (const id of [idFor('2025-02-29'),idFor('2027-01-01'),'110105194912310020']) expect(()=>parseIdentity(id,'2026-11-06')).toThrow();
   });
-  it('证件加密带认证和随机nonce，指纹稳定',()=>{
+  it('身份证号只存带密钥的哈希：同号同哈希、换密钥哈希不同、库里没有原号码和密文',()=>{
     const old=process.env.REGISTRATION_IDENTITY_KEY;
     try { process.env.REGISTRATION_IDENTITY_KEY='ab'.repeat(32);
-      const id=idFor('2018-01-01');const a=encryptIdentity(id),b=encryptIdentity(id);
-      expect(a).not.toContain(id);expect(a).not.toEqual(b);expect(decryptIdentity(a)).toBe(id);
-      expect(identityFingerprint(id)).toBe(identityFingerprint(id));
-      const parts=a.split('.');parts[2]=Buffer.alloc(16).toString('base64');expect(()=>decryptIdentity(parts.join('.'))).toThrow();
+      const id=idFor('2018-01-01');
+      const hash=identityFingerprint(id);
+      expect(hash).toMatch(/^[a-f0-9]{64}$/);expect(identityFingerprint(id)).toBe(hash);expect(identityFingerprint(idFor('2018-01-02'))).not.toBe(hash);
+      const person=preparePerson({identityNumber:id},groupFields({identityNumber:'required'}),normalizeAgeRule({mode:'NONE'}));
+      expect(person.identity).toEqual({fingerprint:hash,birthDate:'2018-01-01',masked:`${id.slice(0,3)}***********${id.slice(-4)}`});
+      expect(JSON.stringify(person.identity)).not.toContain(id.slice(3,14));
+      process.env.REGISTRATION_IDENTITY_KEY='cd'.repeat(32);
+      expect(identityFingerprint(id)).not.toBe(hash);
+      delete process.env.REGISTRATION_IDENTITY_KEY;
+      expect(()=>identityFingerprint(id)).toThrow('证件核验服务尚未配置');
     } finally { if(old===undefined) delete process.env.REGISTRATION_IDENTITY_KEY; else process.env.REGISTRATION_IDENTITY_KEY=old; }
+  });
+  it('编辑时没提交身份证号就沿用库里的哈希和出生日期；空字符串表示清空；旧数据里的密文字段被丢弃',()=>{
+    const fields=groupFields({identityNumber:'required'});const rule=normalizeAgeRule({mode:'NONE'});
+    const saved={fingerprint:'f'.repeat(64),birthDate:'2015-03-04',masked:'110***********1234',encrypted:'v1.legacy'};
+    expect(preparePerson({},fields,rule,'本人',saved).identity).toEqual({fingerprint:'f'.repeat(64),birthDate:'2015-03-04',masked:'110***********1234'});
+    expect(()=>preparePerson({identityNumber:''},fields,rule,'本人',saved)).toThrow('请填写本人身份证号');
+    expect(()=>preparePerson({},fields,rule,'本人',{fingerprint:'not-a-hash',birthDate:'2015-03-04',masked:'x'})).toThrow('请填写本人身份证号');
+    expect(preparePerson({},groupFields({identityNumber:'hidden'}),rule,'本人',saved).identity).toBeNull();
   });
   it('所有层级的响应均不泄露证件存储数据',()=>expect(stripIdentityStorage({id:'1',identityData:{encrypted:'secret'},members:[{personKey:'key',partnerIdentityData:{fingerprint:'hash'},name:'测试'}]})).toEqual({id:'1',members:[{name:'测试'}]}));
   it('文件下载、Buffer、Date 等类实例原样返回，不被拷成普通对象', () => {
@@ -114,7 +128,7 @@ describe('按年龄填写，自动推算出生日期', () => {
     expect(checkReportedAge({ mode: 'NONE' }, 30).status).toBe('NOT_REQUIRED');
   });
   it('报名：身份证优先自动算年龄，没身份证用自填年龄；衣服尺寸手填', () => {
-    // 带身份证号的报名要加密证件号，测试里临时给一个密钥。
+    // 带身份证号的报名要算证件哈希，测试里临时给一个密钥。
     const old = process.env.REGISTRATION_IDENTITY_KEY;
     process.env.REGISTRATION_IDENTITY_KEY = 'a'.repeat(64);
     try {

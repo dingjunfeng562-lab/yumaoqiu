@@ -10,7 +10,7 @@ function isPlainObject(value: object) {
 }
 
 /**
- * 证件密文/查重标识只在服务层使用，所有HTTP响应均移除。
+ * 证件哈希/查重标识只在服务层使用，所有HTTP响应均移除。
  * 只递归普通对象和数组：StreamableFile（封面、照片、收款码等文件下载）、Buffer、Date 等类实例
  * 若被拷贝成普通对象，会被当成 JSON 输出，文件就打不开了。
  */

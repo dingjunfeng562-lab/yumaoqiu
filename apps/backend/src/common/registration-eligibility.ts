@@ -1,14 +1,30 @@
 import { BadRequestException } from '@nestjs/common';
 import { Gender, Prisma } from '@prisma/client';
 import { AgeRule, ageForRule, checkAge, checkGender, checkReportedAge, GroupFields, parseIdentity } from './age-eligibility';
-import { encryptIdentity, identityFingerprint } from './identity-vault';
+import { identityFingerprint } from './identity-vault';
 
-export type IdentityData = { encrypted: string; fingerprint: string; birthDate: string; masked: string };
+/** 库里只存这三项，不存身份证号原文，也不存可还原的密文。 */
+export type IdentityData = { fingerprint: string; birthDate: string; masked: string };
 export type PersonInput = { identityNumber?: string; gender?: string | null; age?: number | string | null; shirtSize?: string | null };
 export const SHIRT_SIZE_MAX_LENGTH = 32;
-export function preparePerson(input: PersonInput, fields: GroupFields, ageRule: AgeRule, label = '本人') {
+
+/** 读取库里已存的证件信息（只取哈希、出生日期、打码号码；旧数据里多出的字段一律丢弃）。 */
+export function storedIdentity(value: Prisma.JsonValue | null | undefined): IdentityData | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const { fingerprint, birthDate, masked } = value;
+  if (typeof fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(fingerprint)) return null;
+  if (typeof birthDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(birthDate) || typeof masked !== 'string') return null;
+  return { fingerprint, birthDate, masked };
+}
+
+/**
+ * @param stored 库里已存的证件信息。只有调用方没有提交身份证号（undefined）时才沿用，
+ *   显式空字符串表示清空。只能由服务端传入，不能来自客户端请求体。
+ */
+export function preparePerson(input: PersonInput, fields: GroupFields, ageRule: AgeRule, label = '本人', stored?: Prisma.JsonValue | null) {
   const number = fields.identityNumber === 'hidden' ? '' : input.identityNumber?.trim() ?? '';
-  if (!number && fields.identityNumber === 'required') throw new BadRequestException(`请填写${label}身份证号`);
+  const kept = fields.identityNumber !== 'hidden' && input.identityNumber === undefined ? storedIdentity(stored) : null;
+  if (!number && !kept && fields.identityNumber === 'required') throw new BadRequestException(`请填写${label}身份证号`);
   const value = fields.gender === 'hidden' ? '' : input.gender;
   if (!value && fields.gender === 'required') throw new BadRequestException(`请填写${label}性别`);
   let gender: Gender | null = null;
@@ -16,10 +32,10 @@ export function preparePerson(input: PersonInput, fields: GroupFields, ageRule: 
     if (!['MALE', 'FEMALE', '男', '女'].includes(value)) throw new BadRequestException(`${label}性别填写有误`);
     gender = value === 'MALE' || value === '男' ? 'MALE' : 'FEMALE';
   }
-  let identity: IdentityData | null = null;
+  let identity: IdentityData | null = kept;
   if (number) {
     const parsed = parseIdentity(number);
-    identity = { encrypted: encryptIdentity(parsed.normalized), fingerprint: identityFingerprint(parsed.normalized), birthDate: parsed.birthDate, masked: parsed.masked };
+    identity = { fingerprint: identityFingerprint(parsed.normalized), birthDate: parsed.birthDate, masked: parsed.masked };
   }
   // 年龄：填了身份证号就按身份证自动算（以身份证为准）；否则用报名人自填的年龄。
   const rawAge = fields.age === 'hidden' || input.age === '' ? null : input.age ?? null;

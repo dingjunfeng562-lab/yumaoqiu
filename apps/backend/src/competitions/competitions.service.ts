@@ -1,4 +1,4 @@
-import { decryptIdentity } from '../common/identity-vault';
+import { maskContact } from '../common/mask-contact';
 import { legacyGroupId } from '../registration-groups/registration-groups.service';
 import { groupFields, normalizeAgeRule, ageRuleLabel, checkGender } from '../common/age-eligibility';
 import { VerifyEligibilityDto } from '../registration-groups/registration-groups.dto';
@@ -1577,11 +1577,12 @@ export class CompetitionsService {
 
     const rules = normalizeRegistrationFieldRules(competition.registrationFieldRules);
     const group = targetEvent.groupId ? await this.prisma.tournamentGroup.findUnique({ where: { id: targetEvent.groupId } }) : null;
-    // 未提交证件字段表示保留旧资料；显式空字符串表示清空，重新进入资格核验。
+    // 未提交证件字段表示保留旧资料（沿用库里存的哈希和出生日期）；显式空字符串表示清空，重新进入资格核验。
     const editDto = { ...dto };
-    if (editDto.identityNumber === undefined && registration.identityData) editDto.identityNumber = this.savedIdentityNumber(registration.identityData);
-    if (editDto.partnerIdentityNumber === undefined && registration.partnerIdentityData) editDto.partnerIdentityNumber = this.savedIdentityNumber(registration.partnerIdentityData);
-    const player = this.normalizeAdminBatchPlayer(editDto, 1, targetEvent, rules, group);
+    const player = this.normalizeAdminBatchPlayer(editDto, 1, targetEvent, rules, group, {
+      own: registration.identityData,
+      partner: registration.partnerIdentityData,
+    });
     if (player.entrantType !== targetEvent.entrantType) {
       throw new BadRequestException('报名组别与项目组别不一致');
     }
@@ -1650,10 +1651,11 @@ export class CompetitionsService {
       const normalized = this.normalizeAdminBatchPlayer({ ...editDto, entrantType: target.entrantType,
         partnerName: sibling.player2?.name, partnerGender: sibling.player2?.gender ?? undefined,
         partnerContact: sibling.player2?.contact ?? sibling.partnerPhone ?? undefined,
-        partnerIdentityNumber: sibling.partnerIdentityData ? this.savedIdentityNumber(sibling.partnerIdentityData) : undefined,
+        // 搭档证件沿用该项目自己存的信息，不用本次编辑提交的搭档证件。
+        partnerIdentityNumber: undefined,
         partnerStudentId: sibling.partnerStudentId ?? undefined, partnerCollege: sibling.partnerCollege ?? undefined,
         partnerMajorGrade: sibling.partnerMajorGrade ?? undefined, partnerSchool: sibling.partnerSchool ?? undefined,
-      }, 1, target, rules, group);
+      }, 1, target, rules, group, { own: registration.identityData, partner: sibling.partnerIdentityData });
       keepManual({ ...registration, ...sibling }, normalized, target.id === sibling.eventId);
       siblingQualifications.set(sibling.id, normalized);
     }
@@ -2571,11 +2573,6 @@ export class CompetitionsService {
     }
   }
 
-  private savedIdentityNumber(value: Prisma.JsonValue): string | undefined {
-    if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.encrypted !== 'string') return undefined;
-    return decryptIdentity(value.encrypted);
-  }
-
   private async createAdminGroupEntries(competition: CompetitionWithRelations, event: CompetitionWithRelations['events'][number], group: TournamentGroup, players: NormalizedAdminBatchPlayer[], operatorId?: string) {
     return this.prisma.$transaction(async tx => {
       await tx.$queryRaw`SELECT id FROM Tournament WHERE id = ${competition.id} FOR UPDATE`;
@@ -2615,10 +2612,12 @@ export class CompetitionsService {
     event: { type: EventType; entrantType: EntrantType },
     rules: RegistrationFieldRules,
     group?: TournamentGroup | null,
+    /** 编辑已有报名时，库里已存的本人/搭档证件信息；未提交证件号时沿用。 */
+    stored?: { own?: Prisma.JsonValue | null; partner?: Prisma.JsonValue | null },
   ): NormalizedAdminBatchPlayer {
     const fields = groupFields(group?.fieldRules, event.entrantType === 'SCHOOL', !group);
     const ageRule = normalizeAgeRule(group?.ageRule);
-    const own = preparePerson(item, fields, ageRule);
+    const own = preparePerson(item, fields, ageRule, '本人', stored?.own);
     if (group) rules = { SCHOOL: fields, SOCIAL: fields };
     const entrantType = item.entrantType
       ? this.normalizeEntrantType(item.entrantType)
@@ -2665,7 +2664,7 @@ export class CompetitionsService {
     }
 
     const partnerName = this.requiredBatchField(item.partnerName, row, isSchool ? '搭档姓名' : '队友姓名');
-    const partner = preparePerson({ gender: item.partnerGender ?? null, identityNumber: item.partnerIdentityNumber }, fields, ageRule, '搭档');
+    const partner = preparePerson({ gender: item.partnerGender ?? null, identityNumber: item.partnerIdentityNumber }, fields, ageRule, '搭档', stored?.partner);
     const partnerGender = partner.gender;
     const partnerContact = this.requiredBatchField(item.partnerContact, row, isSchool ? '搭档联系方式' : '队友联系方式');
     const partnerSchool = item.partnerSchool?.trim() || school;
@@ -3083,8 +3082,31 @@ export class CompetitionsService {
     };
   }
 
+  /**
+   * 前台参赛名单（无需登录）只公开姓名、性别和打码后的联系方式。
+   * 学号、学校、学院、邮箱、年龄、衣服尺寸、备注等一律不返回——接口返回的数据任何人都能看到，
+   * 不能只靠页面不显示。
+   */
+  private toPublicPlayerView(registration: RegistrationWithRelations) {
+    const view = this.toRegistrationView(registration);
+    return {
+      id: view.id,
+      eventId: view.eventId,
+      eventType: view.eventType,
+      eventName: view.eventName,
+      name: view.primaryName,
+      primaryName: view.primaryName,
+      gender: view.gender,
+      genderLabel: view.genderLabel,
+      phone: maskContact(view.phone),
+      partner: view.partner
+        ? { name: view.partner.name, gender: view.partner.gender, genderLabel: view.partner.genderLabel, phone: maskContact(view.partner.phone) }
+        : null,
+    };
+  }
+
   private groupPlayers(registrations: RegistrationWithRelations[]) {
-    const players = registrations.map((registration) => this.toRegistrationView(registration));
+    const players = registrations.map((registration) => this.toPublicPlayerView(registration));
     const eventGroupMap = new Map<string, { eventId: string; label: string; players: typeof players }>();
     for (const player of players) {
       const item = eventGroupMap.get(player.eventId) ?? {

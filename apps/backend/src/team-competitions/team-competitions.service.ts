@@ -1,6 +1,5 @@
 import { groupFields, normalizeAgeRule } from '../common/age-eligibility';
 import { preparePerson, identityView, isPendingEligibility } from '../common/registration-eligibility';
-import { decryptIdentity } from '../common/identity-vault';
 import { legacyGroupId } from '../registration-groups/registration-groups.service';
 import { AuthActor, playerScope, tournamentScope } from '../auth/admin-scope';
 import { validateTeamRoster } from './team-roster';
@@ -1545,9 +1544,9 @@ export class TeamCompetitionsService {
     const previous = input.id ? await db.teamMember.findFirst({ where: { playerId: input.id, team: { teamCompetitionId } } }) : null;
     if (previous) return { identityData: previous.identityData ?? Prisma.DbNull, eligibility: previous.eligibility ?? Prisma.DbNull };
     const entry = input.id ? await db.registration.findFirst({ where: { status: 'APPROVED', event: { tournamentId: competition.tournamentId, groupId: competition.groupId }, OR: [{ player1Id: input.id }, { player2Id: input.id }] } }) : null;
+    // 没填身份证号时沿用该选手单项报名里存的证件信息（哈希 + 出生日期）。
     const stored = entry ? entry.player1Id === input.id ? entry.identityData : entry.partnerIdentityData : null;
-    const saved = stored && typeof stored === 'object' && !Array.isArray(stored) && typeof stored.encrypted === 'string' ? decryptIdentity(stored.encrypted) : undefined;
-    const person = preparePerson({ ...input, identityNumber: input.identityNumber ?? saved }, groupFields(group?.fieldRules, competition.entrantType === 'SCHOOL', !group), normalizeAgeRule(group?.ageRule), input.name);
+    const person = preparePerson(input, groupFields(group?.fieldRules, competition.entrantType === 'SCHOOL', !group), normalizeAgeRule(group?.ageRule), input.name, stored);
     if (person.identity) {
       const duplicate = await db.teamMember.findFirst({ where: { identityData: { path: '$.fingerprint', equals: person.identity.fingerprint }, team: { teamCompetition: { tournamentId: competition.tournamentId } } } });
       if (duplicate) throw new ConflictException(`${input.name}已作为团体队员报名，请勿重复导入`);

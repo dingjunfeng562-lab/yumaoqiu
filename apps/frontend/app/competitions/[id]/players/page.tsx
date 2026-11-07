@@ -34,12 +34,10 @@ type Competition = {
   eventOptions?: EventOption[];
 };
 
+// 公开名单只有姓名、性别和打码后的联系方式（后端接口也只返回这几项）。
 type Partner = {
   name: string;
-  studentId?: string;
   genderLabel?: string;
-  school?: string;
-  className?: string;
   phone?: string;
 };
 
@@ -47,19 +45,12 @@ type Player = {
   id: string;
   name: string;
   primaryName?: string;
-  teamName?: string | null;
   partner?: Partner | null;
-  studentId?: string;
-  school?: string;
-  className?: string;
   phone?: string;
   genderLabel?: string;
   eventId?: string;
   eventType?: string;
   eventName: string;
-  entrantType?: 'SCHOOL' | 'SOCIAL';
-  createdAt: string;
-  statusLabel: string;
 };
 
 const DOUBLES_TYPES = new Set(['MENS_DOUBLES', 'WOMENS_DOUBLES', 'MIXED_DOUBLES']);
@@ -75,18 +66,6 @@ type VisiblePlayerGroup = {
   title: string;
   players: Player[];
 };
-
-function formatDateTime(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
 
 function buildVisibleGroups(competition: Competition | null, data: PlayersResponse | null): VisiblePlayerGroup[] {
   if (competition?.eventOptions) {
@@ -229,37 +208,39 @@ function PlayerGroup({ title, players }: { title: string; players: Player[] }) {
   );
 }
 
+const CELL = 'whitespace-nowrap px-4 py-3 sm:px-4 sm:py-4';
+
+function PlayersTableHead() {
+  return (
+    <thead className="bg-white text-[11px] font-black uppercase text-slate-500 sm:text-xs">
+      <tr>
+        <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">姓名</th>
+        <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">性别</th>
+        <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">联系方式</th>
+      </tr>
+    </thead>
+  );
+}
+
+function PersonCells({ name, genderLabel, phone }: { name: string; genderLabel?: string; phone?: string }) {
+  return (
+    <>
+      <td className={`${CELL} font-bold text-slate-900`}>{name}</td>
+      <td className={`${CELL} text-slate-600`}>{genderLabel ?? '-'}</td>
+      <td className={`${CELL} tabular-nums text-slate-600`}>{phone || '-'}</td>
+    </>
+  );
+}
+
 function SinglesTable({ players }: { players: Player[] }) {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[700px] text-left text-[13px] sm:min-w-[800px] sm:text-sm">
-        <thead className="bg-white text-[11px] font-black uppercase text-slate-500 sm:text-xs">
-          <tr>
-            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">姓名</th>
-            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">性别</th>
-            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">学校</th>
-            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">学院班级</th>
-            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">学号</th>
-            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">参赛项目</th>
-            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">报名时间</th>
-            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">审核状态</th>
-          </tr>
-        </thead>
+      <table className="w-full text-left text-[13px] sm:text-sm">
+        <PlayersTableHead />
         <tbody>
           {players.map((player) => (
             <tr key={player.id} className="border-t border-blue-50">
-              <td className="whitespace-nowrap px-4 py-3 font-bold text-slate-900 sm:px-4 sm:py-4">{player.primaryName || player.name}</td>
-              <td className="whitespace-nowrap px-4 py-3 text-slate-600 sm:px-4 sm:py-4">{player.genderLabel ?? '-'}</td>
-              <td className="whitespace-nowrap px-4 py-3 font-semibold text-slate-700 sm:px-4 sm:py-4">{player.school || '-'}</td>
-              <td className="px-4 py-3 text-slate-600 sm:px-4 sm:py-4">{player.className || '-'}</td>
-              <td className="whitespace-nowrap px-4 py-3 text-slate-600 sm:px-4 sm:py-4">{player.studentId || '-'}</td>
-              <td className="whitespace-nowrap px-4 py-3 text-slate-600 sm:px-4 sm:py-4">{player.eventName}</td>
-              <td className="whitespace-nowrap px-4 py-3 text-slate-600 sm:px-4 sm:py-4">{formatDateTime(player.createdAt)}</td>
-              <td className="px-4 py-3 sm:px-4 sm:py-4">
-                <span className="whitespace-nowrap rounded-full bg-green-50 px-2.5 py-1 text-[11px] font-black text-green-700 sm:px-3 sm:text-xs">
-                  {player.statusLabel}
-                </span>
-              </td>
+              <PersonCells name={player.primaryName || player.name} genderLabel={player.genderLabel} phone={player.phone} />
             </tr>
           ))}
         </tbody>
@@ -268,53 +249,25 @@ function SinglesTable({ players }: { players: Player[] }) {
   );
 }
 
+// 双打每队两行：第一行本人，第二行搭档（浅色底），队与队之间用粗分隔线。
 function DoublesTable({ players }: { players: Player[] }) {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[600px] text-left text-[13px] sm:min-w-[700px] sm:text-sm">
-        <thead className="bg-white text-[11px] font-black uppercase text-slate-500 sm:text-xs">
-          <tr>
-            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">队伍名称</th>
-            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">姓名</th>
-            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">学号</th>
-            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">性别</th>
-            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">学校</th>
-            <th className="whitespace-nowrap px-4 py-2.5 sm:px-4 sm:py-3">学院班级</th>
-          </tr>
-        </thead>
+      <table className="w-full text-left text-[13px] sm:text-sm">
+        <PlayersTableHead />
         <tbody>
-          {players.map((player) => {
-            const hasPartner = Boolean(player.partner);
-            const teamLabel = player.teamName || player.name || '未命名队伍';
-            const school = player.school || '-';
-            const className = player.className || '-';
-            return (
-              <Fragment key={player.id}>
-                <tr className="border-t border-blue-50">
-                  <td
-                    className="px-4 py-3 align-top font-black text-blue-900 sm:px-4 sm:py-4"
-                    rowSpan={hasPartner ? 2 : 1}
-                  >
-                    {teamLabel}
-                  </td>
-                  <td className="whitespace-nowrap px-4 py-3 font-bold text-slate-900 sm:px-4 sm:py-4">{player.primaryName || player.name}</td>
-                  <td className="whitespace-nowrap px-4 py-3 text-slate-600 sm:px-4 sm:py-4">{player.studentId || '-'}</td>
-                  <td className="whitespace-nowrap px-4 py-3 text-slate-600 sm:px-4 sm:py-4">{player.genderLabel ?? '-'}</td>
-                  <td className="whitespace-nowrap px-4 py-3 font-semibold text-slate-700 sm:px-4 sm:py-4">{school}</td>
-                  <td className="px-4 py-3 text-slate-600 sm:px-4 sm:py-4">{className}</td>
+          {players.map((player) => (
+            <Fragment key={player.id}>
+              <tr className="border-t-2 border-blue-100">
+                <PersonCells name={player.primaryName || player.name} genderLabel={player.genderLabel} phone={player.phone} />
+              </tr>
+              {player.partner ? (
+                <tr className="border-t border-blue-50/60 bg-blue-50/30">
+                  <PersonCells name={player.partner.name} genderLabel={player.partner.genderLabel} phone={player.partner.phone} />
                 </tr>
-                {hasPartner ? (
-                  <tr className="border-t border-blue-50/60 bg-blue-50/30">
-                    <td className="whitespace-nowrap px-4 py-3 font-bold text-slate-900 sm:px-4 sm:py-4">{player.partner!.name}</td>
-                    <td className="whitespace-nowrap px-4 py-3 text-slate-600 sm:px-4 sm:py-4">{player.partner?.studentId || '-'}</td>
-                    <td className="whitespace-nowrap px-4 py-3 text-slate-600 sm:px-4 sm:py-4">{player.partner!.genderLabel ?? '-'}</td>
-                    <td className="whitespace-nowrap px-4 py-3 font-semibold text-slate-700 sm:px-4 sm:py-4">{player.partner!.school || school}</td>
-                    <td className="px-4 py-3 text-slate-600 sm:px-4 sm:py-4">{player.partner?.className || '-'}</td>
-                  </tr>
-                ) : null}
-              </Fragment>
-            );
-          })}
+              ) : null}
+            </Fragment>
+          ))}
         </tbody>
       </table>
     </div>
