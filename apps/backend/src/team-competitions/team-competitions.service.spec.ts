@@ -364,3 +364,35 @@ describe('TeamCompetitionsService team names', () => {
     expect(tx.team.create).not.toHaveBeenCalled();
   });
 });
+
+describe('团体赛出场项目：最多 7 项，同一项目可以重复', () => {
+  it('同一项目可以重复出现（三单两双），按出场顺序排好；出场顺序重复仍然报错', () => {
+    const service = new TeamCompetitionsService({} as PrismaService) as unknown as {
+      normalizeItems(items: Array<{ eventType: string; sortOrder: number }>): Array<{ eventType: string; sortOrder: number }>;
+    };
+    const items = [
+      { eventType: 'MENS_SINGLES', sortOrder: 3 },
+      { eventType: 'MENS_SINGLES', sortOrder: 1 },
+      { eventType: 'MENS_DOUBLES', sortOrder: 2 },
+      { eventType: 'MENS_DOUBLES', sortOrder: 4 },
+      { eventType: 'MENS_SINGLES', sortOrder: 5 },
+    ];
+    expect(service.normalizeItems(items).map((item) => `${item.sortOrder}.${item.eventType}`)).toEqual([
+      '1.MENS_SINGLES', '2.MENS_DOUBLES', '3.MENS_SINGLES', '4.MENS_DOUBLES', '5.MENS_SINGLES',
+    ]);
+    expect(() => service.normalizeItems([{ eventType: 'MENS_SINGLES', sortOrder: 1 }, { eventType: 'WOMENS_SINGLES', sortOrder: 1 }]))
+      .toThrow('出场顺序 1 重复');
+  });
+
+  it('请求里的出场项目超过 7 项会被拒绝，7 项可以', async () => {
+    const { plainToInstance } = await import('class-transformer');
+    const { validate } = await import('class-validator');
+    const { UpdateTeamCompetitionDto, TEAM_ITEM_MAX } = await import('./dto/team-competition.dto');
+    const items = (n: number) => Array.from({ length: n }, (_, index) => ({ eventType: 'MENS_SINGLES', sortOrder: index + 1 }));
+    expect(TEAM_ITEM_MAX).toBe(7);
+    const ok = await validate(plainToInstance(UpdateTeamCompetitionDto, { items: items(7) }));
+    expect(ok.filter((error) => error.property === 'items')).toHaveLength(0);
+    const tooMany = await validate(plainToInstance(UpdateTeamCompetitionDto, { items: items(8) }));
+    expect(tooMany.find((error) => error.property === 'items')?.constraints).toHaveProperty('arrayMaxSize');
+  });
+});

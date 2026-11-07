@@ -1102,7 +1102,7 @@ model TeamCompetitionItem {
   createdAt         DateTime        @default(now())
   updatedAt         DateTime        @updatedAt
 
-  @@unique([teamCompetitionId, eventType])
+  // 同一项目可以重复出场（如三单两双），按出场顺序区分，所以不再对 eventType 设唯一约束。
   @@unique([teamCompetitionId, sortOrder])
   @@index([teamCompetitionId, sortOrder])
 }

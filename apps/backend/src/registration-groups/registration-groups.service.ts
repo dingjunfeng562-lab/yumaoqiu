@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ageRuleLabel, groupFields, normalizeAgeRule } from '../common/age-eligibility';
 import { generateRegistrationCode } from '../common/registration-code';
 import { normalizeRegistrationFieldRules } from '../common/entrant';
+import { defaultTeamCompetitionName } from '../common/team-competition-label';
 import { SaveRegistrationGroupDto } from './registration-groups.dto';
 
 export function legacyGroupId(tournamentId: string, type: EntrantType) { return `${tournamentId}_${type}`; }
@@ -86,6 +87,13 @@ export async function saveRegistrationGroup(
       update: { groupLabel: name, entrantType } });
   }
   await tx.teamCompetition.updateMany({ where: { groupId: group.id }, data: { entrantType } });
+  // 团体赛名称跟着组别走：组别改名时，自动名称「旧组别名团体赛」一起改；早期手填的名称不动。
+  if (current && current.name !== name) {
+    await tx.teamCompetition.updateMany({
+      where: { groupId: group.id, name: defaultTeamCompetitionName(current.name) },
+      data: { name: defaultTeamCompetitionName(name) },
+    });
+  }
   await tx.tournamentPaymentSetting.upsert({ where: { tournamentId_groupId: { tournamentId, groupId: group.id } },
     create: { tournamentId, groupId: group.id, entrantType, enabled: dto.paymentEnabled ?? false,
       singlesFee: dto.singlesFee ?? 0, doublesFee: dto.doublesFee ?? 0, teamFee: dto.teamFee ?? 0, instructions: dto.paymentInstructions?.trim() || null },

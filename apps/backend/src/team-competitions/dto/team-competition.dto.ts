@@ -1,4 +1,5 @@
 import {
+  ArrayMaxSize,
   ArrayMinSize,
   IsArray,
   IsBoolean,
@@ -16,6 +17,9 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { EntrantType, EventType, Gender, ScoringMode, ScoringRule, TeamCompetitionFormat, TeamThirdPlaceMode } from '@prisma/client';
+
+/** 团体赛每场最多的出场项目数（同一项目可重复出现）。前端 TeamCompetitionFields 保持一致。 */
+export const TEAM_ITEM_MAX = 7;
 
 // 团体赛赛制：SINGLE_ELIMINATION 单淘汰 / ROUND_ROBIN 单组循环 /
 // GROUP_ROUND_ROBIN 多组循环 / GROUP_PLUS_KNOCKOUT 小组+淘汰
@@ -95,9 +99,11 @@ export class CreateTeamCompetitionDto extends TeamScoringDto {
   @IsEnum(EntrantType)
   entrantType?: EntrantType;
 
+  // 团体赛不再单独起名：不传时自动取「组别名团体赛」（每个组别最多一个团体赛）。旧客户端传了仍可用。
+  @IsOptional()
   @IsString()
   @MinLength(1)
-  name: string;
+  name?: string;
 
   @IsOptional()
   @IsString()
@@ -137,8 +143,10 @@ export class CreateTeamCompetitionDto extends TeamScoringDto {
   @Min(1)
   advancePerGroup?: number | null;
 
+  // 出场项目最多 7 项，同一项目可以重复（如三单两双）。
   @IsArray()
   @ArrayMinSize(1)
+  @ArrayMaxSize(TEAM_ITEM_MAX, { message: `出场项目最多 ${TEAM_ITEM_MAX} 项` })
   @ValidateNested({ each: true })
   @Type(() => TeamCompetitionItemDto)
   items: TeamCompetitionItemDto[];
@@ -216,6 +224,7 @@ export class UpdateTeamCompetitionDto extends TeamScoringDto {
   @IsOptional()
   @IsArray()
   @ArrayMinSize(1)
+  @ArrayMaxSize(TEAM_ITEM_MAX, { message: `出场项目最多 ${TEAM_ITEM_MAX} 项` })
   @ValidateNested({ each: true })
   @Type(() => TeamCompetitionItemDto)
   items?: TeamCompetitionItemDto[];

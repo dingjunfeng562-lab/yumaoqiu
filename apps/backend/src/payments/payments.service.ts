@@ -3,6 +3,7 @@ import { legacyGroupId } from '../registration-groups/registration-groups.servic
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { EntrantType, EventType, PaymentStatus, Prisma, RegistrationStatus, TournamentPaymentSetting } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { teamCompetitionLabel } from '../common/team-competition-label';
 import { entrantTypeLabel, eventDisplayLabel, normalizeRegistrationFieldRules } from '../common/entrant';
 import { ChangeActor, ensureRegistrationEditable, requireAdminActor } from '../common/registration-changes';
 import { CompetitionsService } from '../competitions/competitions.service';
@@ -187,7 +188,7 @@ export class PaymentsService {
           groupId: team.teamCompetition.groupId,
           groupLabel: team.teamCompetition.name,
           itemId: team.teamCompetition.id,
-          itemName: `团体赛 · ${team.teamCompetition.name}`,
+          itemName: teamCompetitionLabel(team.teamCompetition.name),
           name: team.name,
           contact: team.members.map((member) => member.player.contact).find(Boolean) ?? '',
           affiliation: team.affiliation,
@@ -310,7 +311,7 @@ export class PaymentsService {
             entrantType: team.teamCompetition.entrantType,
             teamId: team.id,
             targetName: team.name.slice(0, 191),
-            itemName: `团体赛 · ${team.teamCompetition.name}`.slice(0, 120),
+            itemName: teamCompetitionLabel(team.teamCompetition.name).slice(0, 120),
             fromStatus: team.paymentStatus,
             toStatus: status,
             amount,
@@ -548,7 +549,7 @@ export class PaymentsService {
           groupLabel: team.teamCompetition.name,
         id: team.id,
         kind: 'TEAM',
-        itemName: `团体赛 · ${team.teamCompetition.name}`,
+        itemName: teamCompetitionLabel(team.teamCompetition.name),
         name: team.name,
         feeKind: 'TEAM',
         paymentStatus: team.paymentStatus,

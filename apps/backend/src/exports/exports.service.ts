@@ -6,6 +6,7 @@ import { SECOND_STAGE_FORMAL_ROUND_NO_BASE } from '../common/second-stage-bracke
 import * as ExcelJS from 'exceljs';
 import { applyFinalRankings, teamStandings } from '../common/final-rankings';
 import { buildOrderbookWorkbook, teamCompetitionEvents } from './orderbook-workbook';
+import { teamCompetitionLabel } from '../common/team-competition-label';
 
 const XLS_CONTENT_TYPE = 'application/vnd.ms-excel';
 const XLSX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -1079,7 +1080,7 @@ export class ExportsService {
 
     for (const competition of tournament.teamCompetitions ?? []) {
       for (const row of teamStandings(competition)) {
-        rows.push([tournament.name, `${entrantExportLabel(competition.entrantType)}团体赛 · ${competition.name}`, row.rank ?? '未设置', row.name, row.affiliation, row.played, row.wins, row.losses, row.gameDiff]);
+        rows.push([tournament.name, teamCompetitionLabel(competition.name, entrantExportLabel(competition.entrantType)), row.rank ?? '未设置', row.name, row.affiliation, row.played, row.wins, row.losses, row.gameDiff]);
       }
     }
     if (rows.length === 1) rows.push([tournament.name, '', '', '暂无名次', '', '', '', '', '']);
@@ -1159,7 +1160,7 @@ export class ExportsService {
       for (const team of competition.teams) {
         rows.push([
           tournament.name,
-          `${entrantExportLabel(competition.entrantType)}团体赛 · ${competition.name}`,
+          teamCompetitionLabel(competition.name, entrantExportLabel(competition.entrantType)),
           team.name,
           team.affiliation,
           team.name,

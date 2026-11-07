@@ -13,6 +13,7 @@ import { tournamentResultsReady } from '../common/tournament-results-ready';
 import { buildKnockoutSkeleton } from '../common/knockout-skeleton';
 import { VersionedCache } from '../common/versioned-cache';
 import { CoalescingRunner } from '../common/coalescing-runner';
+import { teamCompetitionLabel } from '../common/team-competition-label';
 
 const gzipAsync = promisify(gzip);
 
@@ -890,7 +891,7 @@ export class PublicService {
         const teamEvents = tournament.teamCompetitions
           .filter((competition) => competition.isPublished && competition.teams.length > 0)
           .map((competition) => ({
-            id: competition.id, type: 'TEAM', typeLabel: `${competition.group?.name ?? (competition.entrantType === 'SOCIAL' ? '第三方' : '学生组')}团体赛 · ${competition.name}`,
+            id: competition.id, type: 'TEAM', typeLabel: teamCompetitionLabel(competition.name, competition.group?.name ?? (competition.entrantType === 'SOCIAL' ? '第三方' : '学生组')),
             format: 'TEAM', registrations: competition.teams.length,
             matches: competition.teamMatches.length,
             completedMatches: competition.teamMatches.filter((match) => match.status === MatchStatus.COMPLETED).length,

@@ -1,6 +1,7 @@
 import { groupFields, normalizeAgeRule } from '../common/age-eligibility';
 import { preparePerson, identityView, isPendingEligibility } from '../common/registration-eligibility';
 import { legacyGroupId } from '../registration-groups/registration-groups.service';
+import { defaultTeamCompetitionName } from '../common/team-competition-label';
 import { AuthActor, playerScope, tournamentScope } from '../auth/admin-scope';
 import { validateTeamRoster } from './team-roster';
 import { rankTeamGroup } from '../common/team-group-ranking';
@@ -199,7 +200,7 @@ export class TeamCompetitionsService {
         tournamentId: dto.tournamentId,
         groupId,
         entrantType,
-        name: dto.name,
+        name: dto.name?.trim() || defaultTeamCompetitionName(group.name),
         description: dto.description,
         winThreshold: dto.winThreshold,
         maxPlayerAppearances: dto.maxPlayerAppearances ?? 2,
@@ -1504,18 +1505,14 @@ export class TeamCompetitionsService {
     return competition;
   }
 
+  // 同一项目可以重复出场（如三单两双：男单、男单、男双…），按出场顺序区分；只有出场顺序不能重复。
   private normalizeItems(items: TeamCompetitionItemDto[]) {
     const normalized = [...items].sort((a, b) => a.sortOrder - b.sortOrder);
-    const eventTypes = new Set<EventType>();
     const sortOrders = new Set<number>();
     for (const item of normalized) {
-      if (eventTypes.has(item.eventType)) {
-        throw new ConflictException(`项目 ${EVENT_TYPE_LABELS[item.eventType]} 重复`);
-      }
       if (sortOrders.has(item.sortOrder)) {
         throw new ConflictException(`出场顺序 ${item.sortOrder} 重复`);
       }
-      eventTypes.add(item.eventType);
       sortOrders.add(item.sortOrder);
     }
     return normalized;

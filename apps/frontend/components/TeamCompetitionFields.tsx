@@ -8,6 +8,8 @@ export const TEAM_EVENT_OPTIONS = [
   { value: 'MENS_DOUBLES', label: '男双' }, { value: 'WOMENS_DOUBLES', label: '女双' },
   { value: 'MIXED_DOUBLES', label: '混双' },
 ];
+/** 团体赛每场最多的出场项目数，同一项目可以重复。与后端 TEAM_ITEM_MAX 保持一致。 */
+export const TEAM_ITEM_MAX = 7;
 export const TEAM_SCORING_OPTIONS = [
   { value: 'FIFTEEN_ONE', label: '15 分 1 局' }, { value: 'FIFTEEN_BO3', label: '15 分 3 局 2 胜' },
   { value: 'TWENTYONE_BO3', label: '21 分 3 局 2 胜' }, { value: 'THIRTYONE_BO3', label: '31 分 3 局 2 胜' },
@@ -49,7 +51,7 @@ export default function TeamCompetitionFields({ formatLocked = false }: { format
   const items = Form.useWatch('items', form) ?? [];
   const format = Form.useWatch('format', form);
   return <>
-    <Form.Item name="name" label="团体赛名称" rules={[{ required: true }]}><Input /></Form.Item>
+    {/* 团体赛不单独起名：挂在组别下，名称自动取「组别名团体赛」，组别改名时一起改。 */}
     <Form.Item name="format" label="赛制" rules={[{ required: true }]}><Select disabled={formatLocked} options={TEAM_FORMAT_OPTIONS} onChange={value => { if (value === 'ROUND_ROBIN') form.setFieldsValue({ groupCount: 1, advancePerGroup: null }); }} /></Form.Item>
     {format === 'ROUND_ROBIN' && <Alert showIcon type="info" style={{ marginBottom: 16 }} title="全部团体同组，每两队交手一次" description="全部对阵打完即结束比赛，依次比较胜场、胜次、净胜分，再比较两队相互胜负。胜次为正式子项获胜数；净胜分为正式子项每局得分减失分的合计，补打不计入。6 队共 5 轮、15 场团体对阵，每轮最多使用 3 片场地。" />}
     {format !== 'SINGLE_ELIMINATION' && <Form.Item name="groupCount" label="小组数量" rules={[{ required: format !== 'ROUND_ROBIN', message: '请填写小组数量' }]} extra={format === 'ROUND_ROBIN' ? '单组循环固定为 1 组。' : '填 1 为单组循环，填 2 或以上为多组循环；每组至少 2 支队伍。'}>
@@ -64,7 +66,7 @@ export default function TeamCompetitionFields({ formatLocked = false }: { format
     <Form.Item name="maxPlayerAppearances" label="兼项规则" rules={[{ required: true }]} extra="按同一场团体对阵计算，下一轮重新计算。每队人数不限，不限制男女人数；出场选手仍须符合各项目的性别要求。">
       <Select options={TEAM_APPEARANCE_OPTIONS} />
     </Form.Item>
-    <Form.Item label="项目出场顺序" required extra="用上下箭头调整顺序；各子项的出场选手在对阵确定后手动填报。">
+    <Form.Item label="项目出场顺序" required extra={`最多 ${TEAM_ITEM_MAX} 项，同一项目可以重复（如三单两双）；用上下箭头调整顺序；各子项的出场选手在对阵确定后手动填报。`}>
       <Form.List name="items" rules={[{ validator: async (_, value) => { if (!value?.length) throw new Error('至少选择一个项目'); } }]}>
         {(fields, { add, remove, move }, { errors }) => <Space orientation="vertical" style={{ width: '100%' }}>
           {fields.map((field, index) => <Space key={field.key} wrap>
@@ -76,7 +78,7 @@ export default function TeamCompetitionFields({ formatLocked = false }: { format
             <Button aria-label={`下移第${index + 1}项`} icon={<ArrowDownOutlined />} disabled={index === fields.length - 1} onClick={() => move(index, index + 1)} />
             <Button aria-label={`移除第${index + 1}项`} icon={<DeleteOutlined />} disabled={fields.length === 1} onClick={() => remove(index)} />
           </Space>)}
-          <Button icon={<PlusOutlined />} disabled={fields.length >= 5} onClick={() => add({})}>添加项目</Button>
+          <Button icon={<PlusOutlined />} disabled={fields.length >= TEAM_ITEM_MAX} onClick={() => add({})}>添加项目</Button>
           <Form.ErrorList errors={errors} />
         </Space>}
       </Form.List>
