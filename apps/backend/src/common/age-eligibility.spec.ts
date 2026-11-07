@@ -2,6 +2,8 @@ import { ageForRule, ageOn, ageRuleLabel, birthRangeFromAges, checkAge, checkGen
 import { preparePerson } from './registration-eligibility';
 import { decryptIdentity, encryptIdentity, identityFingerprint } from './identity-vault';
 import { stripIdentityStorage } from './identity-response.interceptor';
+import { StreamableFile } from '@nestjs/common';
+import { Readable } from 'node:stream';
 
 function idFor(birth: string) {
   const prefix = `110101${birth.replaceAll('-', '')}001`;
@@ -50,6 +52,16 @@ describe('自定义组别资格规则', () => {
     } finally { if(old===undefined) delete process.env.REGISTRATION_IDENTITY_KEY; else process.env.REGISTRATION_IDENTITY_KEY=old; }
   });
   it('所有层级的响应均不泄露证件存储数据',()=>expect(stripIdentityStorage({id:'1',identityData:{encrypted:'secret'},members:[{personKey:'key',partnerIdentityData:{fingerprint:'hash'},name:'测试'}]})).toEqual({id:'1',members:[{name:'测试'}]}));
+  it('文件下载、Buffer、Date 等类实例原样返回，不被拷成普通对象', () => {
+    const file = new StreamableFile(Readable.from(['x']), { type: 'image/webp' });
+    expect(stripIdentityStorage(file)).toBe(file);
+    const buffer = Buffer.from('x');
+    const date = new Date('2026-11-07T00:00:00Z');
+    const out = stripIdentityStorage({ buffer, date, rows: [{ personKey: 'k', at: date }] }) as Record<string, unknown>;
+    expect(out.buffer).toBe(buffer);
+    expect(out.date).toBe(date);
+    expect(out.rows).toEqual([{ at: date }]);
+  });
 });
 
 describe('按年龄填写，自动推算出生日期', () => {
