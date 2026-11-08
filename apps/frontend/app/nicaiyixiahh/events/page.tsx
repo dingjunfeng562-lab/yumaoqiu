@@ -119,7 +119,10 @@ function stageRuleForForm(
 function groupConfigSummary(event: Event) {
   if (!GROUP_COUNT_FORMATS.has(event.format)) return '—';
   const qualifiers = event.qualifiersPerGroup ?? 2;
-  return `自动分组 / 每组出线${qualifiers}`;
+  const grouping = event.groupCount
+    ? `手动 ${event.groupCount} 组`
+    : `自动（每组 ${event.groupSize ?? 4} 人）`;
+  return `${grouping} / 每组出线 ${qualifiers}`;
 }
 
 export default function EventsPage() {
@@ -164,6 +167,7 @@ export default function EventsPage() {
     form.setFieldValue('tournamentId', selectedTournamentId);
     form.setFieldValue('scoringMethod', 'preset');
     form.setFieldValue('qualifiersPerGroup', 2);
+    form.setFieldValue('groupMode', 'auto');
     setModalOpen(true);
   };
 
@@ -186,6 +190,7 @@ export default function EventsPage() {
     }
     form.setFieldsValue({
       ...e,
+      groupMode: e.groupCount ? 'manual' : 'auto',
       scoringMethod: e.customGamePoint ? 'custom' : 'preset',
       ...stageValues,
     });
@@ -219,8 +224,19 @@ export default function EventsPage() {
     const rest = Object.fromEntries(
       Object.entries(others).filter(([key]) => !key.startsWith('stage_')),
     );
-    if (!GROUP_COUNT_FORMATS.has(String(rest.format))) {
+    const groupMode = rest.groupMode;
+    delete rest.groupMode;
+    if (GROUP_COUNT_FORMATS.has(String(rest.format))) {
+      if (groupMode === 'manual') {
+        // 手动组数与每组人数互斥：手动时清掉每组人数，避免两套配置冲突。
+        rest.groupSize = null;
+      } else {
+        rest.groupCount = null;
+        rest.groupSize = rest.groupSize ?? null;
+      }
+    } else {
       rest.groupCount = null;
+      rest.groupSize = null;
       rest.qualifiersPerGroup = null;
     }
     const stageScoringRules = Object.keys(stageRules).length ? stageRules : null;
@@ -367,20 +383,55 @@ export default function EventsPage() {
               options={Object.entries(FORMAT_LABELS).map(([v, l]) => ({ value: v, label: l }))}
             />
           </Form.Item>
-          <Form.Item shouldUpdate={(prev, cur) => prev.format !== cur.format} noStyle>
-            {({ getFieldValue }) =>
-              GROUP_COUNT_FORMATS.has(getFieldValue('format')) ? (
-                <Form.Item
-                  name="qualifiersPerGroup"
-                  label="每组出线数"
-                  tooltip="小组赛后每组进入淘汰赛的人数，默认 2。组别数将根据报名人数和每组最多4人自动计算。"
-                  initialValue={2}
-                  rules={[{ required: true, message: '请输入每组出线数' }]}
-                >
-                  <InputNumber min={1} max={8} style={{ width: '100%' }} />
-                </Form.Item>
-              ) : null
-            }
+          <Form.Item
+            shouldUpdate={(prev, cur) => prev.format !== cur.format || prev.groupMode !== cur.groupMode}
+            noStyle
+          >
+            {({ getFieldValue }) => {
+              if (!GROUP_COUNT_FORMATS.has(getFieldValue('format'))) return null;
+              const groupMode = getFieldValue('groupMode') ?? 'auto';
+              return (
+                <>
+                  <Form.Item name="groupMode" label="分组方式" initialValue="auto">
+                    <Radio.Group
+                      optionType="button"
+                      buttonStyle="solid"
+                      options={[
+                        { value: 'auto', label: '按每组人数自动分组' },
+                        { value: 'manual', label: '手动指定小组数量' },
+                      ]}
+                    />
+                  </Form.Item>
+                  {groupMode === 'manual' ? (
+                    <Form.Item
+                      name="groupCount"
+                      label="小组数量"
+                      rules={[{ required: true, message: '请输入小组数量' }]}
+                      extra="1–26 组（A–Z）。抽签时按实际报名人数均分到各组，余数先给 A 组；每组至少 2 人。"
+                    >
+                      <InputNumber min={1} max={26} style={{ width: '100%' }} />
+                    </Form.Item>
+                  ) : (
+                    <Form.Item
+                      name="groupSize"
+                      label="每组人数"
+                      extra="留空按每组 4 人。抽签时按实际报名人数算组数，所以个别组会少 1 人（如 39 人 / 每组 4 人 = 10 组：4+4+…+3）。"
+                    >
+                      <InputNumber min={2} max={8} placeholder="默认 4" style={{ width: '100%' }} />
+                    </Form.Item>
+                  )}
+                  <Form.Item
+                    name="qualifiersPerGroup"
+                    label="每组出线数"
+                    tooltip="小组赛后每组进入淘汰赛的人数，默认 2。出线总数不超过 8 人时进 A–H 签位手动编排；超过 8 人时小组赛结束后自动生成淘汰赛。"
+                    initialValue={2}
+                    rules={[{ required: true, message: '请输入每组出线数' }]}
+                  >
+                    <InputNumber min={1} max={8} style={{ width: '100%' }} />
+                  </Form.Item>
+                </>
+              );
+            }}
           </Form.Item>
           <Form.Item name="scoringMethod" label="计分方式" initialValue="preset">
             <Radio.Group

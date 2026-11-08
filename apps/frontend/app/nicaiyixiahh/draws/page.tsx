@@ -150,12 +150,25 @@ interface GroupItem {
   matches: MatchItem[];
 }
 
+interface GroupPlanView {
+  entrantCount: number;
+  groupCount: number;
+  sizes: number[];
+  manualGroupCount: boolean;
+  groupSize: number | null;
+  qualifiersPerGroup: number;
+  qualifiersTotal: number;
+  secondStage: 'AH' | 'AUTO' | 'PLAYOFF' | 'MANUAL';
+  errors: string[];
+}
+
 interface BracketData {
   event: EventItem;
   currentDraw?: DrawBracket | null;
   registrations: Registration[];
   rounds: RoundItem[];
   groups: GroupItem[];
+  groupPlan?: GroupPlanView | null;
   knockoutSkeleton?: KnockoutBracketData['knockoutSkeleton'];
   secondStage?: SecondStageData | null;
 }
@@ -174,6 +187,26 @@ interface RedrawRequestItem {
   decidedAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+function groupMatchCount(sizes: number[]) {
+  return sizes.reduce((sum, size) => sum + (size * (size - 1)) / 2, 0);
+}
+
+function groupPlanSummary(plan: GroupPlanView) {
+  const mode = plan.manualGroupCount
+    ? `手动 ${plan.groupCount} 组`
+    : `每组 ${plan.groupSize ?? 4} 人（自动算组数）`;
+  if (plan.secondStage === 'PLAYOFF') {
+    return `${mode} · 按当前报名的 ${plan.entrantCount} 人将分 ${plan.groupCount} 组（${plan.sizes.join('+')}）；小组赛结束后按 A/B 组名次自动生成交叉排位赛。`;
+  }
+  const stage2Label: Record<GroupPlanView['secondStage'], string> = {
+    AUTO: '小组赛结束后自动生成淘汰赛',
+    AH: '小组赛结束后在 A–H 签位编排第二阶段',
+    PLAYOFF: '',
+    MANUAL: '小组赛结束后按出线名额人工生成淘汰赛',
+  };
+  return `${mode} · 每组出线 ${plan.qualifiersPerGroup} 人 → 按当前报名的 ${plan.entrantCount} 人将分 ${plan.groupCount} 组（${plan.sizes.join('+')}），出线 ${plan.qualifiersTotal} 人；${stage2Label[plan.secondStage]}。`;
 }
 
 function seedMark(seed?: number | null) {
@@ -969,6 +1002,19 @@ export default function DrawsPage() {
     },
   ];
 
+  // 重新抽签前后的分组对比：让管理员在覆盖已有对阵前看到「会从几组变成几组」。
+  const drawChangeHint = (() => {
+    const plan = bracket?.groupPlan;
+    if (!plan || !bracket?.currentDraw) return null;
+    const currentSizes = bracket.groups.map((group) => group.registrations.length);
+    if (!currentSizes.length) return null;
+    const currentMatches = groupMatchCount(currentSizes);
+    const planMatches = groupMatchCount(plan.sizes);
+    const same = currentSizes.length === plan.sizes.length && currentMatches === planMatches;
+    if (same) return null;
+    return `分组将从 ${currentSizes.length} 组（${currentSizes.join('+')}，${currentMatches} 场）变为 ${plan.groupCount} 组（${plan.sizes.join('+')}，${planMatches} 场）。`;
+  })();
+
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 12, flexWrap: 'wrap' }}>
@@ -1022,19 +1068,28 @@ export default function DrawsPage() {
             ) : (
               <Popconfirm
                 title={
-                  selectedEvent?.drawPublished
-                    ? '对阵已发布，重抽会清空所有比赛结果并取消发布，确认继续？'
-                    : '重新抽签会覆盖当前对阵，确认继续？'
+                  <div>
+                    <div>
+                      {selectedEvent?.drawPublished
+                        ? '对阵已发布，重抽会清空所有比赛结果并取消发布，确认继续？'
+                        : '重新抽签会覆盖当前对阵，确认继续？'}
+                    </div>
+                    {drawChangeHint && (
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        {drawChangeHint}
+                      </Typography.Text>
+                    )}
+                  </div>
                 }
                 onConfirm={() => handleDraw(true)}
               >
-                <Button danger icon={<BranchesOutlined />} disabled={!selectedEventId || registrations.length < 2}>
+                <Button danger icon={<BranchesOutlined />} disabled={!selectedEventId || registrations.length < 2 || Boolean(bracket?.groupPlan?.errors.length)}>
                   重新抽签
                 </Button>
               </Popconfirm>
             )
           ) : (
-            <Button type="primary" icon={<BranchesOutlined />} onClick={() => handleDraw(false)} disabled={!selectedEventId || registrations.length < 2}>
+            <Button type="primary" icon={<BranchesOutlined />} onClick={() => handleDraw(false)} disabled={!selectedEventId || registrations.length < 2 || Boolean(bracket?.groupPlan?.errors.length)}>
               抽签
             </Button>
           )}
@@ -1078,6 +1133,28 @@ export default function DrawsPage() {
           </Col>
         </Row>
       </section>
+
+      {bracket?.groupPlan && bracket.groupPlan.entrantCount >= 2 && (
+        <Alert
+          type={bracket.groupPlan.errors.length ? 'warning' : 'info'}
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={`分组规则（重新抽签生效）：${
+            bracket.groupPlan.manualGroupCount
+              ? `手动 ${bracket.groupPlan.groupCount} 组`
+              : `每组 ${bracket.groupPlan.groupSize ?? 4} 人（自动算组数）`
+          }${
+            bracket.groupPlan.secondStage === 'PLAYOFF'
+              ? ''
+              : ` · 每组出线 ${bracket.groupPlan.qualifiersPerGroup} 人`
+          }`}
+          description={
+            bracket.groupPlan.errors.length
+              ? `${bracket.groupPlan.errors.join('；')}（调整单项的分组设置后才能抽签）`
+              : groupPlanSummary(bracket.groupPlan)
+          }
+        />
+      )}
 
       {teamCompetitions.length > 0 && (
         <section style={{ marginBottom: 16, border: '1px solid #f0f0f0', borderRadius: 8, padding: 16, background: '#fff' }}>

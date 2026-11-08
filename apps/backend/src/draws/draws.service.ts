@@ -26,7 +26,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { unpaidEventEntrants, unpaidMessage } from '../payments/payment-rules';
-import { DrawAlgorithmService } from './draw-algorithm.service';
+import { DrawAlgorithmService, GroupPlan } from './draw-algorithm.service';
 import { DrawLogService } from './draw-log.service';
 import {
   CreateRegistrationDto,
@@ -359,6 +359,12 @@ export class DrawsService {
         .map((registration, index) => ({ entrantId: registration.id, seedNo: index + 1 }));
     }
 
+    // 分组计划在事务外算好：组数/每组人数/出线人数都由「每组人数」或「手动组数」决定，
+    // 校验失败直接 400，避免先生成一份残缺签表再回滚。
+    const format = this.drawFormatForEvent(event.format);
+    const groupPlan = this.groupPlanFor(event, format, registrations.length);
+    if (groupPlan?.errors.length) throw new BadRequestException(groupPlan.errors[0]);
+
     const latest = await this.prisma.drawBracket.findFirst({
       where: { eventItemId: eventId },
       orderBy: { version: 'desc' },
@@ -374,8 +380,6 @@ export class DrawsService {
       // （roundNo ≥ 100）在 materialize 时按 eventId 一并删除，这里同步清空 SecondStage 实体
       // （级联删 slots/matches/rankings），要求重抽后重新指定 A-H。首次抽签时无第二阶段，空操作。
       await tx.secondStage.deleteMany({ where: { eventId } });
-
-      const format = this.drawFormatForEvent(event.format);
 
       let bracketSize = registrations.length;
       let byeCount = 0;
@@ -393,7 +397,11 @@ export class DrawsService {
           seedLimit,
           seedCount,
           byeCount,
-          groupCount: this.initialDrawGroupCount(event, format, registrations.length),
+          groupCount: groupPlan
+            ? groupPlan.groupCount
+            : format === DrawFormat.round_robin
+              ? 1
+              : null,
           qualifyPerGroup: event.qualifiersPerGroup ?? null,
           executedAt: new Date(),
           createdBy: operatorId,
@@ -451,14 +459,7 @@ export class DrawsService {
         const groups =
           format === DrawFormat.round_robin
             ? this.drawAlgorithmService.buildSingleRoundRobin(entrants, seedInputs)
-            : this.drawAlgorithmService.buildGroups(
-                entrants,
-                seedInputs,
-                format === DrawFormat.group_then_playoff
-                  ? 2
-                  : this.configuredGroupCount(event, entrants.length),
-                event.qualifiersPerGroup ?? 2,
-              );
+            : this.drawAlgorithmService.buildGroups(entrants, seedInputs, groupPlan?.sizes ?? []);
 
         await tx.drawBracket.update({
           where: { id: draw.id },
@@ -1197,12 +1198,21 @@ export class DrawsService {
         ? await this.getStandardSecondStageEntrants(eventId, event.qualifiersPerGroup ?? 2)
         : [];
 
+    // 当前报名人数下的分组预览：抽签编排页用来显示「几组、每组几人、出线几人」，
+    // 以及重新抽签会带来什么变化。与真正抽签调用同一份计划逻辑。
+    const groupPlan = this.groupPlanFor(
+      event,
+      this.drawFormatForEvent(event.format),
+      registrations.length,
+    );
+
     return {
       event,
       currentDraw,
       registrations,
       rounds,
       groups,
+      groupPlan,
       knockoutSkeleton,
       secondStage: this.secondStageView(
         secondStage,
@@ -1918,24 +1928,45 @@ export class DrawsService {
     }
   }
 
-  private initialDrawGroupCount(
-    event: { groupCount?: number | null; groupSize?: number | null },
+  /**
+   * 抽签/重抽、抽签编排页预览共用的分组计划。
+   * - 淘汰赛、单循环：不分组，返回 null；
+   * - 小组循环+淘汰：按单项的「每组人数」或「手动小组数量」计算；
+   * - 小组循环+交叉排位：固定 A/B 两组（每组至少 2 人）。
+   */
+  private groupPlanFor(
+    event: {
+      format: Format;
+      groupCount?: number | null;
+      groupSize?: number | null;
+      qualifiersPerGroup?: number | null;
+    },
     format: DrawFormat,
     entrantCount: number,
-  ) {
-    if (format === DrawFormat.single_elim) return null;
-    if (format === DrawFormat.round_robin) return 1;
-    if (format === DrawFormat.group_then_playoff) return 2;
-    return this.configuredGroupCount(event, entrantCount);
-  }
-
-  private configuredGroupCount(
-    event: { groupCount?: number | null; groupSize?: number | null },
-    entrantCount: number,
-  ) {
-    if (event.groupCount && event.groupCount > 0) return event.groupCount;
-    const legacyGroupSize = Math.max(event.groupSize ?? 4, 2);
-    return Math.ceil(entrantCount / legacyGroupSize);
+  ): GroupPlan | null {
+    if (format === DrawFormat.single_elim || format === DrawFormat.round_robin) return null;
+    const isPlayoff = format === DrawFormat.group_then_playoff;
+    const plan = this.drawAlgorithmService.planGroups({
+      entrantCount,
+      groupCount: isPlayoff ? 2 : event.groupCount,
+      groupSize: isPlayoff ? null : event.groupSize,
+      qualifiersPerGroup: isPlayoff ? 1 : event.qualifiersPerGroup,
+    });
+    if (isPlayoff) {
+      return {
+        ...plan,
+        secondStage: 'PLAYOFF',
+        errors:
+          entrantCount < 4
+            ? [`交叉排位赛按 A/B 两组交叉对阵，至少需要 4 个报名（当前 ${entrantCount} 个）`]
+            : plan.errors,
+      };
+    }
+    // 旧赛制 GROUP_PLUS_KNOCKOUT 没有自动生成淘汰赛的实现（只有 _STD 有），如实标注。
+    if (event.format === Format.GROUP_PLUS_KNOCKOUT) {
+      return { ...plan, secondStage: 'MANUAL' };
+    }
+    return plan;
   }
 
   private bracketMatchCompare(

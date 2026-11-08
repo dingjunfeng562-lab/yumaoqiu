@@ -35,6 +35,43 @@ export type BuiltDrawGroup = {
 
 import { Injectable } from '@nestjs/common';
 
+/** 每组人数可配置范围，默认 4 人（与历史「每组 4 人」的数据一致）。 */
+export const GROUP_SIZE_DEFAULT = 4;
+export const GROUP_SIZE_MIN = 2;
+export const GROUP_SIZE_MAX = 8;
+/** 小组数量上限：组代码用 A–Z（超出后 AA/AB…，但业务上限保持 26）。 */
+export const GROUP_COUNT_MAX = 26;
+/** 每组出线数范围：A–H 第二阶段最多 8 个签位。 */
+export const QUALIFIERS_PER_GROUP_MIN = 1;
+export const QUALIFIERS_PER_GROUP_MAX = 8;
+
+export type GroupPlanRequest = {
+  entrantCount: number;
+  /** 手动指定的小组数量；给出时优先于 groupSize。 */
+  groupCount?: number | null;
+  /** 每组人数；未手动指定组数时用它推导组数。 */
+  groupSize?: number | null;
+  qualifiersPerGroup?: number | null;
+};
+
+/**
+ * 分组计划：抽签前算好「几组、每组几人、出线几人、第二阶段走哪条路」。
+ * 纯计算，不抛异常；errors 非空表示这份计划不能落库（由调用方转成 400）。
+ */
+export type GroupPlan = {
+  entrantCount: number;
+  groupCount: number;
+  sizes: number[];
+  manualGroupCount: boolean;
+  groupSize: number | null;
+  qualifiersPerGroup: number;
+  qualifiersTotal: number;
+  /** AH：出线 ≤8，进 A–H 手动签位；AUTO：>8，小组赛结束后自动生成淘汰赛；
+   * PLAYOFF：交叉排位赛；MANUAL：该赛制没有自动淘汰赛，需要人工生成。 */
+  secondStage: 'AH' | 'AUTO' | 'PLAYOFF' | 'MANUAL';
+  errors: string[];
+};
+
 @Injectable()
 export class DrawAlgorithmService {
   getSeedLimit(entrantCount: number) {
@@ -115,16 +152,19 @@ export class DrawAlgorithmService {
     };
   }
 
+  /**
+   * 按 planGroups() 给出的每组人数建组：种子按蛇形落在各组，其余随机补齐，
+   * 每组人数严格等于 sizes[index]（余数先给 A 组）。
+   */
   buildGroups(
     entrants: DrawEntrantInput[],
     seedSettings: DrawSeedSettingInput[],
-    groupCount: number,
-    qualifiersPerGroup: number = 2,
+    sizes: number[],
   ) {
-    const resolvedGroupCount = this.resolveGroupCount(entrants.length, groupCount, qualifiersPerGroup);
-    const targetSizes = this.targetGroupSizes(entrants.length, resolvedGroupCount);
+    const resolvedGroupCount = sizes.length;
+    const targetSizes = sizes;
     const groups: BuiltDrawGroup[] = Array.from({ length: resolvedGroupCount }, (_, index) => ({
-      groupCode: String.fromCharCode(65 + index),
+      groupCode: this.groupCodeLabel(index),
       sortOrder: index,
       members: [],
     }));
@@ -166,58 +206,104 @@ export class DrawAlgorithmService {
     return groups;
   }
 
-  private resolveGroupCount(entrantCount: number, groupCount: number, qualifiersPerGroup: number = 2) {
-    const normalized = Number.isFinite(groupCount) ? Math.floor(groupCount) : 2;
-    // 每组最多4人，计算所需的最小组数
-    const minGroupsForMaxSize = Math.ceil(entrantCount / 4);
+  /**
+   * 计算分组计划。规则（不再有「每组最多 4 人」和「出线总数必须是 ≥8 的 2 的幂」两条硬编码）：
+   * - 手动给了小组数量：以它为准；
+   * - 否则按每组人数（默认 4）推导组数 = ceil(报名数 / 每组人数)；
+   * - 组数上限 26（A–Z），且每组至少 2 人（人数不足时宁可少分一组，不产生 1 人组）；
+   * - 每组出线数不能超过最小组人数（否则「出线」名次不存在）。
+   */
+  planGroups(request: GroupPlanRequest): GroupPlan {
+    const entrantCount = Math.max(0, Math.floor(Number(request.entrantCount) || 0));
+    const errors = new Set<string>();
 
-    // 第二阶段淘汰赛出线总人数必须是2的幂次方（8、16、32、64...）
-    // 总出线人数 = 组数 × 每组出线数
-    // 必须满足：组数 × 每组出线数 = 2的幂次方（≥8）
-    let finalGroupCount = Math.max(2, minGroupsForMaxSize);
-    let totalQualifiers = finalGroupCount * qualifiersPerGroup;
+    const rawQualifiers = Math.floor(Number(request.qualifiersPerGroup ?? 2));
+    const qualifiersPerGroup = Number.isFinite(rawQualifiers) ? rawQualifiers : 2;
+    if (qualifiersPerGroup < QUALIFIERS_PER_GROUP_MIN || qualifiersPerGroup > QUALIFIERS_PER_GROUP_MAX) {
+      errors.add(`每组出线数需在 ${QUALIFIERS_PER_GROUP_MIN}–${QUALIFIERS_PER_GROUP_MAX} 之间`);
+    }
+    const resolvedQualifiers = Math.min(
+      QUALIFIERS_PER_GROUP_MAX,
+      Math.max(QUALIFIERS_PER_GROUP_MIN, qualifiersPerGroup || QUALIFIERS_PER_GROUP_MIN),
+    );
 
-    // 找到大于等于totalQualifiers的最小的2的幂次方（且≥8）
-    let targetQualifiers = 8; // 最小从8强开始
-    while (targetQualifiers < totalQualifiers) {
-      targetQualifiers *= 2;
+    const manualGroupCount =
+      typeof request.groupCount === 'number' && Number.isFinite(request.groupCount) && request.groupCount > 0;
+    const rawGroupSize =
+      typeof request.groupSize === 'number' && Number.isFinite(request.groupSize)
+        ? Math.floor(request.groupSize)
+        : null;
+    const groupSizeInRange =
+      rawGroupSize !== null && rawGroupSize >= GROUP_SIZE_MIN && rawGroupSize <= GROUP_SIZE_MAX;
+    if (rawGroupSize !== null && !groupSizeInRange) {
+      errors.add(`每组人数需在 ${GROUP_SIZE_MIN}–${GROUP_SIZE_MAX} 之间`);
     }
 
-    // 根据目标出线人数和每组出线数，计算需要的组数
-    finalGroupCount = Math.ceil(targetQualifiers / qualifiersPerGroup);
-
-    // 确保组数不超过参赛人数，且每组不超过4人
-    const maxGroups = Math.max(entrantCount, 2);
-    finalGroupCount = Math.min(finalGroupCount, maxGroups);
-
-    // 最终验证每组人数不超过4
-    const avgGroupSize = entrantCount / finalGroupCount;
-    if (avgGroupSize > 4) {
-      finalGroupCount = Math.ceil(entrantCount / 4);
-      // 再次调整以满足2的幂次方要求
-      totalQualifiers = finalGroupCount * qualifiersPerGroup;
-      targetQualifiers = 8;
-      while (targetQualifiers < totalQualifiers) {
-        targetQualifiers *= 2;
-      }
-      finalGroupCount = Math.ceil(targetQualifiers / qualifiersPerGroup);
+    let groupCount = 1;
+    if (entrantCount < 2) {
+      errors.add('至少需要 2 个报名才能分组');
+    } else if (manualGroupCount) {
+      groupCount = Math.floor(request.groupCount as number);
+    } else {
+      const perGroup = groupSizeInRange ? (rawGroupSize as number) : GROUP_SIZE_DEFAULT;
+      // 每组至少 2 人：人数不足时宁可少分一组，也不产生 1 人组（1 人组没有任何场次）。
+      const maxGroupsByPairs = Math.max(1, Math.floor(entrantCount / 2));
+      groupCount = Math.min(Math.ceil(entrantCount / perGroup), maxGroupsByPairs);
     }
 
-    return Math.max(normalized, finalGroupCount);
+    if (groupCount < 1) {
+      errors.add('小组数量至少为 1');
+      groupCount = 1;
+    }
+    if (groupCount > GROUP_COUNT_MAX) {
+      errors.add(
+        `需要 ${groupCount} 个小组，超过 ${GROUP_COUNT_MAX} 组上限（A–Z），请增大每组人数`,
+      );
+      groupCount = GROUP_COUNT_MAX;
+    }
+    if (entrantCount >= 2 && groupCount > Math.floor(entrantCount / 2)) {
+      errors.add(`报名 ${entrantCount} 人分成 ${groupCount} 组会出现 1 人组，请减少组数`);
+    }
+
+    const sizes = entrantCount > 0 ? this.distribute(entrantCount, groupCount) : [];
+    const minSize = sizes.length ? Math.min(...sizes) : 0;
+    if (minSize >= 2 && resolvedQualifiers > minSize) {
+      errors.add(
+        `最小组只有 ${minSize} 人，每组出线 ${resolvedQualifiers} 人；请增大每组人数或减少出线数`,
+      );
+    }
+
+    const qualifiersTotal = groupCount * resolvedQualifiers;
+    return {
+      entrantCount,
+      groupCount,
+      sizes,
+      manualGroupCount,
+      groupSize: groupSizeInRange ? rawGroupSize : null,
+      qualifiersPerGroup: resolvedQualifiers,
+      qualifiersTotal,
+      secondStage: qualifiersTotal <= 8 ? 'AH' : 'AUTO',
+      errors: [...errors],
+    };
   }
 
-  private targetGroupSizes(entrantCount: number, groupCount: number): number[] {
-    const base = Math.floor(entrantCount / groupCount);
-    const remainder = entrantCount % groupCount;
-    const sizes = Array.from({ length: groupCount }, (_, index) => base + (index < remainder ? 1 : 0));
-    // 确保每组不超过4人，如果超过则需要更多组
-    const maxSize = Math.max(...sizes);
-    if (maxSize > 4) {
-      // 递归调整，增加组数
-      const newGroupCount = Math.ceil(entrantCount / 4);
-      return this.targetGroupSizes(entrantCount, newGroupCount);
-    }
-    return sizes;
+  /** 把 total 人尽量均分到 groups 组，余数从 A 组开始各 +1。 */
+  private distribute(total: number, groups: number): number[] {
+    if (groups <= 0) return [];
+    const base = Math.floor(total / groups);
+    const remainder = total % groups;
+    return Array.from({ length: groups }, (_, index) => base + (index < remainder ? 1 : 0));
+  }
+
+  /** 0 → A，25 → Z，26 → AA…（业务上限定 26 组，这里仍按 26 进制输出，避免出现 '['）。 */
+  private groupCodeLabel(index: number): string {
+    let value = Math.max(0, Math.floor(index));
+    let label = '';
+    do {
+      label = String.fromCharCode(65 + (value % 26)) + label;
+      value = Math.floor(value / 26) - 1;
+    } while (value >= 0);
+    return label;
   }
 
   /**
