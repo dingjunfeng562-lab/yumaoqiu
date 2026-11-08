@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
-import { GroupVenueSettings, type GroupVenueRule } from '@/components/admin/GroupVenueSettings';
+import { GroupVenueSettings, type EventVenueRule, type GroupVenueRule } from '@/components/admin/GroupVenueSettings';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import dayjs, { Dayjs } from 'dayjs';
@@ -156,7 +156,11 @@ interface ScheduleData {
 
 type AutoPreview = {
   fingerprint: string; scheduledCount: number; preservedCount: number;
-  groups: Array<GroupVenueRule & { scheduled: number; unscheduled: number; estimatedEnd: string | null }>;
+  groups: Array<GroupVenueRule & {
+    scheduled: number; unscheduled: number; estimatedEnd: string | null;
+    // 精确到单项的排程统计。
+    events: Array<EventVenueRule & { scheduled: number; unscheduled: number; estimatedEnd: string | null }>;
+  }>;
   unscheduled: Array<{ matchId: string; reason: string }>;
   matches: ScheduleMatch[];
 };
@@ -941,7 +945,7 @@ export default function AdminSchedulingPage() {
             <Select allowClear options={activeVenues.map(venue => {
               const info = manualPreview?.venues.find(v => v.id === venue.id);
               const inGroup = !editingMatch?.allowedVenueIds || editingMatch.allowedVenueIds.includes(venue.id);
-              return { value: venue.id, label: `${venue.name} · ${inGroup ? '组别可用' : '组别范围外'}${info ? ` · ${info.available ? '空闲' : '不可用'}` : ''}` };
+              return { value: venue.id, label: `${venue.name} · ${inGroup ? '规则可用' : '规则范围外'}${info ? ` · ${info.available ? '空闲' : '不可用'}` : ''}` };
             })} />
           </Form.Item>
           <Form.Item name="scheduledAt" label="比赛时间">
@@ -949,9 +953,9 @@ export default function AdminSchedulingPage() {
           </Form.Item>
           <Space wrap style={{ marginBottom: 12 }}><Button loading={scheduleBusy} onClick={() => previewManual()}>检查场地与时间</Button><Button loading={scheduleBusy} onClick={() => previewManual(true)}>查找最近可用时间</Button></Space>
           <Form.Item name="scheduleLocked" valuePropName="checked"><Checkbox>保留人工安排，重新自动排程时固定场地和时间</Checkbox></Form.Item>
-          <Form.Item name="allowOutsideGroup" valuePropName="checked"><Checkbox>允许本场临时借用组别范围外的场地</Checkbox></Form.Item>
-          <Typography.Paragraph type="secondary">临时借场仅影响本场比赛，不修改组别规则。保存成功后大屏和裁判端同步更新。</Typography.Paragraph>
-          {manualPreview && <Alert style={{ marginBottom: 12 }} type={manualPreview.conflicts.length ? 'error' : manualPreview.outsideGroup ? 'warning' : 'success'} showIcon title={manualPreview.conflicts[0]?.message ?? (manualPreview.outsideGroup ? '本次涉及组别范围外场地，请确认临时借场' : '场地与时间检查通过')} description={manualPreview.changes.map(c => `${c.venueName ?? '待排场地'} · ${c.scheduledAtLocal ?? '时间未定'}`).join('；')} />}
+          <Form.Item name="allowOutsideGroup" valuePropName="checked"><Checkbox>允许本场临时借用规则范围外的场地</Checkbox></Form.Item>
+          <Typography.Paragraph type="secondary">临时借场仅影响本场比赛，不修改组别或单项的场地规则。保存成功后大屏和裁判端同步更新。</Typography.Paragraph>
+          {manualPreview && <Alert style={{ marginBottom: 12 }} type={manualPreview.conflicts.length ? 'error' : manualPreview.outsideGroup ? 'warning' : 'success'} showIcon title={manualPreview.conflicts[0]?.message ?? (manualPreview.outsideGroup ? '本次涉及规则范围外场地，请确认临时借场' : '场地与时间检查通过')} description={manualPreview.changes.map(c => `${c.venueName ?? '待排场地'} · ${c.scheduledAtLocal ?? '时间未定'}`).join('；')} />}
           <Form.Item name="durationMinutes" label="预估时长（分钟）" rules={[{ required: true, message: '请输入预估时长' }]}>
             <InputNumber min={1} style={{ width: '100%' }} />
           </Form.Item>
@@ -960,10 +964,28 @@ export default function AdminSchedulingPage() {
       <Modal title="自动排程预览" open={Boolean(autoPreview)} onCancel={() => { setAutoPreview(null); setAutoModalOpen(true); }} onOk={applyAutoSchedule} okText="应用排程并同步大屏" cancelText="返回调整" confirmLoading={scheduleBusy} width={1050}>
         {autoPreview && <>
           <Alert showIcon type={autoPreview.unscheduled.length ? 'warning' : 'success'} title={`本次安排 ${autoPreview.scheduledCount} 场，保留人工固定 ${autoPreview.preservedCount} 场，未排入 ${autoPreview.unscheduled.length} 场`} description="预览尚未保存。应用后，后台、公开赛程、裁判端和赛事大屏同步更新；结束时间为估算值。" style={{ marginBottom: 12 }} />
-          <Table rowKey="groupId" size="small" dataSource={autoPreview.groups} pagination={false} columns={[
-            { title: '组别', dataIndex: 'name' }, { title: '允许场地', render: (_, r) => r.restrictVenues ? r.venueIds.map(id => configuredVenues.find(v => v.id === id)?.name ?? '已删除').join('、') : '全部启用场地' },
-            { title: '已排', dataIndex: 'scheduled' }, { title: '未排', dataIndex: 'unscheduled' }, { title: '预计结束', render: (_, r) => formatTime(r.estimatedEnd) },
-          ]} />
+          <Table rowKey="groupId" size="small" dataSource={autoPreview.groups} pagination={false}
+            expandable={{
+              rowExpandable: (row) => Boolean(row.events?.length),
+              expandedRowRender: (row) => <Table rowKey="eventId" size="small" pagination={false} dataSource={row.events ?? []} columns={[
+                { title: '单项', dataIndex: 'name' },
+                { title: '生效场地', render: (_, event) => {
+                  const ids = event.venueRule === 'SPECIFIED' ? event.venueIds : event.venueRule === 'ALL' ? null : (row.restrictVenues ? row.venueIds : null);
+                  if (!ids) return '全部启用场地';
+                  return ids.length ? ids.map(id => configuredVenues.find(v => v.id === id)?.name ?? '已删除').join('、') : '未选择';
+                } },
+                { title: '已排', dataIndex: 'scheduled' }, { title: '未排', dataIndex: 'unscheduled' }, { title: '预计结束', render: (_, event) => formatTime(event.estimatedEnd) },
+              ]} />,
+            }}
+            columns={[
+              { title: '组别', dataIndex: 'name' },
+              { title: '允许场地', render: (_, r) => r.restrictVenues ? r.venueIds.map(id => configuredVenues.find(v => v.id === id)?.name ?? '已删除').join('、') : '全部启用场地' },
+              { title: '单项覆盖', width: 120, render: (_, r) => {
+                const overridden = (r.events ?? []).filter(e => e.venueRule !== 'INHERIT').length;
+                return overridden ? <Tag color="blue">{overridden} 个单项单独设置</Tag> : '—';
+              } },
+              { title: '已排', dataIndex: 'scheduled' }, { title: '未排', dataIndex: 'unscheduled' }, { title: '预计结束', render: (_, r) => formatTime(r.estimatedEnd) },
+            ]} />
           {autoPreview.unscheduled.length > 0 && <Alert type="warning" title="未排入的比赛" description={<div style={{ maxHeight: 180, overflow: 'auto' }}>{autoPreview.unscheduled.map(r => {
             const match = autoPreview.matches.find(m => m.id === r.matchId);
             return <div key={r.matchId}>{match?.groupName} · {match?.eventTypeLabel} · {match?.round} 第{match?.matchNo}场：{r.reason}</div>;

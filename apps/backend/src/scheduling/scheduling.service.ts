@@ -6,7 +6,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { createHash } from 'node:crypto';
-import { Format, MatchStatus, Prisma } from '@prisma/client';
+import { Format, MatchStatus, Prisma, VenueRuleMode } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TeamCompetitionsService } from '../team-competitions/team-competitions.service';
 import { AutoScheduleDto, ClearScheduleDto, CreateVenueDto, UpdateMatchScheduleDto, UpdateVenueDto, SaveGroupVenuesDto } from './dto/scheduling.dto';
@@ -26,6 +26,9 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
   MIXED_DOUBLES: '混合双打',
 };
 
+// 单项展示顺序：男单、女单、男双、女双、混双。
+const EVENT_TYPE_ORDER = ['MENS_SINGLES', 'WOMENS_SINGLES', 'MENS_DOUBLES', 'WOMENS_DOUBLES', 'MIXED_DOUBLES'];
+
 type ScheduleStage = NonNullable<AutoScheduleDto['scheduleStage']>;
 
 type RegistrationView = {
@@ -43,6 +46,8 @@ type ScheduleMatch = {
   scheduleOverride: boolean;
   unscheduledReason: string | null;
   allowedVenueIds: string[] | null;
+  // 生效的场地规则来源：EVENT 单项指定（覆盖组别）；GROUP 组别规则；null 不限制。
+  venueRuleScope: 'EVENT' | 'GROUP' | null;
   team1Id?: string | null;
   team2Id?: string | null;
   teamMatchId?: string | null;
@@ -136,14 +141,55 @@ export class SchedulingService {
     return logs.map(log => ({ ...log, actorName: log.actorId ? users.find(user => user.id === log.actorId)?.username ?? '已删除用户' : '系统' }));
   }
 
+  /**
+   * 计算一场比赛生效的场地范围。单项规则优先于组别；单项为 INHERIT 时沿用组别。
+   * 团体赛没有 Event 行，只能由组别规则决定，保持原有行为。
+   * 自动排程、人工调场、冲突提示与「需调整」统计都走这里，避免几处口径不一致。
+   */
+  private resolveVenueRule(
+    event: { venueRule: VenueRuleMode; allowedVenues: { venueId: string }[] } | null | undefined,
+    group: { restrictVenues: boolean; allowedVenues: { venueId: string }[] } | null | undefined,
+  ): { allowedVenueIds: string[] | null; venueRuleScope: 'EVENT' | 'GROUP' | null } {
+    if (event && event.venueRule !== VenueRuleMode.INHERIT) {
+      return {
+        allowedVenueIds: event.venueRule === VenueRuleMode.SPECIFIED ? event.allowedVenues.map(v => v.venueId).sort() : null,
+        venueRuleScope: 'EVENT',
+      };
+    }
+    if (group?.restrictVenues) {
+      return { allowedVenueIds: group.allowedVenues.map(v => v.venueId).sort(), venueRuleScope: 'GROUP' };
+    }
+    return { allowedVenueIds: null, venueRuleScope: null };
+  }
+
+  /** 未排入时的范围描述：单项规则说单项名，组别规则说组别名。 */
+  private venueScopeLabel(match: ScheduleMatch) {
+    return match.venueRuleScope === 'EVENT' ? match.eventTypeLabel : match.groupName ?? '本组';
+  }
+
   async getGroupVenues(tournamentId: string) {
     await this.ensureTournament(tournamentId);
     const groups = await this.prisma.tournamentGroup.findMany({
-      where: { tournamentId }, include: { allowedVenues: true }, orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
+      where: { tournamentId },
+      include: {
+        allowedVenues: true,
+        events: { include: { allowedVenues: true } },
+      },
+      orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
     });
     return groups.map(group => ({
       groupId: group.id, name: group.name, restrictVenues: group.restrictVenues,
       venueIds: group.allowedVenues.map(v => v.venueId).sort(),
+      // 组别下每个单项的场地规则，供「组别场地分配」精确到男子单打等单项。
+      events: [...group.events]
+        .sort((a, b) => EVENT_TYPE_ORDER.indexOf(a.type) - EVENT_TYPE_ORDER.indexOf(b.type))
+        .map(event => ({
+          eventId: event.id,
+          type: event.type,
+          name: EVENT_TYPE_LABELS[event.type] ?? event.type,
+          venueRule: event.venueRule,
+          venueIds: event.allowedVenues.map(v => v.venueId).sort(),
+        })),
     }));
   }
 
@@ -152,14 +198,29 @@ export class SchedulingService {
       const before = await service.getGroupVenues(tournamentId);
       const venues = await service.listVenues(tournamentId);
       const groupIds = new Set(before.map(group => group.groupId));
+      const eventGroupIds = new Map(before.flatMap(group => group.events.map(event => [event.eventId, group.groupId] as const)));
       if (new Set(dto.groups.map(g => g.groupId)).size !== dto.groups.length) throw new BadRequestException('组别不能重复');
+      const eventRules = dto.events ?? [];
+      if (new Set(eventRules.map(e => e.eventId)).size !== eventRules.length) throw new BadRequestException('单项不能重复');
+      const activeVenueIds = new Set(venues.filter(v => v.isActive).map(v => v.id));
+      const checkVenues = (venueIds: string[]) => venueIds.some(id => !activeVenueIds.has(id));
       for (const rule of dto.groups) {
         if (!groupIds.has(rule.groupId)) throw new BadRequestException('组别必须属于当前赛事');
         if (rule.restrictVenues && !rule.venueIds.length) throw new BadRequestException('指定场地模式至少选择一片场地');
-        if (rule.venueIds.some(id => !venues.some(v => v.id === id && v.isActive))) throw new BadRequestException('请选择当前赛事已启用的场地');
+        if (checkVenues(rule.venueIds)) throw new BadRequestException('请选择当前赛事已启用的场地');
         await service.prisma.tournamentGroup.update({ where: { id: rule.groupId }, data: { restrictVenues: rule.restrictVenues } });
         await service.prisma.groupVenue.deleteMany({ where: { groupId: rule.groupId } });
         if (rule.restrictVenues) await service.prisma.groupVenue.createMany({ data: [...new Set(rule.venueIds)].map(venueId => ({ groupId: rule.groupId, venueId })) });
+      }
+      for (const rule of eventRules) {
+        if (!eventGroupIds.has(rule.eventId)) throw new BadRequestException('单项必须属于当前赛事');
+        if (rule.venueRule === VenueRuleMode.SPECIFIED && !rule.venueIds.length) throw new BadRequestException('指定场地的单项至少选择一片场地');
+        if (rule.venueRule !== VenueRuleMode.INHERIT && checkVenues(rule.venueIds)) throw new BadRequestException('请选择当前赛事已启用的场地');
+        await service.prisma.event.update({ where: { id: rule.eventId }, data: { venueRule: rule.venueRule } });
+        await service.prisma.eventVenue.deleteMany({ where: { eventId: rule.eventId } });
+        if (rule.venueRule === VenueRuleMode.SPECIFIED) {
+          await service.prisma.eventVenue.createMany({ data: [...new Set(rule.venueIds)].map(venueId => ({ eventId: rule.eventId, venueId })) });
+        }
       }
       const groups = await service.getGroupVenues(tournamentId);
       const matches = await service.loadScheduleMatches(tournamentId);
@@ -295,7 +356,10 @@ export class SchedulingService {
 
     const scopeMatches = await this.prisma.match.findMany({
       where: this.tournamentMatches(dto.tournamentId, dto.eventId),
-      include: { event: true, teamMatch: { include: { teamCompetition: true } } },
+      include: {
+        event: { include: { group: { include: { allowedVenues: true } }, allowedVenues: true } },
+        teamMatch: { include: { teamCompetition: { include: { group: { include: { allowedVenues: true } } } } } },
+      },
       orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }],
     });
     if (!scopeMatches.length) throw new BadRequestException('暂无可排程场次，请先完成抽签编排');
@@ -323,9 +387,12 @@ export class SchedulingService {
     const groups = await this.getGroupVenues(dto.tournamentId);
     const groupMap = new Map(groups.map(group => [group.groupId, group]));
     const groupFor = (match: (typeof scopeMatches)[number]) => groupMap.get(match.event?.groupId ?? match.teamMatch?.teamCompetition.groupId ?? '');
+    // 候选场地与人工调场、冲突提示共用同一套生效规则：单项优先、组别兜底。
+    const venueRuleFor = (match: (typeof scopeMatches)[number]) =>
+      this.resolveVenueRule(match.event, match.event?.group ?? match.teamMatch?.teamCompetition.group);
     const eligibleVenues = (match: (typeof scopeMatches)[number]) => {
-      const rule = groupFor(match);
-      return venues.filter(venue => !rule?.restrictVenues || rule.venueIds.includes(venue.id));
+      const allowed = venueRuleFor(match).allowedVenueIds;
+      return allowed ? venues.filter(venue => allowed.includes(venue.id)) : venues;
     };
     const allScheduled = await this.loadScheduleMatches(dto.tournamentId);
     const fingerprint = createHash('sha256').update(JSON.stringify({ tournament, groups, venues,
@@ -452,8 +519,11 @@ export class SchedulingService {
         );
       // 排不入指定场地的比赛保留待排程并给出原因。
       if (!candidates.length) {
+        const scopeName = venueRuleFor(match).venueRuleScope === 'EVENT'
+          ? EVENT_TYPE_LABELS[match.event?.type ?? ''] ?? '本单项'
+          : groupFor(match)?.name ?? '本组';
         reasons.set(match.id, !allowed.length && !fixedVenue
-          ? `${groupFor(match)?.name ?? '本组'}指定场地与本次启用场地无交集，请调整场地范围`
+          ? `${scopeName}指定场地与本次启用场地无交集，请调整场地范围`
           : '指定场地在赛事日期和可用时段内已无空位，请增加场地或延长时间');
         continue;
       }
@@ -509,11 +579,22 @@ export class SchedulingService {
     const hardConflicts = this.detectPlacementConflicts(projected, breakMinutes)
       .filter(c => c.matchIds.some(id => adjustableIds.has(id)));
     if (hardConflicts.length) throw new ConflictException(hardConflicts[0].message);
+    const summaryStats = (items: ScheduleMatch[]) => ({
+      scheduled: items.filter(m => m.scheduledAt && m.venueId).length,
+      unscheduled: items.filter(m => m.status === MatchStatus.PENDING && (!m.scheduledAt || !m.venueId)).length,
+      estimatedEnd: items.some(m => m.scheduledAt) ? new Date(Math.max(...items.filter(m => m.scheduledAt).map(m => this.endTime(m).getTime()))).toISOString() : null,
+    });
     const summary = groups.map(group => {
       const items = projected.filter(m => m.groupId === group.groupId && (!dto.eventId || m.eventId === dto.eventId));
-      return { ...group, scheduled: items.filter(m => m.scheduledAt && m.venueId).length,
-        unscheduled: items.filter(m => m.status === MatchStatus.PENDING && (!m.scheduledAt || !m.venueId)).length,
-        estimatedEnd: items.some(m => m.scheduledAt) ? new Date(Math.max(...items.filter(m => m.scheduledAt).map(m => this.endTime(m).getTime()))).toISOString() : null };
+      return {
+        ...group,
+        ...summaryStats(items),
+        // 精确到单项：男子单打等各自的已排/未排与预计结束。
+        events: group.events.map(event => ({
+          ...event,
+          ...summaryStats(items.filter(m => m.eventId === event.eventId)),
+        })),
+      };
     });
     const preview = { fingerprint, groups: summary, scheduledCount: updates.length,
       preservedCount: targetMatches.filter(m => m.scheduleLocked).length,
@@ -702,7 +783,7 @@ export class SchedulingService {
     const matches = await this.prisma.match.findMany({
       where: this.tournamentMatches(tournamentId, eventId),
       include: {
-        event: { include: { group: { include: { allowedVenues: true } } } },
+        event: { include: { group: { include: { allowedVenues: true } }, allowedVenues: true } },
         teamCompetitionItem: true,
         teamMatch: { include: { team1: true, team2: true, teamCompetition: { include: { group: { include: { allowedVenues: true } } } } } },
         venue: true,
@@ -747,11 +828,14 @@ export class SchedulingService {
         venueSequence.set(match.venueId, venueOrder);
       }
       const group = match.event?.group ?? match.teamMatch?.teamCompetition.group;
+      // 单项规则优先于组别；团体赛无 Event，回落组别规则。
+      const venueRule = this.resolveVenueRule(match.event, group);
       return {
         id: match.id,
         groupId: group?.id ?? null,
         groupName: group?.name ?? null,
-        allowedVenueIds: group?.restrictVenues ? group.allowedVenues.map(v => v.venueId) : null,
+        allowedVenueIds: venueRule.allowedVenueIds,
+        venueRuleScope: venueRule.venueRuleScope,
         scheduleLocked: match.scheduleLocked,
         scheduleOverride: match.scheduleOverride,
         unscheduledReason: match.unscheduledReason,
@@ -802,7 +886,7 @@ export class SchedulingService {
 
       if (match.status !== MatchStatus.PENDING) continue;
       if (match.venueId && match.allowedVenueIds && !match.allowedVenueIds.includes(match.venueId) && !match.scheduleOverride) {
-        conflicts.push({ type: 'GROUP_VENUE', matchIds: [match.id], message: `${match.groupName ?? '本组'}的场地规则已变化，本场需调整或明确设置为临时借场` });
+        conflicts.push({ type: 'GROUP_VENUE', matchIds: [match.id], message: `${this.venueScopeLabel(match)}的场地规则已变化，本场需调整或明确设置为临时借场` });
       }
 
       // Future-round matches are allowed to lack side1/side2 — they will be

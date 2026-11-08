@@ -39,6 +39,14 @@ enum EventType {
   MIXED_DOUBLES
 }
 
+// 单项场地规则：INHERIT 沿用组别配置（默认，旧赛事行为不变）；ALL 忽略组别限制用全部启用场地；
+// SPECIFIED 只用 EventVenue 中列出的场地。
+enum VenueRuleMode {
+  INHERIT
+  ALL
+  SPECIFIED
+}
+
 // 报名身份：SCHOOL = 学生（需学号等）；SOCIAL = 第三方（非学生、免登录，填单位）。
 // 默认社会组已取消，SOCIAL 只用于字段模板为「第三方」的自定义组别。
 enum EntrantType {
@@ -816,6 +824,9 @@ model Event {
   groupCount         Int?
   qualifiersPerGroup Int?
   drawLocked         Boolean            @default(false)
+  // 单项场地规则，优先于所属组别；INHERIT 时沿用组别「组别场地分配」。
+  venueRule          VenueRuleMode      @default(INHERIT)
+  allowedVenues      EventVenue[]
   drawPublished      Boolean            @default(false)
   drawGeneratedAt    DateTime?
   /// 签表生成后报名有删除、调出或调入：签表与参赛名单不一致，需要重新抽签；重新抽签或清空签表后复位。为 true 时不能冻结或发布。
@@ -1297,6 +1308,7 @@ model Venue {
   isActive     Boolean    @default(true)
   matches      Match[]
   allowedGroups GroupVenue[]
+  allowedEvents EventVenue[]
   broadcasts   BroadcastSession[]
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
@@ -1311,6 +1323,16 @@ model GroupVenue {
   group TournamentGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
   venue Venue @relation(fields: [venueId], references: [id], onDelete: Cascade)
   @@id([groupId, venueId])
+  @@index([venueId])
+}
+
+// 单项（男子单打等）指定场地。仅 venueRule = SPECIFIED 时生效。
+model EventVenue {
+  eventId String
+  venueId String
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  venue Venue @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  @@id([eventId, venueId])
   @@index([venueId])
 }
 

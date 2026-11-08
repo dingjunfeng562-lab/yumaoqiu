@@ -1,9 +1,11 @@
 import { Type } from 'class-transformer';
+import { VenueRuleMode } from '@prisma/client';
 import {
   ArrayMaxSize,
   IsArray,
   IsBoolean,
   IsDateString,
+  IsEnum,
   IsIn,
   IsInt,
   IsOptional,
@@ -182,10 +184,31 @@ export class GroupVenueRuleDto {
   venueIds: string[];
 }
 
+export class EventVenueRuleDto {
+  @IsString()
+  eventId: string;
+
+  // INHERIT 沿用组别；ALL 忽略组别限制；SPECIFIED 使用 venueIds。
+  @IsEnum(VenueRuleMode)
+  venueRule: VenueRuleMode;
+
+  @IsArray()
+  @IsString({ each: true })
+  venueIds: string[];
+}
+
 export class SaveGroupVenuesDto {
   @IsArray()
   @ArrayMaxSize(500)
   @ValidateNested({ each: true })
   @Type(() => GroupVenueRuleDto)
   groups: GroupVenueRuleDto[];
+
+  // 单项级规则，优先于组别。旧客户端不传时保持现有单项规则不变。
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(2000)
+  @ValidateNested({ each: true })
+  @Type(() => EventVenueRuleDto)
+  events?: EventVenueRuleDto[];
 }
