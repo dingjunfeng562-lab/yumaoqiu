@@ -1394,7 +1394,7 @@ function MatchManageDrawer({
           </div>
           <Text type="secondary" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
             保存后会按本场计分规则重新判定每局与整场胜负；未进行的后续局请保持 0:0。
-            {match.status === 'COMPLETED' ? ' 已结束场次只能更正比分，不能改变胜方；如需改判请先重开本场。' : ''}
+            {match.status === 'COMPLETED' ? ' 已结束场次可直接改分改判，胜方变化时下一轮签位会自动换成新胜方（保留原定时间场地）；下一轮已产生比分时不能改判。本场如有签字的电子比分单，改分后会标为作废（记录保留）。' : ''}
           </Text>
           <Button
             style={{ marginTop: 12 }}
@@ -1422,7 +1422,7 @@ function MatchManageDrawer({
                 match.forfeitedSide !== null
                   ? `本场由弃权/退赛判定：${match.forfeitReason ?? '未填写原因'}。此类赛果不能在此重开。`
                   : match.status === 'COMPLETED'
-                    ? '本场已结束。可以更正比分，或重开后改分并重新结束。'
+                    ? '本场已结束。可直接修改比分（胜方随比分改判），无需重开。'
                     : match.status === 'CANCELLED'
                       ? '本场已取消，不能在此修改赛果。'
                       : match.status === 'LIVE'

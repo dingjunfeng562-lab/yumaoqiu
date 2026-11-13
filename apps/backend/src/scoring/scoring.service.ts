@@ -1306,62 +1306,7 @@ export class ScoringService {
         correcting: true,
         expectedUpdatedAt: match.updatedAt,
       });
-      const current = await tx.match.findUniqueOrThrow({
-        where: { id: matchId },
-        include: {
-          teamMatch: {
-            include: {
-              matches: { select: { id: true, matchNo: true, status: true } },
-            },
-          },
-        },
-      });
-
-      if (current.eventId && current.roundNo === 0) {
-        const stage = await tx.secondStage.findUnique({
-          where: { eventId: current.eventId },
-          select: { status: true },
-        });
-        if (stage && stage.status !== SecondStageStatus.NOT_STARTED) {
-          throw new BadRequestException('第二阶段已编排或已结束，不能重开本阶段小组赛');
-        }
-      }
-
-      if (current.teamMatch) {
-        if (current.teamMatch.status === MatchStatus.COMPLETED) {
-          throw new BadRequestException('团体对阵已结束，请先在团体赛管理中重开');
-        }
-        const laterStarted = current.teamMatch.matches.some(
-          (item) =>
-            item.matchNo > current.matchNo &&
-            (item.status === MatchStatus.LIVE || item.status === MatchStatus.COMPLETED),
-        );
-        if (laterStarted) {
-          throw new BadRequestException('同一团体对阵的后续子项已开赛或结束，请先处理后续子项');
-        }
-      }
-
-      if (current.eventId && current.roundNo >= 1) {
-        const targetSide = current.matchNo % 2 === 1 ? 'side1Id' : 'side2Id';
-        const nextMatches = await tx.match.findMany({
-          where: {
-            eventId: current.eventId,
-            roundNo: current.roundNo + 1,
-            OR: [
-              { matchNo: Math.ceil(current.matchNo / 2), round: { not: 'BRONZE' } },
-              { round: 'BRONZE' },
-            ],
-          },
-          select: { id: true, status: true, side1Id: true, side2Id: true },
-        });
-        const blocking = nextMatches.filter(
-          (item) => Boolean(targetSide === 'side1Id' ? item.side1Id : item.side2Id)
-            && item.status !== MatchStatus.PENDING,
-        );
-        if (blocking.length) {
-          throw new BadRequestException('后续轮次已开赛或结束，请先重开后续场次');
-        }
-      }
+      const current = await this.assertCompletedResultRevisable(tx, matchId, '重开');
 
       await tx.match.update({
         where: { id: matchId },
@@ -1381,6 +1326,97 @@ export class ScoringService {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
 
     return this.getMatchState(matchId);
+  }
+
+  /**
+   * 撤销或改判一场已结束比赛前的检查，“重开本场”与超级管理员直接改判共用：
+   * 第二阶段已编排时不动小组赛；团体对阵已结束或后续子项已开赛时不动；
+   * 单淘汰后续轮次（含铜牌赛）已开赛或结束时不动，避免晋级对阵与已打结果矛盾。
+   *
+   * `allowUnscoredLaterMatches`：改判后仍有胜方时，下一轮只是换人，
+   * 已开赛但还没产生任何比分的后续场次可以放行；已有比分或已结束的仍然拦下。
+   */
+  private async assertCompletedResultRevisable(
+    tx: Prisma.TransactionClient,
+    matchId: string,
+    action: '重开' | '改判',
+    options: { allowUnscoredLaterMatches?: boolean } = {},
+  ) {
+    const scoreSelect = { select: { side1Score: true, side2Score: true } } as const;
+    const current = await tx.match.findUniqueOrThrow({
+      where: { id: matchId },
+      include: {
+        teamMatch: {
+          include: {
+            matches: { select: { id: true, matchNo: true, status: true, games: scoreSelect } },
+          },
+        },
+      },
+    });
+    const laterMatchStarted = (item: {
+      status: MatchStatus;
+      games: Array<{ side1Score: number; side2Score: number }>;
+    }) => {
+      if (item.status === MatchStatus.PENDING) return false;
+      if (options.allowUnscoredLaterMatches && item.status === MatchStatus.LIVE) {
+        return item.games.some((game) => game.side1Score > 0 || game.side2Score > 0);
+      }
+      return true;
+    };
+    const startedText = options.allowUnscoredLaterMatches ? '已产生比分或已结束' : '已开赛或结束';
+
+    if (current.eventId && current.roundNo === 0) {
+      const stage = await tx.secondStage.findUnique({
+        where: { eventId: current.eventId },
+        select: { status: true },
+      });
+      if (stage && stage.status !== SecondStageStatus.NOT_STARTED) {
+        throw new BadRequestException(`第二阶段已编排或已结束，不能${action}本阶段小组赛`);
+      }
+    }
+
+    if (current.teamMatch) {
+      if (current.teamMatch.status === MatchStatus.COMPLETED) {
+        throw new BadRequestException('团体对阵已结束，请先在团体赛管理中重开');
+      }
+      const laterStarted = current.teamMatch.matches.some(
+        (item) =>
+          item.matchNo > current.matchNo &&
+          (item.status === MatchStatus.LIVE || item.status === MatchStatus.COMPLETED) &&
+          laterMatchStarted(item),
+      );
+      if (laterStarted) {
+        throw new BadRequestException(`同一团体对阵的后续子项${startedText}，请先处理后续子项`);
+      }
+    }
+
+    if (current.eventId && current.roundNo >= 1) {
+      const targetSide = current.matchNo % 2 === 1 ? 'side1Id' : 'side2Id';
+      const nextMatches = await tx.match.findMany({
+        where: {
+          eventId: current.eventId,
+          roundNo: current.roundNo + 1,
+          OR: [
+            { matchNo: Math.ceil(current.matchNo / 2), round: { not: 'BRONZE' } },
+            { round: 'BRONZE' },
+          ],
+        },
+        select: { id: true, status: true, side1Id: true, side2Id: true, games: scoreSelect },
+      });
+      const blocking = nextMatches.filter(
+        (item) => Boolean(targetSide === 'side1Id' ? item.side1Id : item.side2Id)
+          && laterMatchStarted(item),
+      );
+      if (blocking.length) {
+        throw new BadRequestException(
+          action === '重开'
+            ? '后续轮次已开赛或结束，请先重开后续场次'
+            : `后续轮次${startedText}，不能改变本场胜方，请先处理后续场次`,
+        );
+      }
+    }
+
+    return current;
   }
 
   async logMatchEvent(
@@ -1747,9 +1783,15 @@ export class ScoringService {
     return this.getMatchState(match.id);
   }
 
+  /**
+   * 后台更正比分。默认不允许已结束比赛因改分而换胜方；
+   * `allowWinnerChange` 仅由超级管理员的“裁判员对局管理”传入：已结束比赛可直接改分改判，
+   * 不必先重开——检查与重开相同，通过后把下一轮（及铜牌赛）的签位换成新的胜/负方。
+   */
   async correctMatchScore(
     matchId: string,
     scoreRows: Array<{ side1Score: number; side2Score: number }>,
+    options: { allowWinnerChange?: boolean } = {},
   ) {
     const match = await this.ensurePlayableMatch(matchId);
     if (match.status === MatchStatus.CANCELLED) {
@@ -1811,8 +1853,14 @@ export class ScoringService {
       scoring.scoringRule,
       scoring,
     );
-    if (match.status === MatchStatus.COMPLETED && winnerSide !== match.winnerSide) {
-      throw new ConflictException('已结束比赛只能更正比分，不能改变胜方，以免影响后续晋级对阵');
+    const winnerChanged = match.status === MatchStatus.COMPLETED && winnerSide !== match.winnerSide;
+    if (winnerChanged) {
+      if (!options.allowWinnerChange) {
+        throw new ConflictException('已结束比赛只能更正比分，不能改变胜方，以免影响后续晋级对阵');
+      }
+      if (match.eventId && isSecondStageFormalRoundNo(match.roundNo)) {
+        throw new BadRequestException('第二阶段场次请在第二阶段编排中调整');
+      }
     }
 
     const hasScore = correctedGames.some((game) => game.side1Score > 0 || game.side2Score > 0);
@@ -1825,6 +1873,13 @@ export class ScoringService {
 
     await this.prisma.$transaction(async (tx) => {
       await this.teamCompetitionsService.prepareScoring(tx, matchId, { correcting: true, expectedUpdatedAt: match.updatedAt });
+      if (winnerChanged) {
+        // 新比分仍有胜方时下一轮只是换人，未产生比分的已开赛场次可以放行；
+        // 改成不分胜负则要撤空下一轮签位，规则与“重开”一致。
+        await this.assertCompletedResultRevisable(tx, matchId, '改判', {
+          allowUnscoredLaterMatches: Boolean(winnerSide),
+        });
+      }
       // 比分真的改了，签字确认过的电子比分单就不再代表本场结果：标为作废，记录保留。
       const previousGames = await tx.game.findMany({
         where: { matchId },
@@ -1873,10 +1928,16 @@ export class ScoringService {
         },
       });
 
+      if (winnerChanged && !winnerSide && match.eventId && match.roundNo >= 1) {
+        // 改分后不再分出胜负：比赛退回进行中，与“重开”一样撤回已推进到下一轮的签位。
+        await this.clearSingleEliminationAdvancement(tx, match);
+      }
+
       if (nextStatus === MatchStatus.COMPLETED && winnerSide) {
         const secondStageSynced = await this.syncSecondStageFormalMatchResult(tx, match, winnerSide);
-        if (match.status !== MatchStatus.COMPLETED && !secondStageSynced) {
-          await this.advanceSingleEliminationWinner(tx, match, winnerSide);
+        if ((match.status !== MatchStatus.COMPLETED || winnerChanged) && !secondStageSynced) {
+          // 改判时下一轮只是换人，保留已排好的时间和场地。
+          await this.advanceSingleEliminationWinner(tx, match, winnerSide, { keepSchedule: winnerChanged });
         }
         await this.fillPlayoffMatchesIfReady(tx, match.eventId);
         await this.fillGroupKnockoutIfReady(tx, match.eventId);
@@ -3096,6 +3157,7 @@ export class ScoringService {
       side2Id: string | null;
     },
     winnerSide: 1 | 2,
+    options: { keepSchedule?: boolean } = {},
   ) {
     if (!match.eventId || match.roundNo < 1 || isSecondStageFormalRoundNo(match.roundNo)) return;
 
@@ -3117,6 +3179,7 @@ export class ScoringService {
         nextMatch,
         match.matchNo % 2 === 1 ? 'side1Id' : 'side2Id',
         winnerId,
+        options,
       );
     }
 
@@ -3134,6 +3197,7 @@ export class ScoringService {
           bronzeMatch,
           match.matchNo % 2 === 1 ? 'side1Id' : 'side2Id',
           loserId,
+          options,
         );
       }
     }
@@ -3171,9 +3235,10 @@ export class ScoringService {
     match: { id: string; status: MatchStatus },
     side: 'side1Id' | 'side2Id',
     value: string | null,
+    options: { keepSchedule?: boolean } = {},
   ) {
     const data: Prisma.MatchUncheckedUpdateInput = { [side]: value };
-    if (match.status === MatchStatus.PENDING) {
+    if (match.status === MatchStatus.PENDING && !options.keepSchedule) {
       data.venueId = null;
       data.scheduledAt = null;
     }

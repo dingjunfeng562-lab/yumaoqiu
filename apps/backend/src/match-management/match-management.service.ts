@@ -432,7 +432,8 @@ export class MatchManagementService {
     games: Array<{ side1Score: number; side2Score: number }>,
   ) {
     const target = await this.requireMatchRef(matchId);
-    const state = await this.scoring.correctMatchScore(matchId, games);
+    // 超级管理员入口：已结束比赛可直接改分改判，无需先重开。
+    const state = await this.scoring.correctMatchScore(matchId, games, { allowWinnerChange: true });
     this.emitUpdate(target);
     return state;
   }
