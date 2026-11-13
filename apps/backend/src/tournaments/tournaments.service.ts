@@ -22,6 +22,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ScoringGateway } from '../scoring/scoring.gateway';
+import { MatchScoreSheetService } from '../scoring/match-score-sheet.service';
 import { TeamCompetitionsService } from '../team-competitions/team-competitions.service';
 import { CreateTournamentDto, UpdateTournamentDto } from './dto/tournament.dto';
 import { sanitizeAnnouncementContent } from '../announcements/announcement-content';
@@ -62,6 +63,7 @@ export class TournamentsService {
     private prisma: PrismaService,
     private teamCompetitionsService: TeamCompetitionsService,
     @Optional() private scoringGateway?: ScoringGateway,
+    @Optional() private scoreSheets?: MatchScoreSheetService,
   ) {}
 
   async getScreenSettings(id: string) {
@@ -313,7 +315,10 @@ export class TournamentsService {
     if (!isSuperAdmin(user) && tournament.submittedById !== user?.id) {
       throw new ForbiddenException('只能删除自己创建的赛事');
     }
-    return this.prisma.tournament.delete({ where: { id } });
+    const deleted = await this.prisma.tournament.delete({ where: { id } });
+    // 比分单记录随场次级联删除，签名和比分单图片也一起删掉。
+    await this.scoreSheets?.removeTournamentFiles(id);
+    return deleted;
   }
 
   private statusFromTiming(dto: CreateTournamentDto | UpdateTournamentDto, current?: TournamentDetail) {

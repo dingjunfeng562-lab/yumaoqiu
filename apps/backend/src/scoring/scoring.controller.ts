@@ -1,5 +1,18 @@
-import { Body, Controller, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Header,
+  NotFoundException,
+  Param,
+  Patch,
+  Post,
+  Req,
+  StreamableFile,
+  UseGuards,
+} from '@nestjs/common';
 import { Role } from '@prisma/client';
+import { createReadStream } from 'node:fs';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
@@ -9,8 +22,11 @@ import {
   CardMatchDto,
   CorrectMatchScoreDto,
   FaultMatchDto,
+  FinishMatchDto,
+  ForfeitBothDto,
   ForfeitMatchDto,
   LogMatchEventDto,
+  MatchSignatureSettingDto,
   PauseMatchDto,
   RetireMatchDto,
   ScorePointDto,
@@ -21,13 +37,29 @@ import {
 } from './dto/scoring.dto';
 import { ScoringGateway } from './scoring.gateway';
 import { ScoringService } from './scoring.service';
+import { MatchScoreSheetService, type ScoreSheetFileKind } from './match-score-sheet.service';
+import type { ScoreSheetRequestMeta } from './score-sheet.types';
 
 type RequestWithUser = {
   user: {
     id: string;
     role: Role;
   };
+  ip?: string;
+  headers?: Record<string, string | string[] | undefined>;
 };
+
+const SCORE_SHEET_FILE_KINDS: ScoreSheetFileKind[] = ['sheet', 'winner', 'referee'];
+
+/** 签字时记下提交端的 IP 和设备信息，作为比分单的附带证据。经 CDN/nginx 转发时取 X-Forwarded-For 的第一个。 */
+function scoreSheetRequestMeta(req: RequestWithUser): ScoreSheetRequestMeta {
+  const header = (name: string) => {
+    const value = req.headers?.[name];
+    return Array.isArray(value) ? value[0] : value;
+  };
+  const forwarded = header('x-forwarded-for')?.split(',')[0]?.trim();
+  return { ip: forwarded || req.ip || null, userAgent: header('user-agent') ?? null };
+}
 
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller()
@@ -35,12 +67,60 @@ export class ScoringController {
   constructor(
     private scoringService: ScoringService,
     private scoringGateway: ScoringGateway,
+    private scoreSheets: MatchScoreSheetService,
   ) {}
 
   @Roles(Role.ADMIN, Role.ROOT)
   @Get('scoring/referees')
   listAssignableReferees(@Req() req: RequestWithUser) {
     return this.scoringService.listAssignableReferees(req.user);
+  }
+
+  /** 比赛结束签字开关（按赛事）。 */
+  @Roles(Role.ADMIN, Role.ROOT)
+  @Get('scoring/tournaments/:tournamentId/signature-setting')
+  getSignatureSetting(@Param('tournamentId') tournamentId: string) {
+    return this.scoreSheets.getSetting(tournamentId);
+  }
+
+  @Roles(Role.ADMIN, Role.ROOT)
+  @Patch('scoring/tournaments/:tournamentId/signature-setting')
+  updateSignatureSetting(
+    @Param('tournamentId') tournamentId: string,
+    @Body() dto: MatchSignatureSettingDto,
+  ) {
+    return this.scoreSheets.updateSetting(tournamentId, dto.enabled);
+  }
+
+  /** 本赛事全部电子比分单（含已作废），不含签名图片。 */
+  @Roles(Role.ADMIN, Role.ROOT)
+  @Get('scoring/tournaments/:tournamentId/score-sheets')
+  listTournamentScoreSheets(@Param('tournamentId') tournamentId: string) {
+    return this.scoreSheets.listForTournament(tournamentId);
+  }
+
+  /** 单场的电子比分单，逐份校验签名文件和指纹。 */
+  @Roles(Role.ADMIN, Role.ROOT)
+  @Get('scoring/matches/:id/score-sheets')
+  listMatchScoreSheets(@Param('id') id: string) {
+    return this.scoreSheets.listForMatch(id);
+  }
+
+  /** 下载比分单图片（sheet）或签名图片（winner / referee）。只走登录接口，不放到公开的 /uploads。 */
+  @Roles(Role.ADMIN, Role.ROOT)
+  @Get('scoring/matches/:id/score-sheets/:sheetId/:kind')
+  @Header('Cache-Control', 'private, no-store')
+  async downloadScoreSheetFile(
+    @Param('id') id: string,
+    @Param('sheetId') sheetId: string,
+    @Param('kind') kind: string,
+  ) {
+    if (!SCORE_SHEET_FILE_KINDS.includes(kind as ScoreSheetFileKind)) throw new NotFoundException('文件不存在');
+    const file = await this.scoreSheets.resolveFile(id, sheetId, kind as ScoreSheetFileKind);
+    return new StreamableFile(createReadStream(file.path), {
+      type: 'image/png',
+      disposition: `inline; filename*=UTF-8''${encodeURIComponent(file.filename)}`,
+    });
   }
 
   @Roles(Role.ADMIN, Role.ROOT)
@@ -148,8 +228,8 @@ export class ScoringController {
 
   @Roles(Role.ADMIN, Role.REFEREE)
   @Post('matches/:id/finish')
-  async finishMatch(@Param('id') id: string, @Req() req: RequestWithUser) {
-    const state = await this.scoringService.finishMatch(id, req.user);
+  async finishMatch(@Param('id') id: string, @Body() dto: FinishMatchDto, @Req() req: RequestWithUser) {
+    const state = await this.scoringService.finishMatch(id, req.user, dto?.signatures, scoreSheetRequestMeta(req));
     this.scoringGateway.emitMatchState(id, state);
     return state;
   }
@@ -210,7 +290,14 @@ export class ScoringController {
     @Body() dto: ForfeitMatchDto,
     @Req() req: RequestWithUser,
   ) {
-    const state = await this.scoringService.forfeitMatch(id, dto.side, req.user, dto.reason);
+    const state = await this.scoringService.forfeitMatch(
+      id,
+      dto.side,
+      req.user,
+      dto.reason,
+      dto.signatures,
+      scoreSheetRequestMeta(req),
+    );
     this.scoringGateway.emitMatchState(id, state);
     return state;
   }
@@ -234,10 +321,16 @@ export class ScoringController {
   @Post('matches/:id/forfeit-both')
   async forfeitBoth(
     @Param('id') id: string,
-    @Body() body: { reason?: string },
+    @Body() body: ForfeitBothDto,
     @Req() req: RequestWithUser,
   ) {
-    const state = await this.scoringService.forfeitBothSides(id, req.user, body?.reason);
+    const state = await this.scoringService.forfeitBothSides(
+      id,
+      req.user,
+      body?.reason,
+      body?.signatures,
+      scoreSheetRequestMeta(req),
+    );
     this.scoringGateway.emitMatchState(id, state);
     return state;
   }
@@ -249,7 +342,14 @@ export class ScoringController {
     @Body() dto: RetireMatchDto,
     @Req() req: RequestWithUser,
   ) {
-    const state = await this.scoringService.retireMatch(id, dto.side, req.user, dto.reason);
+    const state = await this.scoringService.retireMatch(
+      id,
+      dto.side,
+      req.user,
+      dto.reason,
+      dto.signatures,
+      scoreSheetRequestMeta(req),
+    );
     this.scoringGateway.emitMatchState(id, state);
     return state;
   }
@@ -304,6 +404,8 @@ export class ScoringController {
       dto.cardType,
       dto.reason,
       dto.playerIndex,
+      dto.signatures,
+      scoreSheetRequestMeta(req),
     );
     this.scoringGateway.emitMatchState(id, state);
     return state;

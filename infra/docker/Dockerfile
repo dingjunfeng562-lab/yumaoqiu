@@ -58,6 +58,9 @@ COPY --from=base /app/node_modules ./node_modules
 COPY --from=base /app/apps/backend/node_modules ./apps/backend/node_modules
 COPY --from=base /app/apps/backend/package.json ./apps/backend/package.json
 COPY --from=base /app/apps/backend/prisma ./apps/backend/prisma
+# Bundled CJK fonts (process.cwd()/assets/fonts): the runtime image has no system
+# Chinese fonts, so server-rendered score sheets and text watermarks need these.
+COPY --from=base /app/apps/backend/assets ./apps/backend/assets
 COPY --from=backend-build /app/apps/backend/dist ./apps/backend/dist
 WORKDIR /app/apps/backend
 # The service resolves uploads via process.cwd(), so this is the mount point.

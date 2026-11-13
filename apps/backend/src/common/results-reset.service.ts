@@ -1,5 +1,5 @@
 import { ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { Format, MatchStatus, Prisma, Role, SecondStageStatus, TeamCompetitionFormat } from '@prisma/client';
+import { Format, MatchStatus, Prisma, Role, ScoreSheetStatus, SecondStageStatus, TeamCompetitionFormat } from '@prisma/client';
 import { AuthActor } from '../auth/admin-scope';
 import { PrismaService } from '../prisma/prisma.service';
 import { ScoringService } from '../scoring/scoring.service';
@@ -23,6 +23,11 @@ export class ResultsResetService {
     await tx.game.deleteMany({ where: { match: where } });
     // Discard old points, serving/paused state, forfeits, cards and undo history.
     await tx.matchEvent.deleteMany({ where: { match: where } });
+    // 签字确认过的电子比分单不再代表比赛结果：标为作废，记录和签名文件保留。
+    await tx.matchScoreSheet.updateMany({
+      where: { status: ScoreSheetStatus.VALID, match: where },
+      data: { status: ScoreSheetStatus.VOID, voidedAt: new Date(), voidReason: '超级管理员清除比赛成绩，签字作废' },
+    });
     await tx.match.updateMany({ where, data: emptyResult });
   }
 

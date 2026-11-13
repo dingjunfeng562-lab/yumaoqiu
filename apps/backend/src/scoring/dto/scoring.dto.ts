@@ -4,6 +4,7 @@ import {
   ArrayMaxSize,
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsEnum,
   IsIn,
   IsInt,
@@ -11,6 +12,7 @@ import {
   IsString,
   Matches,
   Max,
+  MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -117,6 +119,50 @@ export class PauseMatchDto {
   reason?: string;
 }
 
+/**
+ * 比赛结束签字：PNG 的 data URL。赛事开启「比赛结束需签字」时由裁判端提交，
+ * 胜方（双打为其中一人）和裁判各一张；双方弃权没有胜方，只交裁判签名。
+ * 必须声明在使用它的 DTO 之前（装饰器元数据在类定义时就会引用它）。
+ */
+export class MatchSignaturesDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(100000)
+  winnerSignature?: string;
+
+  @IsOptional()
+  @IsIn([1, 2])
+  winnerSignerIndex?: 1 | 2;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100000)
+  refereeSignature?: string;
+}
+
+export class FinishMatchDto {
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => MatchSignaturesDto)
+  signatures?: MatchSignaturesDto;
+}
+
+export class ForfeitBothDto {
+  @IsOptional()
+  @IsString()
+  reason?: string;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => MatchSignaturesDto)
+  signatures?: MatchSignaturesDto;
+}
+
+export class MatchSignatureSettingDto {
+  @IsBoolean()
+  enabled: boolean;
+}
+
 export class ForfeitMatchDto {
   @IsIn([1, 2])
   side: 1 | 2;
@@ -124,6 +170,11 @@ export class ForfeitMatchDto {
   @IsOptional()
   @IsString()
   reason?: string;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => MatchSignaturesDto)
+  signatures?: MatchSignaturesDto;
 }
 
 export class RetireMatchDto {
@@ -133,6 +184,11 @@ export class RetireMatchDto {
   @IsOptional()
   @IsString()
   reason?: string;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => MatchSignaturesDto)
+  signatures?: MatchSignaturesDto;
 }
 
 export class FaultMatchDto {
@@ -161,4 +217,10 @@ export class CardMatchDto {
   @IsOptional()
   @IsString()
   reason?: string;
+
+  /** 黑牌会直接判对方胜，赛事要求签字时随黑牌一起提交。 */
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => MatchSignaturesDto)
+  signatures?: MatchSignaturesDto;
 }

@@ -88,7 +88,11 @@ export function requiredPermissions(controller: string, action: string, kind?: s
     case 'SchedulingController': return ['SCHEDULING'];
     case 'ScoringController':
       if (['authorizeTournament', 'listAuthorizedTournaments', 'listRefereeMatches', 'listTournamentCourts', 'listCourtMatches', 'claimCourtMatch'].includes(action)) return ['REFEREE'];
-      if (['listAssignableReferees', 'getRefereeAccessCode', 'correctMatchScore', 'assignReferee', 'forfeitTeamMatch'].includes(action)) return ['SCORING'];
+      // 比赛结束签字开关、电子比分单与签名图片：只给有「裁判分配」权限的后台账号，裁判账号调不到。
+      if ([
+        'listAssignableReferees', 'getRefereeAccessCode', 'correctMatchScore', 'assignReferee', 'forfeitTeamMatch',
+        'getSignatureSetting', 'updateSignatureSetting', 'listTournamentScoreSheets', 'listMatchScoreSheets', 'downloadScoreSheetFile',
+      ].includes(action)) return ['SCORING'];
       return ['SCORING', 'REFEREE'];
     case 'AdminPhotosController': return action === 'listTournamentStats' ? ['PHOTOS', 'DASHBOARD'] : ['PHOTOS'];
     case 'PhotoActivitiesController':

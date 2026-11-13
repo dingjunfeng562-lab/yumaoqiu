@@ -3,11 +3,18 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import dayjs from 'dayjs';
-import { Button, Card, Empty, InputNumber, Modal, Select, Space, Table, Tag, Typography, message } from 'antd';
+import { Alert, Button, Card, Empty, InputNumber, Modal, Select, Space, Table, Tag, Typography, message } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { roundCn } from '@/lib/round';
 import TournamentRefereeQr from '@/components/referee/TournamentRefereeQr';
+import {
+  MatchSignaturePanel,
+  ScoreSheetStatusTag,
+  ScoreSheetViewer,
+  pickMatchSheet,
+  useMatchSignatures,
+} from '@/components/admin/MatchSignaturePanel';
 
 const EVENT_TYPE_LABELS: Record<string, string> = {
   MENS_SINGLES: '男子单打',
@@ -123,6 +130,9 @@ export default function AdminScoringPage() {
   const [scoreGames, setScoreGames] = useState<GameScore[]>([]);
   const [scoreLoadingId, setScoreLoadingId] = useState('');
   const [scoreSaving, setScoreSaving] = useState(false);
+  // 比赛结束签字：本赛事的开关和电子比分单。
+  const signatures = useMatchSignatures(token, selectedTournamentId);
+  const [sheetViewerTarget, setSheetViewerTarget] = useState<{ matchId: string; sheetId?: string | null } | null>(null);
 
   const referees = users.filter((user) => user.role === 'REFEREE');
   const matches = useMemo(() => {
@@ -242,6 +252,7 @@ export default function AdminScoringPage() {
       message.success('比分已更新');
       setScoreTarget(null);
       await loadBracket();
+      void signatures.reload();
     } catch (error) {
       message.error(error instanceof Error ? error.message : '更新比分失败');
     } finally {
@@ -265,7 +276,14 @@ export default function AdminScoringPage() {
           <Typography.Title level={3} style={{ margin: 0 }}>裁判分配</Typography.Title>
           <Typography.Text type="secondary">裁判可扫码选择场地执裁，也可继续在下方手动分配裁判。</Typography.Text>
         </div>
-        <Button icon={<ReloadOutlined />} onClick={loadBracket} loading={loading}>
+        <Button
+          icon={<ReloadOutlined />}
+          onClick={() => {
+            void loadBracket();
+            void signatures.reload();
+          }}
+          loading={loading}
+        >
           刷新
         </Button>
       </div>
@@ -298,6 +316,13 @@ export default function AdminScoringPage() {
         />
         </div>
       </Card>
+
+      <MatchSignaturePanel
+        token={token}
+        tournamentName={tournaments.find((item) => item.id === selectedTournamentId)?.name}
+        signatures={signatures}
+        onView={(sheet) => setSheetViewerTarget({ matchId: sheet.matchId, sheetId: sheet.id })}
+      />
 
       <Card>
         {matches.length ? (
@@ -336,6 +361,31 @@ export default function AdminScoringPage() {
                 render: (value: string) => {
                   const meta = STATUS_LABELS[value] ?? STATUS_LABELS.PENDING;
                   return <Tag color={meta.color}>{meta.label}</Tag>;
+                },
+              },
+              {
+                title: '签字',
+                width: 150,
+                render: (_, row: MatchItem) => {
+                  const sheet = pickMatchSheet(signatures.sheets, row.id);
+                  if (sheet) {
+                    return (
+                      <Space size={4} wrap>
+                        <ScoreSheetStatusTag sheet={sheet} />
+                        <Button
+                          type="link"
+                          size="small"
+                          onClick={() => setSheetViewerTarget({ matchId: row.id, sheetId: sheet.id })}
+                        >
+                          比分单
+                        </Button>
+                      </Space>
+                    );
+                  }
+                  if (signatures.enabled && (row.status === 'COMPLETED' || row.status === 'CANCELLED')) {
+                    return <Tag title="开启签字前结束，或由后台直接结束/改分">未签字</Tag>;
+                  }
+                  return <Typography.Text type="secondary">—</Typography.Text>;
                 },
               },
               {
@@ -420,9 +470,22 @@ export default function AdminScoringPage() {
             <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
               保存后会按本场计分规则重新判定每局及整场胜负；未进行的后续局请保持 0:0。
             </Typography.Paragraph>
+            {pickMatchSheet(signatures.sheets, scoreTarget.id)?.status === 'VALID' ? (
+              <Alert
+                type="warning"
+                showIcon
+                title="本场已有胜方和裁判签字确认的电子比分单。比分改动后，这份比分单会标为作废（记录保留，可在比分单里查看）。"
+              />
+            ) : null}
           </div>
         )}
       </Modal>
+
+      <ScoreSheetViewer
+        token={token}
+        target={sheetViewerTarget}
+        onClose={() => setSheetViewerTarget(null)}
+      />
     </div>
   );
 }

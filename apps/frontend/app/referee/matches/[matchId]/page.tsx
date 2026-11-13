@@ -27,6 +27,7 @@ import {
 } from '@ant-design/icons';
 import { io, type Socket } from 'socket.io-client';
 import { apiFetch } from '@/lib/api';
+import MatchSignatureModal, { type SignatureWinner } from '@/components/referee/MatchSignatureModal';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL!;
 const SOCKET_BASE = API_BASE.replace(/\/api$/, '');
@@ -151,7 +152,11 @@ type PendingRefereeAction =
 
 type ScoreState = {
   id: string;
-  referee?: { id: string } | null;
+  referee?: { id: string; username?: string | null } | null;
+  /** 赛事开启了「比赛结束需签字」：结束、弃权、退赛、黑牌前先让胜方和裁判签字。 */
+  signatureRequired?: boolean;
+  /** 本场电子比分单的签字时间；没签过为 null。 */
+  scoreSheetSignedAt?: string | null;
   status: 'PENDING' | 'LIVE' | 'COMPLETED' | 'CANCELLED';
   winnerSide?: number | null;
   pendingFinish?: boolean;
@@ -557,6 +562,8 @@ export default function RefereeScoringPage() {
   const [retireReason, setRetireReason] = useState('伤退/退赛');
   const [retireChooserOpen, setRetireChooserOpen] = useState(false);
   const [finishConfirmOpen, setFinishConfirmOpen] = useState(false);
+  // 赛事要求签字时，结束类操作先进签字流程；这里记下签完要提交的是哪种结束。
+  const [signingRequest, setSigningRequest] = useState<SigningRequest | null>(null);
   const [setupOpen, setSetupOpen] = useState(false);
   const [preMatchSetup, setPreMatchSetup] = useState<PreMatchSetup | null>(null);
   const [startServingSide, setStartServingSide] = useState<1 | 2 | null>(null);
@@ -589,6 +596,11 @@ export default function RefereeScoringPage() {
   }, [score]);
   const retireReasonText = decodeRetireReason(score?.forfeitReason);
   const pauseAlert = pauseAlertText(score);
+  // 签字时显示的裁判账号：本场分配给自己就用分配记录里的账号名，否则用当前登录的账号。
+  const refereeAccountName = (score?.referee?.id && score.referee.id === session?.user?.id ? score.referee.username : null)
+    || session?.user?.name
+    || score?.referee?.username
+    || '裁判';
 
   async function loadScore(background = false) {
     if (!token || !matchId) return;
@@ -606,8 +618,8 @@ export default function RefereeScoringPage() {
   }
 
   /** busyKey 用来区分同一个接口的不同按钮（比如 A、B 两方的 +1），默认就是接口路径。 */
-  async function postAction(path: string, body?: Record<string, unknown>, busyKey = path) {
-    if (!token || !matchId) return;
+  async function postAction(path: string, body?: Record<string, unknown>, busyKey = path): Promise<boolean> {
+    if (!token || !matchId) return false;
     setBusyAction(busyKey);
     try {
       const data = await apiFetch<ScoreState>(path, {
@@ -617,12 +629,35 @@ export default function RefereeScoringPage() {
         body: body ? JSON.stringify(body) : undefined,
       });
       applyScore(data);
+      return true;
     } catch (error) {
       if ((error as { status?: number }).status === 403) setAccessRevoked(true);
       messageApi.error(error instanceof Error ? error.message : '操作失败');
+      return false;
     } finally {
       setBusyAction('');
     }
+  }
+
+  /**
+   * 结束类操作前确认本赛事是否要求签字。本机状态已经是「要签」就直接走签字；
+   * 否则再向后台取一次最新状态，避免后台刚打开开关、这台设备还不知道。
+   */
+  async function signatureRequiredNow(): Promise<boolean> {
+    if (score?.signatureRequired) return true;
+    if (!token || !matchId) return false;
+    try {
+      const data = await apiFetch<ScoreState>(`/matches/${matchId}/score`, { token, redirectOnForbidden: false });
+      applyScore(data);
+      return Boolean(data.signatureRequired);
+    } catch {
+      return false;
+    }
+  }
+
+  async function openFinishFlow() {
+    if (await signatureRequiredNow()) setSigningRequest({ kind: 'finish' });
+    else setFinishConfirmOpen(true);
   }
 
   function openSetup() {
@@ -711,9 +746,15 @@ export default function RefereeScoringPage() {
     }
     if (finishPromptedForRef.current !== winner) {
       finishPromptedForRef.current = winner;
-      setFinishConfirmOpen(true);
+      if (score?.signatureRequired) setSigningRequest({ kind: 'finish' });
+      else setFinishConfirmOpen(true);
     }
-  }, [score?.pendingFinish, score?.winnerSide]);
+  }, [score?.pendingFinish, score?.winnerSide, score?.signatureRequired]);
+
+  // 正在签「确认结束」时裁判撤销了最后一分（不再待确认结束），签字窗口跟着关掉。
+  useEffect(() => {
+    if (signingRequest?.kind === 'finish' && score && !score.pendingFinish) setSigningRequest(null);
+  }, [signingRequest, score]);
 
   // 新一局 0:0 且发球信息还是系统默认值时，主动弹出一次「发球设置」。
   // 方案 B：不拦记分，取消后照常开打，之后随时可以从「更多」或球场上的提示里再打开。
@@ -905,16 +946,18 @@ export default function RefereeScoringPage() {
       ? {
           tone: 'green',
           title: winnerName ? `本场已结束 · 胜方：${winnerName}` : '本场已结束',
-          description: score.forfeitedSide
+          description: (score.forfeitedSide
             ? `${forfeitedName} ${retireReasonText !== null ? '退赛' : '弃权'}：${retireReasonText ?? score.forfeitReason ?? '选手未到场弃权'}`
-            : '计分已锁定。',
+            : '计分已锁定。')
+            + (score.scoreSheetSignedAt ? ' 胜方和裁判已签字确认，电子比分单已保存。' : ''),
           actions: [{ label: '返回场次列表', icon: <ArrowLeftOutlined />, href: backHref }],
         }
       : score.status === 'CANCELLED'
         ? {
             tone: 'red',
             title: '本场已取消',
-            description: score.forfeitReason || '计分已锁定。',
+            description: (score.forfeitReason || '计分已锁定。')
+              + (score.scoreSheetSignedAt ? ' 裁判已签字确认，电子比分单已保存。' : ''),
             actions: [{ label: '返回场次列表', icon: <ArrowLeftOutlined />, href: backHref }],
           }
         : score.pendingFinish
@@ -959,7 +1002,7 @@ export default function RefereeScoringPage() {
 
   function runOverlayAction(run: CourtOverlayRun) {
     if (run === 'start') void startMatchNow();
-    else if (run === 'finish') setFinishConfirmOpen(true);
+    else if (run === 'finish') void openFinishFlow();
     else if (run === 'setup') openSetup();
     else if (run === 'warmup') void postAction(warmupPath, { seconds: warmupMinutes * 60 });
     else if (run === 'warmup-end') void postAction(warmupEndPath);
@@ -1021,7 +1064,7 @@ export default function RefereeScoringPage() {
     const refereeAction = MENU_REFEREE_ACTIONS[key];
     if (refereeAction) setPendingRefereeAction(refereeAction);
     else if (key === 'pause') void postAction(pausePath);
-    else if (key === 'finish') setFinishConfirmOpen(true);
+    else if (key === 'finish') void openFinishFlow();
     else if (key === 'forfeit') setForfeitChooserOpen(true);
     else if (key === 'retire') setRetireChooserOpen(true);
   }
@@ -1198,9 +1241,17 @@ export default function RefereeScoringPage() {
         busyAction={busyAction}
         onReasonChange={setForfeitReason}
         onCancel={() => setForfeitTarget(null)}
+        signatureNext={Boolean(score.signatureRequired)}
         onConfirm={async () => {
           if (forfeitTarget === null) return;
           const reason = forfeitReason.trim();
+          if (await signatureRequiredNow()) {
+            setSigningRequest(forfeitTarget === 'both'
+              ? { kind: 'forfeit-both', reason: reason || '双方均未到场，本场作废' }
+              : { kind: 'forfeit', side: forfeitTarget, reason: reason || '选手未到场弃权' });
+            setForfeitTarget(null);
+            return;
+          }
           if (forfeitTarget === 'both') {
             await postAction(`/matches/${matchId}/forfeit-both`, {
               reason: reason || '双方均未到场，本场作废',
@@ -1235,8 +1286,14 @@ export default function RefereeScoringPage() {
         busyAction={busyAction}
         onReasonChange={setRetireReason}
         onCancel={() => setRetireTarget(null)}
+        signatureNext={Boolean(score.signatureRequired)}
         onConfirm={async () => {
           if (retireTarget === null) return;
+          if (await signatureRequiredNow()) {
+            setSigningRequest({ kind: 'retire', side: retireTarget, reason: retireReason.trim() || '伤退/退赛' });
+            setRetireTarget(null);
+            return;
+          }
           await postAction(`/matches/${matchId}/retire`, {
             side: retireTarget,
             reason: retireReason.trim() || '伤退/退赛',
@@ -1265,6 +1322,12 @@ export default function RefereeScoringPage() {
               faultType: pendingRefereeAction.faultType,
             });
           } else if (pendingRefereeAction.action === 'card') {
+            // 黑牌直接判对方胜：赛事要求签字时先签字，签完连同黑牌一起提交。
+            if (pendingRefereeAction.cardType === 'black' && await signatureRequiredNow()) {
+              setSigningRequest({ kind: 'black-card', side, reason: pendingRefereeAction.label });
+              setPendingRefereeAction(null);
+              return;
+            }
             await postAction(`/matches/${matchId}/card`, {
               side,
               cardType: pendingRefereeAction.cardType,
@@ -1320,6 +1383,27 @@ export default function RefereeScoringPage() {
         }}
       />
 
+      {signingRequest ? (() => {
+        const view = signingView(signingRequest, score, matchId);
+        return (
+          <MatchSignatureModal
+            open
+            title={view.title}
+            summary={view.summary}
+            winner={view.winner}
+            refereeName={refereeAccountName}
+            submitText={view.submitText}
+            submitting={busyAction === view.path}
+            onCancel={() => setSigningRequest(null)}
+            onSubmit={async (signatures) => {
+              const ok = await postAction(view.path, { ...view.body, signatures });
+              if (ok) setSigningRequest(null);
+              return ok;
+            }}
+          />
+        );
+      })() : null}
+
       <Modal
         open={finishConfirmOpen}
         title="确认结束比赛"
@@ -1328,6 +1412,12 @@ export default function RefereeScoringPage() {
         okButtonProps={{ danger: true, loading: busyAction === finishPath }}
         onCancel={() => setFinishConfirmOpen(false)}
         onOk={async () => {
+          // 后台可能刚打开「比赛结束需签字」：改走签字流程。
+          if (await signatureRequiredNow()) {
+            setFinishConfirmOpen(false);
+            setSigningRequest({ kind: 'finish' });
+            return;
+          }
           await postAction(finishPath);
           setFinishConfirmOpen(false);
         }}
@@ -2465,6 +2555,146 @@ function LogGroup({
   );
 }
 
+/** 签字后要提交的结束操作。 */
+type SigningRequest =
+  | { kind: 'finish' }
+  | { kind: 'forfeit'; side: 1 | 2; reason: string }
+  | { kind: 'forfeit-both'; reason: string }
+  | { kind: 'retire'; side: 1 | 2; reason: string }
+  | { kind: 'black-card'; side: 1 | 2; reason: string };
+
+function signatureWinner(score: ScoreState, side: 1 | 2 | null): SignatureWinner | null {
+  if (!side) return null;
+  const matchSide = side === 1 ? score.side1 : score.side2;
+  return {
+    sideLabel: `${sideLetter(side)}方`,
+    name: sideName(matchSide),
+    players: sidePlayers(matchSide).map((player) => ({ index: player.index, name: player.name })),
+  };
+}
+
+function SignatureScoreSummary({ score, headline }: { score: ScoreState; headline: ReactNode }) {
+  const games = score.games.filter((game) => game.side1Score > 0 || game.side2Score > 0 || game.winnerSide);
+  return (
+    <div className="space-y-2">
+      <p className="text-sm font-semibold text-slate-700">{headline}</p>
+      {games.length ? (
+        <div className="overflow-hidden rounded-xl border border-slate-200">
+          <table className="w-full text-center text-sm">
+            <thead className="bg-slate-50 text-slate-500">
+              <tr>
+                <th className="py-1.5 font-semibold">局次</th>
+                <th className="py-1.5 font-semibold">A方 {sideName(score.side1)}</th>
+                <th className="py-1.5 font-semibold">B方 {sideName(score.side2)}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {games.map((game) => (
+                <tr key={game.gameNo} className="border-t border-slate-100">
+                  <td className="py-1.5 text-slate-500">第 {game.gameNo} 局</td>
+                  <td className={`py-1.5 text-base ${game.winnerSide === 1 ? 'font-black text-emerald-700' : 'text-slate-700'}`}>{game.side1Score}</td>
+                  <td className={`py-1.5 text-base ${game.winnerSide === 2 ? 'font-black text-emerald-700' : 'text-slate-700'}`}>{game.side2Score}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function signingView(request: SigningRequest, score: ScoreState, matchId: string): {
+  title: string;
+  submitText: string;
+  path: string;
+  body: Record<string, unknown>;
+  winner: SignatureWinner | null;
+  summary: ReactNode;
+} {
+  const name = (side: 1 | 2) => sideName(side === 1 ? score.side1 : score.side2);
+  switch (request.kind) {
+    case 'finish': {
+      const winnerSide = score.winnerSide === 1 || score.winnerSide === 2 ? score.winnerSide : null;
+      return {
+        title: '确认结束比赛 · 签字确认',
+        submitText: '提交签字并结束比赛',
+        path: `/matches/${matchId}/finish`,
+        body: {},
+        winner: signatureWinner(score, winnerSide),
+        summary: (
+          <SignatureScoreSummary
+            score={score}
+            headline={<>比分已决出胜方：<strong className="text-emerald-700">{winnerSide ? `${sideLetter(winnerSide)}方 ${name(winnerSide)}` : '—'}</strong>。请双方核对每局比分。</>}
+          />
+        ),
+      };
+    }
+    case 'forfeit': {
+      const winnerSide: 1 | 2 = request.side === 1 ? 2 : 1;
+      return {
+        title: '判定弃权 · 签字确认',
+        submitText: '提交签字并判定弃权',
+        path: `/matches/${matchId}/forfeit`,
+        body: { side: request.side, reason: request.reason },
+        winner: signatureWinner(score, winnerSide),
+        summary: (
+          <SignatureScoreSummary
+            score={score}
+            headline={<>判定 <strong className="text-red-600">{name(request.side)}</strong> 弃权，胜方为 <strong className="text-blue-700">{name(winnerSide)}</strong>。原因：{request.reason}</>}
+          />
+        ),
+      };
+    }
+    case 'forfeit-both':
+      return {
+        title: '双方均弃权 · 签字确认',
+        submitText: '提交签字并作废本场',
+        path: `/matches/${matchId}/forfeit-both`,
+        body: { reason: request.reason },
+        winner: null,
+        summary: (
+          <SignatureScoreSummary
+            score={score}
+            headline={<>本场判定为<strong className="text-red-600">双方均弃权</strong>，本场作废、无人晋级。原因：{request.reason}</>}
+          />
+        ),
+      };
+    case 'retire': {
+      const winnerSide: 1 | 2 = request.side === 1 ? 2 : 1;
+      return {
+        title: '伤退/退赛 · 签字确认',
+        submitText: '提交签字并判对方胜',
+        path: `/matches/${matchId}/retire`,
+        body: { side: request.side, reason: request.reason },
+        winner: signatureWinner(score, winnerSide),
+        summary: (
+          <SignatureScoreSummary
+            score={score}
+            headline={<><strong className="text-red-600">{name(request.side)}</strong> 伤退/退赛，胜方为 <strong className="text-blue-700">{name(winnerSide)}</strong>。原因：{request.reason}</>}
+          />
+        ),
+      };
+    }
+    case 'black-card': {
+      const winnerSide: 1 | 2 = request.side === 1 ? 2 : 1;
+      return {
+        title: '黑牌取消资格 · 签字确认',
+        submitText: '提交签字并出示黑牌',
+        path: `/matches/${matchId}/card`,
+        body: { side: request.side, cardType: 'black', reason: request.reason },
+        winner: signatureWinner(score, winnerSide),
+        summary: (
+          <SignatureScoreSummary
+            score={score}
+            headline={<>对 <strong className="text-red-600">{name(request.side)}</strong> 出示黑牌、取消资格，胜方为 <strong className="text-blue-700">{name(winnerSide)}</strong>。</>}
+          />
+        ),
+      };
+    }
+  }
+}
+
 function ForfeitChooserModal({
   open,
   score,
@@ -2508,6 +2738,7 @@ function ForfeitConfirmModal({
   matchId,
   reason,
   busyAction,
+  signatureNext = false,
   onReasonChange,
   onCancel,
   onConfirm,
@@ -2518,6 +2749,8 @@ function ForfeitConfirmModal({
   matchId: string;
   reason: string;
   busyAction: string;
+  /** 赛事要求签字：确认后先进签字流程，按钮文字提示下一步。 */
+  signatureNext?: boolean;
   onReasonChange: (value: string) => void;
   onCancel: () => void;
   onConfirm: () => void;
@@ -2526,7 +2759,7 @@ function ForfeitConfirmModal({
     <Modal
       open={open}
       title={target === 'both' ? '双方均弃权 · 本场作废' : '判定弃权'}
-      okText={target === 'both' ? '确认作废本场' : '确认弃权'}
+      okText={signatureNext ? '下一步：签字确认' : target === 'both' ? '确认作废本场' : '确认弃权'}
       okButtonProps={{
         danger: true,
         loading:
@@ -2621,6 +2854,7 @@ function RetireConfirmModal({
   matchId,
   reason,
   busyAction,
+  signatureNext = false,
   onReasonChange,
   onCancel,
   onConfirm,
@@ -2631,6 +2865,8 @@ function RetireConfirmModal({
   matchId: string;
   reason: string;
   busyAction: string;
+  /** 赛事要求签字：确认后先进签字流程，按钮文字提示下一步。 */
+  signatureNext?: boolean;
   onReasonChange: (value: string) => void;
   onCancel: () => void;
   onConfirm: () => void;
@@ -2639,7 +2875,7 @@ function RetireConfirmModal({
     <Modal
       open={open}
       title="确认伤退/退赛"
-      okText="确认退赛并判对方胜"
+      okText={signatureNext ? '下一步：签字确认' : '确认退赛并判对方胜'}
       okButtonProps={{
         danger: true,
         loading: busyAction === `/matches/${matchId}/retire`,

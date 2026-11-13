@@ -1446,7 +1446,7 @@ function MatchManageDrawer({
             {canReopen ? (
               <Popconfirm
                 title="重开本场？"
-                description="会清除本场胜方并撤销已推进到下一轮的签位；若后续轮次或团体后续子项已开赛，将被拒绝。"
+                description="会清除本场胜方并撤销已推进到下一轮的签位；若后续轮次或团体后续子项已开赛，将被拒绝。本场如有胜方和裁判签字的电子比分单，会标为作废（记录保留）。"
                 okText="确认重开"
                 cancelText="取消"
                 onConfirm={() => void reopenMatch()}

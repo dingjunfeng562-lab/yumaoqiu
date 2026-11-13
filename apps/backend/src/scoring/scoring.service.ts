@@ -6,6 +6,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import {
   Format,
@@ -14,6 +15,7 @@ import {
   MatchStatus,
   Prisma,
   Role,
+  ScoreSheetStatus,
   ScoringMode,
   ScoringRule,
   SecondStageRankingMode,
@@ -25,6 +27,15 @@ import { ScoringGateway } from './scoring.gateway';
 import { isSecondStageFormalRoundNo } from '../common/second-stage-bracket';
 import { SecondStageProgressService } from '../common/second-stage-progress.service';
 import { randomBytes } from 'node:crypto';
+import { MatchScoreSheetService } from './match-score-sheet.service';
+import type {
+  MatchSignatureInput,
+  ScoreSheetEndType,
+  ScoreSheetRequestMeta,
+  ScoreSheetSide,
+  ScoreSheetSigning,
+  ScoreSheetSnapshot,
+} from './score-sheet.types';
 
 type AuthUser = AuthActor;
 
@@ -182,6 +193,8 @@ export class ScoringService {
     private teamCompetitionsService: TeamCompetitionsService,
     private gateway: ScoringGateway,
     private secondStageProgress: SecondStageProgressService,
+    // 比赛结束签字（电子比分单）。可选注入，只为让直接 new 本服务的单测不用改。
+    @Optional() private scoreSheets?: MatchScoreSheetService,
   ) {}
 
   async listRefereeMatches(user: AuthUser) {
@@ -527,6 +540,10 @@ export class ScoringService {
       warmup,
       warmupDone,
       events: match.events,
+      /** 赛事开启了「比赛结束需签字」：裁判端结束比赛前先让胜方、裁判签字。 */
+      signatureRequired: Boolean(tournament?.requireMatchSignature),
+      /** 本场有效电子比分单的签字时间；没签过为 null。只给时间，不给签名图片。 */
+      scoreSheetSignedAt: await this.latestScoreSheetSignedAt(match.id, match.status),
       updatedAt: match.updatedAt,
       // 裁判端用它校准手机时钟，暂停和练球倒计时都按服务器时间算。
       serverNow: new Date(),
@@ -1164,7 +1181,12 @@ export class ScoringService {
     return this.getMatchState(matchId, user);
   }
 
-  async finishMatch(matchId: string, user: AuthUser) {
+  async finishMatch(
+    matchId: string,
+    user: AuthUser,
+    signatures?: MatchSignatureInput,
+    meta?: ScoreSheetRequestMeta,
+  ) {
     await this.ensureMatchAccess(matchId, user);
     const match = await this.ensurePlayableMatch(matchId);
     if (match.status === MatchStatus.COMPLETED) {
@@ -1181,8 +1203,9 @@ export class ScoringService {
     if (!winner) {
       throw new BadRequestException('比分尚未决出胜方，请先完成本场比赛');
     }
+    const signing = await this.prepareScoreSheetSigning(match, user, signatures, winner);
 
-    await this.prisma.$transaction(async (tx) => {
+    await this.withScoreSheetCleanup(signing, () => this.prisma.$transaction(async (tx) => {
       await this.teamCompetitionsService.prepareScoring(tx, matchId, { expectedUpdatedAt: match.updatedAt });
       await tx.match.update({
         where: { id: matchId },
@@ -1199,7 +1222,8 @@ export class ScoringService {
         await this.fillGroupKnockoutIfReady(tx, match.eventId);
       }
       await this.teamCompetitionsService.updateTeamMatchAggregate(tx, matchId);
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+      if (signing) await this.recordScoreSheet(tx, match, signing, user, 'NORMAL', meta);
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }));
 
     this.gateway.emitBracketUpdate({
       tournamentId: this.tournamentIdForMatch(match),
@@ -1347,6 +1371,8 @@ export class ScoringService {
           finishedAt: null,
         },
       });
+      // 已签字的电子比分单不再代表本场结果：标为作废，记录保留。
+      await this.scoreSheets?.voidValidSheets(tx, { id: matchId }, '管理员重开比赛，签字作废');
 
       if (current.eventId && current.roundNo >= 1) {
         await this.clearSingleEliminationAdvancement(tx, current);
@@ -1416,6 +1442,8 @@ export class ScoringService {
     cardType: 'yellow' | 'red' | 'black',
     reason?: string,
     playerIndex?: PlayerIndex,
+    signatures?: MatchSignatureInput,
+    meta?: ScoreSheetRequestMeta,
   ) {
     await this.ensureMatchAccess(matchId, user);
     const match = await this.ensurePlayableMatch(matchId);
@@ -1425,22 +1453,32 @@ export class ScoringService {
 
     const cleanReason = reason?.trim() || null;
     if (cardType === 'black') {
-      await this.prisma.matchEvent.create({
-        data: {
+      // 黑牌直接判对方胜：赛事要求签字时先校验签字，签字不合格就不记这张黑牌。
+      const signing = await this.prepareScoreSheetSigning(match, user, signatures, penalizedSide === 1 ? 2 : 1);
+      try {
+        await this.prisma.matchEvent.create({
+          data: {
+            matchId,
+            type: MatchEventType.YELLOW_CARD,
+            side: penalizedSide,
+            note: this.encodeCardNote(cardType, playerIndex, cleanReason),
+          },
+        });
+        // 黑牌 → 对手因弃权获胜。给原因加前缀，公开对阵图 / 大屏才能显示
+        // 「黑牌取消资格」而不是笼统的「弃权」（BWF 规则对两者有区分）。
+        return await this.forfeitMatch(
           matchId,
-          type: MatchEventType.YELLOW_CARD,
-          side: penalizedSide,
-          note: this.encodeCardNote(cardType, playerIndex, cleanReason),
-        },
-      });
-      // 黑牌 → 对手因弃权获胜。给原因加前缀，公开对阵图 / 大屏才能显示
-      // 「黑牌取消资格」而不是笼统的「弃权」（BWF 规则对两者有区分）。
-      return this.forfeitMatch(
-        matchId,
-        penalizedSide,
-        user,
-        `${BLACK_CARD_NOTE_PREFIX}${cleanReason ?? '黑牌取消资格'}`,
-      );
+          penalizedSide,
+          user,
+          `${BLACK_CARD_NOTE_PREFIX}${cleanReason ?? '黑牌取消资格'}`,
+          undefined,
+          meta,
+          signing,
+        );
+      } catch (error) {
+        if (signing) await this.scoreSheets?.discardFiles(signing);
+        throw error;
+      }
     }
 
     await this.prisma.matchEvent.create({
@@ -1466,7 +1504,19 @@ export class ScoringService {
     return this.getMatchState(matchId, user);
   }
 
-  async forfeitMatch(matchId: string, forfeitedSide: 1 | 2, user: AuthUser, reason?: string) {
+  /**
+   * preparedSigning：黑牌判负时调用方已经先校验好签字（签字不合格就不记黑牌），直接用它；
+   * 不传时按本次提交的 signatures 现场校验。
+   */
+  async forfeitMatch(
+    matchId: string,
+    forfeitedSide: 1 | 2,
+    user: AuthUser,
+    reason?: string,
+    signatures?: MatchSignatureInput,
+    meta?: ScoreSheetRequestMeta,
+    preparedSigning?: ScoreSheetSigning | null,
+  ) {
     await this.ensureMatchAccess(matchId, user);
     // 团体赛子项：缺人的一方填不出名单时也要能判弃权。
     // 裁判只能看到名单已锁定的子项（ensureMatchAccess），未填名单的子项只有后台计分权限能判。
@@ -1474,10 +1524,16 @@ export class ScoringService {
     if (match.status === MatchStatus.COMPLETED || match.status === MatchStatus.CANCELLED) {
       throw new BadRequestException('场次已结束,无法再判定弃权');
     }
+    const note = reason?.trim() || '选手未到场弃权';
+    const winnerSide: 1 | 2 = forfeitedSide === 1 ? 2 : 1;
+    const signing = preparedSigning !== undefined
+      ? preparedSigning
+      : await this.prepareScoreSheetSigning(match, user, signatures, winnerSide);
 
-    await this.prisma.$transaction(async (tx) => {
-      await this.applyForfeit(tx, match, forfeitedSide, reason?.trim() || '选手未到场弃权', match.updatedAt);
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+    await this.withScoreSheetCleanup(signing, () => this.prisma.$transaction(async (tx) => {
+      await this.applyForfeit(tx, match, forfeitedSide, note, match.updatedAt);
+      if (signing) await this.recordScoreSheet(tx, match, signing, user, this.scoreSheetEndType(note), meta);
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }));
 
     this.gateway.emitBracketUpdate({
       tournamentId: this.tournamentIdForMatch(match),
@@ -1606,19 +1662,34 @@ export class ScoringService {
     return { teamMatchId, forfeitedMatchIds };
   }
 
-  async retireMatch(matchId: string, retiredSide: 1 | 2, user: AuthUser, reason?: string) {
+  async retireMatch(
+    matchId: string,
+    retiredSide: 1 | 2,
+    user: AuthUser,
+    reason?: string,
+    signatures?: MatchSignatureInput,
+    meta?: ScoreSheetRequestMeta,
+  ) {
     const cleanReason = reason?.trim() || '伤退/退赛';
-    return this.forfeitMatch(matchId, retiredSide, user, `${RETIRE_NOTE_PREFIX}${cleanReason}`);
+    return this.forfeitMatch(matchId, retiredSide, user, `${RETIRE_NOTE_PREFIX}${cleanReason}`, signatures, meta);
   }
 
-  async forfeitBothSides(matchId: string, user: AuthUser, reason?: string) {
+  async forfeitBothSides(
+    matchId: string,
+    user: AuthUser,
+    reason?: string,
+    signatures?: MatchSignatureInput,
+    meta?: ScoreSheetRequestMeta,
+  ) {
     await this.ensureMatchAccess(matchId, user);
     const match = await this.ensurePlayableMatch(matchId, { teamLineupOptional: true });
     if (match.status === MatchStatus.COMPLETED || match.status === MatchStatus.CANCELLED) {
       throw new BadRequestException('场次已结束,无法再判定弃权');
     }
+    // 双方弃权没有胜方，只要裁判签字。
+    const signing = await this.prepareScoreSheetSigning(match, user, signatures, null);
 
-    await this.prisma.$transaction(async (tx) => {
+    await this.withScoreSheetCleanup(signing, () => this.prisma.$transaction(async (tx) => {
       await this.teamCompetitionsService.prepareScoring(tx, matchId, { forfeiting: true, expectedUpdatedAt: match.updatedAt });
       // 本场作废。forfeitedSide = 0 是哨兵值，表示双方都弃权。
       await tx.match.update({
@@ -1651,7 +1722,8 @@ export class ScoringService {
       }
 
       await this.teamCompetitionsService.updateTeamMatchAggregate(tx, matchId);
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+      if (signing) await this.recordScoreSheet(tx, match, signing, user, 'BOTH_FORFEIT', meta);
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }));
 
     this.gateway.emitBracketUpdate({
       tournamentId: this.tournamentIdForMatch(match),
@@ -1753,6 +1825,17 @@ export class ScoringService {
 
     await this.prisma.$transaction(async (tx) => {
       await this.teamCompetitionsService.prepareScoring(tx, matchId, { correcting: true, expectedUpdatedAt: match.updatedAt });
+      // 比分真的改了，签字确认过的电子比分单就不再代表本场结果：标为作废，记录保留。
+      const previousGames = await tx.game.findMany({
+        where: { matchId },
+        orderBy: { gameNo: 'asc' },
+        select: { side1Score: true, side2Score: true },
+      });
+      const scoreChanged = previousGames.length !== correctedGames.length
+        || previousGames.some((game, index) =>
+          game.side1Score !== correctedGames[index].side1Score
+          || game.side2Score !== correctedGames[index].side2Score);
+      if (scoreChanged) await this.scoreSheets?.voidValidSheets(tx, { id: matchId }, '管理员修改比分，签字作废');
       for (const game of correctedGames) {
         await tx.game.upsert({
           where: { matchId_gameNo: { matchId, gameNo: game.gameNo } },
@@ -3381,6 +3464,241 @@ export class ScoringService {
     const regularMap = await this.registrationMap(regularIds);
     const lineupMap = await this.teamCompetitionsService.buildLineupRegistrationMap(lineupIds);
     return new Map<string, any>([...regularMap.entries(), ...lineupMap.entries()]);
+  }
+
+  // ---------------------------------------------------------------- 比赛结束签字（电子比分单）
+
+  /**
+   * 赛事开启「比赛结束需签字」时，校验裁判端提交的签名并先写到磁盘，等结束比赛的事务里落库。
+   * - 裁判账号必须带签名：有胜方时胜方（双打其中一人）和裁判都要签，双方弃权只要裁判签。
+   * - 后台管理员的操作（签到台、团体赛管理判弃权等）不带签名时照常结束，不生成比分单。
+   * - 赛事没开签字时忽略提交的签名。
+   */
+  private async prepareScoreSheetSigning(
+    match: PlayableMatch,
+    user: AuthUser,
+    input: MatchSignatureInput | undefined,
+    winnerSide: 1 | 2 | null,
+  ): Promise<ScoreSheetSigning | null> {
+    const sheets = this.scoreSheets;
+    if (!sheets) return null;
+    const tournamentId = this.tournamentIdForMatch(match);
+    if (!tournamentId || !(await sheets.isRequired(tournamentId))) return null;
+    const provided = Boolean(input?.refereeSignature || input?.winnerSignature);
+    if (!provided) {
+      if (user.role === Role.REFEREE) {
+        throw new BadRequestException(
+          winnerSide
+            ? '本赛事要求比赛结束时由胜方选手和裁判签字确认，请完成签字后再提交'
+            : '本赛事要求比赛结束时由裁判签字确认，请完成签字后再提交',
+        );
+      }
+      return null;
+    }
+    const views = await this.resolveSideViews([match.side1Id, match.side2Id]);
+    const view1 = match.side1Id ? views.get(match.side1Id) : undefined;
+    const view2 = match.side2Id ? views.get(match.side2Id) : undefined;
+    const side1 = view1 ? this.toScoreSheetSide(view1) : null;
+    const side2 = view2 ? this.toScoreSheetSide(view2) : null;
+    const winnerView = winnerSide === 1 ? side1 : winnerSide === 2 ? side2 : null;
+    const prepared = await sheets.prepareSignatures(input ?? {}, { required: winnerSide !== null, side: winnerView });
+    const sheetId = sheets.createSheetId();
+    const files = await sheets.writeSignatureFiles(tournamentId, match.id, sheetId, prepared);
+    return { sheetId, tournamentId, prepared, files, side1, side2 };
+  }
+
+  /** 跑结束比赛的事务：失败时删掉已写好的签名文件；成功后在后台生成比分单图片。 */
+  private async withScoreSheetCleanup<T>(signing: ScoreSheetSigning | null, run: () => Promise<T>): Promise<T> {
+    try {
+      const result = await run();
+      if (signing && this.scoreSheets) void this.scoreSheets.renderAndStore(signing.sheetId);
+      return result;
+    } catch (error) {
+      if (signing && this.scoreSheets) await this.scoreSheets.discardFiles(signing);
+      throw error;
+    }
+  }
+
+  private toScoreSheetSide(view: MatchSideView): ScoreSheetSide {
+    return {
+      name: view.name,
+      teamName: view.teamName ?? null,
+      affiliation: view.affiliation ?? null,
+      players: view.players.map((player) => ({
+        index: player.index,
+        name: player.name,
+        affiliation: player.affiliation ?? null,
+      })),
+    };
+  }
+
+  private scoreSheetEndType(note: string | null | undefined): ScoreSheetEndType {
+    if (note?.startsWith(RETIRE_NOTE_PREFIX)) return 'RETIRE';
+    if (note?.startsWith(BLACK_CARD_NOTE_PREFIX)) return 'BLACK_CARD';
+    return 'FORFEIT';
+  }
+
+  private scoreSheetEndReason(endType: ScoreSheetEndType, note: string | null | undefined) {
+    if (endType === 'NORMAL' || !note) return null;
+    if (endType === 'RETIRE') return note.slice(RETIRE_NOTE_PREFIX.length) || null;
+    if (endType === 'BLACK_CARD') return note.slice(BLACK_CARD_NOTE_PREFIX.length) || null;
+    return note;
+  }
+
+  private scoreSheetRoundLabel(round: string, roundNo: number) {
+    const value = round?.trim();
+    if (!value) return '—';
+    if (roundNo === 0) return value.endsWith('组') ? value : `${value}组`;
+    const fixed: Record<string, string> = {
+      F: '决赛',
+      SF: '半决赛',
+      QF: '1/4 决赛',
+      R1: '1/8 决赛',
+      R2: '1/16 决赛',
+      R3: '1/32 决赛',
+      BRONZE: '季军赛',
+    };
+    if (fixed[value]) return fixed[value];
+    const knockout = /^R(\d+)$/.exec(value);
+    if (knockout) {
+      const slots = Number(knockout[1]);
+      return slots >= 4 ? `1/${slots / 2} 决赛` : value;
+    }
+    return value;
+  }
+
+  /** 在结束比赛的同一个事务里冻结比分快照（每局比分、逐分过程、双方、时间、裁判），写电子比分单记录。 */
+  private async recordScoreSheet(
+    tx: Prisma.TransactionClient,
+    match: PlayableMatch,
+    signing: ScoreSheetSigning,
+    user: AuthUser,
+    endType: ScoreSheetEndType,
+    meta?: ScoreSheetRequestMeta,
+  ) {
+    const sheets = this.scoreSheets;
+    if (!sheets) return;
+    const current = await tx.match.findUniqueOrThrow({
+      where: { id: match.id },
+      select: {
+        round: true,
+        roundNo: true,
+        matchNo: true,
+        scheduledAt: true,
+        startedAt: true,
+        finishedAt: true,
+        winnerSide: true,
+        forfeitReason: true,
+        venue: { select: { name: true } },
+      },
+    });
+    const games = await tx.game.findMany({
+      where: { matchId: match.id },
+      orderBy: { gameNo: 'asc' },
+      select: { gameNo: true, side1Score: true, side2Score: true, winnerSide: true },
+    });
+    const pointEvents = await tx.matchEvent.findMany({
+      where: { matchId: match.id, type: MatchEventType.POINT, undoneAt: null },
+      orderBy: { createdAt: 'asc' },
+      select: { gameNo: true, side1Score: true, side2Score: true },
+    });
+    const pauseEvents = await tx.matchEvent.findMany({
+      where: { matchId: match.id, type: MatchEventType.TIMEOUT },
+      orderBy: { createdAt: 'asc' },
+      select: { note: true, createdAt: true },
+    });
+    const tournament = await tx.tournament.findUnique({
+      where: { id: signing.tournamentId },
+      select: { id: true, name: true, edition: true },
+    });
+    const account = await tx.user.findUnique({ where: { id: user.id }, select: { username: true } });
+    const refereeName = account?.username ?? user.id;
+
+    const pointsByGame = new Map<number, Array<[number, number]>>();
+    for (const event of pointEvents) {
+      if (event.gameNo === null || event.side1Score === null || event.side2Score === null) continue;
+      const list = pointsByGame.get(event.gameNo) ?? [];
+      list.push([event.side1Score, event.side2Score]);
+      pointsByGame.set(event.gameNo, list);
+    }
+    const pauseState = this.computePauseState(pauseEvents, current.finishedAt);
+    const eventType = match.event?.type ?? match.teamCompetitionItem?.eventType ?? null;
+    const typeLabel = eventType ? EVENT_TYPE_LABELS[eventType] ?? eventType : '团体赛';
+    const roundLabel = this.scoreSheetRoundLabel(current.round, current.roundNo);
+    // 团体赛名称多半已经带「团体赛」（如「乙组团体赛」），不再重复补一次。
+    const teamCompetitionName = match.teamMatch?.teamCompetition.name?.trim() ?? '';
+    const teamLabel = teamCompetitionName.includes('团体赛')
+      ? teamCompetitionName
+      : [teamCompetitionName, '团体赛'].filter(Boolean).join(' · ');
+    const eventLabel = match.teamMatch
+      ? `${teamLabel} · ${typeLabel}`
+      : [match.event?.groupLabel?.trim(), typeLabel].filter(Boolean).join(' · ');
+    const matchLabel = match.teamMatch
+      ? `${roundLabel} · 团体第 ${match.teamMatch.matchNo} 场 · 第 ${current.matchNo} 项`
+      : `${roundLabel} · 第 ${current.matchNo} 场`;
+    const winnerSide = current.winnerSide === 1 || current.winnerSide === 2 ? current.winnerSide : null;
+
+    const snapshot: ScoreSheetSnapshot = {
+      version: 1,
+      tournament: tournament ?? { id: signing.tournamentId, name: '', edition: 1 },
+      matchId: match.id,
+      eventLabel,
+      roundLabel,
+      matchLabel,
+      matchNo: current.matchNo,
+      venue: current.venue?.name ?? null,
+      scheduledAt: current.scheduledAt?.toISOString() ?? null,
+      startedAt: current.startedAt?.toISOString() ?? null,
+      finishedAt: current.finishedAt?.toISOString() ?? null,
+      durationSeconds: this.computeActualDurationSeconds(
+        current.startedAt,
+        current.finishedAt,
+        MatchStatus.COMPLETED,
+        pauseState,
+      ),
+      side1: signing.side1,
+      side2: signing.side2,
+      games: games.map((game) => ({
+        gameNo: game.gameNo,
+        side1Score: game.side1Score,
+        side2Score: game.side2Score,
+        winnerSide: game.winnerSide ?? null,
+      })),
+      side1Games: games.filter((game) => game.winnerSide === 1).length,
+      side2Games: games.filter((game) => game.winnerSide === 2).length,
+      winnerSide,
+      endType,
+      endReason: this.scoreSheetEndReason(endType, current.forfeitReason),
+      points: [...pointsByGame.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([gameNo, scores]) => ({ gameNo, scores })),
+      referee: { id: user.id, name: refereeName },
+    };
+    await sheets.createRecord(tx, {
+      signing,
+      matchId: match.id,
+      snapshot,
+      refereeId: user.id,
+      refereeName,
+      matchFinishedAt: current.finishedAt,
+      signedAt: new Date(),
+      meta,
+    });
+  }
+
+  private async latestScoreSheetSignedAt(matchId: string, status: MatchStatus) {
+    if (!this.scoreSheets) return null;
+    if (status !== MatchStatus.COMPLETED && status !== MatchStatus.CANCELLED) return null;
+    try {
+      const sheet = await this.prisma.matchScoreSheet.findFirst({
+        where: { matchId, status: ScoreSheetStatus.VALID },
+        orderBy: { signedAt: 'desc' },
+        select: { signedAt: true },
+      });
+      return sheet?.signedAt ?? null;
+    } catch {
+      return null;
+    }
   }
 
   private tournamentIdForMatch(match: {
