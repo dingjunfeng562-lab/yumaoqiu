@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
-import { GroupVenueSettings, type EventVenueRule, type GroupVenueRule } from '@/components/admin/GroupVenueSettings';
+import { GroupVenueSettings, playDaysText, type EventVenueRule, type GroupVenueRule } from '@/components/admin/GroupVenueSettings';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import dayjs, { Dayjs } from 'dayjs';
@@ -61,6 +61,7 @@ const STATUS_LABELS: Record<string, { label: string; color: string }> = {
 
 const CONFLICT_LABELS: Record<ConflictItem['type'], { label: string; color: string }> = {
   GROUP_VENUE: { label: '需调场', color: 'orange' },
+  GROUP_DATE: { label: '需改期', color: 'orange' },
   UNSCHEDULED: { label: '待排程', color: 'default' },
   PLAYER: { label: '时间冲突', color: 'orange' },
   VENUE: { label: '场地冲突', color: 'red' },
@@ -97,7 +98,7 @@ interface Venue {
 }
 
 interface ConflictItem {
-  type: 'VENUE' | 'PLAYER' | 'DEPENDENCY' | 'UNSCHEDULED' | 'GROUP_VENUE';
+  type: 'VENUE' | 'PLAYER' | 'DEPENDENCY' | 'UNSCHEDULED' | 'GROUP_VENUE' | 'GROUP_DATE';
   matchIds: string[];
   message: string;
 }
@@ -108,6 +109,9 @@ interface ScheduleMatch {
   scheduleLocked: boolean;
   scheduleOverride: boolean;
   allowedVenueIds: string[] | null;
+  /** 组别比赛日期（YYYY-MM-DD），null 为不限；dateOverride 为人工确认的临时改期。 */
+  allowedDates?: string[] | null;
+  dateOverride?: boolean;
   id: string;
   teamMatchId?: string | null;
   team1Name?: string | null;
@@ -148,6 +152,8 @@ function formatActualDuration(row: ScheduleMatch) {
 
 interface ScheduleData {
   groups?: GroupVenueRule[];
+  /** 赛事开始到结束的每一天，「组别场地与日期」里的比赛日期从这里选。 */
+  tournamentDays?: string[];
   teamCourtLimits?: Array<{ competitionId: string; name: string; teamCount: number; maxCourts: number; canAdjust: boolean }>;
   venues: Venue[];
   matches: ScheduleMatch[];
@@ -167,6 +173,8 @@ type AutoPreview = {
 type ManualPreview = {
   changes: Array<{ matchId: string; venueId: string | null; venueName: string | null; scheduledAt: string | null; scheduledAtLocal: string | null }>;
   conflicts: ConflictItem[]; outsideGroup: boolean;
+  /** 超出组别规则的是场地还是日期，以及给管理员的提示。 */
+  outsideVenue?: boolean; outsideDate?: boolean; outsideMessage?: string | null;
   venues: Array<{ id: string; name: string; inGroup: boolean; available: boolean; reason: string | null }>;
 };
 
@@ -501,7 +509,7 @@ export default function AdminSchedulingPage() {
       const preview = await apiFetch<ManualPreview>(`/matches/${editingMatch.id}/schedule-preview`, { method: 'POST', token, body: JSON.stringify(payload) });
       setManualPreview(preview);
       if (preview.conflicts.length) { message.error(preview.conflicts[0].message); return; }
-      if (preview.outsideGroup && !values.allowOutsideGroup) { message.warning('所选场地超出组别范围，请确认临时借场'); return; }
+      if (preview.outsideGroup && !values.allowOutsideGroup) { message.warning(preview.outsideMessage ?? '所选场地或日期超出组别规则，请勾选确认后保存'); return; }
       await apiFetch(`/matches/${editingMatch.id}/schedule`, { method: 'PATCH', token, body: JSON.stringify(payload) });
       setEditingMatch(null); await loadSchedule(); message.success('排程已更新，大屏及裁判端已同步');
     } catch (e) { message.error(e instanceof Error ? e.message : '更新排程失败'); }
@@ -520,10 +528,10 @@ export default function AdminSchedulingPage() {
     if (Array.isArray(value)) return value.map(item => logDescription(item)).join('\n');
     if (!value || typeof value !== 'object') return '—';
     const row = value as Record<string, unknown>;
-    if (row.groupId) return `${String(row.name ?? '组别')}：${row.restrictVenues ? (row.venueIds as string[]).map(id => configuredVenues.find(v => v.id === id)?.name ?? '已删除场地').join('、') : '不限制'}`;
+    if (row.groupId) return `${String(row.name ?? '组别')}：${row.restrictVenues ? (row.venueIds as string[]).map(id => configuredVenues.find(v => v.id === id)?.name ?? '已删除场地').join('、') : '不限制'}；比赛日期：${playDaysText(row.playDates as string[] | undefined)}`;
     if (row.matchId) {
       const match = schedule.matches.find(m => m.id === row.matchId);
-      return `${match ? `${match.groupName ?? ''} ${match.eventTypeLabel} ${match.round} 第${match.matchNo}场` : '比赛'}：${configuredVenues.find(v => v.id === row.venueId)?.name ?? '未分配场地'} · ${formatTime(row.scheduledAt as string | null)} · ${row.durationMinutes}分钟${row.scheduleLocked ? ' · 人工固定' : ''}${row.scheduleOverride ? ' · 临时借场' : ''}`;
+      return `${match ? `${match.groupName ?? ''} ${match.eventTypeLabel} ${match.round} 第${match.matchNo}场` : '比赛'}：${configuredVenues.find(v => v.id === row.venueId)?.name ?? '未分配场地'} · ${formatTime(row.scheduledAt as string | null)} · ${row.durationMinutes}分钟${row.scheduleLocked ? ' · 人工固定' : ''}${row.scheduleOverride ? ' · 临时借场' : ''}${row.dateOverride ? ' · 临时改期' : ''}`;
     }
     if (typeof row.count === 'number') return `已清空 ${row.count} 场未开始比赛，${row.includeLocked ? '包括人工固定安排' : '保留人工固定安排'}`;
     return '—';
@@ -612,7 +620,7 @@ export default function AdminSchedulingPage() {
               导出秩序册 <DownOutlined />
             </Button>
           </Dropdown>
-          <GroupVenueSettings key={selectedTournamentId} tournamentId={selectedTournamentId} token={token ?? ''} groups={schedule.groups ?? []} venues={configuredVenues} onSaved={() => loadSchedule()} />
+          <GroupVenueSettings key={selectedTournamentId} tournamentId={selectedTournamentId} token={token ?? ''} groups={schedule.groups ?? []} venues={configuredVenues} days={schedule.tournamentDays ?? []} onSaved={() => loadSchedule()} />
           <Button disabled={!selectedTournamentId} onClick={async () => {
             try { setLogs(await apiFetch(`/tournaments/${selectedTournamentId}/schedule-logs`, { token })); }
             catch (e) { message.error(e instanceof Error ? e.message : '加载记录失败'); }
@@ -712,7 +720,7 @@ export default function AdminSchedulingPage() {
               },
             },
             { title: '时间', key: 'scheduledAt', width: 118, render: (_: unknown, row: ScheduleMatch) => formatScheduleTime(row) },
-            { title: '场地', dataIndex: 'venueName', width: 110, render: (value, row: ScheduleMatch) => <Space orientation="vertical" size={2}>{value || '—'}{row.scheduleLocked && <Tag color="blue">人工固定</Tag>}{row.scheduleOverride && <Tag color="orange">临时借场</Tag>}</Space> },
+            { title: '场地', dataIndex: 'venueName', width: 110, render: (value, row: ScheduleMatch) => <Space orientation="vertical" size={2}>{value || '—'}{row.scheduleLocked && <Tag color="blue">人工固定</Tag>}{row.scheduleOverride && <Tag color="orange">临时借场</Tag>}{row.dateOverride && <Tag color="orange">临时改期</Tag>}</Space> },
             { title: '项目', dataIndex: 'eventTypeLabel', width: 74, ellipsis: true },
             { title: '组别', key: 'groupLabel', width: 62, ellipsis: true, render: (_: unknown, row: ScheduleMatch) => row.groupName ?? scheduleGroupLabel(row) },
             {
@@ -834,7 +842,7 @@ export default function AdminSchedulingPage() {
             <TimePicker format="HH:mm" minuteStep={5} style={{ width: '100%' }} />
           </Form.Item>
           <Typography.Text type="secondary" style={{ display: 'block', marginTop: -12, marginBottom: 16 }}>
-            第一天排不完时，会按相同的每日起止时间自动续排到第二天及后续日期。
+            第一天排不完时，会按相同的每日起止时间自动续排到第二天及后续日期。在「组别场地与日期」里设了比赛日期的组别，只排在那几天。
           </Typography.Text>
           <Form.Item name="hasBreakPeriods" label="是否安排中途休息" valuePropName="checked">
             <Switch checkedChildren="安排" unCheckedChildren="不安排" />
@@ -939,7 +947,7 @@ export default function AdminSchedulingPage() {
               : '场地与时间留空表示不变更；预估时长可独立修改而不影响其他字段。'}
           </Typography.Text>
           <Form.Item noStyle shouldUpdate>
-            {({ getFieldValue }) => <Alert type="info" style={{ marginBottom: 12 }} title={`${editingMatch?.groupName ?? ''} · ${editingMatch?.venueName ?? '未分配场地'} → ${activeVenues.find(v => v.id === getFieldValue('venueId'))?.name ?? editingMatch?.venueName ?? '未分配场地'}`} description={`原时间：${formatTime(editingMatch?.scheduledAt)}；调整后：${getFieldValue('scheduledAt')?.format('YYYY-MM-DD HH:mm') ?? '保持原时间'}`} />}
+            {({ getFieldValue }) => <Alert type="info" style={{ marginBottom: 12 }} title={`${editingMatch?.groupName ?? ''} · ${editingMatch?.venueName ?? '未分配场地'} → ${activeVenues.find(v => v.id === getFieldValue('venueId'))?.name ?? editingMatch?.venueName ?? '未分配场地'}`} description={`原时间：${formatTime(editingMatch?.scheduledAt)}；调整后：${getFieldValue('scheduledAt')?.format('YYYY-MM-DD HH:mm') ?? '保持原时间'}${editingMatch?.allowedDates?.length ? `；${editingMatch.groupName ?? '本组'}比赛日期：${playDaysText(editingMatch.allowedDates)}` : ''}`} />}
           </Form.Item>
           <Form.Item name="venueId" label="场地">
             <Select allowClear options={activeVenues.map(venue => {
@@ -953,9 +961,9 @@ export default function AdminSchedulingPage() {
           </Form.Item>
           <Space wrap style={{ marginBottom: 12 }}><Button loading={scheduleBusy} onClick={() => previewManual()}>检查场地与时间</Button><Button loading={scheduleBusy} onClick={() => previewManual(true)}>查找最近可用时间</Button></Space>
           <Form.Item name="scheduleLocked" valuePropName="checked"><Checkbox>保留人工安排，重新自动排程时固定场地和时间</Checkbox></Form.Item>
-          <Form.Item name="allowOutsideGroup" valuePropName="checked"><Checkbox>允许本场临时借用规则范围外的场地</Checkbox></Form.Item>
-          <Typography.Paragraph type="secondary">临时借场仅影响本场比赛，不修改组别或单项的场地规则。保存成功后大屏和裁判端同步更新。</Typography.Paragraph>
-          {manualPreview && <Alert style={{ marginBottom: 12 }} type={manualPreview.conflicts.length ? 'error' : manualPreview.outsideGroup ? 'warning' : 'success'} showIcon title={manualPreview.conflicts[0]?.message ?? (manualPreview.outsideGroup ? '本次涉及规则范围外场地，请确认临时借场' : '场地与时间检查通过')} description={manualPreview.changes.map(c => `${c.venueName ?? '待排场地'} · ${c.scheduledAtLocal ?? '时间未定'}`).join('；')} />}
+          <Form.Item name="allowOutsideGroup" valuePropName="checked"><Checkbox>允许本场临时超出组别规则（范围外场地或日期）</Checkbox></Form.Item>
+          <Typography.Paragraph type="secondary">临时借场、临时改期仅影响本场比赛，不修改组别或单项的规则。保存成功后大屏和裁判端同步更新。</Typography.Paragraph>
+          {manualPreview && <Alert style={{ marginBottom: 12 }} type={manualPreview.conflicts.length ? 'error' : manualPreview.outsideGroup ? 'warning' : 'success'} showIcon title={manualPreview.conflicts[0]?.message ?? (manualPreview.outsideGroup ? (manualPreview.outsideMessage ?? '本次涉及组别规则范围外的场地或日期，请勾选确认') : '场地与时间检查通过')} description={manualPreview.changes.map(c => `${c.venueName ?? '待排场地'} · ${c.scheduledAtLocal ?? '时间未定'}`).join('；')} />}
           <Form.Item name="durationMinutes" label="预估时长（分钟）" rules={[{ required: true, message: '请输入预估时长' }]}>
             <InputNumber min={1} style={{ width: '100%' }} />
           </Form.Item>
@@ -980,6 +988,7 @@ export default function AdminSchedulingPage() {
             columns={[
               { title: '组别', dataIndex: 'name' },
               { title: '允许场地', render: (_, r) => r.restrictVenues ? r.venueIds.map(id => configuredVenues.find(v => v.id === id)?.name ?? '已删除').join('、') : '全部启用场地' },
+              { title: '比赛日期', render: (_, r) => playDaysText(r.playDates) },
               { title: '单项覆盖', width: 120, render: (_, r) => {
                 const overridden = (r.events ?? []).filter(e => e.venueRule !== 'INHERIT').length;
                 return overridden ? <Tag color="blue">{overridden} 个单项单独设置</Tag> : '—';

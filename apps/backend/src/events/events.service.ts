@@ -15,6 +15,9 @@ import {
   UpdateEventDto,
 } from './dto/event.dto';
 
+// 单项排序：男单、女单、男双、女双、混双。
+const EVENT_TYPE_ORDER: string[] = ['MENS_SINGLES', 'WOMENS_SINGLES', 'MENS_DOUBLES', 'WOMENS_DOUBLES', 'MIXED_DOUBLES'];
+
 @Injectable()
 export class EventsService {
   constructor(private prisma: PrismaService) {}
@@ -57,12 +60,18 @@ export class EventsService {
   async findByTournament(tournamentId: string, actor?: AuthActor) {
     const events = await this.prisma.event.findMany({
       where: { tournamentId, tournament: tournamentScope(actor) },
-      include: { tournament: true },
+      include: { tournament: true, group: { select: { id: true, name: true, sortOrder: true, createdAt: true } } },
       orderBy: [{ entrantType: 'asc' }, { type: 'asc' }],
     });
+    // 按组别排（顺序同组别设置），组内按男单、女单、男双、女双、混双；没有组别的旧单项排最后。
+    const sorted = [...events].sort((a, b) =>
+      (a.group?.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.group?.sortOrder ?? Number.MAX_SAFE_INTEGER)
+      || (a.group?.createdAt.getTime() ?? 0) - (b.group?.createdAt.getTime() ?? 0)
+      || (a.groupId ?? '').localeCompare(b.groupId ?? '')
+      || EVENT_TYPE_ORDER.indexOf(a.type) - EVENT_TYPE_ORDER.indexOf(b.type));
     // 单项管理的「名额」列：已占名额（已通过 + 待审核），口径与扫码报名的名额检查一致。
-    const counts = await eventEntryCounts(this.prisma, events.map((event) => event.id));
-    return events.map((event) => ({ ...event, entryCount: counts.get(event.id) ?? 0 }));
+    const counts = await eventEntryCounts(this.prisma, sorted.map((event) => event.id));
+    return sorted.map((event) => ({ ...event, entryCount: counts.get(event.id) ?? 0 }));
   }
 
   async findOne(id: string) {

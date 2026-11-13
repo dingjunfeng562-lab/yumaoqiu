@@ -29,6 +29,27 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
 // 单项展示顺序：男单、女单、男双、女双、混双。
 const EVENT_TYPE_ORDER = ['MENS_SINGLES', 'WOMENS_SINGLES', 'MENS_DOUBLES', 'WOMENS_DOUBLES', 'MIXED_DOUBLES'];
 
+const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+/** 组别比赛日期（TournamentGroup.playDates）：只认 YYYY-MM-DD，去重并按日期排序；空的或格式不对按不限（null）。 */
+export function normalizePlayDates(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const days = [...new Set(value.filter((day): day is string => typeof day === 'string' && DAY_PATTERN.test(day)))].sort();
+  return days.length ? days : null;
+}
+
+/** 2026-11-15 → 11月15日 */
+function dayLabel(day: string) {
+  const [, month, date] = day.split('-').map(Number);
+  return `${month}月${date}日`;
+}
+
+/** 提示里列日期：最多列 3 天，多了写「等 N 天」。 */
+function daysLabel(days: string[]) {
+  const shown = days.slice(0, 3).map(dayLabel).join('、');
+  return days.length > 3 ? `${shown}等 ${days.length} 天` : shown;
+}
+
 type ScheduleStage = NonNullable<AutoScheduleDto['scheduleStage']>;
 
 type RegistrationView = {
@@ -48,6 +69,10 @@ type ScheduleMatch = {
   allowedVenueIds: string[] | null;
   // 生效的场地规则来源：EVENT 单项指定（覆盖组别）；GROUP 组别规则；null 不限制。
   venueRuleScope: 'EVENT' | 'GROUP' | null;
+  // 组别比赛日期（YYYY-MM-DD）；null 表示不限。
+  allowedDates: string[] | null;
+  // 临时改期：管理员确认本场排在组别比赛日期以外。
+  dateOverride: boolean;
   team1Id?: string | null;
   team2Id?: string | null;
   teamMatchId?: string | null;
@@ -78,7 +103,7 @@ type ScheduleMatch = {
 };
 
 type ConflictItem = {
-  type: 'VENUE' | 'PLAYER' | 'DEPENDENCY' | 'UNSCHEDULED' | 'GROUP_VENUE';
+  type: 'VENUE' | 'PLAYER' | 'DEPENDENCY' | 'UNSCHEDULED' | 'GROUP_VENUE' | 'GROUP_DATE';
   matchIds: string[];
   message: string;
 };
@@ -167,6 +192,35 @@ export class SchedulingService {
     return match.venueRuleScope === 'EVENT' ? match.eventTypeLabel : match.groupName ?? '本组';
   }
 
+  /** 比赛地日期 YYYY-MM-DD。 */
+  private scheduleDay(date: Date | number) {
+    return this.formatScheduleDateTime(new Date(date)).slice(0, 10);
+  }
+
+  /** 赛事开始到结束的每一天（比赛地日期），组别比赛日期只能从这里面选。 */
+  private tournamentDays(tournament: { startDate: Date; endDate: Date }) {
+    const start = this.scheduleDateParts(tournament.startDate);
+    const last = this.scheduleDay(tournament.endDate);
+    const days: string[] = [];
+    for (let offset = 0; offset < 366; offset += 1) {
+      const { year, month, day } = this.addScheduleDays(start, offset);
+      const key = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      if (key > last) break;
+      days.push(key);
+    }
+    return days;
+  }
+
+  private tournamentRangeLabel(days: string[]) {
+    if (!days.length) return '赛事日期设置有误';
+    return days.length === 1 ? dayLabel(days[0]) : `${dayLabel(days[0])}至${dayLabel(days[days.length - 1])}`;
+  }
+
+  /** 本场排在组别比赛日期以外的日子。组别不限日期、本场还没排时间都不算。 */
+  private outsideGroupDates(allowedDates: string[] | null, scheduledAt: Date | null | undefined) {
+    return Boolean(scheduledAt && allowedDates && !allowedDates.includes(this.scheduleDay(scheduledAt)));
+  }
+
   async getGroupVenues(tournamentId: string) {
     await this.ensureTournament(tournamentId);
     const groups = await this.prisma.tournamentGroup.findMany({
@@ -180,6 +234,8 @@ export class SchedulingService {
     return groups.map(group => ({
       groupId: group.id, name: group.name, restrictVenues: group.restrictVenues,
       venueIds: group.allowedVenues.map(v => v.venueId).sort(),
+      // 本组比赛日期，空数组表示不限。
+      playDates: normalizePlayDates(group.playDates) ?? [],
       // 组别下每个单项的场地规则，供「组别场地分配」精确到男子单打等单项。
       events: [...group.events]
         .sort((a, b) => EVENT_TYPE_ORDER.indexOf(a.type) - EVENT_TYPE_ORDER.indexOf(b.type))
@@ -204,11 +260,22 @@ export class SchedulingService {
       if (new Set(eventRules.map(e => e.eventId)).size !== eventRules.length) throw new BadRequestException('单项不能重复');
       const activeVenueIds = new Set(venues.filter(v => v.isActive).map(v => v.id));
       const checkVenues = (venueIds: string[]) => venueIds.some(id => !activeVenueIds.has(id));
+      const tournamentDays = service.tournamentDays(await service.ensureTournament(tournamentId));
       for (const rule of dto.groups) {
         if (!groupIds.has(rule.groupId)) throw new BadRequestException('组别必须属于当前赛事');
         if (rule.restrictVenues && !rule.venueIds.length) throw new BadRequestException('指定场地模式至少选择一片场地');
         if (checkVenues(rule.venueIds)) throw new BadRequestException('请选择当前赛事已启用的场地');
-        await service.prisma.tournamentGroup.update({ where: { id: rule.groupId }, data: { restrictVenues: rule.restrictVenues } });
+        // 比赛日期只能选赛事日期内的日子；不传（旧客户端）保持原值，空数组为不限。
+        const playDates = rule.playDates === undefined ? undefined : normalizePlayDates(rule.playDates);
+        const outsideDays = (playDates ?? []).filter(day => !tournamentDays.includes(day));
+        if (outsideDays.length) {
+          const name = before.find(group => group.groupId === rule.groupId)?.name ?? '';
+          throw new BadRequestException(`「${name}」的比赛日期 ${daysLabel(outsideDays)} 不在赛事日期内（${service.tournamentRangeLabel(tournamentDays)}），请重新选择`);
+        }
+        await service.prisma.tournamentGroup.update({ where: { id: rule.groupId }, data: {
+          restrictVenues: rule.restrictVenues,
+          ...(playDates === undefined ? {} : { playDates: playDates ?? Prisma.DbNull }),
+        } });
         await service.prisma.groupVenue.deleteMany({ where: { groupId: rule.groupId } });
         if (rule.restrictVenues) await service.prisma.groupVenue.createMany({ data: [...new Set(rule.venueIds)].map(venueId => ({ groupId: rule.groupId, venueId })) });
       }
@@ -224,7 +291,10 @@ export class SchedulingService {
       }
       const groups = await service.getGroupVenues(tournamentId);
       const matches = await service.loadScheduleMatches(tournamentId);
-      const affected = matches.filter(m => m.status === MatchStatus.PENDING && m.venueId && m.allowedVenueIds && !m.allowedVenueIds.includes(m.venueId) && !m.scheduleOverride);
+      // 规则保存不挪比赛：场地或日期不符合新规则的未开始比赛只计数，赛程表里标「需调场」「需改期」。
+      const affected = matches.filter(m => m.status === MatchStatus.PENDING && (
+        (m.venueId && m.allowedVenueIds && !m.allowedVenueIds.includes(m.venueId) && !m.scheduleOverride)
+        || (service.outsideGroupDates(m.allowedDates, m.scheduledAt) && !m.dateOverride)));
       await service.audit(tournamentId, 'GROUP_VENUES', before, groups, actorId);
       return { groups, affectedMatchCount: affected.length };
     }, false);
@@ -262,7 +332,7 @@ export class SchedulingService {
   }
 
   async getSchedule(tournamentId: string, eventId?: string) {
-    await this.ensureTournament(tournamentId);
+    const tournament = await this.ensureTournament(tournamentId);
     const [venues, allMatches, groups] = await Promise.all([
       this.listVenues(tournamentId),
       this.loadScheduleMatches(tournamentId),
@@ -282,6 +352,8 @@ export class SchedulingService {
 
     return {
       groups,
+      // 「组别场地与日期」里比赛日期的可选范围：赛事开始到结束的每一天。
+      tournamentDays: this.tournamentDays(tournament),
       teamCourtLimits: eventId ? [] : await this.teamCourtLimits(tournamentId),
       venues,
       matches: matches.map((match) => ({
@@ -394,6 +466,14 @@ export class SchedulingService {
       const allowed = venueRuleFor(match).allowedVenueIds;
       return allowed ? venues.filter(venue => allowed.includes(venue.id)) : venues;
     };
+    // 组别比赛日期：只取赛事日期内的日子。设了日期但都不在赛事日期内时为空数组（排不进，提示重新设置）；null 为不限。
+    const tournamentDays = this.tournamentDays(tournament);
+    const playDaysById = new Map(scopeMatches.map(match => {
+      const days = normalizePlayDates((match.event?.group ?? match.teamMatch?.teamCompetition.group)?.playDates);
+      return [match.id, days ? days.filter(day => tournamentDays.includes(day)) : null] as const;
+    }));
+    // 日期限制越紧的越先排，免得不限日期的组别先占满这几天。
+    const playDayCount = (match: (typeof scopeMatches)[number]) => playDaysById.get(match.id)?.length ?? Number.MAX_SAFE_INTEGER;
     const allScheduled = await this.loadScheduleMatches(dto.tournamentId);
     const fingerprint = createHash('sha256').update(JSON.stringify({ tournament, groups, venues,
       matches: allScheduled, scopeMatches,
@@ -461,7 +541,7 @@ export class SchedulingService {
           : 0;
         const aRank = eventTypeRank.get(a.event?.type ?? '') ?? Number.MAX_SAFE_INTEGER;
         const bRank = eventTypeRank.get(b.event?.type ?? '') ?? Number.MAX_SAFE_INTEGER;
-        return stagePriority || aRank - bRank || a.roundNo - b.roundNo || eligibleVenues(a).length - eligibleVenues(b).length
+        return stagePriority || aRank - bRank || playDayCount(a) - playDayCount(b) || a.roundNo - b.roundNo || eligibleVenues(a).length - eligibleVenues(b).length
           || (a.teamMatchId ?? '').localeCompare(b.teamMatchId ?? '') || a.matchNo - b.matchNo;
       });
 
@@ -483,6 +563,11 @@ export class SchedulingService {
       ];
       const perMatchMinutes = dto.overrideMatchMinutes ? matchMinutes : match.durationMinutes ?? match.event?.defaultMatchMinutes ?? matchMinutes;
       if (this.longestPlayableMinutes(dailyWindow) < perMatchMinutes) { reasons.set(match.id, '每日连续可用时段不足以容纳本场比赛'); continue; }
+      const playDays = playDaysById.get(match.id) ?? null;
+      if (playDays && !playDays.length) {
+        reasons.set(match.id, `${groupFor(match)?.name ?? '本组'}设置的比赛日期不在赛事日期内，请在「组别场地与日期」里重新选择`);
+        continue;
+      }
       const dependencyReleaseTime = this.dependencyReleaseTime(match, matchMap, scheduledEndByKey);
       const competitionId = match.teamMatch?.teamCompetitionId;
       const courtLimit = competitionId ? limitsByCompetition.get(competitionId) : undefined;
@@ -509,6 +594,7 @@ export class SchedulingService {
             playerIds,
             venueBusy,
             playerBusy,
+            playDays,
           ),
         }))
         .filter(
@@ -524,7 +610,9 @@ export class SchedulingService {
           : groupFor(match)?.name ?? '本组';
         reasons.set(match.id, !allowed.length && !fixedVenue
           ? `${scopeName}指定场地与本次启用场地无交集，请调整场地范围`
-          : '指定场地在赛事日期和可用时段内已无空位，请增加场地或延长时间');
+          : playDays
+            ? `${groupFor(match)?.name ?? '本组'}的比赛日期（${daysLabel(playDays)}）内已无空位，请增加场地、延长每日时间或增加比赛日期`
+            : '指定场地在赛事日期和可用时段内已无空位，请增加场地或延长时间');
         continue;
       }
       // 同一可用范围内优先最早时间，再按场地序号稳定排序。
@@ -573,6 +661,8 @@ export class SchedulingService {
         venueName: venues.find(v => v.id === update?.venueId)?.name ?? match.venueName,
         durationMinutes: update?.minutes ?? match.durationMinutes,
         scheduleLocked: false, scheduleOverride: Boolean(update && match.allowedVenueIds && !match.allowedVenueIds.includes(update.venueId)),
+        // 自动排程只排在组别比赛日期内，这里正常总是 false。
+        dateOverride: this.outsideGroupDates(match.allowedDates, update?.scheduledAt),
         unscheduledReason: reasons.get(match.id) ?? null };
     });
     // A locked downstream match must not be invalidated by a rebuilt upstream.
@@ -607,7 +697,7 @@ export class SchedulingService {
       const changed = await this.prisma.match.updateMany({
         where: { id: match.id, status: MatchStatus.PENDING, startedAt: null, updatedAt: original.updatedAt },
         data: { venueId: match.venueId, scheduledAt: match.scheduledAt, durationMinutes: match.durationMinutes,
-          scheduleLocked: false, scheduleOverride: match.scheduleOverride, unscheduledReason: match.unscheduledReason },
+          scheduleLocked: false, scheduleOverride: match.scheduleOverride, dateOverride: match.dateOverride, unscheduledReason: match.unscheduledReason },
       });
       if (changed.count !== 1) throw new ConflictException('比赛状态已变化，请重新预览');
     }
@@ -635,7 +725,7 @@ export class SchedulingService {
       const result = await service.prisma.match.updateMany({
         where: { id: { in: matches.map(m => m.id) }, status: MatchStatus.PENDING, startedAt: null,
           ...(dto.includeLocked ? {} : { scheduleLocked: false }) },
-        data: { venueId: null, scheduledAt: null, scheduleLocked: false, scheduleOverride: false, unscheduledReason: null },
+        data: { venueId: null, scheduledAt: null, scheduleLocked: false, scheduleOverride: false, dateOverride: false, unscheduledReason: null },
       });
       if (result.count !== matches.length) throw new ConflictException('比赛状态已变化，请刷新后重试');
       await service.audit(dto.tournamentId, 'CLEAR', matches.map(m => service.placement(m)), { includeLocked: dto.includeLocked ?? false, count: result.count }, actorId);
@@ -662,7 +752,19 @@ export class SchedulingService {
   private manualPreview(plan: Awaited<ReturnType<SchedulingService['manualPlan']>>) {
     return { changes: plan.changes.map(m => ({ ...this.placement(m), venueName: m.venueName,
       scheduledAtLocal: m.scheduledAt ? this.formatScheduleDateTime(m.scheduledAt) : null })),
-      conflicts: plan.conflicts, outsideGroup: plan.outsideGroup, venues: plan.venueOptions };
+      conflicts: plan.conflicts, outsideGroup: plan.outsideGroup, outsideVenue: plan.outsideVenue, outsideDate: plan.outsideDate,
+      outsideMessage: plan.outsideGroup ? this.outsideRuleMessage(plan) : null, venues: plan.venueOptions };
+  }
+
+  /** 超出组别规则（范围外场地、组别日期以外的日子）时的提示，三个手动调整入口共用。 */
+  private outsideRuleMessage(plan: { outsideVenue: boolean; outsideDate: boolean; changes: ScheduleMatch[] }) {
+    const confirm = '请勾选「允许本场临时超出组别规则」后保存';
+    if (plan.outsideVenue && plan.outsideDate) return `所选场地和日期都超出组别规则，${confirm}`;
+    if (plan.outsideDate) {
+      const match = plan.changes[0];
+      return `所选日期不在${match?.groupName ?? '本组'}的比赛日期（${daysLabel(match?.allowedDates ?? [])}）内，${confirm}`;
+    }
+    return `所选场地超出组别范围，${confirm}`;
   }
 
   async updateMatchSchedule(matchId: string, dto: UpdateMatchScheduleDto, actorId?: string) {
@@ -671,7 +773,7 @@ export class SchedulingService {
     return this.withScheduleTransaction(tournamentId, async service => {
       const plan = await service.manualPlan(tournamentId, matchId, dto);
       if (plan.conflicts.length) throw new ConflictException(plan.conflicts[0].message);
-      if (plan.outsideGroup && !dto.allowOutsideGroup) throw new BadRequestException('所选场地超出组别范围，请勾选“允许本场临时借场”后保存');
+      if (plan.outsideGroup && !dto.allowOutsideGroup) throw new BadRequestException(service.outsideRuleMessage(plan));
       for (const match of plan.changes) {
         const original = plan.before.find(m => m.id === match.id)!;
         const result = await service.prisma.match.updateMany({ where: {
@@ -679,10 +781,10 @@ export class SchedulingService {
           venueId: original.venueId, scheduledAt: original.scheduledAt, durationMinutes: original.durationMinutes,
           scheduleLocked: original.scheduleLocked,
         }, data: { venueId: match.venueId, scheduledAt: match.scheduledAt, durationMinutes: match.durationMinutes,
-          scheduleLocked: match.scheduleLocked, scheduleOverride: match.scheduleOverride, unscheduledReason: null } });
+          scheduleLocked: match.scheduleLocked, scheduleOverride: match.scheduleOverride, dateOverride: match.dateOverride, unscheduledReason: null } });
         if (result.count !== 1) throw new ConflictException('比赛安排或状态已变化，请刷新后重试');
       }
-      await service.audit(tournamentId, 'MANUAL', plan.before.map(m => service.placement(m)), plan.changes.map(m => ({ ...service.placement(m), scheduleOverride: m.scheduleOverride })), actorId);
+      await service.audit(tournamentId, 'MANUAL', plan.before.map(m => service.placement(m)), plan.changes.map(m => ({ ...service.placement(m), scheduleOverride: m.scheduleOverride, dateOverride: m.dateOverride })), actorId);
       return service.getSchedule(tournamentId);
     });
   }
@@ -723,8 +825,12 @@ export class SchedulingService {
         const scheduledAt = forceReflow ? cursor ?? null : item.scheduledAt;
         const full = Boolean(court && scheduledAt);
         const outside = Boolean(court && item.allowedVenueIds && !item.allowedVenueIds.includes(court));
+        // 组别比赛日期：日子没变的，原来确认过的临时改期继续保留；换到组别日期以外的日子要勾选确认。
+        const dateOutside = this.outsideGroupDates(item.allowedDates, scheduledAt);
+        const sameDay = Boolean(scheduledAt && item.scheduledAt && this.scheduleDay(scheduledAt) === this.scheduleDay(item.scheduledAt));
         const match = { ...item, venueId: court, venueName: venues.find(v => v.id === court)?.name ?? null, scheduledAt, durationMinutes,
-          scheduleLocked: full && (dto.scheduleLocked ?? true), scheduleOverride: outside && (dto.allowOutsideGroup === true || (item.scheduleOverride && item.venueId === court)), unscheduledReason: null };
+          scheduleLocked: full && (dto.scheduleLocked ?? true), scheduleOverride: outside && (dto.allowOutsideGroup === true || (item.scheduleOverride && item.venueId === court)),
+          dateOverride: dateOutside && (dto.allowOutsideGroup === true || (sameDay && item.dateOverride)), unscheduledReason: null };
         if (cursor) cursor = this.addMinutes(cursor, durationMinutes + (gaps.get(item.id) ?? gap));
         return match;
       });
@@ -765,18 +871,33 @@ export class SchedulingService {
       const dependencyIds = before.flatMap(m => m.dependencyMatchIds);
       const dependencyEnd = Math.max(0, ...others.filter(m => dependencyIds.includes(m.id) || (selected.teamMatchId && m.teamMatchId === selected.teamMatchId)).filter(m => m.scheduledAt).map(m => this.endTime(m).getTime() + gap * 60000));
       const earliest = Math.max((parsed ?? before[0].scheduledAt ?? tournament.startDate).getTime(), this.withMinutesOfDay(tournament.startDate, window.startMinutes).getTime(), dependencyEnd);
-      const found = this.findEarliestStart(venueId, earliest, minutes, gap, window, tournament.endDate, before.flatMap(m => this.matchPlayerIds(m)), venueBusy, playerBusy);
-      if (found === null) throw new BadRequestException('赛事时间内无可用时段，请更换场地或延长时间');
+      // 只在组别比赛日期里找；要排到别的日子请手动填时间并勾选确认。
+      const tournamentDays = this.tournamentDays(tournament);
+      const playDays = selected.allowedDates ? selected.allowedDates.filter(day => tournamentDays.includes(day)) : null;
+      const groupName = selected.groupName ?? '本组';
+      if (playDays && !playDays.length) throw new BadRequestException(`${groupName}设置的比赛日期不在赛事日期内，请在「组别场地与日期」里重新选择`);
+      const found = this.findEarliestStart(venueId, earliest, minutes, gap, window, tournament.endDate, before.flatMap(m => this.matchPlayerIds(m)), venueBusy, playerBusy, playDays);
+      if (found === null) {
+        throw new BadRequestException(playDays
+          ? `${groupName}的比赛日期（${daysLabel(playDays)}）内没有可用时段，请更换场地或手动指定时间`
+          : '赛事时间内无可用时段，请更换场地或延长时间');
+      }
       start = new Date(found);
     }
     const changes = project(venueId, start, reflow || dto.findNextAvailable);
     const conflicts = validate(changes);
-    const outsideGroup = !lockOnly && changes.some(m => m.venueId && m.allowedVenueIds && !m.allowedVenueIds.includes(m.venueId) && !(before.find(b => b.id === m.id)?.scheduleOverride && before.find(b => b.id === m.id)?.venueId === m.venueId));
+    const outsideVenue = !lockOnly && changes.some(m => m.venueId && m.allowedVenueIds && !m.allowedVenueIds.includes(m.venueId) && !(before.find(b => b.id === m.id)?.scheduleOverride && before.find(b => b.id === m.id)?.venueId === m.venueId));
+    // 改到组别日期以外的另一天才要确认；日子不变（只改场地、时长或当天时间）不用确认，原来的「需改期」提示照旧。
+    const outsideDate = !lockOnly && changes.some(m => {
+      const original = before.find(b => b.id === m.id)?.scheduledAt;
+      return this.outsideGroupDates(m.allowedDates, m.scheduledAt)
+        && !(original && m.scheduledAt && this.scheduleDay(original) === this.scheduleDay(m.scheduledAt));
+    });
     const venueOptions = venues.filter(v => v.isActive).map(v => {
       const unavailable = fixedVenue && fixedVenue !== v.id ? '团体对阵已开赛，不能换场' : validate(project(v.id, start, reflow || dto.findNextAvailable))[0]?.message;
       return { id: v.id, name: v.name, inGroup: !selected.allowedVenueIds || selected.allowedVenueIds.includes(v.id), available: !unavailable, reason: unavailable ?? null };
     });
-    return { before, changes, conflicts, outsideGroup, venueOptions };
+    return { before, changes, conflicts, outsideGroup: outsideVenue || outsideDate, outsideVenue, outsideDate, venueOptions };
   }
 
   private async loadScheduleMatches(tournamentId: string, eventId?: string) {
@@ -836,6 +957,9 @@ export class SchedulingService {
         groupName: group?.name ?? null,
         allowedVenueIds: venueRule.allowedVenueIds,
         venueRuleScope: venueRule.venueRuleScope,
+        // 比赛日期只按组别设置（团体赛同样按所属组别）。
+        allowedDates: normalizePlayDates(group?.playDates),
+        dateOverride: match.dateOverride,
         scheduleLocked: match.scheduleLocked,
         scheduleOverride: match.scheduleOverride,
         unscheduledReason: match.unscheduledReason,
@@ -887,6 +1011,9 @@ export class SchedulingService {
       if (match.status !== MatchStatus.PENDING) continue;
       if (match.venueId && match.allowedVenueIds && !match.allowedVenueIds.includes(match.venueId) && !match.scheduleOverride) {
         conflicts.push({ type: 'GROUP_VENUE', matchIds: [match.id], message: `${this.venueScopeLabel(match)}的场地规则已变化，本场需调整或明确设置为临时借场` });
+      }
+      if (this.outsideGroupDates(match.allowedDates, match.scheduledAt) && !match.dateOverride) {
+        conflicts.push({ type: 'GROUP_DATE', matchIds: [match.id], message: `${match.groupName ?? '本组'}只在${daysLabel(match.allowedDates ?? [])}比赛，本场需改期或明确设置为临时改期` });
       }
 
       // Future-round matches are allowed to lack side1/side2 — they will be
@@ -972,12 +1099,14 @@ export class SchedulingService {
     playerIds: string[],
     venueBusy: Map<string, BusyInterval[]>,
     playerBusy: Map<string, BusyInterval[]>,
+    // 组别比赛日期（已按日期排序）；null 或不传为不限。
+    allowedDays?: readonly string[] | null,
   ): number | null {
-    let start = this.normalizeToDailyWindow(earliest, matchMinutes, dailyWindow);
+    let start = this.normalizeToDailyWindow(earliest, matchMinutes, dailyWindow, allowedDays);
     const latestEnd = this.endOfDay(tournamentEndDate).getTime();
     while (true) {
       if (start + matchMinutes * 60 * 1000 > latestEnd) {
-        // 已无法在赛事结束日期前安排:返回 null,交由上层留空并标记为冲突。
+        // 已无法在赛事结束日期（或组别最后一个比赛日）前安排:返回 null,交由上层留空并标记为冲突。
         return null;
       }
 
@@ -986,7 +1115,7 @@ export class SchedulingService {
         end: start + (matchMinutes + breakMinutes) * 60 * 1000,
       });
       if (venueConflict) {
-        start = this.normalizeToDailyWindow(venueConflict.end, matchMinutes, dailyWindow);
+        start = this.normalizeToDailyWindow(venueConflict.end, matchMinutes, dailyWindow, allowedDays);
         continue;
       }
 
@@ -1000,7 +1129,7 @@ export class SchedulingService {
           }),
         );
       if (playerConflict) {
-        start = this.normalizeToDailyWindow(playerConflict.end, matchMinutes, dailyWindow);
+        start = this.normalizeToDailyWindow(playerConflict.end, matchMinutes, dailyWindow, allowedDays);
         continue;
       }
 
@@ -1139,11 +1268,28 @@ export class SchedulingService {
     return hour * 60 + minute;
   }
 
-  private normalizeToDailyWindow(timestamp: number, matchMinutes: number, window: DailyWindow) {
+  private normalizeToDailyWindow(
+    timestamp: number,
+    matchMinutes: number,
+    window: DailyWindow,
+    allowedDays?: readonly string[] | null,
+  ) {
     let candidate = timestamp;
     while (true) {
       const date = new Date(candidate);
       const parts = this.scheduleDateParts(date);
+      // 组别只在指定日期比赛：不是指定日期就跳到下一个指定日期的开始时间；
+      // 后面没有指定日期了返回 Infinity，上层按「排不进」处理。allowedDays 须按日期升序。
+      if (allowedDays?.length) {
+        const day = `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
+        if (!allowedDays.includes(day)) {
+          const next = allowedDays.find((item) => item > day);
+          if (!next) return Number.POSITIVE_INFINITY;
+          const [year, month, dayOfMonth] = next.split('-').map(Number);
+          candidate = this.dateFromScheduleParts(year, month, dayOfMonth, window.startMinutes).getTime();
+          continue;
+        }
+      }
       const minutes = parts.hour * 60 + parts.minute;
       if (minutes < window.startMinutes) {
         candidate = this.withMinutesOfDay(date, window.startMinutes).getTime();

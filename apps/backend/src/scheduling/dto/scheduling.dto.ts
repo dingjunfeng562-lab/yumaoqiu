@@ -10,6 +10,7 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  Matches,
   Max,
   Min,
   ValidateNested,
@@ -182,6 +183,14 @@ export class GroupVenueRuleDto {
   @IsArray()
   @IsString({ each: true })
   venueIds: string[];
+
+  // 本组比赛日期（YYYY-MM-DD，比赛地日期），空数组表示不限；必须在赛事日期内。
+  // 旧客户端不传时保持原值。
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(366)
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { each: true, message: '比赛日期格式应为 YYYY-MM-DD' })
+  playDates?: string[];
 }
 
 export class EventVenueRuleDto {

@@ -344,6 +344,8 @@ model TournamentGroup {
   ruleVersion Int @default(1)
   restrictVenues Boolean @default(false)
   allowedVenues GroupVenue[]
+  // 场地排程：本组只在这几天比赛，["2026-11-15", ...]（比赛地日期）。为空表示赛事期间哪天都可以。
+  playDates Json?
   sortOrder Int @default(0)
   events Event[]
   teamCompetitions TeamCompetition[]
@@ -1286,6 +1288,8 @@ model Match {
   scheduledAt           DateTime?
   scheduleLocked        Boolean              @default(false)
   scheduleOverride      Boolean              @default(false)
+  // 临时改期：管理员确认本场可以排在组别比赛日期以外的日子（TournamentGroup.playDates）。
+  dateOverride          Boolean              @default(false)
   unscheduledReason     String?              @db.VarChar(255)
   durationMinutes       Int                  @default(45)
   status                MatchStatus          @default(PENDING)

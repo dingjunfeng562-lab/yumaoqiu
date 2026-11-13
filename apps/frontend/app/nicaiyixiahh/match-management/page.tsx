@@ -1292,7 +1292,7 @@ function MatchManageDrawer({
           <Divider titlePlacement="left" style={{ margin: '18px 0 12px' }}>时间 / 场地 / 裁判</Divider>
           <Form form={form} layout="vertical" requiredMark={false} initialValues={initialValues}>
             <Form.Item name="scheduleLocked" valuePropName="checked"><Checkbox>保留本次人工排程</Checkbox></Form.Item>
-            <Form.Item name="allowOutsideGroup" valuePropName="checked"><Checkbox>允许本场临时借用组别范围外的场地</Checkbox></Form.Item>
+            <Form.Item name="allowOutsideGroup" valuePropName="checked"><Checkbox>允许本场临时超出组别规则（范围外场地或日期）</Checkbox></Form.Item>
             <Form.Item name="scheduledAt" label="比赛时间">
               <DatePicker
                 showTime={{ format: 'HH:mm' }}

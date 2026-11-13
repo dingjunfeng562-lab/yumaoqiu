@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import { useSession } from 'next-auth/react';
 import {
   Table,
@@ -79,6 +79,10 @@ interface Event {
   id: string;
   tournamentId: string;
   tournament: Tournament;
+  /** 所属组别；groupLabel 是保存在单项上的组别名（组别改名时同步）。 */
+  groupId?: string | null;
+  groupLabel?: string | null;
+  group?: { id: string; name: string } | null;
   type: string;
   format: string;
   scoringRule: string;
@@ -120,6 +124,20 @@ const DOUBLES_TYPES = new Set(['MENS_DOUBLES', 'WOMENS_DOUBLES', 'MIXED_DOUBLES'
 function entryUnit(type: string | undefined) {
   return DOUBLES_TYPES.has(String(type)) ? '队' : '人';
 }
+
+/** 单项所属组别名；早期没有组别的单项为空。 */
+function eventGroupName(event: Pick<Event, 'group' | 'groupLabel'>) {
+  return event.group?.name ?? event.groupLabel ?? '';
+}
+
+/** 「甲组 · 女子单打」；没有组别时只写项目名。 */
+function eventLabel(event: Pick<Event, 'group' | 'groupLabel' | 'type'>) {
+  const type = EVENT_TYPE_LABELS[event.type] || event.type;
+  const group = eventGroupName(event);
+  return group ? `${group} · ${type}` : type;
+}
+
+type GroupOption = { id: string; name: string };
 
 function customRuleSummary(point: number, cap?: number | null, gamesToWin?: number | null) {
   const capText = cap && cap > point ? `（封顶${cap}）` : '';
@@ -173,6 +191,34 @@ export default function EventsPage() {
   const [deletePreview, setDeletePreview] = useState<DeletePreview | null>(null);
   const [deleteNote, setDeleteNote] = useState('');
   const [deleting, setDeleting] = useState(false);
+  // 添加单项时可选的组别（随弹窗里选的赛事加载）；null 表示还在加载。
+  const [formGroups, setFormGroups] = useState<GroupOption[] | null>(null);
+  const formTournamentId = Form.useWatch('tournamentId', form) as string | undefined;
+
+  useEffect(() => {
+    if (!token || !modalOpen || editing || !formTournamentId) return;
+    let cancelled = false;
+    setFormGroups(null);
+    apiFetch<GroupOption[]>(`/admin/competitions/${formTournamentId}/groups`, { token })
+      .then((data) => {
+        if (cancelled) return;
+        const groups = data.map(({ id, name }) => ({ id, name }));
+        setFormGroups(groups);
+        // 只有一个组别时直接选上。
+        if (groups.length === 1 && !form.getFieldValue('groupId')) form.setFieldValue('groupId', groups[0].id);
+      })
+      .catch(() => { if (!cancelled) setFormGroups([]); });
+    return () => { cancelled = true; };
+  }, [token, modalOpen, editing, formTournamentId, form]);
+
+  // 「组别」列的表头筛选：列表已按组别顺序排好，按出现顺序取。
+  const groupFilters = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const event of events) {
+      if (!seen.has(event.groupId ?? '')) seen.set(event.groupId ?? '', eventGroupName(event) || '未分组');
+    }
+    return [...seen].map(([value, text]) => ({ text, value }));
+  }, [events]);
 
   const fetchTournaments = useCallback(async () => {
     if (!token) return;
@@ -365,6 +411,14 @@ export default function EventsPage() {
   };
 
   const columns = [
+    {
+      title: '组别',
+      key: 'group',
+      render: (_: unknown, r: Event) => eventGroupName(r) || '—',
+      // 只有一个组别时不显示筛选。
+      filters: groupFilters.length > 1 ? groupFilters : undefined,
+      onFilter: (value: unknown, r: Event) => (r.groupId ?? '') === value,
+    },
     { title: '单项', dataIndex: 'type', render: (v: string) => EVENT_TYPE_LABELS[v] || v },
     { title: '赛制', dataIndex: 'format', render: (v: string) => FORMAT_LABELS[v] || v },
     {
@@ -449,10 +503,12 @@ export default function EventsPage() {
         </Space>
       </div>
 
-      <Table rowKey="id" columns={columns} dataSource={events} loading={loading} pagination={false} />
+      {/* 换赛事时重建表格，免得上一个赛事的组别筛选把列表筛空。 */}
+      {/* antd 没配中文语言包，组别筛选的按钮文字要自己给。 */}
+      <Table key={selectedTournamentId} rowKey="id" columns={columns} dataSource={events} loading={loading} pagination={false} locale={{ filterConfirm: '确定', filterReset: '重置' }} />
 
       <Modal
-        title={editing ? '编辑单项' : '添加单项'}
+        title={editing ? `编辑单项：${eventLabel(editing)}` : '添加单项'}
         open={modalOpen}
         onOk={handleSubmit}
         onCancel={() => setModalOpen(false)}
@@ -466,6 +522,21 @@ export default function EventsPage() {
             <Form.Item name="tournamentId" label="所属赛事" rules={[{ required: true }]}>
               <Select
                 options={tournaments.map((t) => ({ value: t.id, label: t.name }))}
+                onChange={() => form.setFieldValue('groupId', undefined)}
+              />
+            </Form.Item>
+          )}
+          {!editing && (
+            <Form.Item
+              name="groupId"
+              label="组别"
+              rules={[{ required: true, message: '请选择组别' }]}
+              extra={formGroups && !formGroups.length ? '这个赛事还没有组别，请先在赛事管理里添加组别' : undefined}
+            >
+              <Select
+                placeholder="选择组别"
+                loading={formGroups === null}
+                options={(formGroups ?? []).map((g) => ({ value: g.id, label: g.name }))}
               />
             </Form.Item>
           )}

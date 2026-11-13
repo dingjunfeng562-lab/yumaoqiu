@@ -225,7 +225,7 @@ export default function TeamCompetitionGroups({ competitionId, token, teams, for
         <Form.Item name="venueId" label="场地" rules={[{ required: true, message: '请选择场地' }]}><Select options={venues.filter(venue => venue.isActive).map(venue => ({ value: venue.id, label: venue.name }))} /></Form.Item>
         <Form.Item name="scheduledAt" label="第一个未开始子项的开始时间" rules={[{ required: true, message: '请选择开始时间' }]}><DatePicker showTime format="YYYY-MM-DD HH:mm" style={{ width: '100%' }} /></Form.Item>
         <Form.Item name="scheduleLocked" valuePropName="checked"><Checkbox>保留人工安排，重新排程时保持场地与时间</Checkbox></Form.Item>
-        <Form.Item name="allowOutsideGroup" valuePropName="checked"><Checkbox>允许本场临时借用组别范围外场地</Checkbox></Form.Item>
+        <Form.Item name="allowOutsideGroup" valuePropName="checked"><Checkbox>允许本场临时超出组别规则（范围外场地或日期）</Checkbox></Form.Item>
       </Form>
     </Modal>
     {format === 'GROUP_PLUS_KNOCKOUT' && groups.length > 0 && knockoutEmpty && <Space orientation="vertical" style={{ marginTop: 16 }}>

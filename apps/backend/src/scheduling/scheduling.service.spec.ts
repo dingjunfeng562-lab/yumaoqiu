@@ -1,6 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { SchedulingService } from './scheduling.service';
+import { SchedulingService, normalizePlayDates } from './scheduling.service';
 
 type TestDailyWindow = {
   startMinutes: number;
@@ -151,5 +151,152 @@ describe('manual team court adjustments', () => {
     tx.$transaction.mockRejectedValueOnce(new Error('rollback'));
     await expect(service.updateMatchSchedule('m0', { venueId: 'court4' })).rejects.toThrow('rollback');
     expect(gateway.emitBracketUpdate).not.toHaveBeenCalled();
+  });
+});
+
+describe('group play dates', () => {
+  type DateInternals = {
+    parseDailyWindow(startTime: string, endTime: string): TestDailyWindow;
+    normalizeToDailyWindow(timestamp: number, matchMinutes: number, window: TestDailyWindow, allowedDays?: string[] | null): number;
+    tournamentDays(tournament: { startDate: Date; endDate: Date }): string[];
+  };
+  const internals = new SchedulingService({} as PrismaService) as unknown as DateInternals;
+  const window = internals.parseDailyWindow('08:00', '18:00');
+
+  it('jumps to the start of the next allowed day', () => {
+    const start = new Date('2026-09-26T01:00:00.000Z').getTime(); // 09-26 09:00 in Asia/Shanghai
+    const result = internals.normalizeToDailyWindow(start, 60, window, ['2026-09-28']);
+    expect(new Date(result).toISOString()).toBe('2026-09-28T00:00:00.000Z'); // 09-28 08:00
+  });
+
+  it('keeps a time that is already on an allowed day', () => {
+    const start = new Date('2026-09-26T01:00:00.000Z').getTime();
+    expect(internals.normalizeToDailyWindow(start, 60, window, ['2026-09-26', '2026-09-28'])).toBe(start);
+  });
+
+  it('skips disallowed days when the match no longer fits today', () => {
+    const start = new Date('2026-09-26T09:30:00.000Z').getTime(); // 09-26 17:30
+    const result = internals.normalizeToDailyWindow(start, 60, window, ['2026-09-26', '2026-09-28']);
+    expect(new Date(result).toISOString()).toBe('2026-09-28T00:00:00.000Z');
+  });
+
+  it('returns Infinity when no allowed day is left', () => {
+    const start = new Date('2026-09-26T01:00:00.000Z').getTime();
+    expect(internals.normalizeToDailyWindow(start, 60, window, ['2026-09-25'])).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it('lists every tournament day in Asia/Shanghai', () => {
+    expect(internals.tournamentDays({
+      startDate: new Date('2026-11-14T16:00:00.000Z'), // 11-15 00:00
+      endDate: new Date('2026-11-16T15:59:59.999Z'), // 11-16 23:59
+    })).toEqual(['2026-11-15', '2026-11-16']);
+  });
+
+  it('normalizes stored play dates', () => {
+    expect(normalizePlayDates(['2026-11-16', '2026-11-15', '2026-11-15', 'x', 3])).toEqual(['2026-11-15', '2026-11-16']);
+    expect(normalizePlayDates([])).toBeNull();
+    expect(normalizePlayDates(null)).toBeNull();
+  });
+});
+
+describe('scheduling with group play dates', () => {
+  // 赛事 10-22、10-23 两天（比赛地时间）；乙组不限日期。每个用例自己建组别，互不影响。
+  function makeGroups(g1Days: string[] | null) {
+    return {
+      g1: { id: 'g1', name: '甲组', restrictVenues: false, allowedVenues: [], events: [], playDates: g1Days },
+      g2: { id: 'g2', name: '乙组', restrictVenues: false, allowedVenues: [], events: [], playDates: null as string[] | null },
+    };
+  }
+  type Group = ReturnType<typeof makeGroups>['g1'];
+  function baseMatch(id: string, matchNo: number, group: Group) {
+    return {
+      id, matchNo, roundNo: 1, round: 'R1', teamMatchId: null, teamMatch: null, teamCompetitionItem: null, eventId: `e-${group.id}`,
+      event: { id: `e-${group.id}`, tournamentId: 't', groupId: group.id, type: 'MENS_SINGLES', format: 'SINGLE_ELIMINATION',
+        venueRule: 'INHERIT', allowedVenues: [], defaultMatchMinutes: null, group },
+      status: 'PENDING', startedAt: null, finishedAt: null, side1Id: null, side2Id: null, winnerSide: null,
+      venueId: null as string | null, venue: null, durationMinutes: 30, updatedAt: new Date('2026-10-01T00:00:00Z'),
+      scheduleLocked: false, scheduleOverride: false, dateOverride: false, unscheduledReason: null,
+      scheduledAt: null as Date | null,
+    };
+  }
+  type MockMatch = ReturnType<typeof baseMatch>;
+  const match = (id: string, matchNo: number, group: Group, extra: Partial<MockMatch> = {}): MockMatch => ({ ...baseMatch(id, matchNo, group), ...extra });
+  function setup(groups: ReturnType<typeof makeGroups>, matches: MockMatch[]) {
+    const prisma = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      match: {
+        findUnique: jest.fn().mockImplementation(({ where }) => matches.find(m => m.id === where.id)),
+        findMany: jest.fn().mockResolvedValue(matches),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      tournament: { findUnique: jest.fn().mockResolvedValue({ id: 't', defaultMatchMinutes: 30, breakMinutes: 10,
+        startDate: new Date('2026-10-21T16:00:00Z'), endDate: new Date('2026-10-23T15:59:00Z'), dailyStartTime: '08:00', dailyEndTime: '18:00' }) },
+      venue: { findMany: jest.fn().mockResolvedValue([{ id: 'court1', name: '1号场', isActive: true, tournamentId: 't', sortOrder: 0 }]) },
+      teamCompetition: { findMany: jest.fn().mockResolvedValue([]) },
+      tournamentGroup: { findMany: jest.fn().mockResolvedValue(Object.values(groups)) },
+      event: { count: jest.fn().mockResolvedValue(2) },
+      scheduleOperationLog: { create: jest.fn().mockResolvedValue({}) },
+      $transaction: jest.fn(),
+    };
+    prisma.$transaction.mockImplementation(callback => callback(prisma));
+    const service = new SchedulingService(prisma as unknown as PrismaService, { emitBracketUpdate: jest.fn() } as never);
+    return { service, tx: prisma };
+  }
+  const placed = (at: string) => ({ venueId: 'court1', scheduledAt: new Date(at) });
+
+  it('auto schedule keeps a group on its dates and reports when they are full', async () => {
+    const groups = makeGroups(['2026-10-23']);
+    const { service } = setup(groups, [
+      match('a1', 1, groups.g1, { durationMinutes: 600 }),
+      match('a2', 2, groups.g1, { durationMinutes: 600 }),
+      match('b1', 1, groups.g2),
+    ]);
+    const result = (await service.autoSchedule({ tournamentId: 't', startAt: '2026-10-22T00:00:00.000Z', preview: true })) as unknown as {
+      preview: { matches: Array<{ id: string; scheduledAt: string | null }>; unscheduled: Array<{ matchId: string; reason: string }> };
+    };
+    const at = (id: string) => result.preview.matches.find(m => m.id === id)?.scheduledAt;
+    expect(at('a1')).toBe('2026-10-23T00:00:00.000Z'); // 甲组只排 10-23
+    expect(at('b1')).toBe('2026-10-22T00:00:00.000Z'); // 乙组不限，排在第一天
+    expect(result.preview.unscheduled).toEqual([{ matchId: 'a2', reason: expect.stringContaining('甲组的比赛日期（10月23日）内已无空位') }]);
+  });
+
+  it('asks for confirmation before moving a match to a day outside the group dates', async () => {
+    const groups = makeGroups(['2026-10-22']);
+    const { service, tx } = setup(groups, [match('a1', 1, groups.g1, placed('2026-10-22T01:00:00Z'))]);
+    await expect(service.updateMatchSchedule('a1', { scheduledAtLocal: '2026-10-23 09:00' }))
+      .rejects.toThrow('所选日期不在甲组的比赛日期（10月22日）内');
+    expect(tx.match.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('saves a confirmed move as 临时改期 and clears it when moved back', async () => {
+    const groups = makeGroups(['2026-10-22']);
+    const first = setup(groups, [match('a1', 1, groups.g1, placed('2026-10-22T01:00:00Z'))]);
+    await first.service.updateMatchSchedule('a1', { scheduledAtLocal: '2026-10-23 09:00', allowOutsideGroup: true });
+    expect(first.tx.match.updateMany.mock.calls[0][0].data.dateOverride).toBe(true);
+
+    const second = setup(groups, [match('a1', 1, groups.g1, { ...placed('2026-10-23T01:00:00Z'), dateOverride: true })]);
+    await second.service.updateMatchSchedule('a1', { scheduledAtLocal: '2026-10-22 10:00' });
+    expect(second.tx.match.updateMany.mock.calls[0][0].data.dateOverride).toBe(false);
+  });
+
+  it('does not ask again when the match stays on its current day, and keeps flagging it', async () => {
+    const groups = makeGroups(['2026-10-22']);
+    const { service, tx } = setup(groups, [match('a1', 1, groups.g1, placed('2026-10-23T01:00:00Z'))]);
+    const schedule = await service.getSchedule('t');
+    expect(schedule.tournamentDays).toEqual(['2026-10-22', '2026-10-23']);
+    expect(schedule.matches[0].conflicts.map(c => c.type)).toContain('GROUP_DATE');
+    await service.updateMatchSchedule('a1', { scheduledAtLocal: '2026-10-23 10:00' });
+    expect(tx.match.updateMany.mock.calls[0][0].data.dateOverride).toBe(false);
+  });
+
+  it('finds the next available time only within the group dates', async () => {
+    const groups = makeGroups(['2026-10-22']);
+    const { service } = setup(groups, [
+      match('a1', 1, groups.g1, placed('2026-10-22T01:00:00Z')),
+      // 乙组占满 1 号场 10-22 全天；10-23 不是甲组的比赛日期。
+      match('b1', 1, groups.g2, { ...placed('2026-10-22T00:00:00Z'), durationMinutes: 600 }),
+    ]);
+    await expect(service.previewMatchSchedule('a1', { venueId: 'court1', findNextAvailable: true }))
+      .rejects.toThrow('甲组的比赛日期（10月22日）内没有可用时段');
   });
 });
