@@ -8,8 +8,11 @@ export type RegistrationGroupInfo = {
   tournamentId: string; title: string; groupId: string; groupName: string;
   fieldTemplate: string; groupFields: GroupFields; ageRule: AgeRule; ageRuleLabel: string;
   maxRegistrationEvents?: number; registrationOpen?: boolean;
-  events: Array<{ id: string; type: string; label: string; isDouble: boolean }>;
+  // 名额：maxEntries 单打按人、双打按队；remaining 为剩余名额，没设上限时为 null。
+  events: Array<{ id: string; type: string; label: string; isDouble: boolean; maxEntries?: number | null; remaining?: number | null }>;
   payment?: { singlesFee: number; doublesFee: number } | null;
+  // 本组总人数上限和剩余名额；满了以后新的人报不进来，已报名的选手仍可追加项目。
+  maxEntrants?: number | null; remaining?: number | null;
 };
 export const GROUP_EVENT_OPTIONS = [
   { value: 'MENS_SINGLES', label: '男子单打' }, { value: 'WOMENS_SINGLES', label: '女子单打' },

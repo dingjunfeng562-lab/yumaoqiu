@@ -1,4 +1,4 @@
-import { ArrayMaxSize, ArrayMinSize, ArrayUnique, IsArray, IsBoolean, IsEnum, IsIn, IsInt, IsObject, IsOptional, IsString, MaxLength, Min, MinLength } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, ArrayUnique, IsArray, IsBoolean, IsEnum, IsIn, IsInt, IsObject, IsOptional, IsString, Max, MaxLength, Min, MinLength } from 'class-validator';
 import { EventType } from '@prisma/client';
 import { AgeRule, GroupFields } from '../common/age-eligibility';
 
@@ -18,6 +18,10 @@ export class SaveRegistrationGroupDto {
   @IsOptional() @IsInt() @Min(0) doublesFee?: number;
   @IsOptional() @IsInt() @Min(0) teamFee?: number;
   @IsOptional() @IsString() @MaxLength(2000) paymentInstructions?: string;
+  // 本组总人数上限，null 表示不限；不传时保持原值。只限制扫码报名，后台添加不受限制。
+  @IsOptional() @IsInt() @Min(1) @Max(100000) maxEntrants?: number | null;
+  // 各项目名额，键为项目类型（单打按人、双打按队），null 表示不限；没传的项目保持原值。
+  @IsOptional() @IsObject() eventCaps?: Partial<Record<EventType, number | null>>;
 }
 
 /** 只切换组别报名码的启停，不动组别的其它设置。 */

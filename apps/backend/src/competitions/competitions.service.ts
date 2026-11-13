@@ -62,6 +62,12 @@ import {
   requireAdminActor,
 } from '../common/registration-changes';
 import { normalizeContact, registrationDisplayName } from '../payments/payment-rules';
+import {
+  ensureRegistrationCapacity,
+  eventEntryCounts,
+  groupEntrantCounts,
+  remainingSlots,
+} from '../common/registration-capacity';
 
 const EVENT_TYPE_LABELS: Record<EventType, string> = {
   MENS_SINGLES: '男子单打',
@@ -285,11 +291,19 @@ export class CompetitionsService {
       const payment = payments.find((item) => item.groupId === groupId);
       return payment?.enabled ? { singlesFee: payment.singlesFee, doublesFee: payment.doublesFee } : null;
     };
+    // 名额：设了上限的项目和组别返回剩余名额，报名页据此显示「剩 N 个」「已满」；提交时后端还会再核对一次。
+    const [entryCounts, entrantCounts] = await Promise.all([
+      eventEntryCounts(this.prisma, found.events.filter((event) => event.maxEntries != null).map((event) => event.id)),
+      groupEntrantCounts(this.prisma, groups.filter((group) => group.maxEntrants != null).map((group) => group.id)),
+    ]);
     const eventView = (event: (typeof found.events)[number]) => ({
       id: event.id,
       type: event.type,
       label: eventDisplayLabel(event),
       isDouble: this.isDoubleEvent(event.type),
+      // 名额上限（单打按人、双打按队）和剩余名额；没设上限时都为 null。
+      maxEntries: event.maxEntries ?? null,
+      remaining: remainingSlots(event.maxEntries, entryCounts.get(event.id)),
     });
     return {
       tournamentId: found.id,
@@ -320,6 +334,9 @@ export class CompetitionsService {
           ageRuleLabel: ageRuleLabel(rule),
           events: found.events.filter((event) => event.groupId === group.id).map(eventView),
           payment: paymentFor(group.id),
+          // 本组总人数上限和剩余名额；满了以后新报名提交不了，已报名的选手仍可追加项目。
+          maxEntrants: group.maxEntrants ?? null,
+          remaining: remainingSlots(group.maxEntrants, entrantCounts.get(group.id)),
         };
       }),
       preselectedGroupId: groups.some((group) => group.id === preselectedGroupId) ? preselectedGroupId : null,
@@ -597,6 +614,14 @@ export class CompetitionsService {
       const concurrent = await tx.competitionRegistration.findFirst({ where: { competitionId: competition.id, personKey, ...(existing ? { id: { not: existing.id } } : {}) } });
       if (concurrent) throw new ConflictException('该选手已提交报名，请勿重复提交');
       await this.ensureIdentityNotCrossGroup(tx, competition.id, group?.id ?? null, [own.identity, ...[...partners.values()].map(p => p.identity)].filter(Boolean).map(p => p!.fingerprint), existing?.id, submittedEventIds);
+      // 名额：新报名人占 1 个组别人数，这次新报的项目各占 1 个项目名额；已通过的选手追加项目（兼项）
+      // 不再占组别人数，只看新项目的名额。和上面的赛事锁在同一个事务里，同时抢最后一个名额只会进一个。
+      const appending = existing?.status === RegistrationStatus.APPROVED;
+      await ensureRegistrationCapacity(tx, {
+        group,
+        newPerson: !appending,
+        events: (appending ? newItems : dto.items).flatMap((item) => events.filter((event) => event.id === item.eventId.trim())),
+      });
       if (existing) {
         if (existing.status === RegistrationStatus.APPROVED) {
           const updated = await tx.competitionRegistration.update({

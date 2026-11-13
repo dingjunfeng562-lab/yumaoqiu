@@ -4,20 +4,23 @@ import { useEffect, useState, useCallback } from 'react';
 import { useSession } from 'next-auth/react';
 import {
   Table,
+  Alert,
   Button,
   Divider,
+  Input,
   Modal,
   Form,
   InputNumber,
   Radio,
   Select,
   Space,
-  Popconfirm,
+  Spin,
   Typography,
   message,
 } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
+import { yuan } from '@/lib/payments';
 
 const EVENT_TYPE_LABELS: Record<string, string> = {
   MENS_SINGLES: '男子单打',
@@ -88,6 +91,34 @@ interface Event {
   groupSize?: number | null;
   groupCount?: number | null;
   qualifiersPerGroup?: number | null;
+  /** 报名名额（单打按人、双打按队），空为不限；entryCount 为已占名额（已通过 + 待审核）。 */
+  maxEntries?: number | null;
+  entryCount?: number;
+}
+
+/** 删除单项前的影响预览（接口 GET /events/:id/delete-preview）。 */
+interface DeletePreview {
+  id: string;
+  label: string;
+  drawGenerated: boolean;
+  drawPublished: boolean;
+  entries: number;
+  paidCount: number;
+  paidAmount: number;
+  pendingApplications: number;
+  removedApplications: number;
+  keptApplications: number;
+  players: number;
+  matches: number;
+  startedMatches: number;
+  liveMatches: number;
+}
+
+const DOUBLES_TYPES = new Set(['MENS_DOUBLES', 'WOMENS_DOUBLES', 'MIXED_DOUBLES']);
+
+/** 名额单位：单打按人，双打按队。 */
+function entryUnit(type: string | undefined) {
+  return DOUBLES_TYPES.has(String(type)) ? '队' : '人';
 }
 
 function customRuleSummary(point: number, cap?: number | null, gamesToWin?: number | null) {
@@ -137,6 +168,11 @@ export default function EventsPage() {
   const [editing, setEditing] = useState<Event | null>(null);
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
+  // 删除确认框：先读影响预览，确认后连同报名一起删除。
+  const [deleteTarget, setDeleteTarget] = useState<Event | null>(null);
+  const [deletePreview, setDeletePreview] = useState<DeletePreview | null>(null);
+  const [deleteNote, setDeleteNote] = useState('');
+  const [deleting, setDeleting] = useState(false);
 
   const fetchTournaments = useCallback(async () => {
     if (!token) return;
@@ -239,6 +275,8 @@ export default function EventsPage() {
       rest.groupSize = null;
       rest.qualifiersPerGroup = null;
     }
+    // 名额留空表示不限：传 null 把原来的上限清掉。
+    rest.maxEntries = rest.maxEntries ?? null;
     const stageScoringRules = Object.keys(stageRules).length ? stageRules : null;
     const payload: Record<string, unknown> =
       scoringMethod === 'custom'
@@ -277,13 +315,52 @@ export default function EventsPage() {
     }
   };
 
-  const handleDelete = async (id: string) => {
+  const openDelete = async (record: Event) => {
+    setDeleteTarget(record);
+    setDeletePreview(null);
+    setDeleteNote('');
     try {
-      await apiFetch(`/events/${id}`, { method: 'DELETE', token });
-      message.success('已删除');
+      setDeletePreview(await apiFetch<DeletePreview>(`/events/${record.id}/delete-preview`, { token }));
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : '读取删除影响失败');
+      setDeleteTarget(null);
+    }
+  };
+
+  const closeDelete = () => {
+    if (deleting) return;
+    setDeleteTarget(null);
+    setDeletePreview(null);
+    setDeleteNote('');
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      const result = await apiFetch<Omit<DeletePreview, 'drawGenerated' | 'drawPublished'>>(`/events/${deleteTarget.id}/delete`, {
+        method: 'POST',
+        token,
+        body: JSON.stringify({ note: deleteNote.trim() || undefined }),
+      });
+      const parts = [
+        result.entries ? `参赛记录 ${result.entries} 条` : '',
+        result.removedApplications ? `整份报名表 ${result.removedApplications} 份` : '',
+        result.players ? `选手档案 ${result.players} 个` : '',
+        result.matches ? `比赛 ${result.matches} 场` : '',
+      ].filter(Boolean);
+      message.success(`已删除「${result.label}」${parts.length ? `，连同${parts.join('、')}` : ''}`, 6);
+      if (result.paidCount) {
+        message.warning(`其中 ${result.paidCount} 条已缴费，共 ${yuan(result.paidAmount)}，请线下退款；缴费操作记录里有删除记录`, 8);
+      }
+      setDeleteTarget(null);
+      setDeletePreview(null);
+      setDeleteNote('');
       fetchEvents();
     } catch (e: unknown) {
       message.error(e instanceof Error ? e.message : '删除失败');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -322,14 +399,33 @@ export default function EventsPage() {
       render: (v?: number | null) => (v ? `${v} 分钟` : '默认（按赛事）'),
     },
     {
+      title: '名额',
+      key: 'capacity',
+      render: (_: unknown, r: Event) => {
+        const unit = entryUnit(r.type);
+        const used = r.entryCount ?? 0;
+        if (r.maxEntries == null) {
+          return (
+            <span>
+              已报 {used} {unit} <Typography.Text type="secondary">（不限）</Typography.Text>
+            </span>
+          );
+        }
+        const full = used >= r.maxEntries;
+        return (
+          <Typography.Text type={full ? 'danger' : undefined}>
+            {used}/{r.maxEntries} {unit}{full ? '（已满）' : ''}
+          </Typography.Text>
+        );
+      },
+    },
+    {
       title: '操作',
       key: 'actions',
       render: (_: unknown, record: Event) => (
         <Space>
           <Button icon={<EditOutlined />} size="small" onClick={() => openEdit(record)}>编辑</Button>
-          <Popconfirm title="确认删除？" onConfirm={() => handleDelete(record.id)}>
-            <Button icon={<DeleteOutlined />} size="small" danger>删除</Button>
-          </Popconfirm>
+          <Button icon={<DeleteOutlined />} size="small" danger onClick={() => openDelete(record)}>删除</Button>
         </Space>
       ),
     },
@@ -557,7 +653,95 @@ export default function EventsPage() {
           >
             <InputNumber min={5} max={600} style={{ width: '100%' }} placeholder="留空使用赛事默认" />
           </Form.Item>
+
+          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.type !== cur.type}>
+            {({ getFieldValue }) => {
+              const unit = entryUnit(getFieldValue('type'));
+              return (
+                <Form.Item
+                  name="maxEntries"
+                  label="报名名额（选填）"
+                  extra={`单打按人、双打按队计，待审核和已通过都占名额，驳回、删除的让出名额；留空不限。只限制扫码报名，后台添加不受限制。${editing ? `当前已报 ${editing.entryCount ?? 0} ${entryUnit(editing.type)}。` : ''}`}
+                >
+                  <InputNumber min={1} max={100000} precision={0} suffix={unit} style={{ width: '100%' }} placeholder="不限" />
+                </Form.Item>
+              );
+            }}
+          </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title={deleteTarget ? `删除单项：${deletePreview?.label ?? EVENT_TYPE_LABELS[deleteTarget.type] ?? deleteTarget.type}` : ''}
+        open={!!deleteTarget}
+        onOk={confirmDelete}
+        onCancel={closeDelete}
+        okText="确认删除"
+        cancelText="取消"
+        okButtonProps={{ danger: true, disabled: !deletePreview }}
+        cancelButtonProps={{ disabled: deleting }}
+        confirmLoading={deleting}
+        destroyOnHidden
+      >
+        {deletePreview ? (
+          <Space orientation="vertical" size={12} style={{ width: '100%' }}>
+            <Alert
+              type="warning"
+              showIcon
+              title="单项和它的报名一起删除，不能恢复"
+              description={(
+                <ul style={{ margin: 0, paddingInlineStart: 18 }}>
+                  <li>参赛记录 {deletePreview.entries} 条（单打一人、双打一队算一条），缴费状态一并删除</li>
+                  {deletePreview.removedApplications ? (
+                    <li>只报了这一项的 {deletePreview.removedApplications} 人：整份报名表删除，报名编号失效，可以重新报名</li>
+                  ) : null}
+                  {deletePreview.keptApplications ? (
+                    <li>还报了其他项目的 {deletePreview.keptApplications} 人：只去掉这一项，其他项目、报名表和缴费不动</li>
+                  ) : null}
+                  {deletePreview.pendingApplications ? (
+                    <li>其中待审核的报名 {deletePreview.pendingApplications} 份，这一项一并去掉</li>
+                  ) : null}
+                  {deletePreview.players ? (
+                    <li>不再有任何报名的选手档案 {deletePreview.players} 个一并删除（选手库里的正式选手保留）</li>
+                  ) : null}
+                  {deletePreview.drawGenerated || deletePreview.matches ? (
+                    <li>签表、种子、分组{deletePreview.matches ? `和比赛 ${deletePreview.matches} 场` : ''}一并删除</li>
+                  ) : null}
+                </ul>
+              )}
+            />
+            {deletePreview.drawPublished || deletePreview.startedMatches ? (
+              <Alert
+                type="error"
+                showIcon
+                title={[
+                  deletePreview.drawPublished ? '签表已发布或已冻结' : '',
+                  deletePreview.startedMatches
+                    ? `已有 ${deletePreview.startedMatches} 场比赛开始或结束${deletePreview.liveMatches ? `（其中 ${deletePreview.liveMatches} 场正在比赛）` : ''}`
+                    : '',
+                ].filter(Boolean).join('，')}
+                description="删除后前台的对阵和比分一起消失，比赛成绩不能恢复。"
+              />
+            ) : null}
+            {deletePreview.paidCount ? (
+              <Alert
+                type="error"
+                showIcon
+                title={`其中 ${deletePreview.paidCount} 条已缴费，共 ${yuan(deletePreview.paidAmount)}，请线下退款`}
+                description="缴费操作记录里会为每条报名留一条「删除」记录，写明删除时的缴费状态和金额。"
+              />
+            ) : null}
+            <Input.TextArea
+              rows={2}
+              maxLength={200}
+              value={deleteNote}
+              onChange={(event) => setDeleteNote(event.target.value)}
+              placeholder="删除原因（可选），会记入缴费操作记录"
+            />
+          </Space>
+        ) : (
+          <div style={{ textAlign: 'center', padding: 24 }}><Spin /></div>
+        )}
       </Modal>
     </div>
   );

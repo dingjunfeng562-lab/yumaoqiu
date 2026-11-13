@@ -1,8 +1,13 @@
 import { legacyGroupId } from '../registration-groups/registration-groups.service';
 import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
-import { EntrantType, Format, Prisma } from '@prisma/client';
+import { EntrantType, Format, Prisma, RegistrationStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthActor, tournamentScope } from '../auth/admin-scope';
+import { eventDisplayLabel } from '../common/entrant';
+import { eventEntryCounts } from '../common/registration-capacity';
+import { ChangeActor, deleteOrphanPlayers, lockEvents } from '../common/registration-changes';
+import { registrationDisplayName } from '../payments/payment-rules';
+import { collectEventDeleteImpact } from './event-delete';
 import {
   CreateEventDto,
   STAGE_SCORING_KEYS,
@@ -49,12 +54,15 @@ export class EventsService {
     return created;
   }
 
-  findByTournament(tournamentId: string, actor?: AuthActor) {
-    return this.prisma.event.findMany({
+  async findByTournament(tournamentId: string, actor?: AuthActor) {
+    const events = await this.prisma.event.findMany({
       where: { tournamentId, tournament: tournamentScope(actor) },
       include: { tournament: true },
       orderBy: [{ entrantType: 'asc' }, { type: 'asc' }],
     });
+    // 单项管理的「名额」列：已占名额（已通过 + 待审核），口径与扫码报名的名额检查一致。
+    const counts = await eventEntryCounts(this.prisma, events.map((event) => event.id));
+    return events.map((event) => ({ ...event, entryCount: counts.get(event.id) ?? 0 }));
   }
 
   async findOne(id: string) {
@@ -172,10 +180,90 @@ export class EventsService {
     return { groupSize: null, groupCount: null };
   }
 
-  async remove(id: string) {
-    await this.findOne(id);
-    // 组名随所属组别保存（groupLabel = 组别名），删除单项不需要再同步其它单项的组名。
-    return this.prisma.event.delete({ where: { id } });
+  /** 删除单项前的影响预览，单项管理的删除确认框用。 */
+  async deletePreview(id: string) {
+    const event = await this.prisma.event.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        type: true,
+        groupLabel: true,
+        drawLocked: true,
+        drawPublished: true,
+        drawGeneratedAt: true,
+        _count: { select: { drawBrackets: true } },
+      },
+    });
+    if (!event) throw new NotFoundException(`单项 ${id} 不存在`);
+    const impact = await collectEventDeleteImpact(this.prisma, id);
+    return {
+      id: event.id,
+      label: eventDisplayLabel(event),
+      drawGenerated: Boolean(event.drawGeneratedAt) || event._count.drawBrackets > 0,
+      drawPublished: event.drawPublished || event.drawLocked,
+      ...impact.summary,
+    };
+  }
+
+  /**
+   * 删除单项，连同这个项目的报名一起删除，不能恢复。规则与参赛选手页、缴费管理的「删除报名」一致：
+   * - 每条已通过的报名在缴费操作记录里记一条「删除」，写明删除时的缴费状态和金额，便于退款对账；
+   * - 只报了这一项的人整份报名表删除（含待审核、已驳回），报名编号失效，可以重新报名；
+   *   兼项的人只去掉这一项，其他项目、报名表和缴费都不动；
+   * - 只为这些报名生成、没有别的报名或团体赛在用的选手档案一并删除，选手库里的正式选手保留；
+   * - 签表、种子、分组、比赛（含比分）、场地设置随单项一起删除。签表已发布或已开赛也可以删，确认框里会提示。
+   * 组名随所属组别保存（groupLabel = 组别名），删除单项不需要再同步其它单项的组名。
+   */
+  async remove(id: string, actor?: ChangeActor, note?: string) {
+    const found = await this.findOne(id);
+    const reason = note?.trim() ?? '';
+    return this.prisma.$transaction(
+      async (tx) => {
+        // 先锁赛事再锁单项：和扫码报名提交同一把赛事锁，删除过程中不会有人报进这个项目。
+        await tx.$queryRaw`SELECT id FROM Tournament WHERE id = ${found.tournamentId} FOR UPDATE`;
+        await lockEvents(tx, [id]);
+        const event = await tx.event.findUnique({ where: { id } });
+        if (!event) throw new NotFoundException('单项不存在或已删除');
+        const label = eventDisplayLabel(event);
+        const impact = await collectEventDeleteImpact(tx, id);
+
+        const approved = await tx.registration.findMany({
+          where: { eventId: id, status: RegistrationStatus.APPROVED },
+          include: { player1: { select: { name: true } }, player2: { select: { name: true } } },
+        });
+        const logNote = (reason ? `删除单项：${reason}` : '删除单项').slice(0, 255);
+        for (const row of approved) {
+          await tx.paymentLog.create({
+            data: {
+              tournamentId: event.tournamentId,
+              entrantType: event.entrantType,
+              action: 'DELETE',
+              registrationId: row.id,
+              targetName: registrationDisplayName(row).slice(0, 191),
+              itemName: label.slice(0, 120),
+              fromStatus: row.paymentStatus,
+              toStatus: row.paymentStatus,
+              amount: row.paidAmount,
+              note: logNote,
+              operatorId: actor?.id ?? null,
+              operatorName: actor?.username ?? null,
+            },
+          });
+        }
+
+        await tx.registration.deleteMany({ where: { eventId: id } });
+        await tx.competitionRegistrationEventItem.deleteMany({ where: { eventId: id } });
+        if (impact.removedApplicationIds.length) {
+          await tx.competitionRegistration.deleteMany({ where: { id: { in: impact.removedApplicationIds } } });
+        }
+        const players =
+          (await deleteOrphanPlayers(tx, impact.ownedPlayerIds, { registrationOwned: true })) +
+          (await deleteOrphanPlayers(tx, impact.adminPlayerIds, { registrationOwned: false }));
+        await tx.event.delete({ where: { id } });
+        return { id, label, ...impact.summary, players };
+      },
+      { timeout: 60_000, maxWait: 10_000 },
+    );
   }
 
   /**

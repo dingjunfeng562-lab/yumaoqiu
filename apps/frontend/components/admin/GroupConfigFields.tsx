@@ -49,6 +49,13 @@ export type GroupFormValues = {
   doublesYuan: number;
   teamYuan: number;
   paymentInstructions?: string;
+  /** 本组总人数上限，空为不限。 */
+  maxEntrants?: number | null;
+  /** 各项目名额，键为项目类型：单打按人、双打按队；空为不限。 */
+  eventCaps?: Record<string, number | null | undefined>;
+  /** 已报人数、各项目已占名额：只用于显示，不提交。 */
+  entrantCount?: number;
+  entryCounts?: Record<string, number>;
 };
 
 /** 接口返回的组别（只列这里用到的字段）。 */
@@ -60,10 +67,19 @@ export type GroupSource = {
   enabled: boolean;
   fieldRules: GroupFields;
   ageRule: AgeRule;
-  events: Array<{ type: string }>;
+  events: Array<{ type: string; maxEntries?: number | null; entryCount?: number }>;
   payment?: { enabled: boolean; singlesFee: number; doublesFee: number; teamFee: number; instructions?: string | null } | null;
+  maxEntrants?: number | null;
+  entrantCount?: number;
   _count?: { applications: number };
 };
+
+const DOUBLES_TYPES = new Set(['MENS_DOUBLES', 'WOMENS_DOUBLES', 'MIXED_DOUBLES']);
+
+/** 名额单位：单打按人，双打按队。 */
+export function entryUnit(type: string) {
+  return DOUBLES_TYPES.has(type) ? '队' : '人';
+}
 
 /** 学生预设：收学号、学院；第三方（空白组别）：姓名、性别、单位、年龄、联系方式、身份证号、衣服尺寸。 */
 export function presetFields(kind: 'STUDENT' | 'THIRD_PARTY'): GroupFields {
@@ -94,6 +110,8 @@ export function newGroupValues(refDate?: string, preset: GroupPreset = { kind: '
     singlesYuan: 0,
     doublesYuan: 0,
     teamYuan: 0,
+    maxEntrants: null,
+    eventCaps: {},
   };
   if (preset.kind === 'STUDENT') return { ...base, name: '学生组', fieldRules: presetFields('STUDENT') };
   // U8 = 未满 9 岁，即 8 岁及以下。
@@ -130,6 +148,10 @@ export function groupToFormValues(group: GroupSource, refDate?: string): GroupFo
     doublesYuan: (group.payment?.doublesFee ?? 0) / 100,
     teamYuan: (group.payment?.teamFee ?? 0) / 100,
     paymentInstructions: group.payment?.instructions ?? undefined,
+    maxEntrants: group.maxEntrants ?? null,
+    eventCaps: Object.fromEntries(group.events.map((event) => [event.type, event.maxEntries ?? null])),
+    entrantCount: group.entrantCount,
+    entryCounts: Object.fromEntries(group.events.map((event) => [event.type, event.entryCount ?? 0])),
   };
 }
 
@@ -177,6 +199,9 @@ export function groupPayload(values: GroupFormValues) {
     doublesFee: Math.round((values.doublesYuan ?? 0) * 100),
     teamFee: Math.round((values.teamYuan ?? 0) * 100),
     paymentInstructions: values.paymentInstructions?.trim() || undefined,
+    // 名额：空为不限（传 null 清空）；只提交勾选的项目。
+    maxEntrants: values.maxEntrants ?? null,
+    eventCaps: Object.fromEntries((values.eventTypes ?? []).map((type) => [type, values.eventCaps?.[type] ?? null])),
   };
 }
 
@@ -249,6 +274,9 @@ export function GroupConfigFields({
   const legacy = Boolean(Form.useWatch(abs('legacy'), form));
   const locked = Boolean(Form.useWatch(abs('locked'), form));
   const paymentEnabled = Form.useWatch(abs('paymentEnabled'), form);
+  const selectedTypes = (Form.useWatch(abs('eventTypes'), form) ?? []) as string[];
+  const entryCounts = Form.useWatch(abs('entryCounts'), form) as Record<string, number> | undefined;
+  const entrantCount = Form.useWatch(abs('entrantCount'), form) as number | undefined;
   const mode = age.mode ?? 'NONE';
   const student = isStudentGroup({ legacy, fieldRules });
   const preview = mode === 'BY_AGE' && (present(age.minAge) || present(age.maxAge)) && age.refDate
@@ -264,13 +292,13 @@ export function GroupConfigFields({
 
   return (
     <>
-      {(['id', 'legacy', 'locked'] as const).map((key) => (
+      {(['id', 'legacy', 'locked', 'entrantCount', 'entryCounts'] as const).map((key) => (
         <Form.Item key={key} name={n(key)} noStyle>
           <HiddenValue />
         </Form.Item>
       ))}
       {locked ? (
-        <Alert type="warning" showIcon title="本组已有报名，年龄要求和报名字段已锁定；名称、项目、开放报名和收费仍可修改。" style={{ marginBottom: 12 }} />
+        <Alert type="warning" showIcon title="本组已有报名，年龄要求和报名字段已锁定；名称、项目、名额、开放报名和收费仍可修改。" style={{ marginBottom: 12 }} />
       ) : null}
 
       <SectionTitle index="①" title="组别" />
@@ -385,6 +413,31 @@ export function GroupConfigFields({
       <Form.Item name={n('eventTypes')} rules={[{ required: true, type: 'array', min: 1, message: '至少选择一个项目' }]}>
         <Checkbox.Group options={GROUP_EVENT_OPTIONS} />
       </Form.Item>
+      {selectedTypes.length ? (
+        <div className="mb-4 rounded-lg border border-slate-200 px-4 pb-1 pt-3">
+          <Typography.Text strong>项目名额（选填）</Typography.Text>
+          <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>
+            单打按人、双打按队计，待审核和已通过都占名额，驳回、删除的让出名额；留空不限。只限制扫码报名，后台添加不受限制。
+          </div>
+          <div className="grid gap-x-6 md:grid-cols-2">
+            {GROUP_EVENT_OPTIONS.filter((option) => selectedTypes.includes(option.value)).map((option) => {
+              const unit = entryUnit(option.value);
+              const used = entryCounts?.[option.value];
+              return (
+                <div key={option.value} className="flex items-center gap-3">
+                  <Typography.Text style={{ width: 64, flexShrink: 0 }}>{option.label}</Typography.Text>
+                  <Form.Item name={n('eventCaps', option.value)} style={{ marginBottom: 8 }}>
+                    <InputNumber min={1} max={100000} precision={0} placeholder="不限" suffix={unit} style={{ width: 130 }} />
+                  </Form.Item>
+                  {used != null ? (
+                    <Typography.Text type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>已报 {used} {unit}</Typography.Text>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
 
       <SectionTitle
         index="③"
@@ -411,6 +464,13 @@ export function GroupConfigFields({
       <SectionTitle index="④" title="报名设置" />
       <Form.Item name={n('enabled')} label="开放本组报名" valuePropName="checked" extra="关闭后，报名人扫码时看不到本组。">
         <Switch />
+      </Form.Item>
+      <Form.Item
+        name={n('maxEntrants')}
+        label="本组总人数上限（选填）"
+        extra={`一人一份报名，报几个项目都算 1 人，双打搭档不另算；待审核和已通过都占名额，留空不限。满了以后新的人报不进来，已报名的选手仍可追加项目。只限制扫码报名，后台添加不受限制。${entrantCount != null ? `当前已报 ${entrantCount} 人。` : ''}`}
+      >
+        <InputNumber min={1} max={100000} precision={0} placeholder="不限" suffix="人" style={{ width: 200 }} />
       </Form.Item>
       {showPayment ? (
         <>

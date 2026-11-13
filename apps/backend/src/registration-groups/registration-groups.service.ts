@@ -1,13 +1,34 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { EntrantType, Prisma, Tournament } from '@prisma/client';
+import { EntrantType, EventType, Prisma, Tournament } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ageRuleLabel, groupFields, normalizeAgeRule } from '../common/age-eligibility';
 import { generateRegistrationCode } from '../common/registration-code';
 import { normalizeRegistrationFieldRules } from '../common/entrant';
+import { eventEntryCounts, groupEntrantCounts } from '../common/registration-capacity';
 import { defaultTeamCompetitionName } from '../common/team-competition-label';
 import { SaveRegistrationGroupDto } from './registration-groups.dto';
 
 export function legacyGroupId(tournamentId: string, type: EntrantType) { return `${tournamentId}_${type}`; }
+
+/** 各项目名额：只接受 1 以上的整数或 null（不限）；没传的项目不在结果里，保存时保持原值。 */
+function normalizeEventCaps(value: SaveRegistrationGroupDto['eventCaps']) {
+  const caps = new Map<EventType, number | null>();
+  if (!value || typeof value !== 'object') return caps;
+  const types = Object.values(EventType) as string[];
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!types.includes(key)) continue;
+    if (raw === null || raw === undefined) {
+      caps.set(key as EventType, null);
+      continue;
+    }
+    const limit = Number(raw);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100000) {
+      throw new BadRequestException('项目名额需填 1 以上的整数，留空表示不限');
+    }
+    caps.set(key as EventType, limit);
+  }
+  return caps;
+}
 
 /**
  * 赛事唯一的默认组别是学生组，ID 固定，报名码与赛事上的兼容字段同步；
@@ -70,8 +91,11 @@ export async function saveRegistrationGroup(
   // 内部仍用 EntrantType.SOCIAL 表示第三方（非学生、免登录）报名。
   const entrantType = fieldTemplate === 'SCHOOL' ? EntrantType.SCHOOL : EntrantType.SOCIAL;
   // 报名码改为一个赛事一个码，组别不再单独生成码；已有的旧组别码保留，扫旧码仍能进入并预选本组。
+  // 名额随时可以改（已有报名也能改）：改小到比已报的还少时，已报上的不受影响，只是不能再报新的。
+  const maxEntrants = dto.maxEntrants === undefined ? current?.maxEntrants ?? null : dto.maxEntrants;
+  const eventCaps = normalizeEventCaps(dto.eventCaps);
   const data = { name, categoryLabel: dto.categoryLabel?.trim() || null, fieldTemplate,
-    enabled: dto.enabled, registrationCodeEnabled: dto.registrationCodeEnabled ?? current?.registrationCodeEnabled ?? true, fieldRules, ageRule };
+    enabled: dto.enabled, registrationCodeEnabled: dto.registrationCodeEnabled ?? current?.registrationCodeEnabled ?? true, fieldRules, ageRule, maxEntrants };
   const group = current
     ? await tx.tournamentGroup.update({ where: { id: current.id }, data: { ...data, ruleVersion: current.ruleVersion + (hasPeople ? 0 : 1) } })
     : await tx.tournamentGroup.create({ data: { ...data, tournamentId, sortOrder: await tx.tournamentGroup.count({ where: { tournamentId } }) } });
@@ -82,9 +106,10 @@ export async function saveRegistrationGroup(
     await tx.event.delete({ where: { id: event.id } });
   }
   for (const type of dto.eventTypes) {
+    const cap = eventCaps.get(type);
     await tx.event.upsert({ where: { tournamentId_groupId_type: { tournamentId, groupId: group.id, type } },
-      create: { tournamentId, groupId: group.id, type, entrantType, groupLabel: name, format: 'SINGLE_ELIMINATION', scoringRule: 'TWENTYONE_BO3', scoringMode: 'STANDARD_GOLDEN' },
-      update: { groupLabel: name, entrantType } });
+      create: { tournamentId, groupId: group.id, type, entrantType, groupLabel: name, format: 'SINGLE_ELIMINATION', scoringRule: 'TWENTYONE_BO3', scoringMode: 'STANDARD_GOLDEN', maxEntries: cap ?? null },
+      update: { groupLabel: name, entrantType, ...(cap === undefined ? {} : { maxEntries: cap }) } });
   }
   await tx.teamCompetition.updateMany({ where: { groupId: group.id }, data: { entrantType } });
   // 团体赛名称跟着组别走：组别改名时，自动名称「旧组别名团体赛」一起改；早期手填的名称不动。
@@ -128,7 +153,15 @@ export class RegistrationGroupsService {
       where: { tournamentId }, orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
       include: { events: true, paymentSettings: true, _count: { select: { applications: true, teamCompetitions: true } } },
     });
-    return groups.map(group => ({ ...group, fieldRules: groupFields(group.fieldRules),
+    // 组别卡片上显示「已报 N 人」和各项目「已报 N 人/队」，口径与扫码报名的名额检查一致。
+    const [entryCounts, entrantCounts] = await Promise.all([
+      eventEntryCounts(this.prisma, groups.flatMap(group => group.events.map(event => event.id))),
+      groupEntrantCounts(this.prisma, groups.map(group => group.id)),
+    ]);
+    return groups.map(group => ({ ...group,
+      events: group.events.map(event => ({ ...event, entryCount: entryCounts.get(event.id) ?? 0 })),
+      entrantCount: entrantCounts.get(group.id) ?? 0,
+      fieldRules: groupFields(group.fieldRules),
       ageRule: normalizeAgeRule(group.ageRule), ageRuleLabel: ageRuleLabel(normalizeAgeRule(group.ageRule)),
       payment: group.paymentSettings[0] ?? null }));
   }

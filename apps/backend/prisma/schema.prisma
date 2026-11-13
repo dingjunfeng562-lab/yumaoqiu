@@ -334,6 +334,9 @@ model TournamentGroup {
   legacyType EntrantType?
   fieldTemplate String @default("GENERAL") @db.VarChar(16)
   enabled Boolean @default(true)
+  // 本组总人数上限：一人一份报名，报几个项目都算 1 人；待审核和已通过都占名额。为空表示不限。
+  // 只限制扫码报名，后台添加、导入、审核通过不受限制；已报名的选手追加项目不占组别人数。
+  maxEntrants Int?
   registrationCode String? @unique @db.VarChar(16)
   registrationCodeEnabled Boolean @default(true)
   fieldRules Json?
@@ -834,6 +837,9 @@ model Event {
   drawGeneratedAt    DateTime?
   /// 签表生成后报名有删除、调出或调入：签表与参赛名单不一致，需要重新抽签；重新抽签或清空签表后复位。为 true 时不能冻结或发布。
   drawStale          Boolean            @default(false)
+  /// 报名名额：单打按人、双打按队（一对算一个），待审核和已通过都占名额；为空表示不限。
+  /// 只限制扫码报名，后台添加、导入、审核通过不受限制。
+  maxEntries         Int?
   registrations      Registration[]
   competitionRegistrationItems CompetitionRegistrationEventItem[]
   matches            Match[]

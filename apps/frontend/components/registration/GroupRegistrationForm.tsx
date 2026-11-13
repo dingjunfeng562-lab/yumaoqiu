@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useSession } from 'next-auth/react';
-import { Alert, Button, Card, Checkbox, Form, Input, InputNumber, Select, Space, Typography, type FormInstance } from 'antd';
+import { Alert, Button, Card, Checkbox, Form, Input, InputNumber, Select, Space, Tag, Typography, type FormInstance } from 'antd';
 import Link from 'next/link';
 import { apiFetch } from '@/lib/api';
 import { ageForRule, birthFromIdentity, cnDate, identityPreview, type RegistrationGroupInfo } from '@/lib/registration-groups';
@@ -11,25 +11,38 @@ type Person = { name: string; gender?: string; identityNumber?: string; contact:
 type Values = Person & { guestEmail?: string; partners?: Record<string, Person> };
 /** 一个赛事一个报名码：扫码后先选组别，再填该组的报名表。 */
 export function GroupPicker({ groups, onPick }: {
-  groups: Array<{ groupId: string; groupName: string; ageRuleLabel: string; events: Array<{ id: string; label: string }> }>;
+  groups: Array<{ groupId: string; groupName: string; ageRuleLabel: string; events: Array<{ id: string; label: string }>; remaining?: number | null }>;
   onPick: (groupId: string) => void;
 }) {
   return <Card title="选择报名组别">
     <Space orientation="vertical" size={12} style={{ width: '100%' }}>
-      {groups.map((group) => (
-        <Card key={group.groupId} size="small" hoverable onClick={() => onPick(group.groupId)}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-            <div style={{ minWidth: 0 }}>
-              <Typography.Text strong style={{ fontSize: 16 }}>{group.groupName}</Typography.Text>
-              <div><Typography.Text type="secondary">{group.ageRuleLabel}</Typography.Text></div>
-              <div><Typography.Text type="secondary">项目：{group.events.map((event) => event.label.replace(`${group.groupName} · `, '')).join('、')}</Typography.Text></div>
+      {groups.map((group) => {
+        // 组别人数满了也能点进去：已报名的选手还可以追加项目，新的人提交时会被拦下。
+        const full = group.remaining === 0;
+        return (
+          <Card key={group.groupId} size="small" hoverable onClick={() => onPick(group.groupId)}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+              <div style={{ minWidth: 0 }}>
+                <Typography.Text strong style={{ fontSize: 16 }}>{group.groupName}</Typography.Text>
+                {full ? <Tag color="red" style={{ marginInlineStart: 8 }}>名额已满</Tag> : null}
+                {group.remaining != null && !full ? <Tag color="blue" style={{ marginInlineStart: 8 }}>剩 {group.remaining} 个名额</Tag> : null}
+                <div><Typography.Text type="secondary">{group.ageRuleLabel}</Typography.Text></div>
+                <div><Typography.Text type="secondary">项目：{group.events.map((event) => event.label.replace(`${group.groupName} · `, '')).join('、')}</Typography.Text></div>
+                {full ? <div><Typography.Text type="danger">本组报名人数已满，已报名的选手仍可追加项目</Typography.Text></div> : null}
+              </div>
+              <Button type={full ? 'default' : 'primary'}>{full ? '追加项目' : '报名'}</Button>
             </div>
-            <Button type="primary">报名</Button>
-          </div>
-        </Card>
-      ))}
+          </Card>
+        );
+      })}
     </Space>
   </Card>;
+}
+
+/** 项目后面的名额提示：没设上限时不显示。 */
+function capacityText(event: { isDouble: boolean; remaining?: number | null }) {
+  if (event.remaining == null) return '';
+  return event.remaining === 0 ? '（已满）' : `（剩 ${event.remaining} ${event.isDouble ? '队' : '人'}）`;
 }
 
 export default function GroupRegistrationForm({ info, registrationCode, onBack }: { info: RegistrationGroupInfo; registrationCode: string; onBack?: () => void }) {
@@ -107,9 +120,10 @@ export default function GroupRegistrationForm({ info, registrationCode, onBack }
 
   return <Card title={`${info.groupName} · 报名`} extra={onBack ? <Button type="link" onClick={onBack} style={{ padding: 0 }}>重新选择组别</Button> : null}>
     <Alert type="info" showIcon title={info.ageRuleLabel} description="填写身份证号会自动计算年龄；缺少资格资料可先提交，由组委会核验。监护人可以代为报名。" style={{ marginBottom: 20 }} />
+    {info.remaining === 0 && <Alert type="warning" showIcon title={`本组报名人数已满（${info.maxEntrants} 人）`} description="新报名无法提交；已经报名的选手可以继续追加项目（填写与第一次报名相同的姓名和联系方式）。" style={{ marginBottom: 16 }} />}
     {error && <Alert type="error" showIcon title={error} style={{ marginBottom: 16 }} />}
     <Form form={form} layout="vertical" onFinish={submit}>
-      <Form.Item label={`参赛项目（最多${maxEvents}项）`} required><Checkbox.Group value={events} onChange={values => setEvents(values as string[])} options={info.events.map(e => ({ value: e.id, label: e.label, disabled: !events.includes(e.id) && events.length >= maxEvents }))} /></Form.Item>
+      <Form.Item label={`参赛项目（最多${maxEvents}项）`} required><Checkbox.Group value={events} onChange={values => setEvents(values as string[])} options={info.events.map(e => ({ value: e.id, label: `${e.label}${capacityText(e)}`, disabled: !events.includes(e.id) && (events.length >= maxEvents || e.remaining === 0) }))} /></Form.Item>
       {personFields()}
       {fields.email !== 'hidden' && <Form.Item name="guestEmail" label={`邮箱${fields.email === 'optional' ? '（选填）' : ''}`} rules={[{ required: fields.email === 'required' }, { type: 'email', message: '邮箱格式有误' }]}><Input type="email" /></Form.Item>}
       {info.events.filter(e => events.includes(e.id) && e.isDouble).map(event => <Card key={event.id} size="small" title={`${event.label} · 搭档资料`} style={{ marginBottom: 16 }}>{personFields(event.id)}</Card>)}

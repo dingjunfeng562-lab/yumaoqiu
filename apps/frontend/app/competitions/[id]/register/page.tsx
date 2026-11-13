@@ -189,7 +189,7 @@ function formFromRegistration(registration: ExistingRegistration): FormState {
 }
 
 /** 报名码对应赛事里开放报名的一个组别。 */
-type CodeGroup = Pick<RegistrationGroupInfo, 'groupId' | 'groupName' | 'fieldTemplate' | 'groupFields' | 'ageRule' | 'ageRuleLabel' | 'events' | 'payment'>;
+type CodeGroup = Pick<RegistrationGroupInfo, 'groupId' | 'groupName' | 'fieldTemplate' | 'groupFields' | 'ageRule' | 'ageRuleLabel' | 'events' | 'payment' | 'maxEntrants' | 'remaining'>;
 
 type RegistrationCodeInfo = RegistrationIntroInfo & Partial<RegistrationGroupInfo> & {
   tournamentId: string;

@@ -8,6 +8,7 @@ import {
   Card,
   DatePicker,
   Drawer,
+  Dropdown,
   Empty,
   Form,
   Image,
@@ -30,6 +31,7 @@ import {
 import {
   CheckCircleOutlined,
   DeleteOutlined,
+  DownOutlined,
   DownloadOutlined,
   EditOutlined,
   HistoryOutlined,
@@ -47,7 +49,19 @@ import {
   type RedrawEvent,
 } from '@/components/admin/RegistrationEditModal';
 import { useCurrentAccess } from '@/lib/use-current-role';
-import { ENTRANT_LABELS, type EntrantType, type PaymentStatus, toFen, uploadUrl, yuan } from '@/lib/payments';
+import {
+  ENTRANT_LABELS,
+  isSettled,
+  isUnpaidDue,
+  paymentListSheet,
+  sortPaymentRows,
+  toFen,
+  uploadUrl,
+  yuan,
+  type EntrantType,
+  type PaymentListKind,
+  type PaymentStatus,
+} from '@/lib/payments';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 
@@ -275,14 +289,19 @@ export default function AdminPaymentsPage() {
     return [...events, ...teams];
   }, [overview, entrantType, kindFilter]);
 
+  // 未缴费的排在前面：未缴费 → 已缴费 → 免缴 → 无需缴费，同一状态里保持项目、报名先后。
   const rows = useMemo(() => {
     const keyword = search.trim().toLowerCase();
-    return (overview?.rows ?? []).filter((row) => (row.groupId ?? row.entrantType) === entrantType
+    return sortPaymentRows((overview?.rows ?? []).filter((row) => (row.groupId ?? row.entrantType) === entrantType
       && (kindFilter === 'ALL' || row.kind === kindFilter)
       && (!itemFilter || row.itemId === itemFilter)
       && (statusFilter === 'ALL' || row.paymentStatus === statusFilter)
-      && (!keyword || [row.name, row.contact, row.affiliation, row.members ?? ''].some((value) => value.toLowerCase().includes(keyword))));
+      && (!keyword || [row.name, row.contact, row.affiliation, row.members ?? ''].some((value) => value.toLowerCase().includes(keyword)))));
   }, [overview, entrantType, kindFilter, itemFilter, statusFilter, search]);
+
+  // 导出菜单上的条数：整个赛事全部组别。
+  const unpaidListCount = useMemo(() => (overview?.rows ?? []).filter(isUnpaidDue).length, [overview]);
+  const settledListCount = useMemo(() => (overview?.rows ?? []).filter(isSettled).length, [overview]);
 
   const selectedRows = rows.filter((row) => selectedKeys.includes(rowKey(row)));
 
@@ -434,8 +453,38 @@ export default function AdminPaymentsPage() {
     }
   }
 
-  async function exportRows() {
+  async function writeWorkbook(data: Array<Record<string, string | number>>, sheetName: string, fileLabel: string, widths?: number[]) {
     const XLSX = await import('xlsx');
+    const sheet = XLSX.utils.json_to_sheet(data);
+    if (widths) sheet['!cols'] = widths.map((wch) => ({ wch }));
+    const book = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(book, sheet, sheetName);
+    const name = (overview?.competition.name ?? '赛事').replace(/[\\/:*?"<>|]/g, '-');
+    XLSX.writeFile(book, `${name}-${fileLabel}-${dayjs().format('YYYYMMDD')}.xlsx`);
+  }
+
+  /** 未缴费 / 已缴费（含免缴）名单：整个赛事全部组别，不受页面筛选影响。 */
+  async function exportList(kind: PaymentListKind) {
+    if (!overview) return;
+    const groupNames = new Map(overview.settings.map((item) => [item.groupId ?? item.entrantType, item.groupLabel ?? ENTRANT_LABELS[item.entrantType]]));
+    const data = paymentListSheet(overview.rows, kind, {
+      groupOrder: overview.settings.map((item) => item.groupId ?? item.entrantType),
+      itemOrder: [...overview.events.map((item) => item.id), ...overview.teamCompetitions.map((item) => item.id)],
+      groupName: (row) => groupNames.get(row.groupId ?? row.entrantType) ?? row.groupLabel ?? ENTRANT_LABELS[row.entrantType],
+      formatTime: (value) => dayjs(value).format('YYYY-MM-DD HH:mm'),
+    });
+    const label = kind === 'UNPAID' ? '未缴费名单' : '已缴费名单';
+    if (!data.length) {
+      message.info(kind === 'UNPAID' ? '没有未缴费的记录' : '没有已缴费或免缴的记录');
+      return;
+    }
+    await writeWorkbook(data, label, label, kind === 'UNPAID'
+      ? [6, 12, 20, 22, 24, 20, 16, 10, 24]
+      : [6, 12, 20, 22, 24, 20, 16, 8, 10, 18, 12, 24]);
+  }
+
+  /** 当前列表：当前组别，按页面上的筛选条件。 */
+  async function exportRows() {
     const data = rows.map((row) => ({
       组别: row.groupLabel ?? ENTRANT_LABELS[row.entrantType],
       项目: row.itemName,
@@ -450,11 +499,7 @@ export default function AdminPaymentsPage() {
       确认人: row.confirmedByName ?? '',
       备注: row.paymentNote ?? '',
     }));
-    const sheet = XLSX.utils.json_to_sheet(data);
-    const book = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(book, sheet, '缴费明细');
-    const name = (overview?.competition.name ?? '赛事').replace(/[\\/:*?"<>|]/g, '-');
-    XLSX.writeFile(book, `${name}-${groupLabel}-缴费明细-${dayjs().format('YYYYMMDD')}.xlsx`);
+    await writeWorkbook(data, '缴费明细', `${groupLabel}-缴费明细`);
   }
 
   // 第一行是缴费状态操作，第二行是改报名信息和删除（仅管理员），操作列保持原来的宽度，不挡住状态列。
@@ -658,7 +703,22 @@ export default function AdminPaymentsPage() {
                   批量删除{selectedRows.length ? `（${selectedRows.length}）` : ''}
                 </Button>
               ) : null}
-              <Button icon={<DownloadOutlined />} onClick={exportRows} disabled={!rows.length}>导出</Button>
+              <Dropdown
+                trigger={['click']}
+                menu={{
+                  items: [
+                    { key: 'UNPAID', label: `未缴费名单（全部组别，${unpaidListCount} 项）`, disabled: !unpaidListCount },
+                    { key: 'SETTLED', label: `已缴费名单（含免缴，全部组别，${settledListCount} 项）`, disabled: !settledListCount },
+                    { type: 'divider' },
+                    { key: 'CURRENT', label: `当前列表（按筛选，${rows.length} 条）`, disabled: !rows.length },
+                  ],
+                  onClick: ({ key }) => {
+                    void (key === 'CURRENT' ? exportRows() : exportList(key as PaymentListKind));
+                  },
+                }}
+              >
+                <Button icon={<DownloadOutlined />}>导出 <DownOutlined /></Button>
+              </Dropdown>
             </Space>
           )}
         >

@@ -1,4 +1,4 @@
-import { IsString, IsEnum, IsOptional, IsInt, Min, Max, ValidateNested } from 'class-validator';
+import { IsString, IsEnum, IsOptional, IsInt, Min, Max, MaxLength, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { EntrantType, EventType, Format, ScoringRule, ScoringMode } from '@prisma/client';
 
@@ -136,6 +136,13 @@ export class CreateEventDto {
   @Min(1)
   @Max(8)
   qualifiersPerGroup?: number;
+
+  /** 报名名额：单打按人、双打按队；为空表示不限。只限制扫码报名，后台添加不受限制。 */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(100000)
+  maxEntries?: number | null;
 }
 
 export class UpdateEventDto {
@@ -205,4 +212,19 @@ export class UpdateEventDto {
   @Min(1)
   @Max(8)
   qualifiersPerGroup?: number;
+
+  /** 报名名额：单打按人、双打按队；传 null 清空为不限。 */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(100000)
+  maxEntries?: number | null;
+}
+
+/** 删除单项：删除原因记入缴费操作记录。 */
+export class DeleteEventDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  note?: string;
 }
