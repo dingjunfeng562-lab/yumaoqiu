@@ -86,4 +86,8 @@ export class ScoringGateway {
   private matchRoom(matchId: string) {
     return `match:${matchId}`;
   }
+
+  emitCheckInUpdate(payload: { tournamentId: string; matchId: string }) {
+    this.server?.emit('check-in:update', payload);
+  }
 }

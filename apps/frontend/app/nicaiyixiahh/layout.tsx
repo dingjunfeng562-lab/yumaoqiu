@@ -81,6 +81,7 @@ const MENU_SECTIONS = [
 ] as const;
 
 const baseMenuItems: NavItem[] = [
+  { key: '/nicaiyixiahh/check-in', section: 'execution', icon: <ScheduleOutlined />, label: '赛事签到' },
   { key: '/nicaiyixiahh', section: 'overview', icon: <DashboardOutlined />, label: '仪表板' },
   { key: '/nicaiyixiahh/statistics', section: 'overview', icon: <BarChartOutlined />, label: '赛事统计' },
   { key: '/nicaiyixiahh/approvals', section: 'competition', icon: <AuditOutlined />, label: '赛事审核' },

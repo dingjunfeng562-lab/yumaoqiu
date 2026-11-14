@@ -23,6 +23,7 @@ export function Providers({
   // put a modal or a login form into the live broadcast.
   // 全服维护页同理（proxy 换页时地址不变，靠 maintenanceView 识别）。
   const isTournamentScreen = pathname.startsWith('/live-screen/')
+    || pathname.startsWith('/match-check-in/')
     || pathname.startsWith('/broadcast/overlay/')
     || maintenanceView
     || pathname === '/maintenance';

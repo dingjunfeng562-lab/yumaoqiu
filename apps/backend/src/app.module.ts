@@ -32,6 +32,7 @@ import { StatisticsModule } from './statistics/statistics.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ResultsResetModule } from './common/results-reset.module';
+import { CheckInModule } from './check-in/check-in.module';
 
 @Module({
   imports: [
@@ -61,6 +62,7 @@ import { ResultsResetModule } from './common/results-reset.module';
     BroadcastsModule,
     PhotoActivitiesModule,
     MatchManagementModule,
+    CheckInModule,
     PaymentsModule,
     MaintenanceModule,
     StatisticsModule,

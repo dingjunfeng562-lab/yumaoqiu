@@ -17,6 +17,7 @@ export function canAccessAdminPage(role: string | undefined, pathname: string, p
     return hasFeature(role, permissions, 'TEAMS');
   }
   const routes: Record<string, string[]> = {
+    '/nicaiyixiahh/check-in': ['SCHEDULING', 'SCORING'],
     '/nicaiyixiahh': ['DASHBOARD'], '/nicaiyixiahh/statistics': ['DASHBOARD'], '/nicaiyixiahh/tournaments': ['TOURNAMENTS', 'TOURNAMENT_ADMIN'],
     '/nicaiyixiahh/players': ['PLAYERS'], '/nicaiyixiahh/payments': ['PAYMENTS'], '/nicaiyixiahh/users': ['USERS'], '/nicaiyixiahh/invite-codes': ['INVITES'], '/nicaiyixiahh/photo-activities': ['PHOTOS'],
     '/nicaiyixiahh/exports': ['ORDERBOOK', 'DATA_EXPORT'], '/nicaiyixiahh/competitions': ['TOURNAMENTS', 'TOURNAMENT_ADMIN', 'PLAYERS', 'PHOTOS'],

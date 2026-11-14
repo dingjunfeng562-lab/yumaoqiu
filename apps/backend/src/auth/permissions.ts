@@ -86,6 +86,7 @@ export function requiredPermissions(controller: string, action: string, kind?: s
     case 'TeamCompetitionsController': return ['TEAMS'];
     case 'DrawsController': return ['getSecondStage', 'confirmSecondStage'].includes(action) ? ['DRAWS', 'REFEREE'] : ['DRAWS'];
     case 'SchedulingController': return ['SCHEDULING'];
+    case 'CheckInController': return ['SCHEDULING', 'SCORING'];
     case 'ScoringController':
       if (['authorizeTournament', 'listAuthorizedTournaments', 'listRefereeMatches', 'listTournamentCourts', 'listCourtMatches', 'claimCourtMatch'].includes(action)) return ['REFEREE'];
       // 比赛结束签字开关、电子比分单与签名图片：只给有「裁判分配」权限的后台账号，裁判账号调不到。
