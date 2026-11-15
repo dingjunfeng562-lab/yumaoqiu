@@ -54,12 +54,21 @@ export function preparePerson(input: PersonInput, fields: GroupFields, ageRule: 
   }
 }
 export type PreparedPerson = ReturnType<typeof preparePerson>;
-export function itemEligibility(type: string, own: PreparedPerson, partner: PreparedPerson | null, rule: AgeRule, version: number) {
+/**
+ * @param skipReview 赛事免审核时传 true：系统核对不了的项（没填性别、只填年龄没填身份证等）不再转人工核验，
+ *   记为 UNVERIFIED（未核验）直接放行。明确不符合（性别与项目不符、超出本组年龄范围）照常报错拦下。
+ */
+export function itemEligibility(type: string, own: PreparedPerson, partner: PreparedPerson | null, rule: AgeRule, version: number, skipReview = false) {
   if (own.identity && partner?.identity && own.identity.fingerprint === partner.identity.fingerprint) throw new BadRequestException('本人和搭档不能使用同一身份证号');
   const gender = checkGender(type, own.gender, partner?.gender ?? null);
   const pending = own.age.status === 'PENDING' || partner?.age.status === 'PENDING' || gender === 'PENDING';
-  return { status: pending ? 'PENDING' : 'PASSED', age: own.age.status, partnerAge: partner?.age.status ?? 'NOT_REQUIRED', gender,
+  return { status: pending ? (skipReview ? 'UNVERIFIED' : 'PENDING') : 'PASSED', age: own.age.status, partnerAge: partner?.age.status ?? 'NOT_REQUIRED', gender,
     calculatedAge: own.age.age, partnerCalculatedAge: partner?.age.age ?? null, rule, ruleVersion: version };
+}
+/** 整份报名的资格汇总：有待核验即待核验；免审核放行的记为未核验；其余为通过。 */
+export function overallEligibilityStatus(statuses: Array<string | null | undefined>) {
+  if (statuses.includes('PENDING')) return 'PENDING';
+  return statuses.includes('UNVERIFIED') ? 'UNVERIFIED' : 'PASSED';
 }
 export function identityView(value: Prisma.JsonValue | null | undefined) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;

@@ -5,7 +5,7 @@ import { useSession } from 'next-auth/react';
 import { Alert, Button, Card, Checkbox, Form, Input, InputNumber, Select, Space, Tag, Typography, type FormInstance } from 'antd';
 import Link from 'next/link';
 import { apiFetch } from '@/lib/api';
-import { ageForRule, birthFromIdentity, cnDate, identityPreview, type RegistrationGroupInfo } from '@/lib/registration-groups';
+import { ageForRule, birthFromIdentity, cnDate, genderConflicts, identityPreview, reportedAgeError, type RegistrationGroupInfo } from '@/lib/registration-groups';
 
 type Person = { name: string; gender?: string; identityNumber?: string; contact: string; school?: string; studentId?: string; college?: string; majorGrade?: string; age?: number | null; shirtSize?: string };
 type Values = Person & { guestEmail?: string; partners?: Record<string, Person> };
@@ -56,6 +56,14 @@ export default function GroupRegistrationForm({ info, registrationCode, onBack }
   const maxEvents = info.maxRegistrationEvents ?? 2;
   const ownIdentity = Form.useWatch('identityNumber', form) ?? '';
   const partnerValues = Form.useWatch('partners', form) as Values['partners'];
+  const ownGender = Form.useWatch('gender', form);
+  // 免审核：资料不全也直接通过，提示文字里不再说「由组委会核验」。
+  const skipReview = info.needsRegistrationReview === false;
+  // 性别和所选项目对不上（如女生报男单、混双两人同性），填写时就提示，改对之前不能提交。
+  const selectedEvents = info.events.filter((event) => events.includes(event.id));
+  const conflicts = genderConflicts(selectedEvents, ownGender,
+    Object.fromEntries(selectedEvents.map((event) => [event.id, partnerValues?.[event.id]?.gender])));
+  const conflictMessages = [...conflicts.own, ...Object.values(conflicts.partner)];
 
   // 年龄口径说明：按出生年份 / 以某日计周岁。
   const ageBasis = info.ageRule.ageInput
@@ -76,17 +84,23 @@ export default function GroupRegistrationForm({ info, registrationCode, onBack }
       if (date && fields.age !== 'hidden') (form as FormInstance).setFieldValue(path('age'), ageForRule(info.ageRule, date));
     };
     const optional = (key: keyof typeof fields) => fields[key] === 'optional' ? '（选填）' : '';
+    const genderProblem = eventId ? conflicts.partner[eventId] : conflicts.own.join('；');
     return <div className="grid gap-x-4 md:grid-cols-2">
       <Form.Item name={path('name')} label={eventId ? '搭档姓名' : '姓名'} rules={[{ required: true, whitespace: true, message: '请填写姓名' }]}><Input maxLength={80} /></Form.Item>
-      {fields.gender !== 'hidden' && <Form.Item name={path('gender')} label={`性别${optional('gender')}`} rules={[{ required: fields.gender === 'required', message: '请选择性别' }]}><Select allowClear placeholder="请选择" options={[{ value: 'MALE', label: '男' }, { value: 'FEMALE', label: '女' }]} /></Form.Item>}
+      {fields.gender !== 'hidden' && <Form.Item name={path('gender')} label={`性别${optional('gender')}`} {...(genderProblem ? { validateStatus: 'error' as const, help: genderProblem } : {})} rules={[{ required: fields.gender === 'required', message: '请选择性别' }]}><Select allowClear placeholder="请选择" options={[{ value: 'MALE', label: '男' }, { value: 'FEMALE', label: '女' }]} /></Form.Item>}
       {!eventId && <Form.Item name="school" label={info.fieldTemplate === 'SCHOOL' ? '学校' : '单位'} rules={[{ required: true, whitespace: true, message: info.fieldTemplate === 'SCHOOL' ? '请填写学校' : '请填写单位，可填个人' }]}><Input placeholder={info.fieldTemplate === 'SCHOOL' ? '学校名称' : '学校、单位或俱乐部，可填个人'} maxLength={120} /></Form.Item>}
       {fields.age !== 'hidden' && <Form.Item name={path('age')} label={`年龄${optional('age')}`}
-        rules={[{ validator: (_, value?: number | null) => (fields.age === 'required' && value == null && !birth ? Promise.reject(new Error('请填写年龄，或填写身份证号自动计算')) : Promise.resolve()) }]}
+        rules={[{ validator: (_, value?: number | null) => {
+          if (birth) return Promise.resolve(); // 按身份证算的年龄由身份证号一栏校验
+          if (fields.age === 'required' && value == null) return Promise.reject(new Error('请填写年龄，或填写身份证号自动计算'));
+          const outOfRange = reportedAgeError(info.ageRule, value);
+          return outOfRange ? Promise.reject(new Error(outOfRange)) : Promise.resolve();
+        } }]}
         extra={birth ? '已按身份证号自动计算' : `${ageBasis}；填写身份证号会自动计算`}>
         <InputNumber min={0} max={150} precision={0} disabled={Boolean(birth)} suffix="岁" style={{ width: '100%' }} />
       </Form.Item>}
       <Form.Item name={path('contact')} label="联系方式" rules={[{ required: true, message: '请填写联系方式' }, { pattern: /^\+?[\d\s()-]{6,24}$/, message: '请输入联系电话' }]}><Input placeholder="可填写监护人联系电话" maxLength={24} /></Form.Item>
-      {fields.identityNumber !== 'hidden' && <Form.Item name={path('identityNumber')} label={`身份证号${optional('identityNumber')}`} rules={[{ required: fields.identityNumber === 'required', message: '请填写身份证号' }, { validator: (_, value) => { const check = identityPreview(value ?? '', info.ageRule); return check.error ? Promise.reject(new Error(check.error)) : Promise.resolve(); } }]} extra={preview.text || '用于计算年龄和资格核验，不在公开名单展示'}><Input maxLength={18} autoComplete="off" spellCheck={false} onChange={(event) => syncAge(event.target.value)} /></Form.Item>}
+      {fields.identityNumber !== 'hidden' && <Form.Item name={path('identityNumber')} label={`身份证号${optional('identityNumber')}`} rules={[{ required: fields.identityNumber === 'required', message: '请填写身份证号' }, { validator: (_, value) => { const check = identityPreview(value ?? '', info.ageRule); return check.error ? Promise.reject(new Error(check.error)) : Promise.resolve(); } }]} extra={skipReview && !number.trim() ? '用于计算年龄，不在公开名单展示' : preview.text || '用于计算年龄和资格核验，不在公开名单展示'}><Input maxLength={18} autoComplete="off" spellCheck={false} onChange={(event) => syncAge(event.target.value)} /></Form.Item>}
       {(['studentId', 'college', 'majorGrade'] as const).map((key) => fields[key] !== 'hidden' && <Form.Item key={key} name={path(key)} label={`${({ studentId: '学号', college: '学院', majorGrade: '年级专业' })[key]}${optional(key)}`} rules={[{ required: fields[key] === 'required', whitespace: true, message: '请填写此项' }]}><Input maxLength={120} /></Form.Item>)}
       {fields.shirtSize !== 'hidden' && <Form.Item name={path('shirtSize')} label={`衣服尺寸${optional('shirtSize')}`} rules={[{ required: fields.shirtSize === 'required', whitespace: true, message: '请填写衣服尺寸' }]}><Input maxLength={32} placeholder="例如 M、XL、130、170/88A" /></Form.Item>}
     </div>;
@@ -94,6 +108,7 @@ export default function GroupRegistrationForm({ info, registrationCode, onBack }
 
   async function submit(values: Values) {
     if (!events.length) { setError('请至少选择一个项目'); return; }
+    if (conflictMessages.length) { setError(conflictMessages.join('；')); return; }
     setBusy(true); setError('');
     try {
       const token = session?.user?.accessToken;
@@ -119,7 +134,7 @@ export default function GroupRegistrationForm({ info, registrationCode, onBack }
   </Space></Card>;
 
   return <Card title={`${info.groupName} · 报名`} extra={onBack ? <Button type="link" onClick={onBack} style={{ padding: 0 }}>重新选择组别</Button> : null}>
-    <Alert type="info" showIcon title={info.ageRuleLabel} description="填写身份证号会自动计算年龄；缺少资格资料可先提交，由组委会核验。监护人可以代为报名。" style={{ marginBottom: 20 }} />
+    <Alert type="info" showIcon title={info.ageRuleLabel} description={skipReview ? '填写身份证号会自动计算年龄。监护人可以代为报名。' : '填写身份证号会自动计算年龄；缺少资格资料可先提交，由组委会核验。监护人可以代为报名。'} style={{ marginBottom: 20 }} />
     {info.remaining === 0 && <Alert type="warning" showIcon title={`本组报名人数已满（${info.maxEntrants} 人）`} description="新报名无法提交；已经报名的选手可以继续追加项目（填写与第一次报名相同的姓名和联系方式）。" style={{ marginBottom: 16 }} />}
     {error && <Alert type="error" showIcon title={error} style={{ marginBottom: 16 }} />}
     <Form form={form} layout="vertical" onFinish={submit}>

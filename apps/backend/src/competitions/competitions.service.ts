@@ -2,7 +2,7 @@ import { maskContact } from '../common/mask-contact';
 import { legacyGroupId } from '../registration-groups/registration-groups.service';
 import { groupFields, normalizeAgeRule, ageRuleLabel, checkGender } from '../common/age-eligibility';
 import { VerifyEligibilityDto } from '../registration-groups/registration-groups.dto';
-import { preparePerson, itemEligibility, identityView, isPendingEligibility, type PreparedPerson } from '../common/registration-eligibility';
+import { preparePerson, itemEligibility, identityView, isPendingEligibility, overallEligibilityStatus, type PreparedPerson } from '../common/registration-eligibility';
 import { hasPermission } from '../auth/permissions';
 import {
   BadRequestException,
@@ -564,7 +564,8 @@ export class CompetitionsService {
         partners.set(item.eventId.trim(), partner);
         item.partnerGender = partner.gender ?? undefined;
       }
-      qualifications.set(item.eventId.trim(), itemEligibility(event.type, own, partner, ageRule, group?.ruleVersion ?? 1));
+      // 免审核赛事：核对不了的资格（没填性别、只填年龄等）不转人工，直接放行。
+      qualifications.set(item.eventId.trim(), itemEligibility(event.type, own, partner, ageRule, group?.ruleVersion ?? 1, !competition.needsRegistrationReview));
       if (group && partner) {
         item.partnerStudentId = this.resolveGroupField(item.partnerStudentId, rules, entrantType, 'studentId', '搭档学号') ?? undefined;
         item.partnerCollege = this.resolveGroupField(item.partnerCollege, rules, entrantType, 'college', '搭档学院') ?? undefined;
@@ -579,6 +580,7 @@ export class CompetitionsService {
     }
 
     const qualificationPending = [...qualifications.values()].some(q => q.status === 'PENDING');
+    const qualificationStatus = overallEligibilityStatus([...qualifications.values()].map(q => q.status));
     const itemData = (item: SubmitCompetitionRegistrationDto['items'][number]) => ({
       ...this.registrationItemData(item, entrantType, fallback, Boolean(group)),
       partnerIdentityData: partners.get(item.eventId.trim())?.identity ?? Prisma.DbNull,
@@ -593,7 +595,7 @@ export class CompetitionsService {
       groupId: group?.id ?? null,
       personKey,
       identityData: own.identity ?? Prisma.DbNull,
-      eligibility: { status: qualificationPending ? 'PENDING' : 'PASSED', ruleVersion: group?.ruleVersion ?? 1 },
+      eligibility: { status: qualificationStatus, ruleVersion: group?.ruleVersion ?? 1 },
       entrantType,
       studentId,
       college,
@@ -629,7 +631,7 @@ export class CompetitionsService {
             data: {
               ...(guestAppendTarget ? {} : baseData),
               status: qualificationPending ? RegistrationStatus.PENDING : RegistrationStatus.APPROVED,
-              eligibility: { status: qualificationPending ? 'PENDING' : 'PASSED' },
+              eligibility: { status: qualificationStatus },
               rejectReason: null,
               eventItems: {
                 create: newItems.map((item) => itemData(item)),
@@ -1177,7 +1179,7 @@ export class CompetitionsService {
     const rules = normalizeRegistrationFieldRules(competition.registrationFieldRules);
     const group = event.groupId ? await this.prisma.tournamentGroup.findUnique({ where: { id: event.groupId } }) : null;
     const players = dto.players.map((item, index) =>
-      this.normalizeAdminBatchPlayer(item, index + 1, event, rules, group),
+      this.normalizeAdminBatchPlayer(item, index + 1, event, rules, group, undefined, !competition.needsRegistrationReview),
     );
     const mixedGroup = players.find((player) => player.entrantType !== event.entrantType);
     if (mixedGroup) {
@@ -1279,7 +1281,7 @@ export class CompetitionsService {
     // 复用批量录入的字段校验（单/双打必填项、性别合法性），单条按第 1 行处理。
     const rules = normalizeRegistrationFieldRules(competition.registrationFieldRules);
     const group = event.groupId ? await this.prisma.tournamentGroup.findUnique({ where: { id: event.groupId } }) : null;
-    const player = this.normalizeAdminBatchPlayer(dto, 1, event, rules, group);
+    const player = this.normalizeAdminBatchPlayer(dto, 1, event, rules, group, undefined, !competition.needsRegistrationReview);
     if (player.entrantType !== event.entrantType) {
       throw new BadRequestException('报名组别与项目组别不一致');
     }
@@ -1607,7 +1609,7 @@ export class CompetitionsService {
     const player = this.normalizeAdminBatchPlayer(editDto, 1, targetEvent, rules, group, {
       own: registration.identityData,
       partner: registration.partnerIdentityData,
-    });
+    }, !competition.needsRegistrationReview);
     if (player.entrantType !== targetEvent.entrantType) {
       throw new BadRequestException('报名组别与项目组别不一致');
     }
@@ -1680,7 +1682,7 @@ export class CompetitionsService {
         partnerIdentityNumber: undefined,
         partnerStudentId: sibling.partnerStudentId ?? undefined, partnerCollege: sibling.partnerCollege ?? undefined,
         partnerMajorGrade: sibling.partnerMajorGrade ?? undefined, partnerSchool: sibling.partnerSchool ?? undefined,
-      }, 1, target, rules, group, { own: registration.identityData, partner: sibling.partnerIdentityData });
+      }, 1, target, rules, group, { own: registration.identityData, partner: sibling.partnerIdentityData }, !competition.needsRegistrationReview);
       keepManual({ ...registration, ...sibling }, normalized, target.id === sibling.eventId);
       siblingQualifications.set(sibling.id, normalized);
     }
@@ -1815,7 +1817,7 @@ export class CompetitionsService {
             groupId: targetEvent.groupId,
             personKey: createHash('sha256').update(`${player.name}\0${normalizeContact(player.contact)}`).digest('hex'),
             identityData: player.identityData ?? Prisma.DbNull,
-            eligibility: { status: qualificationPending ? 'PENDING' : 'PASSED' },
+            eligibility: { status: overallEligibilityStatus([player.eligibility?.status, ...[...siblingQualifications.values()].map(p => p.eligibility?.status)]) },
             status: qualificationPending ? RegistrationStatus.PENDING : RegistrationStatus.APPROVED,
             entrantType: player.entrantType,
             studentId: player.studentId ?? null,
@@ -2618,7 +2620,7 @@ export class CompetitionsService {
         const data = { groupId: group.id, personKey, entrantType: player.entrantType, name: player.name, gender: player.gender, school: player.school,
           studentId: player.studentId ?? null, college: player.college ?? null, majorGrade: player.majorGrade ?? null,
           className: player.className ?? null, contact: player.contact, identityData: player.identityData ?? Prisma.DbNull,
-          status: pending ? RegistrationStatus.PENDING : RegistrationStatus.APPROVED, eligibility: { status: pending ? 'PENDING' : 'PASSED' },
+          status: pending ? RegistrationStatus.PENDING : RegistrationStatus.APPROVED, eligibility: { status: pending ? 'PENDING' : overallEligibilityStatus([player.eligibility?.status]) },
           reviewedAt: pending ? null : new Date(), reviewedById: pending ? null : operatorId ?? null };
         const include = { user: true, eventItems: { include: { event: true } } } as const;
         const application = previous
@@ -2639,6 +2641,8 @@ export class CompetitionsService {
     group?: TournamentGroup | null,
     /** 编辑已有报名时，库里已存的本人/搭档证件信息；未提交证件号时沿用。 */
     stored?: { own?: Prisma.JsonValue | null; partner?: Prisma.JsonValue | null },
+    /** 赛事免审核：核对不了的资格不转人工，记为未核验直接放行。 */
+    skipReview = false,
   ): NormalizedAdminBatchPlayer {
     const fields = groupFields(group?.fieldRules, event.entrantType === 'SCHOOL', !group);
     const ageRule = normalizeAgeRule(group?.ageRule);
@@ -2680,7 +2684,7 @@ export class CompetitionsService {
 
     if (!this.isDoubleEvent(event.type)) {
       try {
-        base.eligibility = itemEligibility(event.type, own, null, ageRule, group?.ruleVersion ?? 1);
+        base.eligibility = itemEligibility(event.type, own, null, ageRule, group?.ruleVersion ?? 1, skipReview);
       } catch (error) {
         const message = error instanceof Error ? error.message : '性别填写有误';
         throw new BadRequestException(`第 ${row} 行：${message}`);
@@ -2719,7 +2723,7 @@ export class CompetitionsService {
     }
 
     try {
-      base.eligibility = itemEligibility(event.type, own, partner, ageRule, group?.ruleVersion ?? 1);
+      base.eligibility = itemEligibility(event.type, own, partner, ageRule, group?.ruleVersion ?? 1, skipReview);
     } catch (error) {
       const message = error instanceof Error ? error.message : '双打性别填写有误';
       throw new BadRequestException(`第 ${row} 行：${message}`);

@@ -369,6 +369,7 @@ export default function CompetitionRegisterPage() {
       title: info.title,
       maxRegistrationEvents: info.maxRegistrationEvents,
       registrationOpen: info.registrationOpen,
+      needsRegistrationReview: info.needsRegistrationReview,
     };
     return <PortalFeaturePage activeHref="/competitions" eyebrow="Registration" title={`${info.title} · ${group.groupName}`} description={group.ageRuleLabel || '按组别规则填写报名信息'} back={{ href: `/competitions/${info.tournamentId}`, label: '赛事主页' }}>
       <GroupRegistrationForm key={group.groupId} info={groupInfo} registrationCode={code} onBack={groups.length > 1 ? () => setGroupId(null) : undefined} />

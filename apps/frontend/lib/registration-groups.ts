@@ -8,6 +8,8 @@ export type RegistrationGroupInfo = {
   tournamentId: string; title: string; groupId: string; groupName: string;
   fieldTemplate: string; groupFields: GroupFields; ageRule: AgeRule; ageRuleLabel: string;
   maxRegistrationEvents?: number; registrationOpen?: boolean;
+  // 赛事是否需要审核；false = 免审核，资料不全也直接通过（只拦必填项和明确不符合的）。
+  needsRegistrationReview?: boolean;
   // 名额：maxEntries 单打按人、双打按队；remaining 为剩余名额，没设上限时为 null。
   events: Array<{ id: string; type: string; label: string; isDouble: boolean; maxEntries?: number | null; remaining?: number | null }>;
   payment?: { singlesFee: number; doublesFee: number } | null;
@@ -94,6 +96,40 @@ export function birthFromIdentity(value: string): string | null {
   const date = new Date(`${birth}T00:00:00Z`);
   if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== birth || birth > shanghaiToday() || birth < '1800-01-01') return null;
   return birth;
+}
+
+const GENDER_TEXT: Record<string, string> = { MALE: '男', FEMALE: '女' };
+
+/**
+ * 性别和所选项目对不上时的即时提示，规则与服务端 checkGender 一致；没填的性别不算冲突。
+ * own：本人性别的问题；partner：按双打项目 id 给出搭档性别的问题。
+ */
+export function genderConflicts(
+  events: Array<{ id: string; type: string; label: string }>,
+  gender: string | null | undefined,
+  partnerGenders: Record<string, string | null | undefined> = {},
+): { own: string[]; partner: Record<string, string> } {
+  const own: string[] = [];
+  const partner: Record<string, string> = {};
+  for (const event of events) {
+    const need = event.type.startsWith('MENS_') ? 'MALE' : event.type.startsWith('WOMENS_') ? 'FEMALE' : null;
+    const partnerGender = event.type.endsWith('DOUBLES') ? partnerGenders[event.id] || null : null;
+    if (need && gender && gender !== need) own.push(`「${event.label}」仅限${GENDER_TEXT[need]}性报名，请核对本人性别或所选项目`);
+    if (need && partnerGender && partnerGender !== need) partner[event.id] = `「${event.label}」的搭档须为${GENDER_TEXT[need]}性，请核对搭档性别`;
+    else if (event.type === 'MIXED_DOUBLES' && gender && partnerGender && gender === partnerGender) partner[event.id] = `「${event.label}」须一男一女，请核对本人和搭档的性别`;
+  }
+  return { own, partner };
+}
+
+/**
+ * 只填年龄、没填身份证时，超出本组年龄范围的即时提示；与服务端 checkReportedAge 一致。
+ * 只按出生日期设的组无法用年龄判断，不提示。
+ */
+export function reportedAgeError(rule: AgeRule, age: number | null | undefined): string | null {
+  if (age == null || rule.mode === 'NONE') return null;
+  const min = rule.ageInput ? rule.ageInput.minAge : rule.mode === 'AGE' && rule.minAge != null ? rule.minAge + (rule.minInclusive === false ? 1 : 0) : undefined;
+  const max = rule.ageInput ? rule.ageInput.maxAge : rule.mode === 'AGE' && rule.maxAge != null ? rule.maxAge - (rule.maxInclusive === false ? 1 : 0) : undefined;
+  return (min != null && age < min) || (max != null && age > max) ? '不符合本组年龄条件，请核对资料或联系组委会' : null;
 }
 
 /** 即时提示；最终资格始终由服务端独立计算。 */
