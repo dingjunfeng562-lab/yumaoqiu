@@ -16,6 +16,7 @@ import {
   Form,
   Input,
   InputNumber,
+  Modal,
   Popconfirm,
   Result,
   Segmented,
@@ -315,6 +316,7 @@ export default function MatchManagementPage() {
   const [keyword, setKeyword] = useState('');
   const [viewMode, setViewMode] = useState<'bracket' | 'list'>('bracket');
   const [editing, setEditing] = useState<MatchView | null>(null);
+  const [releasingId, setReleasingId] = useState<string | null>(null);
   const reloadTimer = useRef<number | null>(null);
   const requestIdRef = useRef(0);
 
@@ -470,6 +472,46 @@ export default function MatchManagementPage() {
     setEditing(null);
     await loadOverview();
   }, [loadOverview]);
+
+  /**
+   * 解除单场比赛的裁判接手：只把这一场改回「未分配」，裁判端立刻失去记分权限。
+   * 进行中的比赛先过一道红色二次确认，后端也要求 force 才放行。
+   */
+  const releaseReferee = useCallback(async (match: MatchView) => {
+    if (!token) return false;
+    const live = match.status === 'LIVE';
+    const refereeName = match.referee?.username ?? '该裁判';
+    const confirmed = await new Promise<boolean>((resolve) => {
+      Modal.confirm({
+        title: live ? '比赛正在进行，确认解除裁判？' : '解除裁判接手？',
+        content: live
+          ? `${refereeName} 正在记分（${scoreDisplay(match)}）。解除后该裁判会立即失去本场记分权限并被移出记分页，已录入的比分保留，本场回到「未分配」。`
+          : `解除后 ${refereeName} 不再执裁本场，比赛回到「未分配」，其他裁判可以重新接手。`,
+        okText: live ? '确认解除' : '解除',
+        okButtonProps: live ? { danger: true } : undefined,
+        cancelText: '取消',
+        onOk: () => resolve(true),
+        onCancel: () => resolve(false),
+      });
+    });
+    if (!confirmed) return false;
+    setReleasingId(match.id);
+    try {
+      await apiFetch(`/match-management/matches/${match.id}/release-referee`, {
+        method: 'POST',
+        token,
+        body: JSON.stringify({ force: live }),
+      });
+      message.success('已解除裁判接手，本场回到未分配');
+      await loadOverview();
+      return true;
+    } catch (error) {
+      message.error(errorText(error, '解除裁判失败'));
+      return false;
+    } finally {
+      setReleasingId(null);
+    }
+  }, [token, loadOverview]);
 
   if (!access.ready) {
     return (
@@ -673,6 +715,8 @@ export default function MatchManagementPage() {
                 overview={overview}
                 matches={visibleMatches}
                 onEdit={setEditing}
+                onRelease={releaseReferee}
+                releasingId={releasingId}
               />
             </Card>
           )}
@@ -686,6 +730,8 @@ export default function MatchManagementPage() {
         token={token}
         onClose={() => setEditing(null)}
         onSaved={handleSaved}
+        onRelease={releaseReferee}
+        releasingId={releasingId}
       />
     </div>
   );
@@ -1001,10 +1047,14 @@ function MatchTable({
   overview,
   matches,
   onEdit,
+  onRelease,
+  releasingId,
 }: {
   overview: Overview;
   matches: MatchView[];
   onEdit: (match: MatchView) => void;
+  onRelease: (match: MatchView) => Promise<boolean>;
+  releasingId: string | null;
 }) {
   const columns: TableColumnsType<MatchView> = [
     {
@@ -1065,8 +1115,26 @@ function MatchTable({
     },
     {
       title: '裁判',
-      width: 110,
-      render: (_, match) => match.referee?.username ?? '未分配',
+      width: 132,
+      render: (_, match) => (match.referee ? (
+        <Space size={2} wrap>
+          <Text style={{ fontSize: 12 }}>{match.referee.username}</Text>
+          {match.status !== 'COMPLETED' && match.status !== 'CANCELLED' ? (
+            <Button
+              type="link"
+              size="small"
+              danger
+              style={{ paddingInline: 0, height: 'auto' }}
+              loading={releasingId === match.id}
+              onClick={() => void onRelease(match)}
+            >
+              解除
+            </Button>
+          ) : null}
+        </Space>
+      ) : (
+        <Text type="secondary" style={{ fontSize: 12 }}>未分配</Text>
+      )),
     },
     {
       title: '操作',
@@ -1098,12 +1166,16 @@ function MatchManageDrawer({
   token,
   onClose,
   onSaved,
+  onRelease,
+  releasingId,
 }: {
   match: MatchView | null;
   overview: Overview | null;
   token?: string;
   onClose: () => void;
   onSaved: () => Promise<void> | void;
+  onRelease: (match: MatchView) => Promise<boolean>;
+  releasingId: string | null;
 }) {
   const [form] = Form.useForm();
   const [games, setGames] = useState<GameView[]>(() => {
@@ -1176,6 +1248,13 @@ function MatchManageDrawer({
     } finally {
       setSavingBasic(false);
     }
+  }
+
+  /** 解除本场裁判接手，成功后关闭抽屉（列表会随 overview 刷新回到「未分配」）。 */
+  async function handleRelease() {
+    if (!match) return;
+    const done = await onRelease(match);
+    if (done) onClose();
   }
 
   async function saveScore() {
@@ -1334,6 +1413,31 @@ function MatchManageDrawer({
                 }))}
               />
             </Form.Item>
+            {match.referee ? (
+              <div style={{ marginTop: -10, marginBottom: 12 }}>
+                {match.status === 'COMPLETED' ? (
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    已结束的比赛如需解除执裁，请先「重开本场」。
+                  </Text>
+                ) : match.status === 'CANCELLED' ? (
+                  <Text type="secondary" style={{ fontSize: 12 }}>已取消的比赛无需解除执裁。</Text>
+                ) : (
+                  <Space size={8} wrap>
+                    <Button
+                      size="small"
+                      danger
+                      loading={releasingId === match.id}
+                      onClick={() => void handleRelease()}
+                    >
+                      解除裁判接手
+                    </Button>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      解除后本场回到「未分配」，该裁判立即失去记分权限。
+                    </Text>
+                  </Space>
+                )}
+              </div>
+            ) : null}
             {match.teamMatchId ? (
               <Alert
                 type="warning"

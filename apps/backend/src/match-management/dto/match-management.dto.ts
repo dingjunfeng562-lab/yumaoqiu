@@ -39,3 +39,13 @@ export class UpdateManagedMatchDto {
   @IsString()
   refereeId?: string | null;
 }
+
+/**
+ * 解除单场比赛的裁判接手，让比赛回到「未分配」。
+ * 进行中的比赛必须显式确认（后台红色二次确认后传 true），已结束的比赛不允许解除。
+ */
+export class ReleaseRefereeDto {
+  @IsOptional()
+  @IsBoolean()
+  force?: boolean;
+}

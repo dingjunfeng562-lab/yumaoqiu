@@ -13,7 +13,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { CorrectMatchScoreDto } from '../scoring/dto/scoring.dto';
-import { UpdateManagedMatchDto } from './dto/match-management.dto';
+import { UpdateManagedMatchDto, ReleaseRefereeDto } from './dto/match-management.dto';
 import { MatchManagementService } from './match-management.service';
 
 /**
@@ -36,6 +36,19 @@ export class MatchManagementController {
   @Patch('matches/:id')
   updateMatch(@Param('id') id: string, @Body() dto: UpdateManagedMatchDto, @Req() req: { user: { id: string } }) {
     return this.matchManagementService.updateMatch(id, dto, req.user.id);
+  }
+
+  /**
+   * 解除单场比赛的裁判接手，比赛回到「未分配」。
+   * 进行中的比赛要带 force=true（后台红色二次确认），已结束的比赛需先重开。
+   */
+  @Post('matches/:id/release-referee')
+  releaseReferee(
+    @Param('id') id: string,
+    @Body() dto: ReleaseRefereeDto,
+    @Req() req: { user: { id: string } },
+  ) {
+    return this.matchManagementService.releaseReferee(id, dto ?? {}, req.user.id);
   }
 
   @Patch('matches/:id/score')

@@ -1,6 +1,8 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { MatchStatus, Prisma, Role } from '@prisma/client';
@@ -147,6 +149,8 @@ function roundLabel(round: string) {
 
 @Injectable()
 export class MatchManagementService {
+  private readonly logger = new Logger(MatchManagementService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly scoring: ScoringService,
@@ -416,15 +420,63 @@ export class MatchManagementService {
       if (dto.refereeId) {
         await this.scoring.assignReferee(matchId, dto.refereeId);
       } else {
-        await this.prisma.match.update({
-          where: { id: matchId },
-          data: { refereeId: null },
-        });
+        // 清空裁判走和「解除接手」同一条校验，避免两条入口规则不一致。
+        await this.clearReferee(matchId, {}, actorId);
       }
     }
 
     this.emitUpdate(target);
     return { ok: true };
+  }
+
+  /**
+   * 解除单场比赛的裁判接手：把这一场的 refereeId 置空，比赛回到「未分配」，
+   * 不动裁判账号、也不影响同赛事其它场次。
+   * - 未开始：直接允许
+   * - 进行中：必须带 force（后台先做红色二次确认），否则正在记分的裁判会被静默踢掉
+   * - 已结束：禁止，需先「重开本场」
+   */
+  async releaseReferee(
+    matchId: string,
+    options: { force?: boolean } = {},
+    actorId?: string,
+  ) {
+    const target = await this.requireMatchRef(matchId);
+    const result = await this.clearReferee(matchId, options, actorId);
+    // 本来就没裁判时不广播，避免无意义刷新。
+    if (result.released) this.emitUpdate(target);
+    return result;
+  }
+
+  private async clearReferee(
+    matchId: string,
+    options: { force?: boolean } = {},
+    actorId?: string,
+  ) {
+    const match = await this.prisma.match.findUnique({
+      where: { id: matchId },
+      select: { id: true, status: true, refereeId: true },
+    });
+    if (!match) throw new NotFoundException('场次不存在');
+    if (!match.refereeId) return { released: false };
+    if (match.status === MatchStatus.CANCELLED) {
+      throw new BadRequestException('已取消的比赛无需解除执裁');
+    }
+    if (match.status === MatchStatus.COMPLETED) {
+      throw new ConflictException('已结束的比赛不能解除执裁，请先重开本场');
+    }
+    if (match.status === MatchStatus.LIVE && !options.force) {
+      throw new ConflictException('比赛正在进行，解除后该裁判会立即失去记分权限，请确认后重试');
+    }
+
+    await this.prisma.match.update({
+      where: { id: matchId },
+      data: { refereeId: null },
+    });
+    this.logger.log(
+      `release-referee match=${matchId} referee=${match.refereeId} actor=${actorId ?? '-'} force=${Boolean(options.force)}`,
+    );
+    return { released: true };
   }
 
   async correctScore(
