@@ -27,7 +27,7 @@ import {
 } from '@ant-design/icons';
 import { io, type Socket } from 'socket.io-client';
 import { apiFetch } from '@/lib/api';
-import MatchSignatureModal, { type SignatureWinner } from '@/components/referee/MatchSignatureModal';
+import MatchSignatureSheet, { type SignatureWinner } from '@/components/referee/MatchSignatureSheet';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL!;
 const SOCKET_BASE = API_BASE.replace(/\/api$/, '');
@@ -1386,8 +1386,7 @@ export default function RefereeScoringPage() {
       {signingRequest ? (() => {
         const view = signingView(signingRequest, score, matchId);
         return (
-          <MatchSignatureModal
-            open
+          <MatchSignatureSheet
             title={view.title}
             summary={view.summary}
             winner={view.winner}

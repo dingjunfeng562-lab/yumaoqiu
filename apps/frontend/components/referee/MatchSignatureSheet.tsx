@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Alert, Button, Modal, message } from 'antd';
+import { useRef, useState, type ReactNode } from 'react';
+import { Alert, Button, message } from 'antd';
 import SignaturePad, { type SignaturePadHandle } from './SignaturePad';
 
 export type MatchSignaturesPayload = {
@@ -19,8 +19,7 @@ export type SignatureWinner = {
 
 type Step = 'review' | 'winner' | 'referee';
 
-type MatchSignatureModalProps = {
-  open: boolean;
+type MatchSignatureSheetProps = {
   title: string;
   /** 第一步「核对结果」里展示的内容（比分、弃权方等）。 */
   summary: ReactNode;
@@ -30,22 +29,19 @@ type MatchSignatureModalProps = {
   submitText: string;
   submitting: boolean;
   onCancel: () => void;
-  /** 提交签名并结束比赛；成功返回 true（由调用方关闭弹窗），失败返回 false，签名保留可重试。 */
+  /** 提交签名并结束比赛；成功返回 true（由调用方关闭），失败返回 false，签名保留可重试。 */
   onSubmit: (signatures: MatchSignaturesPayload) => Promise<boolean>;
 };
 
-/** 签字板高度跟着屏幕走：横屏手机只有三四百像素高，平板可以大一些。 */
-function padHeightForViewport() {
-  if (typeof window === 'undefined') return 220;
-  return Math.max(130, Math.min(280, window.innerHeight - 250));
-}
-
 /**
  * 比赛结束签字：核对结果 → 胜方签字（双打两人选一人）→ 裁判签字 → 提交。
- * 赛事开启「比赛结束需签字」时，裁判端的结束、弃权、退赛、黑牌都先走这里。
+ *
+ * 用整屏签字层而不是 antd Modal：手机（尤其被 RefereeLandscapeGate 旋转成横屏兜底的
+ * 记分台）里，Modal 会缩在竖屏宽度那么高的盒子里，签字板被裁、手势又被 touch-action
+ * 吃掉，裁判只能签在露出来的一小块里，看起来就是「签字不完整、划不动」。
+ * 这一层固定铺满当前可见区域，里面没有滚动容器，签字板吃满剩余高度。
  */
-export default function MatchSignatureModal({
-  open,
+export default function MatchSignatureSheet({
   title,
   summary,
   winner,
@@ -54,33 +50,18 @@ export default function MatchSignatureModal({
   submitting,
   onCancel,
   onSubmit,
-}: MatchSignatureModalProps) {
+}: MatchSignatureSheetProps) {
   const [messageApi, messageHolder] = message.useMessage();
+  // 这一层由调用方在需要签字时挂载、签完卸载，所以初始状态按挂载那一刻算即可。
   const [step, setStep] = useState<Step>('review');
-  const [signerIndex, setSignerIndex] = useState<number | null>(null);
+  const [signerIndex, setSignerIndex] = useState<number | null>(() => {
+    const players = winner?.players ?? [];
+    return players.length === 1 ? players[0].index : null;
+  });
   const [winnerSignature, setWinnerSignature] = useState<string | null>(null);
   const [padEmpty, setPadEmpty] = useState(true);
-  const [padHeight, setPadHeight] = useState(220);
   const padRef = useRef<SignaturePadHandle>(null);
   const players = winner?.players ?? [];
-
-  useEffect(() => {
-    if (!open) return;
-    setStep('review');
-    setWinnerSignature(null);
-    setPadEmpty(true);
-    setSignerIndex(players.length === 1 ? players[0].index : null);
-    setPadHeight(padHeightForViewport());
-    // 只在每次打开时重置；players 每次渲染都是新数组，不能放进依赖。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onResize = () => setPadHeight(padHeightForViewport());
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, [open]);
 
   const signerName = players.find((player) => player.index === signerIndex)?.name ?? winner?.name ?? '';
 
@@ -171,64 +152,69 @@ export default function MatchSignatureModal({
   }
 
   return (
-    <Modal
-      open={open}
-      title={title}
-      width="min(960px, 96vw)"
-      centered
-      mask={{ closable: false }}
-      keyboard={false}
-      destroyOnHidden
-      okText="确定"
-      cancelText="取消"
-      onCancel={submitting ? undefined : onCancel}
-      footer={footer}
-      styles={{ body: { paddingTop: 4 } }}
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      className="fixed inset-0 z-[1200] flex flex-col bg-white text-slate-800"
+      style={{ overscrollBehavior: 'none' }}
     >
       {messageHolder}
-      <div className="mb-3 flex flex-wrap items-center gap-2 text-xs font-bold">
-        {stepItems.map((item, index) => (
-          <span
-            key={item.key}
-            className={`rounded-full px-3 py-1 ${
-              index === currentIndex
-                ? 'bg-blue-600 text-white'
-                : index < currentIndex
-                  ? 'bg-emerald-100 text-emerald-700'
-                  : 'bg-slate-100 text-slate-500'
-            }`}
-          >
-            {index + 1}. {item.label}
-          </span>
-        ))}
-      </div>
+      <header className="flex shrink-0 items-center gap-2 border-b border-slate-200 px-3 py-2">
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-black leading-tight text-slate-900">{title}</div>
+          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] font-bold">
+            {stepItems.map((item, index) => (
+              <span
+                key={item.key}
+                className={`rounded-full px-2 py-0.5 ${
+                  index === currentIndex
+                    ? 'bg-blue-600 text-white'
+                    : index < currentIndex
+                      ? 'bg-emerald-100 text-emerald-700'
+                      : 'bg-slate-100 text-slate-500'
+                }`}
+              >
+                {index + 1}. {item.label}
+              </span>
+            ))}
+          </div>
+        </div>
+        <Button size="small" onClick={onCancel} disabled={submitting}>取消</Button>
+      </header>
 
       {step === 'review' ? (
-        <div className="space-y-3">
-          {summary}
-          <Alert
-            type="info"
-            showIcon
-            title={
-              winner
-                ? '本赛事要求比赛结束时签字确认：请胜方选手核对比分后签字，再由裁判签字。提交后本场比赛正式结束。'
-                : '本赛事要求比赛结束时签字确认：本场没有胜方，由裁判签字后提交。'
-            }
-          />
+        <div
+          className="min-h-0 flex-1 overflow-y-auto px-3 py-2"
+          style={{ touchAction: 'pan-y', overscrollBehavior: 'contain' }}
+        >
+          <div className="space-y-3">
+            {summary}
+            <Alert
+              type="info"
+              showIcon
+              title={
+                winner
+                  ? '本赛事要求比赛结束时签字确认：请胜方选手核对比分后签字，再由裁判签字。提交后本场比赛正式结束。'
+                  : '本赛事要求比赛结束时签字确认：本场没有胜方，由裁判签字后提交。'
+              }
+            />
+          </div>
         </div>
       ) : null}
 
       {step === 'winner' && winner ? (
-        <div className="space-y-3">
-          <div className="text-sm font-semibold text-slate-700">
+        <div className="flex min-h-0 flex-1 flex-col gap-2 px-3 py-2">
+          <div className="shrink-0 text-sm font-semibold text-slate-700">
             请胜方 <strong className="text-emerald-700">{winner.sideLabel} {winner.name}</strong> 核对比分后签字
           </div>
           {players.length > 1 ? (
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-sm text-slate-500">签字选手（两人中一人签即可）：</span>
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
+              <span className="text-xs text-slate-500">签字选手（两人中一人签即可）：</span>
               {players.map((player) => (
                 <Button
                   key={player.index}
+                  size="small"
                   type={signerIndex === player.index ? 'primary' : 'default'}
                   onClick={() => setSignerIndex(player.index)}
                 >
@@ -240,7 +226,7 @@ export default function MatchSignatureModal({
           <SignaturePad
             key="winner-pad"
             ref={padRef}
-            height={players.length > 1 ? Math.max(120, padHeight - 44) : padHeight}
+            fill
             placeholder={signerName ? `${signerName} 请在框内签名` : '胜方选手请在框内签名'}
             onChange={setPadEmpty}
           />
@@ -248,8 +234,8 @@ export default function MatchSignatureModal({
       ) : null}
 
       {step === 'referee' ? (
-        <div className="space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-h-0 flex-1 flex-col gap-2 px-3 py-2">
+          <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
             <div className="text-sm font-semibold text-slate-700">
               请裁判 <strong className="text-blue-700">{refereeName}</strong> 签字确认
             </div>
@@ -258,19 +244,23 @@ export default function MatchSignatureModal({
                 <span>胜方已签（{signerName}）</span>
                 {/* 签名是本机刚生成的 data URL，不走 next/image。 */}
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={winnerSignature} alt="胜方签名" className="h-10 rounded border border-slate-200 bg-white px-1" />
+                <img src={winnerSignature} alt="胜方签名" className="h-9 rounded border border-slate-200 bg-white px-1" />
               </div>
             ) : null}
           </div>
           <SignaturePad
             key="referee-pad"
             ref={padRef}
-            height={padHeight}
+            fill
             placeholder="裁判请在框内签名"
             onChange={setPadEmpty}
           />
         </div>
       ) : null}
-    </Modal>
+
+      <footer className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-slate-200 px-3 py-2 [&_.ant-btn]:shrink-0">
+        {footer}
+      </footer>
+    </div>
   );
 }
