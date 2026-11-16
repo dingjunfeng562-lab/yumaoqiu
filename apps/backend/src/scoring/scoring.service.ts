@@ -1936,8 +1936,8 @@ export class ScoringService {
       if (nextStatus === MatchStatus.COMPLETED && winnerSide) {
         const secondStageSynced = await this.syncSecondStageFormalMatchResult(tx, match, winnerSide);
         if ((match.status !== MatchStatus.COMPLETED || winnerChanged) && !secondStageSynced) {
-          // 改判时下一轮只是换人，保留已排好的时间和场地。
-          await this.advanceSingleEliminationWinner(tx, match, winnerSide, { keepSchedule: winnerChanged });
+          // 改判时下一轮只是换人，已排好的时间和场地不动（晋级一律不动排程）。
+          await this.advanceSingleEliminationWinner(tx, match, winnerSide);
         }
         await this.fillPlayoffMatchesIfReady(tx, match.eventId);
         await this.fillGroupKnockoutIfReady(tx, match.eventId);
@@ -3157,7 +3157,6 @@ export class ScoringService {
       side2Id: string | null;
     },
     winnerSide: 1 | 2,
-    options: { keepSchedule?: boolean } = {},
   ) {
     if (!match.eventId || match.roundNo < 1 || isSecondStageFormalRoundNo(match.roundNo)) return;
 
@@ -3179,7 +3178,6 @@ export class ScoringService {
         nextMatch,
         match.matchNo % 2 === 1 ? 'side1Id' : 'side2Id',
         winnerId,
-        options,
       );
     }
 
@@ -3197,7 +3195,6 @@ export class ScoringService {
           bronzeMatch,
           match.matchNo % 2 === 1 ? 'side1Id' : 'side2Id',
           loserId,
-          options,
         );
       }
     }
@@ -3230,21 +3227,20 @@ export class ScoringService {
     }
   }
 
+  /**
+   * 晋级 / 撤回晋级：只改下一轮（含季军赛）的签位，不动该场已排好的场地和时间。
+   * 赛前是把全部轮次一次排好的；以前这里会顺手清空场地和时间，结果 1/4、半决赛、决赛
+   * 一决出人选就从秩序表、对阵表和裁判的场地列表里消失。要调时间请到「场地排程」里调。
+   */
   private async updatePendingDependentMatch(
     tx: Prisma.TransactionClient,
-    match: { id: string; status: MatchStatus },
+    match: { id: string },
     side: 'side1Id' | 'side2Id',
     value: string | null,
-    options: { keepSchedule?: boolean } = {},
   ) {
-    const data: Prisma.MatchUncheckedUpdateInput = { [side]: value };
-    if (match.status === MatchStatus.PENDING && !options.keepSchedule) {
-      data.venueId = null;
-      data.scheduledAt = null;
-    }
     await tx.match.update({
       where: { id: match.id },
-      data,
+      data: { [side]: value },
     });
   }
 
