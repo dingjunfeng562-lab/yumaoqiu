@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+﻿import { createHash } from 'node:crypto';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Format, MatchStatus, RegistrationStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -305,6 +305,32 @@ function entrantExportLabel(value?: string | null) {
   return value ? ENTRANT_LABELS[value] ?? value : '';
 }
 
+/** 淘汰赛轮次代码 → 中文阶段名。导出文件里直接显示代码（R1/QF/SF/F）看不出是哪一轮。 */
+const KNOCKOUT_ROUND_LABELS: Record<string, string> = {
+  F: '决赛',
+  SF: '半决赛',
+  QF: '1/4决赛',
+  R1: '1/8决赛',
+  R2: '1/16决赛',
+  R3: '1/32决赛',
+  BRONZE: '季军赛',
+};
+
+/** 导出里的「轮次/阶段」列：淘汰赛代码翻成中文，排位赛 P5 → 5-6名决赛，其余原样。 */
+export function exportRoundLabel(match: ExportMatch): string {
+  if (match.roundText) return match.roundText;
+  const roundNo = match.roundNo ?? 0;
+  const round = typeof match.round === 'string' ? match.round : match.round != null ? String(match.round) : '';
+  if (roundNo >= 1 && roundNo < 100) {
+    if (KNOCKOUT_ROUND_LABELS[round]) return KNOCKOUT_ROUND_LABELS[round];
+    const playoff = /^P(\d+)$/.exec(round);
+    if (playoff) return `${playoff[1]}-${Number(playoff[1]) + 1}名决赛`;
+    return round || '淘汰赛';
+  }
+  if (roundNo === 0 && !round) return '小组循环';
+  return round;
+}
+
 @Injectable()
 export class ExportsService {
   constructor(private prisma: PrismaService) {}
@@ -327,7 +353,7 @@ export class ExportsService {
     if (!tournament) throw new NotFoundException('赛事不存在');
 
     // 生成器版本也进指纹：改了出片逻辑（如淘汰赛名次折算）后，旧缓存文件会在下次下载/巡检时自动重建。
-    const fingerprint = createHash('sha256').update(kind === 'orderbook' ? 'team-orderbook-v7-knockout-placements' : 'team-standings-v4-knockout-placements').update(kind).update(JSON.stringify(tournament)).digest('hex');
+    const fingerprint = createHash('sha256').update(kind === 'orderbook' ? 'team-orderbook-v7-knockout-placements' : 'team-standings-v5-round-labels').update(kind).update(JSON.stringify(tournament)).digest('hex');
     return { kind, tournament, fingerprint };
   }
 
@@ -1015,7 +1041,7 @@ export class ExportsService {
         rows.push([
           tournament.name,
           this.eventMatchLabel(event, match),
-          match.roundText ?? match.round,
+          exportRoundLabel(match),
           match.matchNoText ?? this.exportMatchNo(match, venueMatchNoMap),
           this.formatDateTime(match.scheduledAt),
           match.venue?.name ?? '未分配',
@@ -1042,7 +1068,7 @@ export class ExportsService {
         rows.push([
           tournament.name,
           this.eventMatchLabel(event, match),
-          match.roundText ?? match.round,
+          exportRoundLabel(match),
           match.matchNoText ?? match.matchNo,
           `${this.matchSideLabel(match, 1, registrationMap)} VS ${this.matchSideLabel(match, 2, registrationMap)}`,
           this.gamesText(match.games),
@@ -1215,7 +1241,7 @@ export class ExportsService {
         this.formatDateTime(match.scheduledAt),
         this.eventMatchLabel(event, match),
         this.matchGroupLabel(match),
-        match.roundText ?? match.round,
+        exportRoundLabel(match),
         `${this.matchSideLabel(match, 1, registrationMap)} VS ${this.matchSideLabel(match, 2, registrationMap)}`,
         STATUS_LABELS[match.status] ?? match.status,
       ]);
