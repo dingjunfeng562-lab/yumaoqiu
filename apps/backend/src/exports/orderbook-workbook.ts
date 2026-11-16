@@ -1,5 +1,6 @@
 import * as ExcelJS from 'exceljs';
 import { buildKnockoutSkeleton } from '../common/knockout-skeleton';
+import { knockoutPlacements } from '../common/knockout-placement';
 import { teamStandings } from '../common/final-rankings';
 import { withOfficialTeamResult } from '../common/team-official-result';
 import { teamResultsReady } from '../common/tournament-results-ready';
@@ -1542,34 +1543,48 @@ function buildRankingSummarySheet(wb: ExcelJS.Workbook, tournament: ExportTourna
       continue;
     }
     const regMap = registrationMap(tournament);
-    const rankingMap = new Map<number, { name: string; source: string; status: string }>();
-    const stageRankings = event.secondStage?.rankings ?? [];
-    for (const item of stageRankings) {
-      const registration = item.entrantId ? regMap.get(item.entrantId) : null;
-      rankingMap.set(item.rank, {
-        name: registrationName(registration) || item.entrantNameSnapshot || '待定',
-        source: '第二阶段排名',
-        status: '已确定',
-      });
-    }
-    if (!rankingMap.size) {
-      const standings = event.registrations
-        .map((registration) => ({ registration, stats: computeEventStats(event, registration.id) }))
-        .sort((a, b) => b.stats.wins - a.stats.wins || b.stats.netGames - a.stats.netGames || a.registration.id.localeCompare(b.registration.id));
-      standings.forEach((item, index) => rankingMap.set(index + 1, {
-        name: registrationName(item.registration),
-        source: item.stats.played ? '小组赛排名' : '抽签签位',
-        status: item.stats.played ? '已确定' : '待定',
-      }));
-    }
-    for (const [rank, item] of [...rankingMap.entries()].sort((a, b) => a[0] - b[0])) {
+    const writeRow = (rank: string, name: string, source: string, status: string) => {
       ws.getCell(row, 1).value = eventLabel(event);
-      ws.getCell(row, 2).value = `第${rank}名`;
-      ws.getCell(row, 3).value = item.name;
-      ws.getCell(row, 4).value = item.source;
-      ws.getCell(row, 5).value = item.status;
+      ws.getCell(row, 2).value = rank;
+      ws.getCell(row, 3).value = name;
+      ws.getCell(row, 4).value = source;
+      ws.getCell(row, 5).value = status;
       styleBodyRange(ws, row, row, 1, 5);
       row += 1;
+    };
+
+    // 第二阶段排名（抽签时指定的名次）优先。
+    const stageRankings = event.secondStage?.rankings ?? [];
+    if (stageRankings.length) {
+      for (const item of [...stageRankings].sort((a, b) => a.rank - b.rank)) {
+        const registration = item.entrantId ? regMap.get(item.entrantId) : null;
+        writeRow(`第${item.rank}名`, registrationName(registration) || item.entrantNameSnapshot || '待定', '第二阶段排名', '已确定');
+      }
+      continue;
+    }
+
+    // 淘汰赛名次：决赛 1-2、季军赛 3-4（无季军赛时半决赛负者并列第3）、1/4 负者并列第5、1/8 负者并列第9。
+    // 只要有一场淘汰赛打完就用这个口径；一场没打时继续用下面小组赛的口径。
+    const knockout = knockoutPlacements(event.matches);
+    if (knockout.decided) {
+      for (const item of knockout.rows) {
+        const registration = item.entrantId ? regMap.get(item.entrantId) : null;
+        writeRow(item.label, registrationName(registration) || '待定', '淘汰赛成绩', item.status);
+      }
+      continue;
+    }
+
+    const rankingMap = new Map<number, { name: string; source: string; status: string }>();
+    const standings = event.registrations
+      .map((registration) => ({ registration, stats: computeEventStats(event, registration.id) }))
+      .sort((a, b) => b.stats.wins - a.stats.wins || b.stats.netGames - a.stats.netGames || a.registration.id.localeCompare(b.registration.id));
+    standings.forEach((item, index) => rankingMap.set(index + 1, {
+      name: registrationName(item.registration),
+      source: item.stats.played ? '小组赛排名' : '抽签签位',
+      status: item.stats.played ? '已确定' : '待定',
+    }));
+    for (const [rank, item] of [...rankingMap.entries()].sort((a, b) => a[0] - b[0])) {
+      writeRow(`第${rank}名`, item.name, item.source, item.status);
     }
   }
   if (row === 3) ws.getCell(row, 1).value = '暂无名次数据';
