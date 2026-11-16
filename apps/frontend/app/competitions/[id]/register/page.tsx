@@ -28,6 +28,14 @@ const DOUBLE_EVENT_TYPES: ReadonlySet<EventType> = new Set([
   'MIXED_DOUBLES',
 ]);
 
+/** 中国大陆手机号校验：先去掉空格、横线、括号和 +86，再要求 1[3-9] 开头的 11 位。 */
+function normalizePhone(value: string) {
+  return (value ?? '').replace(/[\s\-()（）]/g, '').replace(/^(\+?86)(?=1\d{10}$)/, '');
+}
+function isMobilePhone(value: string) {
+  return /^1[3-9]\d{9}$/.test(normalizePhone(value));
+}
+
 function isDoubleOption(option: EventOption | undefined): boolean {
   if (!option) return false;
   if (typeof option.isDouble === 'boolean') return option.isDouble;
@@ -528,6 +536,15 @@ function SchoolRegisterPage({
   async function submitRegistration(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!id) return;
+    // 手机号是认人、查重和通知的唯一凭据，先在前端拦一道，避免提交后才被打回。
+    if (!isMobilePhone(form.contact)) {
+      setError('联系方式须填写 11 位手机号（例如 13800138000）');
+      return;
+    }
+    if (form.items.some((item) => item.partnerContact && !isMobilePhone(item.partnerContact))) {
+      setError('搭档联系方式须填写 11 位手机号');
+      return;
+    }
     setSubmitting(true);
     setMessage('');
     setError('');
@@ -768,7 +785,14 @@ function SchoolRegisterPage({
                       </Field>
                     ) : null}
                     <Field label="联系方式">
-                      <input required value={form.contact} onChange={(event) => updateField('contact', event.target.value)} />
+                      <input
+                        required
+                        inputMode="tel"
+                        maxLength={20}
+                        value={form.contact}
+                        onChange={(event) => updateField('contact', event.target.value)}
+                        placeholder="11 位手机号，例如 13800138000"
+                      />
                     </Field>
                   </div>
                 ) : null}

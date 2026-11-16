@@ -2,7 +2,7 @@ import { maskContact } from '../common/mask-contact';
 import { legacyGroupId } from '../registration-groups/registration-groups.service';
 import { groupFields, normalizeAgeRule, ageRuleLabel, checkGender } from '../common/age-eligibility';
 import { VerifyEligibilityDto } from '../registration-groups/registration-groups.dto';
-import { preparePerson, itemEligibility, identityView, isPendingEligibility, overallEligibilityStatus, type PreparedPerson } from '../common/registration-eligibility';
+import { preparePerson, itemEligibility, identityView, isPendingEligibility, overallEligibilityStatus, storedIdentity, type PreparedPerson } from '../common/registration-eligibility';
 import { hasPermission } from '../auth/permissions';
 import {
   BadRequestException,
@@ -62,6 +62,7 @@ import {
   requireAdminActor,
 } from '../common/registration-changes';
 import { normalizeContact, registrationDisplayName } from '../payments/payment-rules';
+import { assertAdminContact, assertMobileContact } from '../common/contact';
 import {
   ensureRegistrationCapacity,
   eventEntryCounts,
@@ -462,8 +463,8 @@ export class CompetitionsService {
     if (fields.email === 'required' && !dto.guestEmail?.trim()) throw new BadRequestException('请填写邮箱');
     const rules: RegistrationFieldRules = group ? { SCHOOL: fields, SOCIAL: fields } : normalizeRegistrationFieldRules(competition.registrationFieldRules);
 
-    const contact = dto.contact?.trim() ?? '';
-    if (!contact) throw new BadRequestException('请填写联系方式');
+    // 线上报名必须是真实手机号：认人、查重、通知都靠它，占位号码会把同一个人拆成好几个人。
+    const contact = assertMobileContact(dto.contact);
     const school = dto.school?.trim() ?? '';
     if (!school) throw new BadRequestException(entrantType === EntrantType.SOCIAL ? '请填写单位/俱乐部' : '请填写学校');
 
@@ -485,13 +486,28 @@ export class CompetitionsService {
 
     const name = dto.name.trim();
     const personKey = createHash('sha256').update(`${name}\0${normalizeContact(contact)}`).digest('hex');
+    const identityFingerprint = own.identity?.fingerprint ?? null;
     const ownRegistration = userId ? await this.prisma.competitionRegistration.findFirst({
       where: { competitionId: competition.id, userId, name, contact },
       include: { user: true, eventItems: { include: { event: true } } },
     }) : null;
     // 扫码报名大多是游客，没有账号可认人：同一赛事里姓名和联系方式都相同的游客报名视为同一个人，
     // 再次提交时与登录用户一样走「追加项目」，否则兼项永远报不上第二项。
-    const existing = ownRegistration ?? await this.findGuestRegistration(competition.id, name, contact);
+    // 但只比手机号不够：换个号、号码写错一位就成了「另一个人」，所以再按身份证指纹、学号兜一层。
+    const person = await this.analyzePersonRegistrations(competition.id, {
+      name,
+      contact,
+      studentId,
+      fingerprint: identityFingerprint,
+    });
+    const existing = ownRegistration
+      ?? await this.findGuestRegistration(competition.id, name, contact)
+      ?? person.ownRows[0]
+      ?? null;
+    // 身份证一致但姓名对不上：多半是姓名写错了，拦住让他核对，别悄悄建出第二条记录。
+    if (existing && !ownRegistration && existing.name.trim() !== name) {
+      throw new ConflictException(`该身份证号已在本赛事以「${existing.name}」报名，请核对姓名后重新提交`);
+    }
     // 追加到游客报名时只新增项目，本人信息沿用第一次报名：不能凭姓名和手机号改掉别人的资料，
     // 也不绕过「报名信息修改截止时间」。
     const guestAppendTarget =
@@ -514,7 +530,13 @@ export class CompetitionsService {
 
     const existingApprovedItems = existing?.status === RegistrationStatus.APPROVED ? existing.eventItems : [];
     const existingApprovedEventIds = existingApprovedItems.map((item) => item.eventId);
-    const eventIds = [...new Set([...existingApprovedEventIds, ...submittedEventIds])];
+    // 兼项按「人」计数：本人所有报名的项目 + 以搭档身份出现的项目，去重后再加这次提交的项目。
+    // 这样换手机号、改姓名写法、当别人的混双搭档，都算在同一个人头上。
+    const personEventIds = new Set<string>(person.partnerEventIds);
+    for (const row of person.ownRows) {
+      for (const item of row.eventItems) personEventIds.add(item.eventId);
+    }
+    const eventIds = [...new Set([...personEventIds, ...submittedEventIds])];
     const maxRegistrationEvents = competition.allowCrossEventRegistration ? competition.maxRegistrationEvents : 1;
     if (eventIds.length > maxRegistrationEvents) {
       if (!existingApprovedItems.length) {
@@ -560,6 +582,7 @@ export class CompetitionsService {
       const partner = this.isDoubleEvent(event.type) ? preparePerson({ gender: item.partnerGender ?? null, identityNumber: item.partnerIdentityNumber, age: item.partnerAge, shirtSize: item.partnerShirtSize }, fields, ageRule, '搭档') : null;
       if (partner) {
         if (!item.partnerName?.trim() || !item.partnerContact?.trim()) throw new BadRequestException('请填写搭档姓名和联系方式');
+        item.partnerContact = assertMobileContact(item.partnerContact, '搭档联系方式');
         requireExtras(partner, '搭档');
         partners.set(item.eventId.trim(), partner);
         item.partnerGender = partner.gender ?? undefined;
@@ -799,6 +822,58 @@ export class CompetitionsService {
 
   private eventItemLabels(items: Array<{ event: { type: EventType; groupLabel?: string | null } }>) {
     return items.map((item) => eventDisplayLabel(item.event)).join('、');
+  }
+
+  /**
+   * 认人：姓名相同，且身份证指纹 / 学号 / 手机号任一相同，就算同一个人。
+   * 只比手机号不够——换一个号、号码写错一位，同一个人就会变成「两个人」，各报一项绕过兼项上限。
+   * 同时收集「这个人作为别人搭档」出现的项目，用于兼项计数。
+   */
+  private async analyzePersonRegistrations(
+    competitionId: string,
+    person: { name: string; contact: string; studentId?: string | null; fingerprint?: string | null },
+  ) {
+    const name = person.name.trim();
+    const phone = normalizeContact(person.contact);
+    const fingerprint = person.fingerprint?.trim() || null;
+    const studentId = person.studentId?.trim() || null;
+    const or: Prisma.CompetitionRegistrationWhereInput[] = [];
+    if (name) or.push({ name });
+    if (studentId) or.push({ studentId });
+    if (fingerprint) {
+      or.push({ identityData: { path: '$.fingerprint', equals: fingerprint } });
+      or.push({ eventItems: { some: { partnerIdentityData: { path: '$.fingerprint', equals: fingerprint } } } });
+    }
+    if (!or.length) return { ownRows: [], partnerEventIds: new Set<string>() };
+
+    const rows = await this.prisma.competitionRegistration.findMany({
+      where: {
+        competitionId,
+        status: { notIn: [RegistrationStatus.REMOVED, RegistrationStatus.REJECTED] },
+        OR: or,
+      },
+      include: { user: true, eventItems: { include: { event: true } } },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const ownRows: typeof rows = [];
+    const partnerEventIds = new Set<string>();
+    for (const row of rows) {
+      const rowFingerprint = storedIdentity(row.identityData)?.fingerprint ?? null;
+      const sameName = row.name.trim() === name;
+      const samePhone = Boolean(phone) && normalizeContact(row.contact ?? '') === phone;
+      const sameStudentId = Boolean(studentId) && row.studentId === studentId;
+      if ((fingerprint && rowFingerprint === fingerprint) || (sameName && (samePhone || sameStudentId))) {
+        ownRows.push(row);
+        continue;
+      }
+      if (!fingerprint) continue;
+      for (const item of row.eventItems) {
+        const partnerFingerprint = storedIdentity(item.partnerIdentityData)?.fingerprint ?? null;
+        if (partnerFingerprint === fingerprint) partnerEventIds.add(item.eventId);
+      }
+    }
+    return { ownRows, partnerEventIds };
   }
 
   async listMyRegistrations(userId: string) {
@@ -2657,7 +2732,7 @@ export class CompetitionsService {
     const name = this.requiredBatchField(item.name, row, '姓名');
     const gender = own.gender;
     const school = this.requiredBatchField(item.school, row, entrantType === EntrantType.SOCIAL ? '单位' : '学校');
-    const contact = this.requiredBatchField(item.contact, row, '联系方式');
+    const contact = this.batchContactField(item.contact, row, '联系方式');
     const isSchool = entrantType === EntrantType.SCHOOL;
     const studentId = isSchool || group ? this.batchGroupField(item.studentId, rules, 'studentId', '学号', row) : undefined;
     const college = isSchool || group ? this.batchGroupField(item.college, rules, 'college', '学院', row) : undefined;
@@ -2695,7 +2770,7 @@ export class CompetitionsService {
     const partnerName = this.requiredBatchField(item.partnerName, row, isSchool ? '搭档姓名' : '队友姓名');
     const partner = preparePerson({ gender: item.partnerGender ?? null, identityNumber: item.partnerIdentityNumber }, fields, ageRule, '搭档', stored?.partner);
     const partnerGender = partner.gender;
-    const partnerContact = this.requiredBatchField(item.partnerContact, row, isSchool ? '搭档联系方式' : '队友联系方式');
+    const partnerContact = this.batchContactField(item.partnerContact, row, isSchool ? '搭档联系方式' : '队友联系方式');
     const partnerSchool = item.partnerSchool?.trim() || school;
     let partnerStudentId: string | undefined;
     let partnerCollege: string | undefined;
@@ -2812,6 +2887,16 @@ export class CompetitionsService {
       ),
     );
     throw new ConflictException(`${hit?.name ?? '该选手'}（${hit?.contact ?? ''}）已在该项目报名`);
+  }
+
+  private batchContactField(value: string | null | undefined, rowNumber: number, label: string) {
+    const trimmed = this.requiredBatchField(value, rowNumber, label);
+    try {
+      return assertAdminContact(trimmed, label);
+    } catch (error) {
+      if (error instanceof BadRequestException) throw new BadRequestException(`第 ${rowNumber} 行：${error.message}`);
+      throw error;
+    }
   }
 
   private requiredBatchField(value: string | null | undefined, rowNumber: number, label: string) {
