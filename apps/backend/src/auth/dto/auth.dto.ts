@@ -43,6 +43,11 @@ export class RefreshTokenDto {
   @IsString()
   @MinLength(1)
   refreshToken: string;
+
+  /** 裁判端「比赛保活」：裁判员账号剩余不足 48 小时就补到 48 小时，其他角色忽略。 */
+  @IsOptional()
+  @IsBoolean()
+  refereeKeepAlive?: boolean;
 }
 
 export class RegisterDto {

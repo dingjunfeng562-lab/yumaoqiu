@@ -11,7 +11,10 @@ class MaintenanceCredentialsSignin extends CredentialsSignin {
   code = 'maintenance';
 }
 
-async function refreshAccessToken(token: Record<string, unknown>): Promise<Record<string, unknown>> {
+async function refreshAccessToken(
+  token: Record<string, unknown>,
+  options: { refereeKeepAlive?: boolean } = {},
+): Promise<Record<string, unknown>> {
   const refreshToken = token.refreshToken as string | undefined;
   if (!refreshToken) {
     return { ...token, authError: 'RefreshAccessTokenError' };
@@ -21,7 +24,7 @@ async function refreshAccessToken(token: Record<string, unknown>): Promise<Recor
     const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/auth/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refreshToken }),
+      body: JSON.stringify(options.refereeKeepAlive ? { refreshToken, refereeKeepAlive: true } : { refreshToken }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -64,7 +67,8 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
   trustHost: true,
   session: {
     strategy: 'jwt',
-    maxAge: 30 * 24 * 60 * 60,
+    // 与后端一致：登录固定 7 天有效（apps/backend/src/auth/auth.service.ts LOGIN_SESSION_SECONDS）。
+    maxAge: 7 * 24 * 60 * 60,
   },
   providers: [
     Credentials({
@@ -134,6 +138,18 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         token.name = nextName;
         token.username = nextName;
       }
+      // 裁判端「比赛保活」（app/referee/RefereeSessionKeeper.tsx 调 update({ refereeKeepAlive: true })）：
+      // 后端把裁判员账号的登录补到至少 48 小时。失败（如网络不好）不登出，走下面的常规逻辑，过一会儿再试。
+      if (
+        trigger === 'update'
+        && (session as { refereeKeepAlive?: unknown } | undefined)?.refereeKeepAlive === true
+        && token.role === 'REFEREE'
+        && token.refreshToken
+        && !token.authError
+      ) {
+        const extended = await refreshAccessToken(token, { refereeKeepAlive: true });
+        if (!extended.authError) return extended;
+      }
       if (token.accessTokenExpiresAt && Date.now() < (token.accessTokenExpiresAt as number) - 60_000) {
         return token;
       }
@@ -152,6 +168,8 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       session.user.username = token.username as string;
       session.user.email = token.email ?? session.user.email ?? null;
       session.authError = token.authError as string | undefined;
+      // 裁判端据此判断离自动退出还剩多久（毫秒时间戳）。
+      session.accessTokenExpiresAt = token.accessTokenExpiresAt as number | undefined;
       return session;
     },
   },

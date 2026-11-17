@@ -29,9 +29,13 @@ import {
 
 const LOGIN_FAILURE_LIMIT = 5;
 const LOGIN_LOCK_MINUTES = 15;
-const ACCESS_TOKEN_EXPIRES_IN_SECONDS = 2 * 60 * 60;
-const REFRESH_TOKEN_EXPIRES_IN_SECONDS = 7 * 24 * 60 * 60;
-const REMEMBERED_REFRESH_TOKEN_EXPIRES_IN_SECONDS = 30 * 24 * 60 * 60;
+// 登录有效期固定 7 天：从登录那一刻算起，到点必须重新登录，中途续期不会往后延；
+// 勾不勾「记住登录状态」都一样。
+// 原来 access token 只有 2 小时，前端只在打开 / 切回页面且离过期不到 60 秒时才续期，
+// 裁判亮屏连续执裁 2 小时就会被 401 踢回登录页（11-17 旅职校两台手机同时掉线）。
+const LOGIN_SESSION_SECONDS = 7 * 24 * 60 * 60;
+// 裁判员账号的「比赛保活」：在裁判端时，离自动退出至少保留 48 小时（裁判端定时请求补足）。
+const REFEREE_KEEPALIVE_SECONDS = 48 * 60 * 60;
 const INVITE_CODE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 const TEMP_PASSWORD_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
 const INVALID_LOGIN_MESSAGE = '账号或密码错误';
@@ -208,6 +212,8 @@ export class AuthService {
       role?: Role;
       tokenType?: string;
       rememberMe?: boolean;
+      iat?: number;
+      exp?: number;
     };
 
     try {
@@ -225,8 +231,23 @@ export class AuthService {
       throw new UnauthorizedException('登录已过期，请重新登录');
     }
 
+    // 续期沿用这次登录的截止时间，不重新计 7 天。
+    // 改版前勾「记住我」签发的 refresh token 有 30 天，按它的签发时间再封顶 7 天。
+    const exp = payload.exp ?? 0;
+    let sessionEndsAtMs =
+      Math.min(exp, (payload.iat ?? exp) + LOGIN_SESSION_SECONDS) * 1000;
+
+    // 裁判员在裁判端：剩余不足 48 小时就延到「现在 + 48 小时」，比赛中不会到点被退出。
+    // 只会延长，不会缩短原来的 7 天；其他角色带了这个参数也不生效。
+    if (dto.refereeKeepAlive && user.role === Role.REFEREE) {
+      sessionEndsAtMs = Math.max(
+        sessionEndsAtMs,
+        Date.now() + REFEREE_KEEPALIVE_SECONDS * 1000,
+      );
+    }
+
     return {
-      ...this.issueTokens(user, Boolean(payload.rememberMe)),
+      ...this.issueTokens(user, Boolean(payload.rememberMe), sessionEndsAtMs),
       user: this.serializeUser(user),
     };
   }
@@ -897,22 +918,30 @@ export class AuthService {
       status?: UserStatus;
     },
     rememberMe: boolean,
+    /** 本次登录的截止时间；不传表示刚登录，从现在起算 7 天。 */
+    sessionEndsAtMs: number = Date.now() + LOGIN_SESSION_SECONDS * 1000,
   ) {
-    const accessTokenExpiresAt = new Date(Date.now() + ACCESS_TOKEN_EXPIRES_IN_SECONDS * 1000);
-    const refreshTokenTtl = rememberMe
-      ? REMEMBERED_REFRESH_TOKEN_EXPIRES_IN_SECONDS
-      : REFRESH_TOKEN_EXPIRES_IN_SECONDS;
-    const refreshTokenExpiresAt = new Date(Date.now() + refreshTokenTtl * 1000);
+    // access token 和 refresh token 同一个截止时间：到点两者一起失效，只能重新登录。
+    // 按整秒算并显式给 iat，保证 exp 恰好等于截止时间；否则每续期一次会因取整提前约 1 秒。
+    const nowSec = Math.floor(Date.now() / 1000);
+    const endSec = Math.floor(sessionEndsAtMs / 1000);
+    const ttlSeconds = endSec - nowSec;
+    if (ttlSeconds < 1) {
+      throw new UnauthorizedException('登录已过期，请重新登录');
+    }
+    const expiresAt = new Date(endSec * 1000).toISOString();
 
     return {
-      access_token: this.jwt.sign(this.buildTokenPayload(user), {
-        expiresIn: ACCESS_TOKEN_EXPIRES_IN_SECONDS,
-      }),
-      refresh_token: this.jwt.sign(this.buildRefreshTokenPayload(user, rememberMe), {
-        expiresIn: refreshTokenTtl,
-      }),
-      accessTokenExpiresAt: accessTokenExpiresAt.toISOString(),
-      refreshTokenExpiresAt: refreshTokenExpiresAt.toISOString(),
+      access_token: this.jwt.sign(
+        { ...this.buildTokenPayload(user), iat: nowSec },
+        { expiresIn: ttlSeconds },
+      ),
+      refresh_token: this.jwt.sign(
+        { ...this.buildRefreshTokenPayload(user, rememberMe), iat: nowSec },
+        { expiresIn: ttlSeconds },
+      ),
+      accessTokenExpiresAt: expiresAt,
+      refreshTokenExpiresAt: expiresAt,
     };
   }
 

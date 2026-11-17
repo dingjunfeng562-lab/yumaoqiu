@@ -14,7 +14,7 @@ import {
   LockOutlined,
   MailOutlined
 } from '@ant-design/icons';
-import { Alert, Button, Checkbox, ConfigProvider, Form, Input } from 'antd';
+import { Alert, Button, ConfigProvider, Form, Input } from 'antd';
 import { firstAdminPage } from '@/lib/admin-permissions';
 
 type LoginType = 'username' | 'email';
@@ -22,7 +22,6 @@ type LoginType = 'username' | 'email';
 type FormValues = {
   identifier: string;
   password: string;
-  remember?: boolean;
 };
 
 const usernamePattern = /^[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9_-]{1,19}$/;
@@ -100,7 +99,6 @@ function LoginContent() {
         loginType,
         identifier: values.identifier.trim(),
         password: values.password,
-        rememberMe: values.remember ? 'true' : 'false',
         redirect: false,
       });
 
@@ -273,12 +271,7 @@ function LoginContent() {
                 />
               </Form.Item>
 
-              <div className="modern-login-options">
-                <Form.Item<FormValues> name="remember" valuePropName="checked" noStyle>
-                  <Checkbox className="modern-login-checkbox">记住登录状态</Checkbox>
-                </Form.Item>
-              </div>
-
+              {/* 「记住登录状态」已去掉：登录统一固定 7 天有效，勾不勾都一样（见后端 auth.service.ts）。 */}
               <Button
                 type="primary"
                 htmlType="submit"

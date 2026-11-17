@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import { RefereeLandscapeGate } from './RefereeLandscapeGate';
+import { RefereeSessionKeeper } from './RefereeSessionKeeper';
 
 export const metadata: Metadata = {
   title: '裁判端 · 羽动云赛',
@@ -15,5 +16,11 @@ export const viewport: Viewport = {
 };
 
 export default function RefereeLayout({ children }: { children: React.ReactNode }) {
-  return <RefereeLandscapeGate>{children}</RefereeLandscapeGate>;
+  return (
+    <>
+      {/* 裁判员账号在裁判端时，保证离自动退出至少还有 48 小时 */}
+      <RefereeSessionKeeper />
+      <RefereeLandscapeGate>{children}</RefereeLandscapeGate>
+    </>
+  );
 }

@@ -26,6 +26,8 @@ declare module 'next-auth' {
       mustChangePassword: boolean;
     };
     authError?: string;
+    /** 本次登录的截止时间（毫秒时间戳），裁判端比赛保活用。 */
+    accessTokenExpiresAt?: number;
   }
 }
 

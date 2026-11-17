@@ -1274,18 +1274,6 @@ a {
   margin-right: 12px;
 }
 
-.modern-login-options {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin: -8px 0 24px;
-}
-
-.modern-login-checkbox {
-  color: #6b7280;
-  font-size: 14px;
-}
-
 .modern-login-submit.ant-btn {
   height: 48px;
   border: none;
