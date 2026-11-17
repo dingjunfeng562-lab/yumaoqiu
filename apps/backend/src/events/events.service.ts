@@ -4,6 +4,7 @@ import { EntrantType, Format, Prisma, RegistrationStatus } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthActor, tournamentScope } from '../auth/admin-scope';
 import { eventDisplayLabel } from '../common/entrant';
+import { hostDisplayLabel, mixCategory } from '../common/event-mix';
 import { eventEntryCounts } from '../common/registration-capacity';
 import { ChangeActor, deleteOrphanPlayers, lockEvents } from '../common/registration-changes';
 import { registrationDisplayName } from '../payments/payment-rules';
@@ -71,7 +72,127 @@ export class EventsService {
       || EVENT_TYPE_ORDER.indexOf(a.type) - EVENT_TYPE_ORDER.indexOf(b.type));
     // 单项管理的「名额」列：已占名额（已通过 + 待审核），口径与扫码报名的名额检查一致。
     const counts = await eventEntryCounts(this.prisma, sorted.map((event) => event.id));
-    return sorted.map((event) => ({ ...event, entryCount: counts.get(event.id) ?? 0 }));
+    // 混编：主项目带 mixLabel（混编名）和 mixMemberIds；并入项目带 mixHostLabel（所在混编的名称）。
+    const membersOf = (hostId: string) => sorted.filter((item) => item.mixHostId === hostId);
+    const labelOfHost = (hostId: string) => {
+      const host = sorted.find((item) => item.id === hostId);
+      return host ? hostDisplayLabel({ ...host, mixMembers: membersOf(hostId) }) : null;
+    };
+    return sorted.map((event) => {
+      const members = membersOf(event.id);
+      return {
+        ...event,
+        entryCount: counts.get(event.id) ?? 0,
+        mixCategory: mixCategory(event.type),
+        mixMemberIds: members.map((member) => member.id),
+        mixLabel: members.length ? labelOfHost(event.id) : null,
+        mixHostLabel: event.mixHostId ? labelOfHost(event.mixHostId) : null,
+      };
+    });
+  }
+
+  /**
+   * 设置混编：hostId 是主项目，memberEventIds 是并入它的单项（空数组 = 取消混编）。
+   * - 只能编同一赛事、同一类（单打类 / 双打类）的单项；
+   * - 一个单项只能属于一个混编：并入项目不能再并入别处，也不能是别的混编的主项目；
+   * - 主项目、新加入和被移出的并入项目都必须还没抽签、没有场次（抽签前才能改）。
+   * 抽签、种子、赛程、记分、名次在主项目里统一进行；报名、资格、名额、缴费仍按原单项。
+   */
+  async setMix(hostId: string, memberEventIds: string[]) {
+    const memberIds = [...new Set(memberEventIds)];
+    if (memberIds.includes(hostId)) throw new BadRequestException('主项目不能同时作为并入项目');
+    const select = {
+      id: true,
+      tournamentId: true,
+      type: true,
+      groupLabel: true,
+      mixHostId: true,
+      mixMembers: { select: { id: true } },
+    } as const;
+    await this.prisma.$transaction(async (tx) => {
+      const host = await tx.event.findUnique({ where: { id: hostId }, select });
+      if (!host) throw new NotFoundException('单项不存在');
+      if (host.mixHostId) throw new ConflictException(`${eventDisplayLabel(host)}已并入其他混编，不能再做主项目`);
+      const targets = memberIds.length
+        ? await tx.event.findMany({ where: { id: { in: memberIds } }, select })
+        : [];
+      if (targets.length !== memberIds.length) throw new BadRequestException('要并入的单项不存在，请刷新后重试');
+      for (const target of targets) {
+        const label = eventDisplayLabel(target);
+        if (target.tournamentId !== host.tournamentId) throw new BadRequestException('只能混编同一赛事的单项');
+        if (mixCategory(target.type) !== mixCategory(host.type)) {
+          throw new BadRequestException('单打只能和单打混编，双打只能和双打混编');
+        }
+        if (target.mixHostId && target.mixHostId !== hostId) throw new ConflictException(`${label}已并入其他混编`);
+        if (target.mixMembers.length) throw new ConflictException(`${label}是另一个混编的主项目，请先取消那个混编`);
+      }
+
+      const currentIds = host.mixMembers.map((member) => member.id);
+      const added = memberIds.filter((id) => !currentIds.includes(id));
+      const removed = currentIds.filter((id) => !memberIds.includes(id));
+      if (!added.length && !removed.length) return;
+
+      // 先锁住涉及的单项，和抽签、报名变动的加锁顺序一致；再确认它们都还没抽签。
+      const touched = [hostId, ...added, ...removed];
+      await lockEvents(tx, touched);
+      const drawn = await tx.event.findMany({
+        where: {
+          id: { in: touched },
+          OR: [
+            { drawGeneratedAt: { not: null } },
+            { matches: { some: {} } },
+            { drawBrackets: { some: { isCurrent: true } } },
+          ],
+        },
+        select: { type: true, groupLabel: true },
+      });
+      if (drawn.length) {
+        throw new ConflictException(
+          `${drawn.map((event) => eventDisplayLabel(event)).join('、')}已经抽签，请先在抽签编排中清空签表，再设置或取消混编`,
+        );
+      }
+
+      if (removed.length) {
+        await tx.event.updateMany({ where: { id: { in: removed } }, data: { mixHostId: null } });
+        await this.detachMixSeeds(tx, hostId, removed);
+      }
+      if (added.length) {
+        await tx.event.updateMany({ where: { id: { in: added } }, data: { mixHostId: hostId } });
+      }
+    });
+    const host = await this.prisma.event.findUniqueOrThrow({ where: { id: hostId }, select: { tournamentId: true } });
+    return this.findByTournament(host.tournamentId);
+  }
+
+  /**
+   * 移出混编时整理种子：
+   * - 移出的单项不再在主项目里抽签，主项目上指向它们选手的种子去掉；
+   *   剩下的种子按原顺序重新编成 1、2、3……（抽签要求种子号从 1 开始连续）。
+   * - 这些选手身上的种子标记是在主项目里设的，一并清掉；移出的单项自己有种子设置的，按它恢复。
+   */
+  private async detachMixSeeds(tx: Prisma.TransactionClient, hostId: string, removed: string[]) {
+    const dropped = await tx.drawSeedSetting.findMany({
+      where: { eventItemId: hostId, entrant: { eventId: { in: removed } } },
+      select: { id: true, entrantId: true },
+    });
+    if (dropped.length) {
+      await tx.drawSeedSetting.deleteMany({ where: { id: { in: dropped.map((seed) => seed.id) } } });
+      await tx.registration.updateMany({
+        where: { id: { in: dropped.map((seed) => seed.entrantId) } },
+        data: { isSeed: false, seedRank: null },
+      });
+    }
+    const remaining = await tx.drawSeedSetting.findMany({ where: { eventItemId: hostId }, orderBy: { seedNo: 'asc' } });
+    // 按升序逐个改小：新号不大于旧号，不会撞上 (eventItemId, seedNo) 唯一约束。
+    for (const [index, seed] of remaining.entries()) {
+      if (seed.seedNo === index + 1) continue;
+      await tx.drawSeedSetting.update({ where: { id: seed.id }, data: { seedNo: index + 1 } });
+      await tx.registration.update({ where: { id: seed.entrantId }, data: { isSeed: true, seedRank: index + 1 } });
+    }
+    const own = await tx.drawSeedSetting.findMany({ where: { eventItemId: { in: removed } } });
+    for (const seed of own) {
+      await tx.registration.update({ where: { id: seed.entrantId }, data: { isSeed: true, seedRank: seed.seedNo } });
+    }
   }
 
   async findOne(id: string) {
@@ -86,6 +207,10 @@ export class EventsService {
   async update(id: string, dto: UpdateEventDto) {
     const current = await this.findOne(id);
     const nextType = dto.type ?? current.type;
+    if (mixCategory(nextType) !== mixCategory(current.type)) {
+      const inMix = current.mixHostId || (await this.prisma.event.count({ where: { mixHostId: id } }));
+      if (inMix) throw new ConflictException('该单项在混编中，单打、双打之间不能互改；请先取消混编');
+    }
     const nextGroupId = dto.groupId ?? (dto.entrantType && dto.entrantType !== current.entrantType ? legacyGroupId(current.tournamentId, dto.entrantType) : current.groupId ?? legacyGroupId(current.tournamentId, current.entrantType));
     const group = await this.prisma.tournamentGroup.findFirst({ where: { id: nextGroupId, tournamentId: current.tournamentId } });
     if (!group) throw new BadRequestException('赛事组别不存在');
@@ -234,6 +359,13 @@ export class EventsService {
         const event = await tx.event.findUnique({ where: { id } });
         if (!event) throw new NotFoundException('单项不存在或已删除');
         const label = eventDisplayLabel(event);
+        if (event.mixHostId) {
+          // 并入混编的单项：主项目的签表和场次里有它的选手，主项目抽签后不能直接删。
+          const hostDrawn = await tx.event.count({
+            where: { id: event.mixHostId, OR: [{ drawGeneratedAt: { not: null } }, { matches: { some: {} } }] },
+          });
+          if (hostDrawn) throw new ConflictException(`${label}已并入混编且主项目已抽签，请先清空主项目签表并取消混编，再删除`);
+        }
         const impact = await collectEventDeleteImpact(tx, id);
 
         const approved = await tx.registration.findMany({

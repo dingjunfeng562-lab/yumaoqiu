@@ -4,6 +4,8 @@ type MatchResult = {
 };
 type EventResults = {
   format: string;
+  /** 并入混编的单项：选手在主项目里比赛，自己没有场次，不参与判断。 */
+  mixHostId?: string | null;
   registrations: Array<{ id: string }>;
   matches: MatchResult[];
   secondStage?: {
@@ -40,7 +42,7 @@ export function eventResultsReady(event: EventResults): boolean {
 export function tournamentResultsReady(tournament: {
   status: string; events: EventResults[]; teamCompetitions: TeamResults[];
 }): boolean {
-  const events = tournament.events.filter((event) => event.registrations.length || event.matches.length);
+  const events = tournament.events.filter((event) => !event.mixHostId && (event.registrations.length || event.matches.length));
   const teams = tournament.teamCompetitions.filter((competition) => competition.teams.length || competition.teamMatches.length);
   const hasMatches = events.some((event) => event.matches.length) || teams.some((competition) => competition.teamMatches.length);
   // Keep explicitly finalized, manually entered historical results available.

@@ -4,6 +4,7 @@ import { knockoutPlacements } from '../common/knockout-placement';
 import { teamStandings } from '../common/final-rankings';
 import { withOfficialTeamResult } from '../common/team-official-result';
 import { teamResultsReady } from '../common/tournament-results-ready';
+import { hasEventMix } from './export-mix';
 import type {
   ExportEvent,
   ExportMatch,
@@ -1504,9 +1505,12 @@ function buildGroupStandingSheet(wb: ExcelJS.Workbook, tournament: ExportTournam
 
 function buildRankingSummarySheet(wb: ExcelJS.Workbook, tournament: ExportTournament) {
   const ws = wb.addWorksheet('名次汇总');
-  ws.columns = [{ width: 16 }, { width: 10 }, { width: 32 }, { width: 28 }, { width: 14 }];
-  addTemplateTitle(ws, '名       次       汇       总', 5);
-  ['项目', '名次', '参赛队/选手', '来源', '状态'].forEach((header, i) => {
+  // 有混编时多一列「原项目」：混编排名里每个人来自哪个组别、哪个项目。
+  const showOrigin = hasEventMix(tournament);
+  const lastCol = showOrigin ? 6 : 5;
+  ws.columns = [{ width: 16 }, { width: 10 }, { width: 32 }, { width: 28 }, { width: 14 }, ...(showOrigin ? [{ width: 24 }] : [])];
+  addTemplateTitle(ws, '名       次       汇       总', lastCol);
+  ['项目', '名次', '参赛队/选手', '来源', '状态', ...(showOrigin ? ['原项目'] : [])].forEach((header, i) => {
     ws.getCell(2, i + 1).value = header;
     styleHeaderCell(ws.getCell(2, i + 1));
   });
@@ -1525,7 +1529,7 @@ function buildRankingSummarySheet(wb: ExcelJS.Workbook, tournament: ExportTourna
         ws.getCell(row, 3).value = standing.name;
         ws.getCell(row, 4).value = manual ? '手动设置' : ready ? '团体赛最终排名' : '团体赛实时积分';
         ws.getCell(row, 5).value = (manual ? standing.rank != null : ready) ? '已确定' : '待定';
-        styleBodyRange(ws, row, row, 1, 5);
+        styleBodyRange(ws, row, row, 1, lastCol);
         row++;
       }
       continue;
@@ -1537,19 +1541,22 @@ function buildRankingSummarySheet(wb: ExcelJS.Workbook, tournament: ExportTourna
         ws.getCell(row, 3).value = registrationName(registration);
         ws.getCell(row, 4).value = '手动设置';
         ws.getCell(row, 5).value = registration.finalRank == null ? '待定' : '已确定';
-        styleBodyRange(ws, row, row, 1, 5);
+        if (showOrigin) ws.getCell(row, 6).value = registration.mixOrigin ?? '';
+        styleBodyRange(ws, row, row, 1, lastCol);
         row++;
       }
       continue;
     }
     const regMap = registrationMap(tournament);
-    const writeRow = (rank: string, name: string, source: string, status: string) => {
+    const origins = new Map(event.registrations.map((registration) => [registration.id, registration.mixOrigin ?? '']));
+    const writeRow = (rank: string, name: string, source: string, status: string, entrantId?: string | null) => {
       ws.getCell(row, 1).value = eventLabel(event);
       ws.getCell(row, 2).value = rank;
       ws.getCell(row, 3).value = name;
       ws.getCell(row, 4).value = source;
       ws.getCell(row, 5).value = status;
-      styleBodyRange(ws, row, row, 1, 5);
+      if (showOrigin) ws.getCell(row, 6).value = (entrantId && origins.get(entrantId)) || '';
+      styleBodyRange(ws, row, row, 1, lastCol);
       row += 1;
     };
 
@@ -1558,7 +1565,7 @@ function buildRankingSummarySheet(wb: ExcelJS.Workbook, tournament: ExportTourna
     if (stageRankings.length) {
       for (const item of [...stageRankings].sort((a, b) => a.rank - b.rank)) {
         const registration = item.entrantId ? regMap.get(item.entrantId) : null;
-        writeRow(`第${item.rank}名`, registrationName(registration) || item.entrantNameSnapshot || '待定', '第二阶段排名', '已确定');
+        writeRow(`第${item.rank}名`, registrationName(registration) || item.entrantNameSnapshot || '待定', '第二阶段排名', '已确定', item.entrantId);
       }
       continue;
     }
@@ -1569,22 +1576,23 @@ function buildRankingSummarySheet(wb: ExcelJS.Workbook, tournament: ExportTourna
     if (knockout.decided) {
       for (const item of knockout.rows) {
         const registration = item.entrantId ? regMap.get(item.entrantId) : null;
-        writeRow(item.label, registrationName(registration) || '待定', '淘汰赛成绩', item.status);
+        writeRow(item.label, registrationName(registration) || '待定', '淘汰赛成绩', item.status, item.entrantId);
       }
       continue;
     }
 
-    const rankingMap = new Map<number, { name: string; source: string; status: string }>();
+    const rankingMap = new Map<number, { id: string; name: string; source: string; status: string }>();
     const standings = event.registrations
       .map((registration) => ({ registration, stats: computeEventStats(event, registration.id) }))
       .sort((a, b) => b.stats.wins - a.stats.wins || b.stats.netGames - a.stats.netGames || a.registration.id.localeCompare(b.registration.id));
     standings.forEach((item, index) => rankingMap.set(index + 1, {
+      id: item.registration.id,
       name: registrationName(item.registration),
       source: item.stats.played ? '小组赛排名' : '抽签签位',
       status: item.stats.played ? '已确定' : '待定',
     }));
     for (const [rank, item] of [...rankingMap.entries()].sort((a, b) => a[0] - b[0])) {
-      writeRow(`第${rank}名`, item.name, item.source, item.status);
+      writeRow(`第${rank}名`, item.name, item.source, item.status, item.id);
     }
   }
   if (row === 3) ws.getCell(row, 1).value = '暂无名次数据';

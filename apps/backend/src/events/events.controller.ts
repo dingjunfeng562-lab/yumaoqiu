@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Patch,
+  Put,
   Delete,
   Body,
   Param,
@@ -11,7 +12,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { EventsService } from './events.service';
-import { CreateEventDto, DeleteEventDto, UpdateEventDto } from './dto/event.dto';
+import { CreateEventDto, DeleteEventDto, SetEventMixDto, UpdateEventDto } from './dto/event.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -43,6 +44,12 @@ export class EventsController {
   @Patch(':id')
   update(@Param('id') id: string, @Body() dto: UpdateEventDto) {
     return this.eventsService.update(id, dto);
+  }
+
+  /** 设置混编：本单项做主项目，body 里是并入的单项；空数组表示取消混编。只能在抽签前改。 */
+  @Put(':id/mix')
+  setMix(@Param('id') id: string, @Body() dto: SetEventMixDto) {
+    return this.eventsService.setMix(id, dto.memberEventIds);
   }
 
   /** 删除前的影响预览：会删掉多少报名、报名表、选手档案、已缴费金额、比赛。 */

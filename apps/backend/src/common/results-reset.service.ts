@@ -6,6 +6,7 @@ import { ScoringService } from '../scoring/scoring.service';
 import { ScoringGateway } from '../scoring/scoring.gateway';
 import { isSecondStageFormalRoundNo, SECOND_STAGE_FORMAL_ROUND_NO_BASE } from './second-stage-bracket';
 import { resetElimination } from './reset-elimination';
+import { mixEventIds } from './event-mix';
 
 const emptyResult = { status: MatchStatus.PENDING, winnerSide: null, startedAt: null, finishedAt: null,
   forfeitedSide: null, forfeitReason: null, refereeId: null };
@@ -112,7 +113,8 @@ export class ResultsResetService {
           status: SecondStageStatus.NOT_STARTED, confirmedAt: null, finishedAt: null, updatedBy: actor.id,
         } });
       }
-      await tx.registration.updateMany({ where: { eventId }, data: { finalRank: null } });
+      // 混编主项目：并入单项选手的名次也在这个排名里，一起清掉。
+      await tx.registration.updateMany({ where: { eventId: { in: await mixEventIds(tx, eventId) } }, data: { finalRank: null } });
       await tx.drawGroupMember.updateMany({ where: { drawGroup: { drawBracket: { eventItemId: eventId } } }, data: { groupRank: null, isQualified: false } });
       await tx.drawRedrawRequest.updateMany({ where: { eventItemId: eventId, status: 'PENDING' }, data: {
         status: 'CANCELLED', decidedById: actor.id, decidedAt: new Date(), decisionRemark: '比赛成绩已清除，原重抽申请作废',

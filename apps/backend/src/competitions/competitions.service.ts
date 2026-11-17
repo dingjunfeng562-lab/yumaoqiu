@@ -61,6 +61,7 @@ import {
   markEventsStale,
   requireAdminActor,
 } from '../common/registration-changes';
+import { hostDisplayLabel, mergeMixRegistrations, mixEventIds } from '../common/event-mix';
 import { normalizeContact, registrationDisplayName } from '../payments/payment-rules';
 import { assertAdminContact, assertMobileContact } from '../common/contact';
 import {
@@ -1433,11 +1434,25 @@ export class CompetitionsService {
       include: {
         events: {
           orderBy: { type: 'asc' },
-          include: { registrations: {
-            where: { status: RegistrationStatus.APPROVED },
-            include: { player1: true, player2: true },
-            orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-          } },
+          include: {
+            registrations: {
+              where: { status: RegistrationStatus.APPROVED },
+              include: { player1: true, player2: true },
+              orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+            },
+            // 混编：并入单项的选手和主项目一起排名。
+            mixMembers: {
+              select: {
+                type: true,
+                groupLabel: true,
+                registrations: {
+                  where: { status: RegistrationStatus.APPROVED },
+                  include: { player1: true, player2: true },
+                  orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+                },
+              },
+            },
+          },
         },
         teamCompetitions: {
           orderBy: { createdAt: 'asc' },
@@ -1449,8 +1464,9 @@ export class CompetitionsService {
     return {
       id, title: tournament.name,
       groups: [
-        ...tournament.events.map((event) => ({
-          id: event.id, kind: 'event' as const, name: eventDisplayLabel(event),
+        // 并入混编的单项不单独排名，它的选手在主项目（混编）的排名里，并标出原项目。
+        ...tournament.events.filter((event) => !event.mixHostId).map((event) => mergeMixRegistrations(event)).map((event) => ({
+          id: event.id, kind: 'event' as const, name: hostDisplayLabel(event),
           rankingLimit: event.rankingLimit,
           entries: event.registrations.map((registration) => ({
             id: registration.id,
@@ -1458,6 +1474,7 @@ export class CompetitionsService {
             teamName: registration.teamName,
             affiliation: [registration.player1.affiliation, registration.player2?.affiliation].filter(Boolean).join(' / '),
             rank: registration.finalRank,
+            origin: registration.mixOrigin ?? null,
           })),
         })),
         ...tournament.teamCompetitions.map((competition) => ({
@@ -1489,10 +1506,12 @@ export class CompetitionsService {
           await tx.teamCompetition.update({ where: { id: group.id }, data: { rankingLimit: dto.rankingLimit } });
         }
       }
+      // 混编主项目的排名里也有并入单项的选手。
+      const rankedEventIds = dto.kind === 'event' ? await mixEventIds(tx, dto.groupId) : [];
       for (const entry of dto.entries) {
         const result = dto.kind === 'event'
           ? await tx.registration.updateMany({
-            where: { id: entry.id, eventId: dto.groupId, event: { tournamentId: id }, status: RegistrationStatus.APPROVED },
+            where: { id: entry.id, eventId: { in: rankedEventIds }, event: { tournamentId: id }, status: RegistrationStatus.APPROVED },
             data: { finalRank: entry.rank },
           })
           : await tx.team.updateMany({

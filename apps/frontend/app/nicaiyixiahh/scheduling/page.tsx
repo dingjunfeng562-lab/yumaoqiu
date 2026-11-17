@@ -88,6 +88,9 @@ interface EventItem {
   tournamentId: string;
   type: string;
   format?: string;
+  /** 混编：主项目的混编名；并入的单项没有自己的场次（mixHostId 指向主项目）。 */
+  mixLabel?: string | null;
+  mixHostId?: string | null;
 }
 
 interface Venue {
@@ -655,7 +658,11 @@ export default function AdminSchedulingPage() {
             value={selectedEventId}
             options={[
               { value: '', label: '全部单项' },
-              ...events.map((item) => ({ value: item.id, label: `${item.group?.name ?? item.groupLabel ?? ''} ${EVENT_TYPE_LABELS[item.type] ?? item.type}`.trim() })),
+              // 并入混编的单项没有自己的场次，不单独列出；混编主项目显示混编名。
+              ...events.filter((item) => !item.mixHostId).map((item) => ({
+                value: item.id,
+                label: item.mixLabel ?? `${item.group?.name ?? item.groupLabel ?? ''} ${EVENT_TYPE_LABELS[item.type] ?? item.type}`.trim(),
+              })),
             ]}
             onChange={setSelectedEventId}
             placeholder="选择单项"

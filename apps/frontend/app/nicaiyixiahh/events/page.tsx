@@ -6,6 +6,7 @@ import {
   Table,
   Alert,
   Button,
+  Checkbox,
   Divider,
   Input,
   Modal,
@@ -15,6 +16,7 @@ import {
   Select,
   Space,
   Spin,
+  Tag,
   Typography,
   message,
 } from 'antd';
@@ -98,6 +100,11 @@ interface Event {
   /** 报名名额（单打按人、双打按队），空为不限；entryCount 为已占名额（已通过 + 待审核）。 */
   maxEntries?: number | null;
   entryCount?: number;
+  /** 混编：并入的单项 mixHostId 指向主项目；主项目带 mixMemberIds 和混编名 mixLabel，并入单项带所在混编名 mixHostLabel。 */
+  mixHostId?: string | null;
+  mixMemberIds?: string[];
+  mixLabel?: string | null;
+  mixHostLabel?: string | null;
 }
 
 /** 删除单项前的影响预览（接口 GET /events/:id/delete-preview）。 */
@@ -119,6 +126,11 @@ interface DeletePreview {
 }
 
 const DOUBLES_TYPES = new Set(['MENS_DOUBLES', 'WOMENS_DOUBLES', 'MIXED_DOUBLES']);
+
+/** 混编只能单打和单打编、双打和双打编。 */
+function mixCategory(type: string | undefined) {
+  return DOUBLES_TYPES.has(String(type)) ? 'DOUBLES' : 'SINGLES';
+}
 
 /** 名额单位：单打按人，双打按队。 */
 function entryUnit(type: string | undefined) {
@@ -191,6 +203,10 @@ export default function EventsPage() {
   const [deletePreview, setDeletePreview] = useState<DeletePreview | null>(null);
   const [deleteNote, setDeleteNote] = useState('');
   const [deleting, setDeleting] = useState(false);
+  // 混编弹窗：mixHost 是主项目，mixSelection 是勾选要并入的单项。
+  const [mixHost, setMixHost] = useState<Event | null>(null);
+  const [mixSelection, setMixSelection] = useState<string[]>([]);
+  const [mixSaving, setMixSaving] = useState(false);
   // 添加单项时可选的组别（随弹窗里选的赛事加载）；null 表示还在加载。
   const [formGroups, setFormGroups] = useState<GroupOption[] | null>(null);
   const formTournamentId = Form.useWatch('tournamentId', form) as string | undefined;
@@ -410,6 +426,45 @@ export default function EventsPage() {
     }
   };
 
+  // 从任一行打开混编：并入的单项打开它所在混编的主项目。
+  const openMix = (record: Event) => {
+    const host = record.mixHostId ? events.find((item) => item.id === record.mixHostId) ?? record : record;
+    setMixHost(host);
+    setMixSelection(host.mixMemberIds ?? []);
+  };
+
+  // 可以并入当前主项目的单项：同一类（单打 / 双打），不是别的混编的主项目或成员。
+  const mixCandidates = useMemo(() => {
+    if (!mixHost) return [];
+    return events
+      .filter((item) => item.id !== mixHost.id && mixCategory(item.type) === mixCategory(mixHost.type))
+      .map((item) => {
+        const elsewhere = (item.mixHostId && item.mixHostId !== mixHost.id)
+          ? `已并入「${item.mixHostLabel ?? '其他混编'}」`
+          : item.mixMemberIds?.length ? '是另一个混编的主项目' : null;
+        return { item, disabledReason: elsewhere };
+      });
+  }, [events, mixHost]);
+
+  const saveMix = async (memberEventIds: string[]) => {
+    if (!mixHost) return;
+    setMixSaving(true);
+    try {
+      await apiFetch(`/events/${mixHost.id}/mix`, {
+        method: 'PUT',
+        token,
+        body: JSON.stringify({ memberEventIds }),
+      });
+      message.success(memberEventIds.length ? '混编已保存，请到抽签编排里对主项目抽签' : '已取消混编');
+      setMixHost(null);
+      fetchEvents();
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : '保存混编失败');
+    } finally {
+      setMixSaving(false);
+    }
+  };
+
   const columns = [
     {
       title: '组别',
@@ -419,7 +474,17 @@ export default function EventsPage() {
       filters: groupFilters.length > 1 ? groupFilters : undefined,
       onFilter: (value: unknown, r: Event) => (r.groupId ?? '') === value,
     },
-    { title: '单项', dataIndex: 'type', render: (v: string) => EVENT_TYPE_LABELS[v] || v },
+    {
+      title: '单项',
+      dataIndex: 'type',
+      render: (v: string, r: Event) => (
+        <Space direction="vertical" size={0}>
+          <span>{EVENT_TYPE_LABELS[v] || v}</span>
+          {r.mixLabel ? <Tag color="blue" style={{ marginInlineEnd: 0 }}>混编主项目：{r.mixLabel}</Tag> : null}
+          {r.mixHostId ? <Tag color="gold" style={{ marginInlineEnd: 0 }}>已并入：{r.mixHostLabel ?? '混编'}</Tag> : null}
+        </Space>
+      ),
+    },
     { title: '赛制', dataIndex: 'format', render: (v: string) => FORMAT_LABELS[v] || v },
     {
       title: '计分规则',
@@ -479,6 +544,7 @@ export default function EventsPage() {
       render: (_: unknown, record: Event) => (
         <Space>
           <Button icon={<EditOutlined />} size="small" onClick={() => openEdit(record)}>编辑</Button>
+          <Button size="small" onClick={() => openMix(record)}>混编</Button>
           <Button icon={<DeleteOutlined />} size="small" danger onClick={() => openDelete(record)}>删除</Button>
         </Space>
       ),
@@ -813,6 +879,67 @@ export default function EventsPage() {
         ) : (
           <div style={{ textAlign: 'center', padding: 24 }}><Spin /></div>
         )}
+      </Modal>
+
+      <Modal
+        title={mixHost ? `混编：以「${eventLabel(mixHost)}」为主项目` : ''}
+        open={Boolean(mixHost)}
+        onCancel={() => { if (!mixSaving) setMixHost(null); }}
+        destroyOnHidden
+        footer={mixHost ? [
+          mixHost.mixMemberIds?.length ? (
+            <Button key="clear" danger loading={mixSaving} onClick={() => saveMix([])}>取消混编</Button>
+          ) : null,
+          <Button key="cancel" disabled={mixSaving} onClick={() => setMixHost(null)}>取消</Button>,
+          <Button key="ok" type="primary" loading={mixSaving} disabled={!mixSelection.length} onClick={() => saveMix(mixSelection)}>
+            保存混编
+          </Button>,
+        ] : null}
+      >
+        {mixHost ? (
+          <Space direction="vertical" style={{ width: '100%' }} size={12}>
+            <Alert
+              type="info"
+              showIcon
+              message="勾选的单项和主项目合在一起抽签、比赛、排名，只出一个排名"
+              description={(
+                <div>
+                  <div>
+                    按主项目的赛制和计分规则比赛（{FORMAT_LABELS[mixHost.format] || mixHost.format}，
+                    {mixHost.customGamePoint
+                      ? `自定义：${customRuleSummary(mixHost.customGamePoint, mixHost.customGameCap, mixHost.customGamesToWin)}`
+                      : SCORING_RULE_LABELS[mixHost.scoringRule] || mixHost.scoringRule}
+                    ），场地和比赛日期按主项目所在组别。
+                  </div>
+                  <div>报名、资格、名额、缴费、审核仍按各自的组别和项目，不受影响。</div>
+                  <div>单打只能和单打编，双打只能和双打编；只能在抽签前设置或取消混编。</div>
+                </div>
+              )}
+            />
+            {mixCandidates.length ? (
+              <Checkbox.Group
+                value={mixSelection}
+                onChange={(values) => setMixSelection(values as string[])}
+                style={{ width: '100%' }}
+              >
+                <Space direction="vertical">
+                  {mixCandidates.map(({ item, disabledReason }) => (
+                    <Checkbox key={item.id} value={item.id} disabled={Boolean(disabledReason)}>
+                      {eventLabel(item)}
+                      <Typography.Text type="secondary">
+                        {`（已报 ${item.entryCount ?? 0} ${entryUnit(item.type)}${disabledReason ? `，${disabledReason}` : ''}）`}
+                      </Typography.Text>
+                    </Checkbox>
+                  ))}
+                </Space>
+              </Checkbox.Group>
+            ) : (
+              <Typography.Text type="secondary">
+                这个赛事里没有可以和它混编的{mixCategory(mixHost.type) === 'DOUBLES' ? '双打' : '单打'}项目。
+              </Typography.Text>
+            )}
+          </Space>
+        ) : null}
       </Modal>
     </div>
   );

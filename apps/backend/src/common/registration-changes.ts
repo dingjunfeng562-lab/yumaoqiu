@@ -1,6 +1,6 @@
 import { ConflictException, ForbiddenException } from '@nestjs/common';
 import { MatchStatus, Prisma, PrismaClient, Role } from '@prisma/client';
-import { eventDisplayLabel } from './entrant';
+import { hostDisplayLabel } from './event-mix';
 
 type Db = PrismaClient | Prisma.TransactionClient;
 
@@ -67,7 +67,14 @@ export async function checkEventsForEntrantChange(
   eventIds: string[],
   verb: string,
 ): Promise<RedrawEvent[]> {
-  const ids = [...new Set(eventIds)];
+  const requested = [...new Set(eventIds)];
+  if (!requested.length) return [];
+  // 混编：并入单项的选手在主项目的签表里，能不能改、要不要重抽都按主项目判断。
+  const owners = await db.event.findMany({
+    where: { id: { in: requested } },
+    select: { id: true, mixHostId: true },
+  });
+  const ids = [...new Set(owners.map((event) => event.mixHostId ?? event.id))];
   if (!ids.length) return [];
   const [events, startedMatches] = await Promise.all([
     db.event.findMany({
@@ -76,6 +83,7 @@ export async function checkEventsForEntrantChange(
         id: true,
         type: true,
         groupLabel: true,
+        mixMembers: { select: { type: true, groupLabel: true } },
         drawLocked: true,
         drawPublished: true,
         drawGeneratedAt: true,
@@ -107,7 +115,7 @@ export async function checkEventsForEntrantChange(
   const blockers: string[] = [];
   const redraw: RedrawEvent[] = [];
   for (const event of events) {
-    const label = eventDisplayLabel(event);
+    const label = hostDisplayLabel(event);
     if (event.drawLocked || event.drawPublished) {
       blockers.push(`${label}签表已冻结或已发布，请先在抽签编排中取消发布`);
     } else if (started.has(event.id)) {

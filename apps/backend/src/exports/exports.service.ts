@@ -7,6 +7,8 @@ import * as ExcelJS from 'exceljs';
 import { applyFinalRankings, teamStandings } from '../common/final-rankings';
 import { knockoutPlacements } from '../common/knockout-placement';
 import { buildOrderbookWorkbook, teamCompetitionEvents } from './orderbook-workbook';
+import { applyEventMixes, hasEventMix } from './export-mix';
+import { hostDisplayLabel, mixOriginLabel } from '../common/event-mix';
 import { teamCompetitionLabel } from '../common/team-competition-label';
 
 const XLS_CONTENT_TYPE = 'application/vnd.ms-excel';
@@ -67,6 +69,8 @@ type StandingRow = {
 
 type ExportRegistration = {
   finalRank?: number | null;
+  /** 混编主项目里的报名：选手的原项目（高一组 · 女子单打），名次表「原项目」列用。 */
+  mixOrigin?: string;
   id: string;
   eventId: string;
   entrantType?: string;
@@ -187,6 +191,9 @@ type ExportSecondStage = {
 };
 
 type ExportEvent = {
+  /** 混编用：并入单项的 mixHostId 指向主项目 id。团体赛映射出的伪项目没有。 */
+  id?: string;
+  mixHostId?: string | null;
   type: string;
   entrantType?: string;
   groupLabel?: string | null;
@@ -349,8 +356,12 @@ export class ExportsService {
       throw new BadRequestException('导出类型必须是 schedule、results、registrations、bracket 或 orderbook');
     }
 
-    const tournament = await this.findTournamentForExport(tournamentId, kind);
-    if (!tournament) throw new NotFoundException('赛事不存在');
+    const found = await this.findTournamentForExport(tournamentId, kind);
+    if (!found) throw new NotFoundException('赛事不存在');
+    // 混编：秩序册、对阵表、赛程、成绩按主项目合并；报名表和回导模板仍按原单项列出。
+    const tournament = kind === 'registrations' || kind === 'roster-student' || kind === 'roster-social'
+      ? found
+      : applyEventMixes(found);
 
     // 生成器版本也进指纹：改了出片逻辑（如淘汰赛名次折算）后，旧缓存文件会在下次下载/巡检时自动重建。
     const fingerprint = createHash('sha256').update(kind === 'orderbook' ? 'team-orderbook-v7-knockout-placements' : 'team-standings-v5-round-labels').update(kind).update(JSON.stringify(tournament)).digest('hex');
@@ -403,31 +414,10 @@ export class ExportsService {
             },
           },
         },
-        registrations: {
-          where: { status: RegistrationStatus.APPROVED },
-          select: {
-            id: true,
-            eventId: true,
-            studentId: true,
-            createdAt: true,
-            className: true,
-            groupName: true,
-            teamName: true,
-            isSeed: true,
-            seedRank: true,
-            finalRank: true,
-            player1: { select: { name: true, gender: true, affiliation: true, contact: true } },
-            player2: { select: { name: true, gender: true, affiliation: true, contact: true } },
-            competitionRegistration: {
-              select: {
-                school: true,
-                age: true,
-                shirtSize: true,
-                eventItems: { select: { eventId: true, partnerStudentId: true, partnerAge: true, partnerShirtSize: true } },
-              },
-            },
-          },
-        },
+        id: true,
+        groupLabel: true,
+        mixHostId: true,
+        mixMembers: { select: { id: true, type: true, groupLabel: true } },
         matches: {
           orderBy: [{ scheduledAt: 'asc' }, { roundNo: 'asc' }, { matchNo: 'asc' }],
           select: {
@@ -490,6 +480,38 @@ export class ExportsService {
       },
     });
     if (!event) throw new NotFoundException('单项不存在');
+    // 混编：并入单项没有自己的场次，到主项目导出；主项目连同并入单项的选手一起导出，并用混编名。
+    if (event.mixHostId) throw new BadRequestException('该单项已并入混编，请在主项目导出秩序册');
+    const registrations = await this.prisma.registration.findMany({
+      where: { eventId: { in: [event.id, ...event.mixMembers.map((member) => member.id)] }, status: RegistrationStatus.APPROVED },
+      select: {
+        id: true,
+        eventId: true,
+        studentId: true,
+        createdAt: true,
+        className: true,
+        groupName: true,
+        teamName: true,
+        isSeed: true,
+        seedRank: true,
+        finalRank: true,
+        player1: { select: { name: true, gender: true, affiliation: true, contact: true } },
+        player2: { select: { name: true, gender: true, affiliation: true, contact: true } },
+        competitionRegistration: {
+          select: {
+            school: true,
+            age: true,
+            shirtSize: true,
+            eventItems: { select: { eventId: true, partnerStudentId: true, partnerAge: true, partnerShirtSize: true } },
+          },
+        },
+      },
+    });
+    const ownerOf = new Map([event, ...event.mixMembers].map((owner) => [owner.id, owner]));
+    const mixed = event.mixMembers.length > 0;
+    const eventRegistrations = registrations.map((registration) => (mixed
+      ? { ...registration, mixOrigin: mixOriginLabel(ownerOf.get(registration.eventId) ?? event) }
+      : registration));
 
     // 只取目标阶段的场次喂给日程表/秩序表；流程表会按 stage 完整呈现该阶段结构（含未排程的）。
     const stageMatches = this.orderStageMatches(
@@ -508,14 +530,15 @@ export class ExportsService {
           type: event.type,
           format: event.format,
           qualifiersPerGroup: event.qualifiersPerGroup,
-          registrations: event.registrations as unknown as ExportRegistration[],
+          registrations: eventRegistrations as unknown as ExportRegistration[],
+          ...(mixed ? { label: hostDisplayLabel(event), groupLabel: null } : {}),
           matches: stageMatches,
           secondStage: event.secondStage as unknown as ExportSecondStage | null,
         },
       ],
     };
 
-    const eventLabel = EVENT_TYPE_LABELS[event.type] ?? event.type;
+    const eventLabel = mixed ? hostDisplayLabel(event) : (EVENT_TYPE_LABELS[event.type] ?? event.type);
     const stageLabel = stage === 'first' ? '第一阶段' : '第二阶段';
     return {
       filename: this.exportFilename(`${event.tournament.name}-${eventLabel}`, `${stageLabel}秩序册`, 'xlsx'),
@@ -584,6 +607,8 @@ export class ExportsService {
           events: {
             orderBy: [{ entrantType: 'asc' }, { type: 'asc' }],
             select: {
+              id: true,
+              mixHostId: true,
               type: true,
               entrantType: true,
               groupLabel: true,
@@ -728,6 +753,8 @@ export class ExportsService {
         events: {
           orderBy: [{ entrantType: 'asc' }, { type: 'asc' }],
           select: {
+            id: true,
+            mixHostId: true,
             type: true,
             entrantType: true,
             groupLabel: true,
@@ -1086,11 +1113,14 @@ export class ExportsService {
   }
 
   private standingsWorksheet(tournament: ExportTournament): Worksheet {
+    // 有混编时多一列「原项目」：混编排名里每个人来自哪个组别、哪个项目。
+    const showOrigin = hasEventMix(tournament);
     const rows: CellValue[][] = [
-      ['赛事', '项目', '名次', '参赛方', '院系/班级', '场次', '胜场', '负场', '小分差'],
+      ['赛事', '项目', '名次', '参赛方', '院系/班级', '场次', '胜场', '负场', '小分差', ...(showOrigin ? ['原项目'] : [])],
     ];
 
     for (const event of tournament.events) {
+      const origins = new Map(event.registrations.map((registration) => [registration.id, registration.mixOrigin ?? '']));
       for (const row of this.eventStandings(event)) {
         rows.push([
           tournament.name,
@@ -1102,6 +1132,7 @@ export class ExportsService {
           row.wins,
           row.losses,
           row.gameDiff,
+          ...(showOrigin ? [origins.get(row.id) ?? ''] : []),
         ]);
       }
     }

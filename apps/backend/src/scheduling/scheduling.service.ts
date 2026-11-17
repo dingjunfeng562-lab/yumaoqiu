@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto';
 import { Format, MatchStatus, Prisma, VenueRuleMode } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TeamCompetitionsService } from '../team-competitions/team-competitions.service';
+import { hostDisplayLabel } from '../common/event-mix';
 import { AutoScheduleDto, ClearScheduleDto, CreateVenueDto, UpdateMatchScheduleDto, UpdateVenueDto, SaveGroupVenuesDto } from './dto/scheduling.dto';
 import { ScoringGateway } from '../scoring/scoring.gateway';
 import {
@@ -904,7 +905,7 @@ export class SchedulingService {
     const matches = await this.prisma.match.findMany({
       where: this.tournamentMatches(tournamentId, eventId),
       include: {
-        event: { include: { group: { include: { allowedVenues: true } }, allowedVenues: true } },
+        event: { include: { group: { include: { allowedVenues: true } }, allowedVenues: true, mixMembers: { select: { type: true, groupLabel: true } } } },
         teamCompetitionItem: true,
         teamMatch: { include: { team1: true, team2: true, teamCompetition: { include: { group: { include: { allowedVenues: true } } } } } },
         venue: true,
@@ -951,10 +952,13 @@ export class SchedulingService {
       const group = match.event?.group ?? match.teamMatch?.teamCompetition.group;
       // 单项规则优先于组别；团体赛无 Event，回落组别规则。
       const venueRule = this.resolveVenueRule(match.event, group);
+      // 混编主项目的场次：组别列显示「混编」，项目列显示混编名。
+      const mixMembers = (match.event as { mixMembers?: Array<{ type: string; groupLabel: string | null }> } | null)?.mixMembers ?? [];
+      const mixName = match.event && mixMembers.length ? hostDisplayLabel({ ...match.event, mixMembers }) : null;
       return {
         id: match.id,
         groupId: group?.id ?? null,
-        groupName: group?.name ?? null,
+        groupName: mixName ? '混编' : group?.name ?? null,
         allowedVenueIds: venueRule.allowedVenueIds,
         venueRuleScope: venueRule.venueRuleScope,
         // 比赛日期只按组别设置（团体赛同样按所属组别）。
@@ -970,7 +974,7 @@ export class SchedulingService {
         team2Name: match.teamMatch?.team2?.name,
         eventId: match.eventId,
         eventType: match.event?.type ?? 'TEAM_COMPETITION',
-        eventTypeLabel: match.event ? (EVENT_TYPE_LABELS[match.event.type] ?? match.event.type) : `团体赛 · ${EVENT_TYPE_LABELS[match.teamCompetitionItem?.eventType ?? ''] ?? ''}`,
+        eventTypeLabel: mixName ?? (match.event ? (EVENT_TYPE_LABELS[match.event.type] ?? match.event.type) : `团体赛 · ${EVENT_TYPE_LABELS[match.teamCompetitionItem?.eventType ?? ''] ?? ''}`),
         round: match.round,
         roundNo: match.roundNo,
         matchNo: match.matchNo,

@@ -26,6 +26,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { unpaidEventEntrants, unpaidMessage } from '../payments/payment-rules';
+import { assertNotMixMember, hostDisplayLabel, mixEventIds } from '../common/event-mix';
 import { DrawAlgorithmService, GroupPlan } from './draw-algorithm.service';
 import { DrawLogService } from './draw-log.service';
 import {
@@ -97,8 +98,9 @@ export class DrawsService {
 
   async listRegistrations(eventId: string) {
     await this.ensureEvent(eventId);
+    // 混编主项目：并入单项的选手一起列出，抽签编排页选种子、看名单用。
     return this.prisma.registration.findMany({
-      where: { eventId, status: RegistrationStatus.APPROVED },
+      where: { eventId: await this.entrantScope(eventId), status: RegistrationStatus.APPROVED },
       include: { player1: true, player2: true },
       orderBy: [{ isSeed: 'desc' }, { seedRank: 'asc' }, { createdAt: 'asc' }],
     });
@@ -187,6 +189,17 @@ export class DrawsService {
 
   async getDrawDetail(eventId: string) {
     const event = await this.ensureEvent(eventId);
+    const scope = await this.entrantScope(eventId);
+    // 混编：主项目带混编名；并入单项带它所在混编的主项目，前端提示到主项目抽签。
+    const mixHost = event.mixHostId
+      ? await this.prisma.event.findUnique({
+          where: { id: event.mixHostId },
+          select: { id: true, type: true, groupLabel: true, mixMembers: { select: { type: true, groupLabel: true } } },
+        })
+      : null;
+    const mixMembers = scope.in.length > 1
+      ? await this.prisma.event.findMany({ where: { mixHostId: eventId }, select: { type: true, groupLabel: true } })
+      : [];
 
     const [currentDraw, seedSettings, entrantCount, unpaidEntrants] = await Promise.all([
       this.prisma.drawBracket.findFirst({
@@ -201,13 +214,15 @@ export class DrawsService {
         orderBy: { seedNo: 'asc' },
       }),
       this.prisma.registration.count({
-        where: { eventId, status: RegistrationStatus.APPROVED },
+        where: { eventId: scope, status: RegistrationStatus.APPROVED },
       }),
-      unpaidEventEntrants(this.prisma, event),
+      this.unpaidEntrants(event),
     ]);
 
     return {
       eventItemId: eventId,
+      mixLabel: mixMembers.length ? hostDisplayLabel({ ...event, mixMembers }) : null,
+      mixHost: mixHost ? { id: mixHost.id, label: hostDisplayLabel(mixHost) } : null,
       hasDraw: Boolean(currentDraw),
       currentDraw,
       seedSettings,
@@ -227,10 +242,11 @@ export class DrawsService {
     operatorName: string | null,
   ) {
     if (!operatorId) throw new BadRequestException('缺少操作人信息');
-    await this.ensureEvent(eventId);
+    await this.ensureDrawEvent(eventId);
+    const scope = await this.entrantScope(eventId);
 
     const registrations = await this.prisma.registration.findMany({
-      where: { eventId, status: RegistrationStatus.APPROVED },
+      where: { eventId: scope, status: RegistrationStatus.APPROVED },
       select: { id: true },
     });
     const seedLimit = this.drawAlgorithmService.getSeedLimit(registrations.length);
@@ -251,7 +267,7 @@ export class DrawsService {
 
       await tx.drawSeedSetting.deleteMany({ where: { eventItemId: eventId } });
       await tx.registration.updateMany({
-        where: { eventId },
+        where: { eventId: scope },
         data: { isSeed: false, seedRank: null },
       });
 
@@ -317,7 +333,7 @@ export class DrawsService {
     force = false,
   ) {
     if (!operatorId) throw new BadRequestException('缺少操作人信息');
-    const event = await this.ensureEvent(eventId);
+    const event = await this.ensureDrawEvent(eventId);
 
     const existingCurrent = await this.prisma.drawBracket.findFirst({
       where: { eventItemId: eventId, isCurrent: true },
@@ -326,8 +342,9 @@ export class DrawsService {
       throw new ConflictException('已有当前签表，请使用重新抽签覆盖');
     }
 
+    // 混编主项目：并入单项的已通过报名一起抽签。
     const registrations = await this.prisma.registration.findMany({
-      where: { eventId, status: RegistrationStatus.APPROVED },
+      where: { eventId: await this.entrantScope(eventId), status: RegistrationStatus.APPROVED },
       include: { player1: true, player2: true },
       orderBy: [{ isSeed: 'desc' }, { seedRank: 'asc' }, { createdAt: 'asc' }],
     });
@@ -335,7 +352,7 @@ export class DrawsService {
       throw new BadRequestException('至少需要 2 个报名才能抽签');
     }
     // 生成、重抽、审批通过的重抽都经过这里；未缴费的报名必须先确认缴费或设为免缴。
-    const unpaid = await unpaidEventEntrants(this.prisma, event);
+    const unpaid = await this.unpaidEntrants(event);
     if (unpaid.length) {
       throw new BadRequestException(unpaidMessage('选手', unpaid.map((entry) => entry.name)));
     }
@@ -1106,7 +1123,7 @@ export class DrawsService {
     if (!event) throw new NotFoundException('单项不存在');
 
     const registrations = await this.prisma.registration.findMany({
-      where: { eventId, status: RegistrationStatus.APPROVED },
+      where: { eventId: await this.entrantScope(eventId), status: RegistrationStatus.APPROVED },
       include: { player1: true, player2: true },
       orderBy: [{ isSeed: 'desc' }, { seedRank: 'asc' }, { createdAt: 'asc' }],
     });
@@ -1238,7 +1255,7 @@ export class DrawsService {
         },
       }),
       this.prisma.registration.findMany({
-        where: { eventId, status: RegistrationStatus.APPROVED },
+        where: { eventId: await this.entrantScope(eventId), status: RegistrationStatus.APPROVED },
         include: { player1: true, player2: true },
       }),
     ]);
@@ -1344,14 +1361,15 @@ export class DrawsService {
       throw new BadRequestException('A-H 签位不能重复选择同一名选手');
     }
 
+    const entrantEvents = await this.entrantScope(eventId);
     const registrations = isStandard2023Format
       ? await this.prisma.registration.findMany({
-          where: { eventId, id: { in: entrantIds }, status: RegistrationStatus.APPROVED },
+          where: { eventId: entrantEvents, id: { in: entrantIds }, status: RegistrationStatus.APPROVED },
           include: { player1: true, player2: true },
         })
       : await this.prisma.registration.findMany({
           where: {
-            eventId,
+            eventId: entrantEvents,
             id: { in: entrantIds },
             status: RegistrationStatus.APPROVED,
           },
@@ -1736,6 +1754,25 @@ export class DrawsService {
     return event;
   }
 
+  /** 抽签用的单项：并入混编的单项不能自己抽签，要到主项目操作。 */
+  private async ensureDrawEvent(eventId: string) {
+    const event = await this.ensureEvent(eventId);
+    await assertNotMixMember(this.prisma, event);
+    return event;
+  }
+
+  /** 抽签的报名范围：主项目 + 并入它的混编单项（普通单项就是它自己）。 */
+  private async entrantScope(eventId: string, db: Prisma.TransactionClient | PrismaService = this.prisma) {
+    return { in: await mixEventIds(db, eventId) };
+  }
+
+  /** 未缴费的报名：混编主项目连同并入单项一起查，每个单项按它自己组别的收费设置。 */
+  private async unpaidEntrants(event: Parameters<typeof unpaidEventEntrants>[1]) {
+    const members = await this.prisma.event.findMany({ where: { mixHostId: event.id } });
+    const lists = await Promise.all([event, ...members].map((item) => unpaidEventEntrants(this.prisma, item)));
+    return lists.flat();
+  }
+
   private isDoubles(type: EventType) {
     const doublesTypes: EventType[] = [
       EventType.MENS_DOUBLES,
@@ -1808,7 +1845,7 @@ export class DrawsService {
     }>,
   ) {
     await tx.match.deleteMany({ where: { eventId } });
-    await tx.registration.updateMany({ where: { eventId }, data: { groupName: null } });
+    await tx.registration.updateMany({ where: { eventId: await this.entrantScope(eventId, tx) }, data: { groupName: null } });
 
     const entrantCount = slots.filter((slot) => !slot.isBye && slot.entrantId).length;
     const slotEntries = slots.map((slot) => ({
@@ -1880,7 +1917,7 @@ export class DrawsService {
     }>,
   ) {
     await tx.match.deleteMany({ where: { eventId } });
-    await tx.registration.updateMany({ where: { eventId }, data: { groupName: null } });
+    await tx.registration.updateMany({ where: { eventId: await this.entrantScope(eventId, tx) }, data: { groupName: null } });
 
     for (const group of groups) {
       const ids = group.members.map((member) => member.entrantId);
@@ -2162,7 +2199,7 @@ export class DrawsService {
 
     const registrations = await this.prisma.registration.findMany({
       where: {
-        eventId,
+        eventId: await this.entrantScope(eventId),
         id: { in: qualifiers.map((qualifier) => qualifier.id) },
         status: RegistrationStatus.APPROVED,
       },

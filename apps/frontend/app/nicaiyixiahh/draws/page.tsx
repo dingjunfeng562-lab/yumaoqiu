@@ -94,12 +94,24 @@ interface EventItem {
   tournamentId: string;
   type: string;
   format: string;
+  groupLabel?: string | null;
+  /** 混编：主项目带混编名 mixLabel；并入的单项带 mixHostId 和所在混编名 mixHostLabel，要到主项目抽签。 */
+  mixLabel?: string | null;
+  mixHostId?: string | null;
+  mixHostLabel?: string | null;
   groupSize?: number | null;
   groupCount?: number | null;
   qualifiersPerGroup?: number | null;
   drawLocked: boolean;
   drawPublished: boolean;
   drawGeneratedAt?: string | null;
+}
+
+/** 选择框里的单项名：混编主项目用混编名，其它「组别 · 项目」。 */
+function drawEventLabel(event: EventItem) {
+  if (event.mixLabel) return event.mixLabel;
+  const type = EVENT_TYPE_LABELS[event.type] || event.type;
+  return event.groupLabel ? `${event.groupLabel} · ${type}` : type;
 }
 
 interface Player {
@@ -433,6 +445,8 @@ export default function DrawsPage() {
     () => events.find((event) => event.id === selectedEventId),
     [events, selectedEventId],
   );
+  // 并入混编的单项在主项目里抽签、设种子，这里只看名单（报名增删仍按原单项）。
+  const isMixMember = Boolean(selectedEvent?.mixHostId);
 
   const visibleRegistrations = useMemo(() => {
     return [...(selectedEventId ? registrations : [])].sort((a, b) => {
@@ -972,7 +986,7 @@ export default function DrawsPage() {
             size="small"
             type="link"
             icon={<StarFilled />}
-            disabled={selectedEvent?.drawLocked}
+            disabled={selectedEvent?.drawLocked || isMixMember}
             onClick={() => setEditingRegistration(row)}
           >
             设置
@@ -1026,7 +1040,7 @@ export default function DrawsPage() {
           <Button icon={<ReloadOutlined />} onClick={refreshDraw} disabled={!selectedEventId}>
             刷新
           </Button>
-          <Button icon={<SwapOutlined />} onClick={openSwapDialog}>
+          <Button icon={<SwapOutlined />} onClick={openSwapDialog} disabled={isMixMember}>
             换签位
           </Button>
           <ClearResultsButton scope="event" id={selectedEventId} token={token} disabled={loading || !selectedEventId || !bracket?.currentDraw} onChanged={refreshDraw} />
@@ -1089,7 +1103,7 @@ export default function DrawsPage() {
               </Popconfirm>
             )
           ) : (
-            <Button type="primary" icon={<BranchesOutlined />} onClick={() => handleDraw(false)} disabled={!selectedEventId || registrations.length < 2 || Boolean(bracket?.groupPlan?.errors.length)}>
+            <Button type="primary" icon={<BranchesOutlined />} onClick={() => handleDraw(false)} disabled={!selectedEventId || isMixMember || registrations.length < 2 || Boolean(bracket?.groupPlan?.errors.length)}>
               抽签
             </Button>
           )}
@@ -1118,12 +1132,16 @@ export default function DrawsPage() {
               onChange={setSelectedEventId}
               options={events.map((event) => ({
                 value: event.id,
-                label: `${EVENT_TYPE_LABELS[event.type] || event.type} · ${FORMAT_LABELS[event.format] || event.format}`,
+                label: event.mixHostId
+                  ? `${drawEventLabel(event)} · 已并入混编`
+                  : `${drawEventLabel(event)} · ${FORMAT_LABELS[event.format] || event.format}`,
               }))}
             />
           </Col>
           <Col xs={24} md={4}>
-            {!bracket?.currentDraw ? (
+            {isMixMember ? (
+              <Tag color="blue">已并入混编</Tag>
+            ) : !bracket?.currentDraw ? (
               <Tag color="default">未抽签</Tag>
             ) : selectedEvent?.drawPublished ? (
               <Tag color="green">已发布</Tag>
@@ -1133,6 +1151,30 @@ export default function DrawsPage() {
           </Col>
         </Row>
       </section>
+
+      {selectedEvent?.mixHostId && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={`这个单项已并入混编「${selectedEvent.mixHostLabel ?? '混编'}」`}
+          description="它的选手和主项目一起抽签、比赛、排名，这里不能单独抽签。请到主项目操作；要取消混编，请到单项管理（只能在抽签前取消）。"
+          action={(
+            <Button size="small" type="primary" onClick={() => setSelectedEventId(selectedEvent.mixHostId!)}>
+              转到主项目
+            </Button>
+          )}
+        />
+      )}
+      {selectedEvent?.mixLabel && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={`混编：${selectedEvent.mixLabel}`}
+          description="并入项目的选手和这个主项目一起抽签、比赛、排名，按主项目的赛制和计分规则。"
+        />
+      )}
 
       {bracket?.groupPlan && bracket.groupPlan.entrantCount >= 2 && (
         <Alert
@@ -1276,7 +1318,9 @@ export default function DrawsPage() {
                 type="info"
                 showIcon
                 style={{ marginBottom: 12 }}
-                message={selectedEvent ? `${EVENT_TYPE_LABELS[selectedEvent.type]} · ${FORMAT_LABELS[selectedEvent.format]}` : '请选择单项'}
+                message={selectedEvent
+                  ? `${drawEventLabel(selectedEvent)} · ${isMixMember ? '已并入混编，在主项目抽签' : FORMAT_LABELS[selectedEvent.format]}`
+                  : '请选择单项'}
               />
               {!selectedEvent?.drawLocked && unplacedRegistrations.length > 0 && (
                 <Alert

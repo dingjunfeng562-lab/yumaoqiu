@@ -1,4 +1,4 @@
-import { IsString, IsEnum, IsOptional, IsInt, Min, Max, MaxLength, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsString, IsEnum, IsOptional, IsInt, Min, Max, MaxLength, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { EntrantType, EventType, Format, ScoringRule, ScoringMode } from '@prisma/client';
 
@@ -227,4 +227,12 @@ export class DeleteEventDto {
   @IsString()
   @MaxLength(200)
   note?: string;
+}
+
+/** 设置混编：路径里的单项是主项目，这里是并入它的单项；空数组表示取消混编。 */
+export class SetEventMixDto {
+  @IsArray()
+  @ArrayMaxSize(30)
+  @IsString({ each: true })
+  memberEventIds!: string[];
 }

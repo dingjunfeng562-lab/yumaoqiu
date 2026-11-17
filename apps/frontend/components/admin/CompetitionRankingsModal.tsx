@@ -4,7 +4,8 @@ import { useEffect, useState } from 'react';
 import { Alert, Button, Empty, Input, InputNumber, Modal, Select, Space, Spin, Table, Typography, message } from 'antd';
 import { apiFetch } from '@/lib/api';
 
-type Entry = { id: string; name: string; teamName: string | null; affiliation: string; rank: number | null };
+/** origin：混编项目里选手的原项目（高一组 · 女子单打），普通项目为空。 */
+type Entry = { id: string; name: string; teamName: string | null; affiliation: string; rank: number | null; origin?: string | null };
 type Group = { id: string; kind: 'event' | 'team'; name: string; rankingLimit: number | null; entries: Entry[] };
 type Rankings = { id: string; title: string; groups: Group[] };
 
@@ -117,6 +118,7 @@ export function CompetitionRankingsModal({ competition, token, onClose }: {
               {entry.teamName && <div><Typography.Text type="secondary">{entry.teamName}</Typography.Text></div>}
             </> },
             { title: '单位', dataIndex: 'affiliation', responsive: ['sm'], render: (value: string) => value || '—' },
+            ...(entries.some((entry) => entry.origin) ? [{ title: '原项目', key: 'origin', render: (_: unknown, entry: Entry) => entry.origin || '—' }] : []),
             { title: '最终名次', key: 'rank', width: 145, render: (_, entry) => <InputNumber
               aria-label={`${entry.name}的最终名次`} min={1} max={9999} step={1} value={entry.rank}
               placeholder="未设置" disabled={saving} style={{ width: 110 }}

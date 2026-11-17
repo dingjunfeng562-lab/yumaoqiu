@@ -850,11 +850,17 @@ model Event {
   drawOperationLogs  DrawOperationLog[] @relation("drawOperationLogEvent")
   drawRedrawRequests DrawRedrawRequest[]
   secondStage        SecondStage?
+  /// 混编：不为空时本单项并入这个主项目，一起抽签、比赛、排名（单打只和单打编，双打只和双打编）。
+  /// 报名、资格、名额、缴费、审核仍按本单项和本组别；主项目被删时自动解除混编。
+  mixHostId          String?
+  mixHost            Event?             @relation("EventMix", fields: [mixHostId], references: [id], onDelete: SetNull)
+  mixMembers         Event[]            @relation("EventMix")
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
 
   @@unique([tournamentId, groupId, type])
   @@index([tournamentId, entrantType])
+  @@index([mixHostId])
 }
 
 model SecondStage {

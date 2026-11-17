@@ -68,7 +68,8 @@ function bracketEvent(id: string, tournamentId: string, matches: unknown[] = [])
 
 async function setup(events: unknown[] = []) {
   const prisma = {
-    event: { findMany: jest.fn().mockResolvedValue(events) },
+    // 混编查询（where.mixHostId）找的是并入单项，这里的赛事都没有混编。
+    event: { findMany: jest.fn(async (args?: { where?: { mixHostId?: string } }) => (args?.where?.mixHostId ? [] : events)) },
     match: { findUnique: jest.fn() },
     registration: { findMany: jest.fn().mockResolvedValue([registration('r1', '张三'), registration('r2', '李四')]) },
   };
@@ -194,7 +195,7 @@ describe('bracket:match push', () => {
     expect(push?.payload.match.score).toBe('11:9');
   });
 
-  it('only resolves names from this event’s approved registrations', async () => {
+  it('only resolves names from this event’s (and its mixed-in events’) approved registrations', async () => {
     const match = liveMatch();
     const { prisma, service } = await setup();
     prisma.match.findUnique.mockResolvedValue({ ...match, event: bracketEvent('e1', 't1') });
@@ -203,7 +204,7 @@ describe('bracket:match push', () => {
 
     expect(prisma.registration.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: { in: ['r1', 'r2'] }, eventId: 'e1', status: 'APPROVED' },
+        where: { id: { in: ['r1', 'r2'] }, eventId: { in: ['e1'] }, status: 'APPROVED' },
       }),
     );
   });

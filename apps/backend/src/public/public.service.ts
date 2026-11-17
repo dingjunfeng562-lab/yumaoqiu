@@ -10,6 +10,7 @@ import { ScoringService } from '../scoring/scoring.service';
 import { effectiveTournamentStatus } from '../tournaments/tournament-status';
 import { applyFinalRankings, limitRankings, teamStandings } from '../common/final-rankings';
 import { tournamentResultsReady } from '../common/tournament-results-ready';
+import { hostDisplayLabel, mergeMixRegistrations, mixEventIds } from '../common/event-mix';
 import { buildKnockoutSkeleton } from '../common/knockout-skeleton';
 import { VersionedCache } from '../common/versioned-cache';
 import { CoalescingRunner } from '../common/coalescing-runner';
@@ -83,6 +84,19 @@ async function toJsonPayload(body: unknown): Promise<PublicJsonPayload> {
   const json = JSON.stringify(body);
   return { json, gzip: await gzipAsync(json) };
 }
+
+/** 混编主项目的公开视图要用到的并入单项（名称 + 已通过报名）。 */
+const PUBLIC_MIX_MEMBERS = {
+  select: {
+    type: true,
+    groupLabel: true,
+    registrations: {
+      where: { status: RegistrationStatus.APPROVED },
+      include: { player1: true, player2: true },
+      orderBy: [{ isSeed: 'desc' as const }, { seedRank: 'asc' as const }, { createdAt: 'asc' as const }],
+    },
+  },
+};
 
 const EVENT_TYPE_LABELS: Record<string, string> = {
   MENS_SINGLES: '男子单打',
@@ -665,7 +679,7 @@ export class PublicService {
     const sideIds = [match.side1Id, match.side2Id].filter((id): id is string => Boolean(id));
     const registrations = sideIds.length
       ? await this.prisma.registration.findMany({
-          where: { id: { in: sideIds }, eventId: event.id, status: RegistrationStatus.APPROVED },
+          where: { id: { in: sideIds }, eventId: { in: await mixEventIds(this.prisma, event.id) }, status: RegistrationStatus.APPROVED },
           include: { player1: true, player2: true },
         })
       : [];
@@ -687,6 +701,7 @@ export class PublicService {
           include: { player1: true, player2: true },
           orderBy: [{ isSeed: 'desc' }, { seedRank: 'asc' }, { createdAt: 'asc' }],
         },
+        mixMembers: PUBLIC_MIX_MEMBERS,
         matches: {
           where: { roundNo: { lt: SECOND_STAGE_FORMAL_ROUND_NO_BASE } },
           include: PUBLIC_BRACKET_MATCH_INCLUDE,
@@ -704,7 +719,7 @@ export class PublicService {
     });
 
     return {
-      brackets: events.map((event) => this.publicBracketView(event)),
+      brackets: events.map((event) => this.publicBracketView(mergeMixRegistrations(event))),
     };
   }
 
@@ -722,6 +737,7 @@ export class PublicService {
               include: { player1: true, player2: true },
               orderBy: [{ groupName: 'asc' }, { isSeed: 'desc' }, { seedRank: 'asc' }],
             },
+            mixMembers: PUBLIC_MIX_MEMBERS,
             matches: {
               include: {
                 venue: true,
@@ -745,7 +761,8 @@ export class PublicService {
 
     return {
       tournaments: tournaments.map((tournament) => {
-        const events = tournament.events.map((event) => {
+        // 混编：并入单项不单独列出，选手合进主项目一起排名。
+        const events = tournament.events.filter((event) => !event.mixHostId).map(mergeMixRegistrations).map((event) => {
           const registrationMap = new Map(
             event.registrations.map((registration) => [registration.id, registration]),
           );
@@ -763,7 +780,7 @@ export class PublicService {
           return {
             id: event.id,
             type: event.type,
-            typeLabel: EVENT_TYPE_LABELS[event.type] ?? event.type,
+            typeLabel: event.mixMembers.length ? hostDisplayLabel(event) : (EVENT_TYPE_LABELS[event.type] ?? event.type),
             format: event.format,
             registrations: event.registrations.map((registration) => ({
               id: registration.id,
@@ -837,6 +854,7 @@ export class PublicService {
               include: { player1: true, player2: true },
               orderBy: [{ groupName: 'asc' }, { isSeed: 'desc' }, { seedRank: 'asc' }],
             },
+            mixMembers: PUBLIC_MIX_MEMBERS,
             matches: {
               include: {
                 games: { orderBy: { gameNo: 'asc' } },
@@ -865,7 +883,8 @@ export class PublicService {
             rankingsAvailable: false, events: [],
           };
         }
-        const events = tournament.events.map((event) => {
+        // 混编：并入单项不单独列出，选手合进主项目一起排名。
+        const events = tournament.events.filter((event) => !event.mixHostId).map(mergeMixRegistrations).map((event) => {
           const registrationMap = new Map(
             event.registrations.map((registration) => [registration.id, registration]),
           );
@@ -875,7 +894,7 @@ export class PublicService {
           return {
             id: event.id,
             type: event.type,
-            typeLabel: EVENT_TYPE_LABELS[event.type] ?? event.type,
+            typeLabel: event.mixMembers.length ? hostDisplayLabel(event) : (EVENT_TYPE_LABELS[event.type] ?? event.type),
             format: event.format,
             registrations: event.registrations.length,
             matches: event.matches.length,
@@ -936,6 +955,8 @@ export class PublicService {
   }
 
   private publicBracketView(event: any) {
+    // 混编主项目显示混编名，其它单项照旧只显示项目名。
+    const eventLabel: string = event.mixMembers?.length ? hostDisplayLabel(event) : (EVENT_TYPE_LABELS[event.type] ?? event.type);
     const registrationMap = new Map<string, any>(
       event.registrations.map((item: any) => [item.id, item]),
     );
@@ -988,8 +1009,8 @@ export class PublicService {
       id: event.id,
       tournamentId: event.tournament.id,
       tournamentName: event.tournament.name,
-      groupLabel: EVENT_TYPE_LABELS[event.type] ?? event.type,
-      title: `${event.tournament.name} · ${EVENT_TYPE_LABELS[event.type] ?? event.type}`,
+      groupLabel: eventLabel,
+      title: `${event.tournament.name} · ${eventLabel}`,
       subtitle: `${FORMAT_LABELS[event.format] ?? event.format} · ${participants.filter((item: any) => !item.isBye).length} 个签位`,
       generatedAt: event.drawGeneratedAt?.toISOString?.() ?? null,
       participants,
