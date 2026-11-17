@@ -23,6 +23,7 @@ import {
 import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { yuan } from '@/lib/payments';
+import BatchScoringModal from '@/components/admin/BatchScoringModal';
 
 const EVENT_TYPE_LABELS: Record<string, string> = {
   MENS_SINGLES: '男子单打',
@@ -207,6 +208,10 @@ export default function EventsPage() {
   const [mixHost, setMixHost] = useState<Event | null>(null);
   const [mixSelection, setMixSelection] = useState<string[]>([]);
   const [mixSaving, setMixSaving] = useState(false);
+  // 批量改规则：表格里勾选的单项。
+  const [batchIds, setBatchIds] = useState<string[]>([]);
+  const [batchOpen, setBatchOpen] = useState(false);
+  const batchEvents = useMemo(() => events.filter((event) => batchIds.includes(event.id)), [events, batchIds]);
   // 添加单项时可选的组别（随弹窗里选的赛事加载）；null 表示还在加载。
   const [formGroups, setFormGroups] = useState<GroupOption[] | null>(null);
   const formTournamentId = Form.useWatch('tournamentId', form) as string | undefined;
@@ -469,7 +474,8 @@ export default function EventsPage() {
     {
       title: '组别',
       key: 'group',
-      render: (_: unknown, r: Event) => eventGroupName(r) || '—',
+      // 组别名不换行：表格多了勾选列后，窄屏下组别名会被挤成竖排。
+      render: (_: unknown, r: Event) => <span style={{ whiteSpace: 'nowrap' }}>{eventGroupName(r) || '—'}</span>,
       // 只有一个组别时不显示筛选。
       filters: groupFilters.length > 1 ? groupFilters : undefined,
       onFilter: (value: unknown, r: Event) => (r.groupId ?? '') === value,
@@ -560,9 +566,12 @@ export default function EventsPage() {
             style={{ width: 240 }}
             placeholder="选择赛事"
             value={selectedTournamentId || undefined}
-            onChange={setSelectedTournamentId}
+            onChange={(id: string) => { setSelectedTournamentId(id); setBatchIds([]); }}
             options={tournaments.map((t) => ({ value: t.id, label: t.name }))}
           />
+          <Button disabled={!batchEvents.length} onClick={() => setBatchOpen(true)}>
+            批量改规则{batchEvents.length ? `（已选 ${batchEvents.length} 项）` : ''}
+          </Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={openCreate} disabled={!selectedTournamentId}>
             添加单项
           </Button>
@@ -571,7 +580,30 @@ export default function EventsPage() {
 
       {/* 换赛事时重建表格，免得上一个赛事的组别筛选把列表筛空。 */}
       {/* antd 没配中文语言包，组别筛选的按钮文字要自己给。 */}
-      <Table key={selectedTournamentId} rowKey="id" columns={columns} dataSource={events} loading={loading} pagination={false} locale={{ filterConfirm: '确定', filterReset: '重置' }} />
+      {/* 勾选后点「批量改规则」；先用组别筛选再点表头勾选框，可以一次选中整个组别。 */}
+      <Table
+        key={selectedTournamentId}
+        rowKey="id"
+        columns={columns}
+        dataSource={events}
+        loading={loading}
+        pagination={false}
+        locale={{ filterConfirm: '确定', filterReset: '重置' }}
+        rowSelection={{ selectedRowKeys: batchIds, onChange: (keys) => setBatchIds(keys.map(String)), columnWidth: 40 }}
+      />
+
+      {batchOpen ? (
+        <BatchScoringModal
+          tournamentId={selectedTournamentId}
+          token={token}
+          events={batchEvents}
+          stages={STAGE_DEFS}
+          stageKeysFor={() => STAGE_DEFS.map((def) => def.key)}
+          labelOf={eventLabel}
+          onClose={() => setBatchOpen(false)}
+          onSaved={fetchEvents}
+        />
+      ) : null}
 
       <Modal
         title={editing ? `编辑单项：${eventLabel(editing)}` : '添加单项'}
