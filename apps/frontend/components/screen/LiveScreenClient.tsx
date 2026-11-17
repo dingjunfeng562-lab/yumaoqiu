@@ -9,8 +9,10 @@ import type {
 import type { SecondStageData } from '@/components/bracket/SecondStageBracket';
 import { SecondStageCrossBracket } from '@/components/bracket/SecondStageCrossBracket';
 import {
+  finalStage,
   isByeMatch,
   normalizeStatus,
+  orderFinalPair,
   parseGames,
   playerName,
   playersFor,
@@ -38,7 +40,8 @@ function formatTime(value?: string | null) {
 }
 
 function sortMatches(matches: BracketMatch[]) {
-  return [...matches].sort((a, b) => a.roundNo - b.roundNo || a.matchNo - b.matchNo);
+  // 按轮次、场次；决赛那一轮季军赛在前、决赛压轴（按时间先后排开、季军赛更晚时按时间）。
+  return orderFinalPair([...matches].sort((a, b) => a.roundNo - b.roundNo || a.matchNo - b.matchNo));
 }
 
 function groupMatches(matches: BracketMatch[]) {
@@ -135,7 +138,8 @@ function MatchCard({ bracket, match }: { bracket: KnockoutBracketData; match: Br
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <p className="truncate text-[11px] font-black leading-tight text-cyan-100/90 sm:text-xs">
-            {roundTitle(match)} · 第 {match.matchNo} 场 · {match.venueName || '待排场地'}
+            {/* 决赛、季军赛对调后不再写「第 N 场」，免得第 2 场排在第 1 场前面 */}
+            {roundTitle(match)}{finalStage(match) ? '' : ` · 第 ${match.matchNo} 场`} · {match.venueName || '待排场地'}
           </p>
           <p className="mt-1 truncate text-[10px] font-semibold leading-none tabular-nums text-white/45 sm:text-[11px]">
             {status === 'LIVE' && currentGameIndex >= 0

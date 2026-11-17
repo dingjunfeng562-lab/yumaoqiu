@@ -74,9 +74,58 @@ export function isByeMatch(bracket: KnockoutBracketData, match: BracketMatch) {
   return match.roundNo <= 1 || status === 'COMPLETED' || status === 'CANCELLED';
 }
 
-export function roundTitle(match: BracketMatch) {
+type RoundInfo = Pick<BracketMatch, 'roundNo' | 'roundLabel'> & { round?: string };
+
+export function roundTitle(match: RoundInfo) {
   // 后端 publicRoundLabel 把单字母轮次一律当组名，淘汰赛决赛（round = 'F'）会变成「F组」。
   // 小组赛场次 roundNo 恒为 0，所以 roundNo ≥ 1 的「F组」只可能是决赛。
   if (match.roundNo >= 1 && match.roundLabel === 'F组') return '决赛';
-  return match.roundLabel || (match as BracketMatch & { round?: string }).round || `第 ${match.roundNo} 轮`;
+  return match.roundLabel || match.round || `第 ${match.roundNo} 轮`;
+}
+
+export type FinalStage = 'FINAL' | 'BRONZE';
+
+/** 淘汰赛最后一轮的两场：决赛、季军赛（季军赛是决赛那一轮的第 2 场）。其他场次返回 null。 */
+export function finalStage(match: RoundInfo): FinalStage | null {
+  if (match.roundNo < 1) return null;
+  const title = roundTitle(match);
+  if (title === '决赛') return 'FINAL';
+  if (title === '季军赛') return 'BRONZE';
+  return null;
+}
+
+function scheduleTime(value?: string | null) {
+  if (!value) return Number.POSITIVE_INFINITY;
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? Number.POSITIVE_INFINITY : time;
+}
+
+type FinalPairMatch = RoundInfo & { scheduledAt?: string | null };
+
+/**
+ * 季军赛和决赛谁在前：一般季军赛在前、决赛压轴；按时间先后排开时按时间——
+ * 季军赛排得比决赛晚（或决赛排了时间、季军赛还没排）就决赛在前。
+ */
+export function bronzeGoesFirst(bronze: FinalPairMatch, final: FinalPairMatch) {
+  return scheduleTime(bronze.scheduledAt) <= scheduleTime(final.scheduledAt);
+}
+
+/**
+ * 同一个项目的场次列表里，按 bronzeGoesFirst 对调决赛和季军赛的位置；其他场次位置不动。
+ * 只传同一个项目的场次，或用 sameEvent 指明哪些场次属于同一个项目。
+ */
+export function orderFinalPair<T extends FinalPairMatch>(
+  matches: T[],
+  sameEvent: (a: T, b: T) => boolean = () => true,
+): T[] {
+  const result = [...matches];
+  result.forEach((final, finalIndex) => {
+    if (finalStage(final) !== 'FINAL') return;
+    const bronzeIndex = result.findIndex((item) => finalStage(item) === 'BRONZE' && sameEvent(item, final));
+    if (bronzeIndex < 0) return;
+    const bronzeFirst = bronzeGoesFirst(result[bronzeIndex], final);
+    if ((bronzeIndex < finalIndex) === bronzeFirst) return;
+    [result[finalIndex], result[bronzeIndex]] = [result[bronzeIndex], result[finalIndex]];
+  });
+  return result;
 }

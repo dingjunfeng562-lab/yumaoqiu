@@ -9,6 +9,7 @@ import type {
 import {
   isByeMatch,
   normalizeStatus,
+  orderFinalPair,
   parseGames,
   playerName,
   playersFor,
@@ -40,6 +41,8 @@ type SideView = {
 
 type BoardMatch = {
   key: string;
+  /** 所属项目（对阵）的 id：同一项目的决赛、季军赛对调位置时用 */
+  bracketId?: string;
   eventLabel: string;
   roundLabel: string;
   roundNo: number;
@@ -119,6 +122,7 @@ function bracketMatchView(
   const venue = match.venueName && match.venueName !== NO_VENUE ? match.venueName : null;
   return {
     key: `${bracket.id}:${match.id}`,
+    bracketId: bracket.id,
     eventLabel,
     roundLabel: roundTitle(match),
     roundNo: match.roundNo,
@@ -257,7 +261,11 @@ function buildBoard(brackets: KnockoutBracketData[]) {
     return [...main, ...secondStageViews(bracket, eventLabel)];
   });
   assignCourtQueue(matches);
-  return matches.sort(compareBoard);
+  // 待开始里同一项目的决赛和季军赛：同时开打（或都还没排时间）时对调，季军赛在前；按时间先后排开的照时间。
+  return orderFinalPair(
+    matches.sort(compareBoard),
+    (a, b) => a.bracketId === b.bracketId && a.status === 'PENDING' && b.status === 'PENDING',
+  );
 }
 
 function sideMatches(side: SideView, keyword: string) {

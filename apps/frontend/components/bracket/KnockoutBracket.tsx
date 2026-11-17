@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from 'react';
 import { SecondStageBracket, type SecondStageData } from './SecondStageBracket';
+import { finalStage, orderFinalPair, roundTitle } from '@/lib/match-display';
 
 // ─────────────────────────────────────────────────────────────────────
 // Types — kept compatible with previous callers
@@ -164,7 +165,8 @@ function isGroupStageMatch(match: Pick<BracketMatch, 'roundNo'>) {
 }
 
 function roundLabelForMatch(match: Pick<BracketMatch, 'roundNo' | 'roundLabel'>, bracketSize: number) {
-  if (match.roundLabel) return match.roundLabel;
+  // 公开接口给决赛的轮次名是「F组」，roundTitle 统一成「决赛」。
+  if (match.roundLabel) return roundTitle(match);
   return isGroupStageMatch(match) ? '小组赛' : defaultRoundLabel(bracketSize, match.roundNo);
 }
 
@@ -835,7 +837,7 @@ function TreeView({
       (parentKeys ? parentKeys.some((k) => highlightedKeys.has(k)) : false);
 
     // Match label sits on the horizontal segment from midX to endX
-    const label = m.roundLabel ?? defaultRoundLabel(bracketSize, r);
+    const label = m.roundLabel ? roundTitle(m) : defaultRoundLabel(bracketSize, r);
     const labelX = midX + (endX - midX) / 2;
     const labelY = yMid - 6;
 
@@ -1403,7 +1405,8 @@ function RoundsView({
   setZoom: Dispatch<SetStateAction<number>>;
   zoomLimits: { min: number; max: number };
 }) {
-  const activeMatches = matches.filter((m) => m.roundNo === activeRound);
+  // 决赛那一轮：季军赛在前、决赛在后（按时间先后排开、季军赛更晚时按时间）。
+  const activeMatches = orderFinalPair(matches.filter((m) => m.roundNo === activeRound));
   const viewportRef = useRef<HTMLDivElement | null>(null);
   useBracketZoomGestures(viewportRef, setZoom, zoomLimits);
 
@@ -1414,8 +1417,10 @@ function RoundsView({
           const roundMatches = matches.filter((m) => m.roundNo === r);
           const count = roundMatches.length || bracketSize / 2 ** r;
           const active = activeRound === r;
-          const label = roundMatches[0]
-            ? roundLabelForMatch(roundMatches[0], bracketSize)
+          // 决赛那一轮里还有季军赛，按钮用决赛的名字。
+          const labelMatch = roundMatches.find((m) => finalStage(m) !== 'BRONZE') ?? roundMatches[0];
+          const label = labelMatch
+            ? roundLabelForMatch(labelMatch, bracketSize)
             : defaultRoundLabel(bracketSize, r);
           return (
             <button
@@ -1515,6 +1520,8 @@ function MatchCard({
   const refereeName = match.refereeName?.trim();
   const latestEvent = match.latestEvents?.[0] ?? null;
   const latestEventTime = formatTime(latestEvent?.createdAt);
+  // 决赛、季军赛在卡片顶部直接标出来，不再只写「第 1 场 / 第 2 场」。
+  const stage = isPlaceholder ? null : finalStage(match);
 
   const tone = isForfeit
     ? 'border-red-200 bg-red-50/40'
@@ -1536,9 +1543,21 @@ function MatchCard({
     >
       {/* Top row: round label + status */}
       <div className="flex items-center justify-between gap-2 border-b border-black/5 px-3 py-1.5">
-        <span className="truncate text-[10px] font-black uppercase tracking-wider text-slate-400">
-          第 {match.matchNo} 场
-        </span>
+        {stage ? (
+          <span
+            className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[11px] font-black ring-1 ${
+              stage === 'FINAL'
+                ? 'bg-amber-400 text-amber-950 ring-amber-500'
+                : 'bg-orange-100 text-orange-800 ring-orange-300'
+            }`}
+          >
+            {stage === 'FINAL' ? '决赛' : '季军赛'}
+          </span>
+        ) : (
+          <span className="truncate text-[10px] font-black uppercase tracking-wider text-slate-400">
+            第 {match.matchNo} 场
+          </span>
+        )}
         <span
           className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-black ${
             isForfeit
