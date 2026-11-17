@@ -4,12 +4,15 @@ import assert from 'node:assert/strict';
 import {
   checkTeamRows,
   duplicateIdentities,
-  identityImportError,
+  identityForSubmit,
+  identityImportCheck,
   identityNumberError,
   ignoredFieldsNotice,
   importFieldRules,
+  lenientWarningNotice,
   maskIdentityNumber,
   parseTeamRosterText,
+  warningConfirmLines,
 } from './import-fields.ts';
 
 // 校验位正确的号码：2015-03-01、1990-03-07、2012-06-15 出生
@@ -42,8 +45,8 @@ describe('importFieldRules', () => {
 describe('身份证号检查', () => {
   it('格式、校验位、出生日期', () => {
     assert.equal(identityNumberError(KID), undefined);
-    assert.equal(identityNumberError('11010520150301001X'), '身份证号校验位有误，请核对');
-    assert.equal(identityNumberError('1101052015'), '身份证号须为18位有效号码');
+    assert.equal(identityNumberError('11010520150301001X'), '身份证号校验位有误');
+    assert.equal(identityNumberError('1101052015'), '身份证号不是18位有效号码');
     assert.equal(identityNumberError(' 1101 0520 1503 0100 10 '), undefined, '中间的空格去掉再判断');
   });
   it('本组年龄条件（按出生日期）', () => {
@@ -55,15 +58,31 @@ describe('身份证号检查', () => {
     assert.equal(identityNumberError(KID, u12, '2026-11-17'), undefined);
     assert.match(identityNumberError(ADULT, u12, '2026-11-17'), /不符合本组年龄条件/);
   });
-  it('必填 / 选填 / 不收集', () => {
-    const required = importFieldRules(fields({ identityNumber: 'required' }), null);
+  it('后台批量导入：必填没填、号码有误、年龄不符只提醒；有误的号码不提交', () => {
+    const required = importFieldRules(fields({ identityNumber: 'required' }), PRIMARY);
     const optional = importFieldRules(fields(), null);
     const hidden = importFieldRules(fields({ identityNumber: 'hidden' }), null);
-    assert.equal(identityImportError('', required), '本组要求填写身份证号');
-    assert.equal(identityImportError(undefined, required, '搭档'), '本组要求填写搭档身份证号');
-    assert.equal(identityImportError('', optional), undefined);
-    assert.equal(identityImportError('123', hidden), undefined, '不收集时不检查');
-    assert.equal(identityImportError('123', optional, '队友'), '队友身份证号须为18位有效号码');
+    assert.deepEqual(identityImportCheck('', required), { warning: '未填身份证号（本组必填）' });
+    assert.deepEqual(identityImportCheck(undefined, required, '搭档'), { warning: '搭档未填身份证号（本组必填）' });
+    assert.deepEqual(identityImportCheck('', optional), {});
+    assert.deepEqual(identityImportCheck('123', hidden), {}, '不收集时不检查、不提交');
+    assert.deepEqual(identityImportCheck('123', optional, '队友'), { warning: '队友身份证号不是18位有效号码，不保存' });
+    assert.deepEqual(identityImportCheck('11010520150301001X', required), { warning: '身份证号校验位有误，不保存' });
+    assert.deepEqual(identityImportCheck(ADULT, required), { submit: ADULT, warning: '不符合本组年龄条件（出生日期 1990-03-07）' }, '年龄不符：号码照样保存');
+    assert.deepEqual(identityImportCheck(` ${KID.slice(0, 6)} ${KID.slice(6)} `, required), { submit: KID });
+    assert.equal(identityForSubmit('11010520150301001X', required), undefined);
+    assert.equal(identityForSubmit(KID, hidden), undefined);
+    assert.equal(identityForSubmit(KID, optional), KID);
+  });
+  it('标黄说明和确认框内容', () => {
+    assert.equal(lenientWarningNotice(0), undefined);
+    assert.match(lenientWarningNotice(3), /^有 3 条标黄提醒.*照常导入.*不保存.*「未核验」.*再确认一次。$/);
+    const items = Array.from({ length: 12 }, (_, i) => ({ row: i + 1, name: i ? `队员${i}` : '', warning: '未填身份证号（本组必填）' }));
+    const lines = warningConfirmLines(items);
+    assert.equal(lines.length, 11);
+    assert.equal(lines[0], '第 1 行：未填身份证号（本组必填）');
+    assert.equal(lines[1], '第 2 行 队员1：未填身份证号（本组必填）');
+    assert.equal(lines[10], '另有 2 条，见预览');
   });
   it('打码与服务端一致：前 3 位 + 后 4 位', () => {
     assert.equal(maskIdentityNumber(KID), '110***********0010');
@@ -131,19 +150,31 @@ describe('团体名单按组别检查', () => {
     `羽燕队\t钱七\t女\t第二小学\t\t${KID}`,
   ].join('\n');
 
-  it('身份证号必填：缺号、年龄不符、重复的行一次全部标出来', () => {
+  it('身份证号必填：缺号、年龄不符只标黄照常导入，重复的号码仍然拦下', () => {
     const rules = importFieldRules(fields({ identityNumber: 'required', gender: 'required' }), PRIMARY);
     const checked = checkTeamRows(parseTeamRosterText(text).rows, rules);
-    assert.deepEqual(checked.rows.map((row) => [row.lineNumber, row.error]), [
-      [1, undefined],
-      [2, '本组要求填写身份证号'],
-      [3, '本组要求填写性别和身份证号'],
-      [4, '不符合本组年龄条件（出生日期 1990-03-07）'],
-      [5, '身份证号与第 1 行重复'],
+    assert.deepEqual(checked.rows.map((row) => [row.lineNumber, row.error, row.warning]), [
+      [1, undefined, undefined],
+      [2, undefined, '未填身份证号（本组必填）'],
+      [3, undefined, '未填性别（本组必填）；未填身份证号（本组必填）'],
+      [4, undefined, '不符合本组年龄条件（出生日期 1990-03-07）'],
+      [5, '身份证号与第 1 行重复', undefined],
     ]);
-    assert.equal(checked.errorCount, 4);
+    assert.equal(checked.errorCount, 1);
+    assert.equal(checked.warningCount, 3);
+    assert.equal(checked.warningLines[0], '第 2 行 李四：未填身份证号（本组必填）');
     assert.equal(checked.valid, false);
+    assert.deepEqual(checked.groups.map((group) => [group.teamName, group.error, group.warnings]), [['飞羽队', undefined, 2], ['羽燕队', '请修正下方行数据', 1]]);
     assert.equal(checked.notice, undefined);
+  });
+  it('号码有误的不算重复（不保存）', () => {
+    const rules = importFieldRules(fields({ identityNumber: 'required' }), null);
+    const bad = '11010520150301001X';
+    const checked = checkTeamRows(parseTeamRosterText(`飞羽队\t张三\t男\t\t\t${bad}\n飞羽队\t李四\t男\t\t\t${bad}`).rows, rules);
+    assert.deepEqual(checked.rows.map((row) => [row.error, row.warning]), [
+      [undefined, '身份证号校验位有误，不保存'], [undefined, '身份证号校验位有误，不保存'],
+    ]);
+    assert.equal(checked.valid, true);
   });
   it('身份证号不收集：填了也不报错，只提示会忽略', () => {
     const rules = importFieldRules(fields({ identityNumber: 'hidden' }), PRIMARY);
@@ -152,14 +183,15 @@ describe('团体名单按组别检查', () => {
     assert.equal(checked.valid, true);
     assert.match(checked.notice, /^本组报名设置不收集身份证号（第 1、4、5 行）/);
   });
-  it('没有组别的老团体赛：性别必填，身份证号忽略', () => {
+  it('没有组别的老团体赛：性别必填（只提醒），身份证号忽略', () => {
     const checked = checkTeamRows(parseTeamRosterText(text).rows, importFieldRules(null, null));
-    assert.deepEqual(checked.rows.filter((row) => row.error).map((row) => [row.lineNumber, row.error]), [[3, '请填写性别']]);
+    assert.equal(checked.errorCount, 0);
+    assert.deepEqual(checked.rows.filter((row) => row.warning).map((row) => [row.lineNumber, row.warning]), [[3, '未填性别（必填）']]);
     assert.match(checked.notice, /^本赛事报名设置不收集身份证号（第 1、4、5 行），这些内容导入时会忽略、不保存。$/);
   });
-  it('选填：没填的放行，填了的照样检查', () => {
+  it('选填：没填的放行，填错的标黄', () => {
     const rules = importFieldRules(fields({ identityNumber: 'optional' }), null);
     const checked = checkTeamRows(parseTeamRosterText(`飞羽队\t张三\t男\t\t\t${TEEN}\n飞羽队\t李四\t女\t\t\t12345`).rows, rules);
-    assert.deepEqual(checked.rows.map((row) => row.error), [undefined, '身份证号须为18位有效号码']);
+    assert.deepEqual(checked.rows.map((row) => [row.error, row.warning]), [[undefined, undefined], [undefined, '身份证号不是18位有效号码，不保存']]);
   });
 });

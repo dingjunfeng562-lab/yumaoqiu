@@ -673,7 +673,8 @@ export class TeamCompetitionsService {
       for (const [name, rows] of groups) {
         const team = await tx.team.create({ data: { teamCompetitionId, name, affiliation: rows.find(row => row.affiliation?.trim())?.affiliation?.trim() || name } });
         for (const row of rows) {
-          const qualification = await this.prepareTeamMember(tx, teamCompetitionId, row);
+          // 后台批量导入不强制报名字段（见 prepareTeamMember 的 lenient）。
+          const qualification = await this.prepareTeamMember(tx, teamCompetitionId, row, true);
           const player = await tx.player.create({ data: { name: row.name, gender: row.gender ?? null, affiliation: row.affiliation?.trim() || team.affiliation, contact: row.contact?.trim() || null, ownerId: actor.id } });
           await tx.teamMember.create({ data: { teamId: team.id, playerId: player.id, ...qualification } });
         }
@@ -1535,7 +1536,11 @@ export class TeamCompetitionsService {
     }
   }
 
-  private async prepareTeamMember(db: Prisma.TransactionClient, teamCompetitionId: string, input: { id?: string; name: string; gender?: string | null; identityNumber?: string }) {
+  /**
+   * @param lenient 后台批量导入：报名字段不强制。必填的身份证号、性别没填照常导入，身份证号无效不保存，
+   *   年龄不符也照常导入；核对不了的资格记为未核验（不挡抽签）。身份证号重复、已在其他组别报名照常拦下。
+   */
+  private async prepareTeamMember(db: Prisma.TransactionClient, teamCompetitionId: string, input: { id?: string; name: string; gender?: string | null; identityNumber?: string }, lenient = false) {
     const competition = await db.teamCompetition.findUniqueOrThrow({ where: { id: teamCompetitionId }, include: { group: true } });
     const group = competition.group;
     const previous = input.id ? await db.teamMember.findFirst({ where: { playerId: input.id, team: { teamCompetitionId } } }) : null;
@@ -1543,7 +1548,7 @@ export class TeamCompetitionsService {
     const entry = input.id ? await db.registration.findFirst({ where: { status: 'APPROVED', event: { tournamentId: competition.tournamentId, groupId: competition.groupId }, OR: [{ player1Id: input.id }, { player2Id: input.id }] } }) : null;
     // 没填身份证号时沿用该选手单项报名里存的证件信息（哈希 + 出生日期）。
     const stored = entry ? entry.player1Id === input.id ? entry.identityData : entry.partnerIdentityData : null;
-    const person = preparePerson(input, groupFields(group?.fieldRules, competition.entrantType === 'SCHOOL', !group), normalizeAgeRule(group?.ageRule), input.name, stored);
+    const person = preparePerson(input, groupFields(group?.fieldRules, competition.entrantType === 'SCHOOL', !group), normalizeAgeRule(group?.ageRule), input.name, stored, lenient);
     if (person.identity) {
       const duplicate = await db.teamMember.findFirst({ where: { identityData: { path: '$.fingerprint', equals: person.identity.fingerprint }, team: { teamCompetition: { tournamentId: competition.tournamentId } } } });
       if (duplicate) throw new ConflictException(`${input.name}已作为团体队员报名，请勿重复导入`);
@@ -1551,7 +1556,9 @@ export class TeamCompetitionsService {
       if (otherGroup) throw new ConflictException(`${input.name}已在其他组别报名`);
     }
     const inherited = entry?.eligibility && typeof entry.eligibility === 'object' && !Array.isArray(entry.eligibility) && entry.eligibility.status === 'MANUAL';
-    return { identityData: person.identity ?? Prisma.DbNull, eligibility: { status: inherited ? 'MANUAL' : person.age.status === 'PENDING' || !person.gender ? 'PENDING' : 'PASSED', age: person.age.status, ruleVersion: group?.ruleVersion ?? 1 } };
+    const unchecked = person.age.status === 'PENDING' || !person.gender;
+    const status = inherited ? 'MANUAL' : unchecked ? lenient ? 'UNVERIFIED' : 'PENDING' : 'PASSED';
+    return { identityData: person.identity ?? Prisma.DbNull, eligibility: { status, age: person.age.status, ruleVersion: group?.ruleVersion ?? 1 } };
   }
 
   async verifyMemberEligibility(teamId: string, playerId: string, note: string, gender: 'MALE' | 'FEMALE', operatorId: string) {

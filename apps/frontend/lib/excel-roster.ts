@@ -14,7 +14,7 @@
 // 本文件不依赖 xlsx，输入是普通二维数组 + 合并区域，方便单测。
 
 import type { AgeRule, GroupFields } from './registration-groups';
-import { identityImportError, ignoredFieldsNotice, importFieldRules, normalizeIdentityNumber, type ImportFieldRules } from './import-fields';
+import { identityImportCheck, ignoredFieldsNotice, importFieldRules, normalizeIdentityNumber, type ImportFieldRules } from './import-fields';
 
 export type Gender = 'MALE' | 'FEMALE';
 export type EntrantType = 'SCHOOL' | 'SOCIAL';
@@ -59,6 +59,8 @@ export type RosterPerson = {
   identityNumber?: string;
   /** 组别不收集身份证号：预览里划掉，导入时不提交。 */
   identityIgnored?: boolean;
+  /** 身份证号有误（或被 Excel 存成了数字）：后台批量导入不拦，但号码不提交、不保存。 */
+  identityInvalid?: boolean;
 };
 
 export type RosterEntry = {
@@ -73,6 +75,8 @@ export type RosterEntry = {
   people: RosterPerson[];
   rows: number[];
   errors: string[];
+  /** 标黄提醒：报名字段没填或有误、年龄不符。后台批量导入不强制报名字段，照常导入。 */
+  warnings: string[];
 };
 
 export type RosterColumnMap = {
@@ -299,13 +303,8 @@ export function detectTemplate(
     if (kind === 'SCHOOL') {
       if (studentHits.length && found.studentId == null) {
         error = '检测到学生字段，但缺少「学号」列，请使用官方学生模板';
-      } else if (fieldRules.SCHOOL.studentId === 'required' && found.studentId == null) {
-        error = '本赛事要求学号，但模板缺少「学号」列';
-      } else if (fieldRules.SCHOOL.college === 'required' && found.college == null) {
-        error = '本赛事要求学院，但模板缺少「学院」列';
-      } else if (fieldRules.SCHOOL.majorGrade === 'required' && found.majorGrade == null) {
-        error = '本赛事要求年级专业，但模板缺少「年级专业」列';
       }
+      // 后台批量导入不强制报名字段：必填列缺了只提醒（逐行标黄），照常导入。
       if (studentHits.length < 3 && !error) {
         messages.push('学生模板缺少部分学生字段列，缺失字段将按赛事配置留空');
       }
@@ -379,6 +378,7 @@ type RawRow = {
   eventType: string | null;
   event: RosterEventOption | null;
   errors: string[];
+  warnings: string[];
   mergeKey: string | null;
 };
 
@@ -460,6 +460,7 @@ export function parseRosterSheet(input: {
       unit,
     };
     const errors: string[] = [];
+    const warnings: string[] = [];
     if (!name) errors.push('姓名不能为空');
     if (!contact) errors.push('联系方式不能为空');
     if (!unit) errors.push('单位不能为空');
@@ -491,11 +492,11 @@ export function parseRosterSheet(input: {
     if (groupRules) {
       anyGrouped = true;
       // 服务端对有组别的项目按组别检查学号/学院/年级专业（第三方模板也一样）。
-      checkStudentFields(errors, person, columns, groupRules.fields, '本组');
+      checkStudentFields(warnings, person, columns, groupRules.fields, '本组');
       if (person.studentId && groupRules.fields.studentId === 'hidden') ignored.studentId.push(r + 1);
       if (person.gender && groupRules.fields.gender === 'hidden') ignored.gender.push(r + 1);
     } else if (kind === 'SCHOOL') {
-      checkStudentFields(errors, person, columns, fieldRules.SCHOOL, '本赛事');
+      checkStudentFields(warnings, person, columns, fieldRules.SCHOOL, '本赛事');
     }
     if (event) {
       const rules: ImportFieldRules = groupRules ?? importFieldRules(null, null, kind === 'SCHOOL');
@@ -506,12 +507,14 @@ export function parseRosterSheet(input: {
           ignored.identityNumber.push(r + 1);
         }
       } else if (columns.identityNumber === null && rules.fields.identityNumber === 'required') {
-        errors.push('本组要求填写身份证号，但表格缺少「身份证号」列');
+        warnings.push(`${rules.grouped ? '本组' : ''}要求填写身份证号，表格没有「身份证号」列`);
       } else if (typeof identityCell === 'number') {
-        errors.push(`${who}身份证号被 Excel 存成了数字，后几位可能已经丢失，请把这一列设为「文本」后重新填写`);
+        person.identityInvalid = true;
+        warnings.push(`${who}身份证号被 Excel 存成了数字，后几位可能已经丢失，不保存（把这一列设为「文本」后重新填写才能保存）`);
       } else {
-        const identityError = identityImportError(person.identityNumber, rules);
-        if (identityError) errors.push(`${who}${identityError}`);
+        const identity = identityImportCheck(person.identityNumber, rules);
+        if (person.identityNumber && !identity.submit) person.identityInvalid = true;
+        if (identity.warning) warnings.push(`${who}${identity.warning}`);
       }
     }
 
@@ -520,7 +523,7 @@ export function parseRosterSheet(input: {
       errors.push('双打需把两名队员的「单位」单元格合并后再导入');
     }
 
-    raws.push({ index: r, row: r + 1, person, project, eventType, event, errors, mergeKey });
+    raws.push({ index: r, row: r + 1, person, project, eventType, event, errors, warnings, mergeKey });
   }
 
   const doubleGroups = new Map<string, RawRow[]>();
@@ -552,12 +555,14 @@ export function parseRosterSheet(input: {
       people: [raw.person],
       rows: [raw.row],
       errors: unique(errors),
+      warnings: unique(raw.warnings),
     });
   }
 
   for (const group of doubleGroups.values()) {
     const people = group.map((raw) => raw.person);
     const errors = unique(group.flatMap((raw) => raw.errors));
+    const warnings = unique(group.flatMap((raw) => raw.warnings));
     if (people.length === 2) {
       // 正常的一对
     } else if (people.length > 2) {
@@ -569,7 +574,7 @@ export function parseRosterSheet(input: {
       const genderError = genderErrorFor(group[0].event.type, people);
       if (genderError) errors.push(genderError);
       if (kind === 'SCHOOL' && fieldRules.SCHOOL.studentId === 'required' && people[1] && !people[1].studentId) {
-        errors.push(`第 ${people[1].row} 行搭档缺少学号`);
+        warnings.push(`第 ${people[1].row} 行搭档未填学号`);
       }
     }
     entries.push({
@@ -584,6 +589,7 @@ export function parseRosterSheet(input: {
       people,
       rows: group.map((raw) => raw.row),
       errors,
+      warnings: unique(warnings),
     });
   }
 
@@ -613,9 +619,12 @@ const STUDENT_FIELDS = [
   { key: 'majorGrade', label: '年级专业' },
 ] as const;
 
-/** 学号 / 学院 / 年级专业：必填时缺列或没填报错。scope 是提示里的「本赛事」或「本组」。 */
+/**
+ * 学号 / 学院 / 年级专业：必填时缺列或没填，标黄提醒（后台批量导入不强制报名字段，照常导入）。
+ * scope 是提示里的「本赛事」或「本组」。
+ */
 function checkStudentFields(
-  errors: string[],
+  warnings: string[],
   person: RosterPerson,
   columns: RosterColumnMap,
   rules: Record<'studentId' | 'college' | 'majorGrade', FieldState>,
@@ -623,8 +632,8 @@ function checkStudentFields(
 ) {
   for (const { key, label } of STUDENT_FIELDS) {
     if (rules[key] !== 'required') continue;
-    if (columns[key] === null) errors.push(`${scope}要求${label}，但模板缺少「${label}」列`);
-    else if (!person[key]) errors.push(`${label}不能为空`);
+    if (columns[key] === null) warnings.push(`${scope}要求${label}，表格没有「${label}」列`);
+    else if (!person[key]) warnings.push(`未填${label}（${scope}必填）`);
   }
 }
 
@@ -661,7 +670,7 @@ function markDuplicates(entries: RosterEntry[]) {
   for (const entry of entries) {
     if (!entry.eventId) continue;
     for (const person of entry.people) {
-      if (!person.identityNumber || person.identityIgnored) continue;
+      if (!person.identityNumber || person.identityIgnored || person.identityInvalid) continue;
       const composite = `${entry.eventId}\u0000${person.identityNumber}`;
       const firstRow = identities.get(composite);
       if (firstRow === undefined) identities.set(composite, person.row);
@@ -696,6 +705,11 @@ function markMaxEvents(entries: RosterEntry[], maxEvents: number, allowCross: bo
   }
 }
 
+/** 不收集或号码有误的身份证号不提交。 */
+function identityToSubmit(person: RosterPerson) {
+  return person.identityIgnored || person.identityInvalid ? undefined : person.identityNumber;
+}
+
 export function rosterImportGroups(entries: RosterEntry[]): Array<{
   eventId: string;
   entrantType: RosterTemplateKind;
@@ -720,7 +734,7 @@ export function rosterImportGroups(entries: RosterEntry[]): Array<{
       name: first.name,
       gender: first.gender,
       contact: first.contact,
-      identityNumber: first.identityIgnored ? undefined : first.identityNumber,
+      identityNumber: identityToSubmit(first),
       ...(isSchool
         ? {
             studentId: first.studentId,
@@ -734,7 +748,7 @@ export function rosterImportGroups(entries: RosterEntry[]): Array<{
             partnerName: second.name,
             partnerGender: second.gender as Gender,
             partnerContact: second.contact,
-            partnerIdentityNumber: second.identityIgnored ? undefined : second.identityNumber,
+            partnerIdentityNumber: identityToSubmit(second),
             ...(isSchool
               ? {
                   partnerStudentId: second.studentId,

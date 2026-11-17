@@ -4,7 +4,8 @@ import { useState } from 'react';
 import { Alert, Button, Modal, Space, Table, Tag, Typography, Upload, message } from 'antd';
 import { DownloadOutlined, FileExcelOutlined, InboxOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
-import { maskIdentityNumber } from '@/lib/import-fields';
+import { lenientWarningNotice, maskIdentityNumber, warningConfirmLines } from '@/lib/import-fields';
+import { confirmImportWarnings } from '@/components/admin/confirmImportWarnings';
 import {
   DEFAULT_ROSTER_FIELD_RULES,
   entrantTypeLabel,
@@ -232,18 +233,21 @@ export default function ExcelRosterImportModal({
   const entries = result?.entries ?? [];
   const errorEntries = entries.filter((entry) => entry.errors.length);
   const importableEntries = entries.filter((entry) => !entry.errors.length);
+  // 标黄：报名字段没填或有误、年龄不符，照常导入（后台批量导入不强制报名字段）。
+  const warningEntries = importableEntries.filter((entry) => entry.warnings.length);
   const peopleCount = rosterPeopleCount(entries);
   const importablePeople = rosterPeopleCount(importableEntries);
   const singles = entries.filter((entry) => entry.kind === 'SINGLE').length;
   const doubles = entries.filter((entry) => entry.kind === 'DOUBLE').length;
   const projectSummary = (() => {
-    const map = new Map<string, { singles: number; doubles: number; errors: number }>();
+    const map = new Map<string, { singles: number; doubles: number; errors: number; warnings: number }>();
     for (const entry of entries) {
       const label = entry.eventLabel ?? (entry.project || '未识别项目');
-      const item = map.get(label) ?? { singles: 0, doubles: 0, errors: 0 };
+      const item = map.get(label) ?? { singles: 0, doubles: 0, errors: 0, warnings: 0 };
       if (entry.kind === 'DOUBLE') item.doubles += 1;
       else item.singles += 1;
       if (entry.errors.length) item.errors += 1;
+      else if (entry.warnings.length) item.warnings += 1;
       map.set(label, item);
     }
     return [...map];
@@ -253,6 +257,12 @@ export default function ExcelRosterImportModal({
     if (!token) return;
     const groups = rosterImportGroups(entries);
     if (!groups.length) return;
+    const lines = warningConfirmLines(warningEntries.map((entry) => ({
+      row: entry.rows.join('、'),
+      name: entry.people.map((person) => person.name).join(' / '),
+      warning: entry.warnings.join('；'),
+    })));
+    if (!(await confirmImportWarnings(warningEntries.length, lines))) return;
     setImporting(true);
     let created = 0;
     const failures: string[] = [];
@@ -300,7 +310,7 @@ export default function ExcelRosterImportModal({
     : '';
   const tournamentRuleText = `本赛事学生组：学号${fieldRules.SCHOOL.studentId === 'required' ? '必填' : fieldRules.SCHOOL.studentId === 'optional' ? '选填' : '不收集'}、学院${fieldRules.SCHOOL.college === 'required' ? '必填' : fieldRules.SCHOOL.college === 'optional' ? '选填' : '不收集'}、年级专业${fieldRules.SCHOOL.majorGrade === 'required' ? '必填' : fieldRules.SCHOOL.majorGrade === 'optional' ? '选填' : '不收集'}`;
   const fieldRuleText = groupedEvents.length
-    ? `学号、学院、身份证号等按各组别的「报名字段」检查${idColumnText ? `；${idColumnText}` : ''}`
+    ? `学号、学院、身份证号等按各组别的「报名字段」检查，没填或有误的只标黄提醒、照常导入${idColumnText ? `；${idColumnText}` : ''}`
     : tournamentRuleText;
 
   return (
@@ -361,7 +371,7 @@ export default function ExcelRosterImportModal({
 
         {result ? (
           <Alert
-            type={!entries.length ? 'warning' : errorEntries.length ? 'error' : 'success'}
+            type={!entries.length ? 'warning' : errorEntries.length ? 'error' : warningEntries.length ? 'warning' : 'success'}
             showIcon
             title={
               entries.length
@@ -376,8 +386,9 @@ export default function ExcelRosterImportModal({
                 <span>
                   {errorEntries.length
                     ? `其中 ${errorEntries.length} 条需要修正后才能导入。`
-                    : '全部检查通过，可以导入。'}
+                    : warningEntries.length ? '没有必须修正的记录，可以导入。' : '全部检查通过，可以导入。'}
                 </span>
+                {warningEntries.length ? <Typography.Text type="warning">{lenientWarningNotice(warningEntries.length)}</Typography.Text> : null}
                 {result.messages.map((text) => (
                   <Typography.Text key={text} type="warning">
                     {text}
@@ -392,11 +403,12 @@ export default function ExcelRosterImportModal({
           <Space wrap size={8}>
             <Typography.Text type="secondary">名单分布：</Typography.Text>
             {projectSummary.map(([label, item]) => (
-              <Tag key={label} color={item.errors ? 'red' : 'blue'}>
+              <Tag key={label} color={item.errors ? 'red' : item.warnings ? 'gold' : 'blue'}>
                 {label}
                 {item.singles ? ` ${item.singles} 人` : ''}
                 {item.doubles ? ` ${item.doubles} 对` : ''}
                 {item.errors ? `（${item.errors} 条待修正）` : ''}
+                {item.warnings ? `（${item.warnings} 条标黄）` : ''}
               </Tag>
             ))}
           </Space>
@@ -478,9 +490,10 @@ export default function ExcelRosterImportModal({
                 render: (_, entry) => (
                   <Space orientation="vertical" size={0}>
                     {entry.people.map((person, index) => (
-                      person.identityNumber && person.identityIgnored ? (
-                        // 组别不收集：划掉表示导入时忽略。
-                        <Typography.Text key={person.row} type="secondary" delete title="本组不收集身份证号，导入时忽略">
+                      person.identityNumber && (person.identityIgnored || person.identityInvalid) ? (
+                        // 组别不收集、号码有误：划掉表示导入时不保存。
+                        <Typography.Text key={person.row} type="secondary" delete
+                          title={person.identityIgnored ? '本组不收集身份证号，导入时忽略' : '身份证号有误，导入时不保存'}>
                           {maskIdentityNumber(person.identityNumber)}
                         </Typography.Text>
                       ) : (
@@ -506,6 +519,15 @@ export default function ExcelRosterImportModal({
                           {text}
                         </Typography.Text>
                       ))}
+                    </Space>
+                  ) : entry.warnings.length ? (
+                    <Space orientation="vertical" size={0}>
+                      {entry.warnings.map((text) => (
+                        <Typography.Text key={text} type="warning" style={{ fontSize: 12 }}>
+                          {text}
+                        </Typography.Text>
+                      ))}
+                      <Tag color="gold" style={{ width: 'fit-content' }}>照常导入</Tag>
                     </Space>
                   ) : (
                     <Tag color="green">可导入</Tag>

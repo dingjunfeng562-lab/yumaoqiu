@@ -8,18 +8,23 @@ import {
   duplicateIdentities,
   fieldStateText,
   identityForSubmit,
-  identityImportError,
+  identityImportCheck,
   ignoredFieldsNotice,
   importFieldRules,
+  lenientWarningNotice,
   maskIdentityNumber,
   normalizeIdentityNumber,
+  type IdentityImportCheck,
   type ImportFieldRules,
+  warningConfirmLines,
 } from '@/lib/import-fields';
+import { confirmImportWarnings } from '@/components/admin/confirmImportWarnings';
 
 // 第三方人员批量导入：没有学号/学院班级，「单位」存为学校；每个项目单独导入。
 //   单打：单位、姓名、性别、联系方式
 //   双打：单位、姓名、性别、联系方式、队友姓名、队友性别、队友联系方式（队友单位同前）
 //   行末可再加身份证号（单打 1 列；双打本人、队友各 1 列），按项目所属组别的「报名字段」检查，组别不收集时忽略。
+//   后台批量导入不强制报名字段：没填、号码有误、年龄不符只标黄提醒，照常导入（有误的号码不提交）。
 // 男单/男双必须为男，女单/女双必须为女，混双一男一女且前后顺序不限。
 
 export type SocialImportEvent = {
@@ -49,6 +54,8 @@ type Row = {
   identityNumber?: string;
   partnerIdentityNumber?: string;
   error?: string;
+  /** 标黄提醒（身份证号没填或有误、年龄不符），不拦导入。 */
+  warning?: string;
 };
 
 const PHONE = /^\+?[\d-]{6,20}$/;
@@ -122,22 +129,30 @@ export function parseSocialRows(text: string, event?: SocialImportEvent): Row[] 
     } else if (!school || !name || !contact || (isDouble && (!partnerName || !partnerContact))) row.error = '单位、姓名、联系方式均必填';
     else if (!gender || (isDouble && !partnerGender)) row.error = '性别需填写男或女';
     else if (!PHONE.test(contact) || (isDouble && !PHONE.test(partnerContact))) row.error = '联系方式需为电话号码';
-    else row.error = genderError(event?.type, gender, partnerGender)
-      ?? identityImportError(identityNumber, rules)
-      ?? (isDouble ? identityImportError(partnerIdentityNumber, rules, '队友') : undefined)
-      ?? (isDouble && identityNumber && identityNumber === partnerIdentityNumber && rules.fields.identityNumber !== 'hidden'
-        ? '本人和队友不能使用同一身份证号' : undefined);
+    else row.error = genderError(event?.type, gender, partnerGender);
+    if (!row.error) {
+      const own = identityImportCheck(identityNumber, rules);
+      const partner: IdentityImportCheck = isDouble ? identityImportCheck(partnerIdentityNumber, rules, '队友') : {};
+      if (own.submit && own.submit === partner.submit) row.error = '本人和队友不能使用同一身份证号';
+      else {
+        const warnings = [own.warning, partner.warning].filter(Boolean);
+        if (warnings.length) row.warning = warnings.join('；');
+      }
+    }
     rows.push(row);
   }
-  // 同一个项目里一个人只能出现一次：身份证号重复的行标出来。
+  // 同一个项目里一个人只能出现一次：身份证号重复的行标出来（只查有效、会提交的号码）。
   if (rules.fields.identityNumber !== 'hidden') {
     const duplicates = duplicateIdentities(rows.flatMap((row) => (row.error ? [] : [
-      { key: `${row.lineNumber}`, identityNumber: row.identityNumber },
-      { key: `${row.lineNumber}-partner`, identityNumber: row.partnerIdentityNumber },
+      { key: `${row.lineNumber}`, identityNumber: identityForSubmit(row.identityNumber, rules) },
+      { key: `${row.lineNumber}-partner`, identityNumber: identityForSubmit(row.partnerIdentityNumber, rules) },
     ])));
     for (const row of rows) {
       const first = duplicates.get(`${row.lineNumber}`) ?? duplicates.get(`${row.lineNumber}-partner`);
-      if (!row.error && first) row.error = `身份证号与第 ${first.split('-')[0]} 行重复`;
+      if (!row.error && first) {
+        row.error = `身份证号与第 ${first.split('-')[0]} 行重复`;
+        row.warning = undefined;
+      }
     }
   }
   return rows;
@@ -177,6 +192,7 @@ export default function SocialPlayerImportModal({
   const event = events.find((item) => item.id === activeEventId);
   const rows = useMemo(() => parseSocialRows(text, event), [text, event]);
   const errorCount = rows.filter((row) => row.error).length;
+  const warningRows = rows.filter((row) => !row.error && row.warning);
   const rules = socialImportRules(event);
   const ignoredNotice = socialIgnoredNotice(rows, event);
   const showIdentity = rules.fields.identityNumber !== 'hidden' || rows.some((row) => row.identityNumber || row.partnerIdentityNumber);
@@ -192,6 +208,12 @@ export default function SocialPlayerImportModal({
     if (!rows.length) return message.warning('请先粘贴选手数据');
     const firstError = rows.find((row) => row.error);
     if (firstError) return message.error(`第 ${firstError.lineNumber} 行：${firstError.error}`);
+    const lines = warningConfirmLines(warningRows.map((row) => ({
+      row: row.lineNumber,
+      name: [row.name, row.partnerName].filter(Boolean).join(' / '),
+      warning: row.warning!,
+    })));
+    if (!(await confirmImportWarnings(warningRows.length, lines))) return;
     setBusy(true);
     try {
       const result = await apiFetch<{ createdCount: number }>(`/admin/competitions/${competitionId}/players/batch`, {
@@ -265,6 +287,7 @@ export default function SocialPlayerImportModal({
           description="每个项目单独导入（男单、女单、男双、女双、混双分开）。每行一条，可从 Excel 直接粘贴（可带表头），也可用空格、逗号或顿号分隔。双打队友单位与第一列相同。"
         />
         {ignoredNotice ? <Alert type="warning" showIcon title={ignoredNotice} /> : null}
+        {warningRows.length ? <Alert type="warning" showIcon title={lenientWarningNotice(warningRows.length)} /> : null}
         <Input.TextArea
           rows={8}
           value={text}
@@ -295,11 +318,18 @@ export default function SocialPlayerImportModal({
                   key: 'identityNumber',
                   width: 180,
                   render: (_: unknown, row: Row) => {
-                    // 不收集时划掉并变灰：导入时忽略。
+                    // 不收集、号码有误时划掉并变灰：导入时不保存。
                     const ignored = rules.fields.identityNumber === 'hidden';
-                    const show = (value?: string) => (value
-                      ? <Typography.Text type={ignored ? 'secondary' : undefined} delete={ignored}>{maskIdentityNumber(value)}</Typography.Text>
-                      : '-');
+                    const show = (value?: string) => {
+                      if (!value) return '-';
+                      const dropped = ignored || !identityForSubmit(value, rules);
+                      return (
+                        <Typography.Text type={dropped ? 'secondary' : undefined} delete={dropped}
+                          title={dropped ? ignored ? '本组不收集身份证号，导入时忽略' : '身份证号有误，导入时不保存' : undefined}>
+                          {maskIdentityNumber(value)}
+                        </Typography.Text>
+                      );
+                    };
                     return pair(show(row.identityNumber), show(row.partnerIdentityNumber));
                   },
                 }]
@@ -308,7 +338,10 @@ export default function SocialPlayerImportModal({
               title: '状态',
               key: 'status',
               width: 220,
-              render: (_: unknown, row: Row) => (row.error ? <Tag color="red" style={{ whiteSpace: 'normal' }}>{row.error}</Tag> : <Tag color="green">可导入</Tag>),
+              fixed: 'right' as const,
+              render: (_: unknown, row: Row) => (row.error ? <Tag color="red" style={{ whiteSpace: 'normal' }}>{row.error}</Tag>
+                : row.warning ? <Tag color="gold" style={{ whiteSpace: 'normal' }}>{row.warning}，照常导入</Tag>
+                  : <Tag color="green">可导入</Tag>),
             },
           ]}
         />

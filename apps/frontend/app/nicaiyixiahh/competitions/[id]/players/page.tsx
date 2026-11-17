@@ -16,13 +16,16 @@ import {
   duplicateIdentities,
   fieldStateText,
   identityForSubmit,
-  identityImportError,
+  identityImportCheck,
   ignoredFieldsNotice,
   importFieldRules,
+  lenientWarningNotice,
   maskIdentityNumber,
-  normalizeIdentityNumber,
+  type IdentityImportCheck,
   type ImportFieldRules,
+  warningConfirmLines,
 } from '@/lib/import-fields';
+import { confirmImportWarnings } from '@/components/admin/confirmImportWarnings';
 import SocialPlayerImportModal from '@/components/SocialPlayerImport';
 import ExcelRosterImportModal from '@/components/ExcelRosterImport';
 import {
@@ -135,6 +138,8 @@ type ParsedBatchRow = Partial<BatchImportItem> & {
   lineNumber: number;
   raw: string;
   error?: string;
+  /** 标黄提醒（身份证号没填或有误、年龄不符），不拦导入。 */
+  warning?: string;
 };
 
 function formatDateTime(value: string) {
@@ -284,27 +289,31 @@ function parseBatchRows(text: string, isDouble: boolean, idCollected: boolean): 
 }
 
 /**
- * 按组别「报名字段」检查身份证号：必填没填、号码或年龄不符、本人和搭档相同、同一批里重复。
- * 不收集时不检查，导入时忽略。服务端遇到第一个问题就整批拒绝，这里先把每一行都标出来。
+ * 按组别「报名字段」检查身份证号。后台批量导入不强制：必填没填、号码有误、年龄不符只标黄提醒，照常导入
+ * （有误的号码不提交）；本人和搭档同号、同一批里重复仍然拦下。不收集时不检查，导入时忽略。
  */
 function checkBatchIdentities(rows: ParsedBatchRow[], rules: ImportFieldRules, isDouble: boolean): ParsedBatchRow[] {
   if (rules.fields.identityNumber === 'hidden') return rows;
-  const duplicates = duplicateIdentities(rows.flatMap((row) => (row.error ? [] : [
-    { key: `${row.lineNumber}`, identityNumber: row.identityNumber },
-    ...(isDouble ? [{ key: `${row.lineNumber}-partner`, identityNumber: row.partnerIdentityNumber }] : []),
-  ])));
-  return rows.map((row) => {
-    if (row.error) return row;
-    const own = identityImportError(row.identityNumber, rules);
-    const partner = isDouble ? identityImportError(row.partnerIdentityNumber, rules, '搭档') : undefined;
-    const same = isDouble && row.identityNumber
-      && normalizeIdentityNumber(row.identityNumber) === normalizeIdentityNumber(row.partnerIdentityNumber)
-      ? '本人和搭档不能使用同一身份证号' : undefined;
+  const checks = rows.map((row): { own: IdentityImportCheck; partner: IdentityImportCheck } | null => (row.error ? null : {
+    own: identityImportCheck(row.identityNumber, rules),
+    partner: isDouble ? identityImportCheck(row.partnerIdentityNumber, rules, '搭档') : {},
+  }));
+  // 只有有效、会提交的号码才查重。
+  const duplicates = duplicateIdentities(rows.flatMap((row, index) => {
+    const check = checks[index];
+    return check ? [
+      { key: `${row.lineNumber}`, identityNumber: check.own.submit },
+      ...(isDouble ? [{ key: `${row.lineNumber}-partner`, identityNumber: check.partner.submit }] : []),
+    ] : [];
+  }));
+  return rows.map((row, index) => {
+    const check = checks[index];
+    if (!check) return row;
+    if (isDouble && check.own.submit && check.own.submit === check.partner.submit) return { ...row, error: '本人和搭档不能使用同一身份证号' };
     const duplicateOf = duplicates.get(`${row.lineNumber}`) ?? duplicates.get(`${row.lineNumber}-partner`);
-    const duplicate = duplicateOf ? `身份证号与第 ${duplicateOf.split('-')[0]} 行重复` : undefined;
-    const error = own ?? partner ?? same ?? duplicate;
-    if (!error) return row;
-    return { ...row, error: error.startsWith('本组要求') ? `${error}（加在行末${isDouble ? '，本人、搭档各一列' : ''}）` : error };
+    if (duplicateOf) return { ...row, error: `身份证号与第 ${duplicateOf.split('-')[0]} 行重复` };
+    const warnings = [check.own.warning, check.partner.warning].filter(Boolean);
+    return warnings.length ? { ...row, warning: warnings.join('；') } : row;
   });
 }
 
@@ -436,6 +445,7 @@ export default function AdminCompetitionPlayersPage() {
     ], batchRules.grouped);
   }, [batchRules, parsedBatchRows]);
   const batchErrorCount = parsedBatchRows.filter((row) => row.error).length;
+  const batchWarningRows = parsedBatchRows.filter((row) => !row.error && row.warning);
   const batchTeam = teamCompetitions.find(team => team.id === batchEventId);
   const parsedTeamBatch = parseTeamRoster(batchText);
 
@@ -585,6 +595,7 @@ export default function AdminCompetitionPlayersPage() {
       setBatchSubmitting(true);
       try {
         const result = await importTeamRoster(batchTeam, batchText, token);
+        if (!result) return; // 标黄提醒确认框里点了取消
         message.success(`已导入 ${result.teamCount} 个团体、${result.playerCount} 名队员${result.drawCleared ? '；原对阵尚未发布，已清空，请在团体赛中重新生成' : '，请在团体赛管理中查看名单'}`);
         setBatchModalOpen(false); setBatchText(''); await loadData();
       } catch (error) { message.error(error instanceof Error ? error.message : '团体导入失败'); }
@@ -604,6 +615,12 @@ export default function AdminCompetitionPlayersPage() {
       message.error(`第 ${firstError.lineNumber} 行：${firstError.error}`);
       return;
     }
+    const lines = warningConfirmLines(batchWarningRows.map((row) => ({
+      row: row.lineNumber,
+      name: [row.name, row.partnerName].filter(Boolean).join(' / '),
+      warning: row.warning!,
+    })));
+    if (!(await confirmImportWarnings(batchWarningRows.length, lines))) return;
 
     const playersPayload = parsedBatchRows.map((row) => ({
       name: row.name ?? '',
@@ -1005,11 +1022,18 @@ export default function AdminCompetitionPlayersPage() {
           key: 'identityNumber',
           width: 170,
           render: (_: unknown, record: ParsedBatchRow) => {
-            // 不收集时划掉并变灰：导入时忽略。
+            // 不收集、号码有误时划掉并变灰：导入时不保存。
             const ignored = batchRules.fields.identityNumber === 'hidden';
-            const show = (value?: string) => (value
-              ? <Typography.Text type={ignored ? 'secondary' : undefined} delete={ignored}>{maskIdentityNumber(value)}</Typography.Text>
-              : <Typography.Text type="secondary">-</Typography.Text>);
+            const show = (value?: string) => {
+              if (!value) return <Typography.Text type="secondary">-</Typography.Text>;
+              const dropped = ignored || !identityForSubmit(value, batchRules);
+              return (
+                <Typography.Text type={dropped ? 'secondary' : undefined} delete={dropped}
+                  title={dropped ? ignored ? '本组不收集身份证号，导入时忽略' : '身份证号有误，导入时不保存' : undefined}>
+                  {maskIdentityNumber(value)}
+                </Typography.Text>
+              );
+            };
             return (
               <Space direction="vertical" size={0}>
                 {show(record.identityNumber)}
@@ -1023,8 +1047,12 @@ export default function AdminCompetitionPlayersPage() {
       title: '状态',
       key: 'status',
       width: 220,
+      // 表格比弹窗宽，状态列固定在右侧，不用横向滚动也能看到提醒。
+      fixed: 'right' as const,
       render: (_: unknown, record: ParsedBatchRow) =>
-        record.error ? <Tag color="red" style={{ whiteSpace: 'normal' }}>{record.error}</Tag> : <Tag color="green">可导入</Tag>,
+        record.error ? <Tag color="red" style={{ whiteSpace: 'normal' }}>{record.error}</Tag>
+          : record.warning ? <Tag color="gold" style={{ whiteSpace: 'normal' }}>{record.warning}，照常导入</Tag>
+            : <Tag color="green">可导入</Tag>,
     },
   ];
 
@@ -1291,6 +1319,7 @@ export default function AdminCompetitionPlayersPage() {
             description="每行一条记录，字段可用空格、顿号、逗号或制表符分隔。"
           />
           {batchIgnoredNotice ? <Alert type="warning" showIcon title={batchIgnoredNotice} /> : null}
+          {batchWarningRows.length ? <Alert type="warning" showIcon title={lenientWarningNotice(batchWarningRows.length)} /> : null}
           <Input.TextArea
             rows={8}
             value={batchText}

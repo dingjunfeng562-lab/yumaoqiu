@@ -1,6 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { Gender, Prisma } from '@prisma/client';
-import { AgeRule, ageForRule, checkAge, checkGender, checkReportedAge, GroupFields, parseIdentity } from './age-eligibility';
+import { AgeRule, ageForRule, checkAge, checkGender, checkReportedAge, Eligibility, GroupFields, parseIdentity } from './age-eligibility';
 import { identityFingerprint } from './identity-vault';
 
 /** 库里只存这三项，不存身份证号原文，也不存可还原的密文。 */
@@ -20,13 +20,16 @@ export function storedIdentity(value: Prisma.JsonValue | null | undefined): Iden
 /**
  * @param stored 库里已存的证件信息。只有调用方没有提交身份证号（undefined）时才沿用，
  *   显式空字符串表示清空。只能由服务端传入，不能来自客户端请求体。
+ * @param lenient 管理员后台批量导入：报名字段不强制（选手自己报名照旧严格）。必填的身份证号、性别没填照常导入；
+ *   身份证号无效时不保存；年龄不符本组条件也照常导入。核对不了的资格记为待核验，
+ *   再由 itemEligibility(skipReview) 记为未核验放行。性别与项目不符等明确错误照常拦下。
  */
-export function preparePerson(input: PersonInput, fields: GroupFields, ageRule: AgeRule, label = '本人', stored?: Prisma.JsonValue | null) {
+export function preparePerson(input: PersonInput, fields: GroupFields, ageRule: AgeRule, label = '本人', stored?: Prisma.JsonValue | null, lenient = false) {
   const number = fields.identityNumber === 'hidden' ? '' : input.identityNumber?.trim() ?? '';
   const kept = fields.identityNumber !== 'hidden' && input.identityNumber === undefined ? storedIdentity(stored) : null;
-  if (!number && !kept && fields.identityNumber === 'required') throw new BadRequestException(`请填写${label}身份证号`);
+  if (!number && !kept && fields.identityNumber === 'required' && !lenient) throw new BadRequestException(`请填写${label}身份证号`);
   const value = fields.gender === 'hidden' ? '' : input.gender;
-  if (!value && fields.gender === 'required') throw new BadRequestException(`请填写${label}性别`);
+  if (!value && fields.gender === 'required' && !lenient) throw new BadRequestException(`请填写${label}性别`);
   let gender: Gender | null = null;
   if (value) {
     if (!['MALE', 'FEMALE', '男', '女'].includes(value)) throw new BadRequestException(`${label}性别填写有误`);
@@ -34,23 +37,33 @@ export function preparePerson(input: PersonInput, fields: GroupFields, ageRule: 
   }
   let identity: IdentityData | null = kept;
   if (number) {
-    const parsed = parseIdentity(number);
-    identity = { fingerprint: identityFingerprint(parsed.normalized), birthDate: parsed.birthDate, masked: parsed.masked };
+    try {
+      const parsed = parseIdentity(number);
+      identity = { fingerprint: identityFingerprint(parsed.normalized), birthDate: parsed.birthDate, masked: parsed.masked };
+    } catch (error) {
+      // 后台批量导入：号码无效就不保存，按没填处理。
+      if (!lenient || !(error instanceof BadRequestException)) throw error;
+    }
   }
   // 年龄：填了身份证号就按身份证自动算（以身份证为准）；否则用报名人自填的年龄。
   const rawAge = fields.age === 'hidden' || input.age === '' ? null : input.age ?? null;
-  const reported = rawAge == null ? null : Number(rawAge);
-  if (reported != null && (!Number.isInteger(reported) || reported < 0 || reported > 150)) throw new BadRequestException(`${label}年龄须为0至150的整数`);
+  let reported = rawAge == null ? null : Number(rawAge);
+  if (reported != null && (!Number.isInteger(reported) || reported < 0 || reported > 150)) {
+    if (!lenient) throw new BadRequestException(`${label}年龄须为0至150的整数`);
+    reported = null;
+  }
   // 衣服尺寸由报名人自己填写，不限定选项。
   const shirtSize = fields.shirtSize === 'hidden' ? null : input.shirtSize?.trim() || null;
   if (shirtSize && shirtSize.length > SHIRT_SIZE_MAX_LENGTH) throw new BadRequestException(`${label}衣服尺寸不超过${SHIRT_SIZE_MAX_LENGTH}个字`);
+  const ageValue = identity ? ageForRule(ageRule, identity.birthDate) : reported;
   try {
     const check = identity ? checkAge(ageRule, identity.birthDate) : reported != null ? checkReportedAge(ageRule, reported) : checkAge(ageRule, null);
-    const ageValue = identity ? ageForRule(ageRule, identity.birthDate) : reported;
     return { gender, identity, age: { status: check.status, age: ageValue }, ageValue, shirtSize };
   } catch (error) {
-    if (error instanceof BadRequestException) throw new BadRequestException(`${label}：${error.message}`);
-    throw error;
+    if (!(error instanceof BadRequestException)) throw error;
+    // 后台批量导入：年龄不符本组条件也照常导入，资格记为待核验（批量导入时再记为未核验）。
+    if (lenient) return { gender, identity, age: { status: 'PENDING' as Eligibility, age: ageValue }, ageValue, shirtSize };
+    throw new BadRequestException(`${label}：${error.message}`);
   }
 }
 export type PreparedPerson = ReturnType<typeof preparePerson>;

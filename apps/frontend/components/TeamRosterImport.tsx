@@ -9,11 +9,13 @@ import {
   fieldStateText,
   identityForSubmit,
   importFieldRules,
+  lenientWarningNotice,
   maskIdentityNumber,
   parseTeamRosterText,
   type ImportFieldRules,
   type TeamRosterRow,
 } from '@/lib/import-fields';
+import { confirmImportWarnings } from '@/components/admin/confirmImportWarnings';
 
 // 列表和详情接口都带 tournamentId / groupId / entrantType；没带时导入前再查一次详情。
 export type TeamImportCompetition = { id: string; name: string; tournamentId?: string; groupId?: string | null; entrantType?: string };
@@ -50,13 +52,18 @@ export function loadTeamImportRules(competition: TeamImportCompetition, token?: 
   return task;
 }
 
+/**
+ * 有标黄提醒（报名字段没填或有误、年龄不符）时先弹框确认，点了取消返回 null。
+ * 后台批量导入不强制报名字段：标黄的照常导入，有误的身份证号不提交。
+ */
 export async function importTeamRoster(competition: TeamImportCompetition, text: string, token?: string) {
   const parsed = parseTeamRosterText(text);
   if (!parsed.valid) throw new Error('请先修正导入预览中的行数据问题');
   const rules = await loadTeamImportRules(competition, token);
   if (rules) {
     const checked = checkTeamRows(parsed.rows, rules);
-    if (checked.errorCount) throw new Error(`有 ${checked.errorCount} 行不符合本组报名要求，请按预览中「检查」列的提示修改后再导入`);
+    if (checked.errorCount) throw new Error(`有 ${checked.errorCount} 行需要修改，请按预览中「检查」列的提示修改后再导入`);
+    if (!(await confirmImportWarnings(checked.warningCount, checked.warningLines))) return null;
   }
   return apiFetch<{ teamCount: number; playerCount: number; drawCleared?: boolean }>(`/team-competitions/${competition.id}/teams/batch-import`, {
     method: 'POST', token, body: JSON.stringify({ players: parsed.rows.map(row => ({
@@ -68,7 +75,7 @@ export async function importTeamRoster(competition: TeamImportCompetition, text:
 
 /**
  * onBusyChange：正在读取本组报名设置（读完前不能导入）；
- * onValidChange：按本组报名字段检查是否全部通过（必填的性别 / 身份证号、身份证号格式和年龄）。
+ * onValidChange：有没有必须修改的行（同一批里身份证号重复等）。报名字段没填或有误只标黄，不影响导入。
  */
 export function TeamRosterImportInput({ competition, text, onChange, token, onBusyChange, onValidChange }: {
   competition: TeamImportCompetition;
@@ -108,12 +115,16 @@ export function TeamRosterImportInput({ competition, text, onChange, token, onBu
     {loading ? <Typography.Text type="secondary">正在读取本组报名设置…</Typography.Text> : null}
     {!loading && !rules ? <Alert type="warning" showIcon title="没能读取本组报名设置，导入前无法检查身份证号等必填项，以提交结果为准。" /> : null}
     {checked?.notice ? <Alert type="warning" showIcon title={checked.notice} /> : null}
+    {checked?.warningCount ? <Alert type="warning" showIcon title={lenientWarningNotice(checked.warningCount)} /> : null}
     {problems.length ? <Alert type="error" showIcon title={`有 ${problems.length} 行需要修改后才能导入`}
       description={problems.slice(0, 5).map((row) => `第 ${row.lineNumber} 行 ${row.name || ''}：${row.error}`).join('；') + (problems.length > 5 ? `；另有 ${problems.length - 5} 行见下表` : '')} /> : null}
     <Input.TextArea aria-label="团体队员数据" rows={8} value={text} onChange={event => onChange(event.target.value)} placeholder={'团体名称\t姓名\t性别\t单位\t联系方式\t身份证号\n飞羽队\t张三\t男\t第一学校\t13800000000\n飞羽队\t李四\t女\t第一学校\t13900000000'} />
     <Table size="small" rowKey="teamName" dataSource={groups} pagination={false} scroll={{ x: 560 }} columns={[
       { title: '团体名称', dataIndex: 'teamName' }, { title: '人数', render: (_, row) => `${row.count} 人（${row.male} 男 ${row.female} 女）` },
-      { title: '来源行号', dataIndex: 'lines' }, { title: '检查', render: (_, row) => <Typography.Text type={row.error ? 'danger' : 'success'}>{row.error || '可导入'}</Typography.Text> },
+      { title: '来源行号', dataIndex: 'lines' },
+      { title: '检查', render: (_, row) => row.error ? <Typography.Text type="danger">{row.error}</Typography.Text>
+        : row.warnings ? <Typography.Text type="warning">{`可导入（${row.warnings} 人标黄）`}</Typography.Text>
+          : <Typography.Text type="success">可导入</Typography.Text> },
     ]} />
     <Table size="small" rowKey="lineNumber" dataSource={rows} pagination={false} scroll={{ x: 860, y: 250 }} columns={[
       { title: '行号', dataIndex: 'lineNumber', width: 64 }, { title: '团体名称', dataIndex: 'teamName' }, { title: '姓名', dataIndex: 'name' },
@@ -123,9 +134,13 @@ export function TeamRosterImportInput({ competition, text, onChange, token, onBu
         title: idState ? `身份证号（${fieldStateText(idState)}）` : '身份证号', width: 190,
         render: (_, row) => !row.identityNumber ? '-'
           : idState === 'hidden' ? <Typography.Text type="secondary" delete title="本组不收集身份证号，导入时忽略">{maskIdentityNumber(row.identityNumber)}</Typography.Text>
-            : maskIdentityNumber(row.identityNumber),
+            // 号码有误：划掉，导入时不保存。
+            : rules && !identityForSubmit(row.identityNumber, rules) ? <Typography.Text type="secondary" delete title="身份证号有误，导入时不保存">{maskIdentityNumber(row.identityNumber)}</Typography.Text>
+              : maskIdentityNumber(row.identityNumber),
       },
-      { title: '检查', width: 220, render: (_, row) => <Typography.Text type={row.error ? 'danger' : 'success'}>{row.error || '格式正确'}</Typography.Text> },
+      { title: '检查', width: 240, render: (_, row) => row.error ? <Typography.Text type="danger">{row.error}</Typography.Text>
+        : row.warning ? <Typography.Text type="warning">{`${row.warning}，照常导入`}</Typography.Text>
+          : <Typography.Text type="success">格式正确</Typography.Text> },
     ]} />
   </Space>;
 }
@@ -142,6 +157,7 @@ export default function TeamRosterImportModal({ competition, open, onClose, onIm
     setBusy(true);
     try {
       const result = await importTeamRoster(competition, text, token);
+      if (!result) return; // 标黄提醒确认框里点了取消
       message.success(`已导入 ${result.teamCount} 个团体、${result.playerCount} 名队员${result.drawCleared ? '；原对阵尚未发布，已清空，请重新生成对阵' : ''}`);
       setText(''); onClose(); await onImported();
     } catch (error) { message.error(error instanceof Error ? error.message : '导入失败'); }

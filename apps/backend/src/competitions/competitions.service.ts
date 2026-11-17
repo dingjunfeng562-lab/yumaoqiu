@@ -1255,7 +1255,8 @@ export class CompetitionsService {
     const rules = normalizeRegistrationFieldRules(competition.registrationFieldRules);
     const group = event.groupId ? await this.prisma.tournamentGroup.findUnique({ where: { id: event.groupId } }) : null;
     const players = dto.players.map((item, index) =>
-      this.normalizeAdminBatchPlayer(item, index + 1, event, rules, group, undefined, !competition.needsRegistrationReview),
+      // 后台批量导入不强制报名字段（选手自己报名照旧严格）：见 preparePerson 的 lenient。
+      this.normalizeAdminBatchPlayer(item, index + 1, event, rules, group, undefined, !competition.needsRegistrationReview, true),
     );
     const mixedGroup = players.find((player) => player.entrantType !== event.entrantType);
     if (mixedGroup) {
@@ -2737,10 +2738,17 @@ export class CompetitionsService {
     stored?: { own?: Prisma.JsonValue | null; partner?: Prisma.JsonValue | null },
     /** 赛事免审核：核对不了的资格不转人工，记为未核验直接放行。 */
     skipReview = false,
+    /**
+     * 后台批量导入：报名字段不强制。必填项没填、身份证号无效（不保存）、年龄不符都照常导入，
+     * 核对不了的资格记为未核验直接通过，不进报名审核。姓名、单位、联系方式和性别与项目不符照常拦下。
+     */
+    lenient = false,
   ): NormalizedAdminBatchPlayer {
     const fields = groupFields(group?.fieldRules, event.entrantType === 'SCHOOL', !group);
     const ageRule = normalizeAgeRule(group?.ageRule);
-    const own = preparePerson(item, fields, ageRule, '本人', stored?.own);
+    // 后台批量导入一律不转人工核验：核对不了的记为未核验，直接通过。
+    const unverifiedPasses = skipReview || lenient;
+    const own = this.batchPerson(() => preparePerson(item, fields, ageRule, '本人', stored?.own, lenient), lenient ? item.row ?? rowNumber : undefined);
     if (group) rules = { SCHOOL: fields, SOCIAL: fields };
     const entrantType = item.entrantType
       ? this.normalizeEntrantType(item.entrantType)
@@ -2753,9 +2761,9 @@ export class CompetitionsService {
     const school = this.requiredBatchField(item.school, row, entrantType === EntrantType.SOCIAL ? '单位' : '学校');
     const contact = this.batchContactField(item.contact, row, '联系方式');
     const isSchool = entrantType === EntrantType.SCHOOL;
-    const studentId = isSchool || group ? this.batchGroupField(item.studentId, rules, 'studentId', '学号', row) : undefined;
-    const college = isSchool || group ? this.batchGroupField(item.college, rules, 'college', '学院', row) : undefined;
-    const majorGrade = isSchool || group ? this.batchGroupField(item.majorGrade, rules, 'majorGrade', '年级专业', row) : undefined;
+    const studentId = isSchool || group ? this.batchGroupField(item.studentId, rules, 'studentId', '学号', row, lenient) : undefined;
+    const college = isSchool || group ? this.batchGroupField(item.college, rules, 'college', '学院', row, lenient) : undefined;
+    const majorGrade = isSchool || group ? this.batchGroupField(item.majorGrade, rules, 'majorGrade', '年级专业', row, lenient) : undefined;
     const className = [college, majorGrade].filter(Boolean).join(' ')
       || item.className?.trim()
       || undefined;
@@ -2778,7 +2786,7 @@ export class CompetitionsService {
 
     if (!this.isDoubleEvent(event.type)) {
       try {
-        base.eligibility = itemEligibility(event.type, own, null, ageRule, group?.ruleVersion ?? 1, skipReview);
+        base.eligibility = itemEligibility(event.type, own, null, ageRule, group?.ruleVersion ?? 1, unverifiedPasses);
       } catch (error) {
         const message = error instanceof Error ? error.message : '性别填写有误';
         throw new BadRequestException(`第 ${row} 行：${message}`);
@@ -2787,7 +2795,10 @@ export class CompetitionsService {
     }
 
     const partnerName = this.requiredBatchField(item.partnerName, row, isSchool ? '搭档姓名' : '队友姓名');
-    const partner = preparePerson({ gender: item.partnerGender ?? null, identityNumber: item.partnerIdentityNumber }, fields, ageRule, '搭档', stored?.partner);
+    const partner = this.batchPerson(
+      () => preparePerson({ gender: item.partnerGender ?? null, identityNumber: item.partnerIdentityNumber }, fields, ageRule, '搭档', stored?.partner, lenient),
+      lenient ? row : undefined,
+    );
     const partnerGender = partner.gender;
     const partnerContact = this.batchContactField(item.partnerContact, row, isSchool ? '搭档联系方式' : '队友联系方式');
     const partnerSchool = item.partnerSchool?.trim() || school;
@@ -2796,13 +2807,14 @@ export class CompetitionsService {
     let partnerMajorGrade: string | undefined;
     let partnerClassName: string | undefined;
     if (isSchool || group) {
-      partnerStudentId = this.batchGroupField(item.partnerStudentId, rules, 'studentId', '搭档学号', row);
+      partnerStudentId = this.batchGroupField(item.partnerStudentId, rules, 'studentId', '搭档学号', row, lenient);
       partnerCollege = this.batchGroupField(
         item.partnerCollege?.trim() || college,
         rules,
         'college',
         '搭档学院',
         row,
+        lenient,
       );
       partnerMajorGrade = this.batchGroupField(
         item.partnerMajorGrade?.trim() || majorGrade,
@@ -2810,6 +2822,7 @@ export class CompetitionsService {
         'majorGrade',
         '搭档年级专业',
         row,
+        lenient,
       );
       partnerClassName = [partnerCollege, partnerMajorGrade].filter(Boolean).join(' ')
         || item.partnerClassName?.trim()
@@ -2817,7 +2830,7 @@ export class CompetitionsService {
     }
 
     try {
-      base.eligibility = itemEligibility(event.type, own, partner, ageRule, group?.ruleVersion ?? 1, skipReview);
+      base.eligibility = itemEligibility(event.type, own, partner, ageRule, group?.ruleVersion ?? 1, unverifiedPasses);
     } catch (error) {
       const message = error instanceof Error ? error.message : '双打性别填写有误';
       throw new BadRequestException(`第 ${row} 行：${message}`);
@@ -2844,15 +2857,28 @@ export class CompetitionsService {
     field: string,
     label: string,
     row: number,
+    /** 后台批量导入：必填项没填也照常导入。 */
+    lenient = false,
   ): string | undefined {
     const state = this.fieldState(rules, EntrantType.SCHOOL, field);
     const trimmed = value?.trim();
     if (state === 'hidden') return undefined;
     if (trimmed) return trimmed;
-    if (state === 'required') {
+    if (state === 'required' && !lenient) {
       throw new BadRequestException(`第 ${row} 行缺少${label}`);
     }
     return undefined;
+  }
+
+  /** 批量导入时，证件、性别等报名字段的错误带上行号；单个新增 / 编辑（row 为空）保持原来的提示。 */
+  private batchPerson<T>(prepare: () => T, row?: number): T {
+    if (row === undefined) return prepare();
+    try {
+      return prepare();
+    } catch (error) {
+      if (error instanceof BadRequestException) throw new BadRequestException(`第 ${row} 行：${error.message}`);
+      throw error;
+    }
   }
 
   // 第三方人员没有学号，同一项目内按「姓名 + 联系方式」判重。
