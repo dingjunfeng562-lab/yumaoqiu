@@ -28,6 +28,7 @@ import {
   LogMatchEventDto,
   MatchSignatureSettingDto,
   PauseMatchDto,
+  ResetOpeningSetupDto,
   RetireMatchDto,
   ScorePointDto,
   SetGameServeDto,
@@ -186,6 +187,19 @@ export class ScoringController {
   @Post('matches/:id/start')
   async startMatch(@Param('id') id: string, @Body() dto: StartMatchDto, @Req() req: RequestWithUser) {
     const state = await this.scoringService.startMatch(id, req.user, dto);
+    this.scoringGateway.emitMatchState(id, state);
+    return state;
+  }
+
+  // 开赛后、第一分之前更正赛前设置（首发方 / 发球员 / 接发球员 / A 方半场）。
+  @Roles(Role.ADMIN, Role.REFEREE)
+  @Post('matches/:id/opening-setup')
+  async resetOpeningSetup(
+    @Param('id') id: string,
+    @Body() dto: ResetOpeningSetupDto,
+    @Req() req: RequestWithUser,
+  ) {
+    const state = await this.scoringService.resetOpeningSetup(id, req.user, dto);
     this.scoringGateway.emitMatchState(id, state);
     return state;
   }

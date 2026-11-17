@@ -86,6 +86,12 @@ export class StartMatchDto {
   side1CourtSide?: 'left' | 'right';
 }
 
+/**
+ * 开赛后、第一分之前更正赛前设置，字段同开赛。
+ * side1CourtSide 不传表示不动当前左右；传了且与当前不同，后端补一条换边事件。
+ */
+export class ResetOpeningSetupDto extends StartMatchDto {}
+
 /** 裁判在「当前这一局」核对/修改发球员与接发球员（发球方由上一局胜方决定，不可改）。 */
 export class SetGameServeDto {
   @IsInt()

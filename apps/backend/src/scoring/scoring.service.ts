@@ -738,6 +738,107 @@ export class ScoringService {
     return this.getMatchState(matchId, user);
   }
 
+  /**
+   * 开赛后、打第一分之前，裁判发现赛前设置选错了（首发方 / 首位发球员 / 接发球员 / A 方半场），在这里更正。
+   *
+   * 只允许在第 1 局 0:0、整场没有有效得分时改（打过几分的，撤销回 0:0 后也可以改）。
+   * 打过第一分以后发球方由得分方决定，开局选错的首发不再影响后面的比赛，所以不开放。
+   * 写法与开赛一致：写一条新的发球状态事件覆盖原来的；A 方半场和当前不同时补一条换边事件。
+   */
+  async resetOpeningSetup(matchId: string, user: AuthUser, options: StartMatchOptions) {
+    await this.ensureMatchAccess(matchId, user);
+    const match = await this.ensurePlayableMatch(matchId);
+    if (match.status === MatchStatus.COMPLETED || match.status === MatchStatus.CANCELLED) {
+      throw new BadRequestException('场次已结束，不能修改赛前设置');
+    }
+    if (match.status !== MatchStatus.LIVE) {
+      throw new BadRequestException('比赛尚未开始，请直接在赛前设置里修改');
+    }
+    if (
+      ![1, 2].includes(options.servingSide) ||
+      ![1, 2].includes(options.serverPlayerIndex) ||
+      ![1, 2].includes(options.receiverPlayerIndex)
+    ) {
+      throw new BadRequestException('请选择首发方、首位发球员和接发球员');
+    }
+
+    const playerCounts = await this.sidePlayerCounts(match);
+    const servingState = this.sanitizeServingState(
+      {
+        ...this.initialServingState(
+          1,
+          options.servingSide,
+          options.serverPlayerIndex,
+          null,
+          {
+            receiverPlayerIndex: options.receiverPlayerIndex,
+            forceServerRight: true,
+          },
+        ),
+        source: 'referee',
+      },
+      playerCounts.side1,
+      playerCounts.side2,
+    );
+
+    await this.prisma.$transaction(async (tx) => {
+      await this.teamCompetitionsService.prepareScoring(tx, matchId, { expectedUpdatedAt: match.updatedAt });
+      const activePoints = await tx.matchEvent.count({
+        where: { matchId, type: MatchEventType.POINT, undoneAt: null },
+      });
+      const games = await tx.game.findMany({ where: { matchId }, orderBy: { gameNo: 'asc' } });
+      const currentGame = games.find((game) => !game.winnerSide) ?? games.at(-1);
+      if (
+        activePoints > 0 ||
+        !currentGame ||
+        currentGame.gameNo !== 1 ||
+        currentGame.side1Score !== 0 ||
+        currentGame.side2Score !== 0
+      ) {
+        throw new BadRequestException('已经开始得分，不能再修改赛前设置；如需更改请先撤销到 0:0');
+      }
+
+      await tx.game.update({ where: { id: currentGame.id }, data: { server: options.servingSide } });
+      await tx.matchEvent.create({
+        data: {
+          matchId,
+          type: MatchEventType.SERVE_CHANGE,
+          side: options.servingSide,
+          gameNo: 1,
+          side1Score: 0,
+          side2Score: 0,
+          note: this.encodeServingState(servingState),
+        },
+      });
+      if (options.side1CourtSide) {
+        const swapEvents = await tx.matchEvent.findMany({
+          where: {
+            matchId,
+            type: MatchEventType.SERVE_CHANGE,
+            note: { startsWith: COURT_SWAP_NOTE_PREFIX },
+          },
+          select: { note: true },
+        });
+        const currentSide1CourtSide = this.computeCourtDisplayState(swapEvents, 1).side1CourtSide;
+        if (currentSide1CourtSide !== options.side1CourtSide) {
+          await tx.matchEvent.create({
+            data: {
+              matchId,
+              type: MatchEventType.SERVE_CHANGE,
+              side: options.servingSide,
+              gameNo: 1,
+              side1Score: 0,
+              side2Score: 0,
+              note: this.encodeCourtSwapNote(1),
+            },
+          });
+        }
+      }
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+
+    return this.getMatchState(matchId, user);
+  }
+
   /** 指定某人在某个发球区后，该方另一人的站位。 */
   private pairPositions(playerIndex: PlayerIndex, courtSide: CourtSide) {
     const positions: Record<CourtSide, PlayerIndex | null> = { left: null, right: null };

@@ -685,6 +685,35 @@ export default function RefereeScoringPage() {
     setSetupOpen(false);
   }
 
+  /** 开赛后、第一分之前更正赛前设置：窗口里先带出当前实际的发球和左右。 */
+  function openOpeningFix() {
+    if (!score) return;
+    const state = score.servingState;
+    setStartServingSide(state?.servingSide === 1 || state?.servingSide === 2 ? state.servingSide : preMatchSetup?.servingSide ?? 1);
+    setStartServerPlayerIndex(state?.serverPlayerIndex === 1 || state?.serverPlayerIndex === 2 ? state.serverPlayerIndex : 1);
+    setStartReceiverPlayerIndex(state?.receiverPlayerIndex === 1 || state?.receiverPlayerIndex === 2 ? state.receiverPlayerIndex : 1);
+    setStartSide1CourtSide(score.courtDisplayState?.side1CourtSide === 'right' ? 'right' : 'left');
+    setSetupOpen(true);
+  }
+
+  async function saveOpeningFix() {
+    if (!startServingSide || !startServerPlayerIndex || !startReceiverPlayerIndex) {
+      messageApi.warning('请先选择首发方、首位发球员和接发球员');
+      return;
+    }
+    const setup: PreMatchSetup = {
+      servingSide: startServingSide,
+      serverPlayerIndex: startServerPlayerIndex,
+      receiverPlayerIndex: startReceiverPlayerIndex,
+      side1CourtSide: startSide1CourtSide,
+    };
+    if (!await postAction(`/matches/${matchId}/opening-setup`, setup)) return;
+    setPreMatchSetup(setup);
+    if (matchId) writePreMatchSetup(matchId, setup);
+    setSetupOpen(false);
+    messageApi.success('赛前设置已更正');
+  }
+
   async function startMatchNow() {
     if (!preMatchSetup) {
       messageApi.warning('请先完成赛前设置');
@@ -871,6 +900,13 @@ export default function RefereeScoringPage() {
   const lastPointSide = lastPointSideOf(score);
   const undoLocked = !live || paused || busy || lastPointSide === null;
   const canMinus = (side: 1 | 2) => !undoLocked && lastPointSide === side && currentSideScore(score, side) > 0;
+  // 开赛后、还没有任何有效得分（第 1 局 0:0）时可以更正赛前设置；打过第一分后发球由得分决定，不再开放。
+  const canFixOpening = live
+    && !score.pendingFinish
+    && currentGameNo(score) === 1
+    && lastPointSide === null
+    && currentSideScore(score, 1) === 0
+    && currentSideScore(score, 2) === 0;
   const backHref = courtListHref(score);
   const undoPath = `/matches/${matchId}/undo`;
   const swapPath = `/matches/${matchId}/swap-court`;
@@ -1024,6 +1060,21 @@ export default function RefereeScoringPage() {
     </div>
   ) : null;
 
+  // 第一分之前在球场上方提示一次：首发或场地选错了可以直接改，不用找管理员。
+  const openingFixNotice = canFixOpening && !courtOverlay ? (
+    <div className="absolute left-1/2 top-[0.35em] z-10 flex max-w-[92%] -translate-x-1/2 items-center gap-[0.5em] rounded-full bg-[#E6F4EC] py-[0.2em] pl-[0.9em] pr-[0.25em] text-[0.8em] font-black text-[#1E5B3F] shadow-[0_6px_14px_rgba(0,0,0,0.18)]">
+      <span className="truncate">还没开始得分，首发或场地选错了可以改</span>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={openOpeningFix}
+        className="shrink-0 rounded-full bg-[#2F7A55] px-[0.9em] py-[0.2em] text-white transition active:scale-95 disabled:opacity-50"
+      >
+        修改
+      </button>
+    </div>
+  ) : null;
+
   const finishMenu: ConsoleMenuSection[] = [
     {
       columns: 3,
@@ -1114,7 +1165,7 @@ export default function RefereeScoringPage() {
           warmupMinutes={warmupMinutes}
           onWarmupMinutesChange={setWarmupMinutes}
           onOverlayAction={runOverlayAction}
-          notice={serveNotice}
+          notice={serveNotice ?? openingFixNotice}
         />
 
         <section className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-[1.2em] px-[1.2em] py-[0.55em]">
@@ -1143,7 +1194,13 @@ export default function RefereeScoringPage() {
             label="交换场地"
             disabled={!live || busy}
             loading={busyAction === swapPath}
-            onClick={() => void postAction(swapPath)}
+            onClick={() => {
+              // 换完明确告诉裁判 A 方现在在哪边，免得以为没换成又按一次（又换回去了）。
+              const side1Next = score.courtDisplayState?.side1CourtSide === 'right' ? '左' : '右';
+              void postAction(swapPath).then((ok) => {
+                if (ok) messageApi.success(`已交换场地：A 方 ${sideName(score.side1)} 现在在${side1Next}半场`);
+              });
+            }}
           />
           <ToolButton
             tone="amber"
@@ -1212,6 +1269,19 @@ export default function RefereeScoringPage() {
                 className={`col-span-2 !h-10 !rounded-xl !font-black ${serveNeedsCheck ? '!border-amber-300 !text-amber-700' : ''}`}
               >
                 本局发球设置{serveNeedsCheck ? '（待核对）' : ''}
+              </Button>
+            ) : null}
+            {canFixOpening ? (
+              <Button
+                icon={<SettingOutlined />}
+                disabled={busy}
+                onClick={() => {
+                  setMoreOpen(false);
+                  openOpeningFix();
+                }}
+                className="col-span-2 !h-10 !rounded-xl !font-black"
+              >
+                修改赛前设置（第一分之前）
               </Button>
             ) : null}
           </div>
@@ -1356,7 +1426,9 @@ export default function RefereeScoringPage() {
         onReceiverPlayerChange={setStartReceiverPlayerIndex}
         onSide1CourtSideChange={setStartSide1CourtSide}
         onCancel={() => setSetupOpen(false)}
-        onConfirm={saveSetup}
+        // 未开赛：只存本机，开赛时一起提交；已开赛（第一分之前）：直接提交更正。
+        onConfirm={() => (score.status === 'LIVE' ? void saveOpeningFix() : saveSetup())}
+        saving={busyAction === `/matches/${matchId}/opening-setup`}
       />
 
       <GameServeModal
@@ -2188,6 +2260,7 @@ function PreMatchSetupModal({
   onSide1CourtSideChange,
   onCancel,
   onConfirm,
+  saving = false,
 }: {
   open: boolean;
   score: ScoreState;
@@ -2201,30 +2274,43 @@ function PreMatchSetupModal({
   onSide1CourtSideChange: (side: CourtSide) => void;
   onCancel: () => void;
   onConfirm: () => void;
+  saving?: boolean;
 }) {
   const selectedSide = servingSide === 1 ? score.side1 : servingSide === 2 ? score.side2 : null;
   const receivingSide = servingSide === 1 ? 2 : servingSide === 2 ? 1 : null;
   const selectedReceivingSide = receivingSide === 1 ? score.side1 : receivingSide === 2 ? score.side2 : null;
+  // 已开赛（第一分之前）打开的是「更正」，保存后立即生效。
+  const correcting = score.status === 'LIVE';
 
   return (
     <Modal
       open={open}
-      title="赛前设置"
-      okText="保存设置"
+      title={correcting ? '修改赛前设置' : '赛前设置'}
+      okText={correcting ? '保存更正' : '保存设置'}
       cancelText="取消"
       okButtonProps={{
-        disabled: score.status !== 'PENDING' || !servingSide || !serverPlayerIndex || !receiverPlayerIndex,
+        loading: saving,
+        disabled: (score.status !== 'PENDING' && !correcting) || !servingSide || !serverPlayerIndex || !receiverPlayerIndex,
       }}
       onCancel={onCancel}
       onOk={onConfirm}
     >
       <div className="space-y-3">
-        <Alert
-          type="info"
-          showIcon
-          message="先确认双方选手到齐"
-          description="再选择首发方、首位发球员、接发球员和 A 方所在半场。保存后开始练球，练球倒计时中可以提前开始比赛。"
-        />
+        {correcting ? (
+          <Alert
+            type="warning"
+            showIcon
+            title="比赛已开始，还没有得分"
+            description="可以更正首发方、首位发球员、接发球员和 A 方所在半场，保存后立即生效。打过第一分就不能再改了（可先撤销回 0:0）。"
+          />
+        ) : (
+          <Alert
+            type="info"
+            showIcon
+            message="先确认双方选手到齐"
+            description="再选择首发方、首位发球员、接发球员和 A 方所在半场。保存后开始练球，练球倒计时中可以提前开始比赛。"
+          />
+        )}
         <div className="grid gap-2 text-sm font-semibold text-slate-700">
           <div className="rounded-xl border border-blue-100 bg-blue-50/60 px-4 py-3">
             <span className="text-slate-500">A 方：</span>
