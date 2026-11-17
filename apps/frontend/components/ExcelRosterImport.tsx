@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Alert, Button, Modal, Space, Table, Tag, Typography, Upload, message } from 'antd';
 import { DownloadOutlined, FileExcelOutlined, InboxOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
+import { maskIdentityNumber } from '@/lib/import-fields';
 import {
   DEFAULT_ROSTER_FIELD_RULES,
   entrantTypeLabel,
@@ -289,7 +290,18 @@ export default function ExcelRosterImportModal({
     await onImported();
   }
 
-  const fieldRuleText = `本赛事学生组：学号${fieldRules.SCHOOL.studentId === 'required' ? '必填' : fieldRules.SCHOOL.studentId === 'optional' ? '选填' : '不收集'}、学院${fieldRules.SCHOOL.college === 'required' ? '必填' : fieldRules.SCHOOL.college === 'optional' ? '选填' : '不收集'}、年级专业${fieldRules.SCHOOL.majorGrade === 'required' ? '必填' : fieldRules.SCHOOL.majorGrade === 'optional' ? '选填' : '不收集'}`;
+  // 项目属于组别时，学号、身份证号等按组别「报名字段」检查（与服务端一致）。
+  const groupedEvents = events.filter((event) => event.groupFields);
+  const idRequiredGroups = [...new Set(groupedEvents
+    .filter((event) => event.groupFields?.identityNumber === 'required')
+    .map((event) => event.groupLabel || event.label))];
+  const idColumnText = groupedEvents.some((event) => event.groupFields?.identityNumber !== 'hidden')
+    ? `需要身份证号时，在表格里加一列「身份证号」，并把这一列设成文本格式${idRequiredGroups.length ? `（${idRequiredGroups.join('、')}要求必填）` : ''}`
+    : '';
+  const tournamentRuleText = `本赛事学生组：学号${fieldRules.SCHOOL.studentId === 'required' ? '必填' : fieldRules.SCHOOL.studentId === 'optional' ? '选填' : '不收集'}、学院${fieldRules.SCHOOL.college === 'required' ? '必填' : fieldRules.SCHOOL.college === 'optional' ? '选填' : '不收集'}、年级专业${fieldRules.SCHOOL.majorGrade === 'required' ? '必填' : fieldRules.SCHOOL.majorGrade === 'optional' ? '选填' : '不收集'}`;
+  const fieldRuleText = groupedEvents.length
+    ? `学号、学院、身份证号等按各组别的「报名字段」检查${idColumnText ? `；${idColumnText}` : ''}`
+    : tournamentRuleText;
 
   return (
     <Modal
@@ -396,7 +408,7 @@ export default function ExcelRosterImportModal({
             rowKey="key"
             dataSource={entries}
             pagination={false}
-            scroll={{ x: 1360, y: 340 }}
+            scroll={{ x: 1540, y: 340 }}
             columns={[
               { title: '行', key: 'rows', width: 74, render: (_, entry) => entry.rows.join('、') },
               {
@@ -460,9 +472,32 @@ export default function ExcelRosterImportModal({
                 render: (_, entry) => stack(entry.people.map((person) => person.contact)),
               },
               {
+                title: '身份证号',
+                key: 'identityNumber',
+                width: 180,
+                render: (_, entry) => (
+                  <Space orientation="vertical" size={0}>
+                    {entry.people.map((person, index) => (
+                      person.identityNumber && person.identityIgnored ? (
+                        // 组别不收集：划掉表示导入时忽略。
+                        <Typography.Text key={person.row} type="secondary" delete title="本组不收集身份证号，导入时忽略">
+                          {maskIdentityNumber(person.identityNumber)}
+                        </Typography.Text>
+                      ) : (
+                        <Typography.Text key={person.row} type={index === 0 ? undefined : 'secondary'}>
+                          {person.identityNumber ? maskIdentityNumber(person.identityNumber) : '-'}
+                        </Typography.Text>
+                      )
+                    ))}
+                  </Space>
+                ),
+              },
+              {
                 title: '状态',
                 key: 'status',
                 width: 260,
+                // 表格较宽，状态列固定在右侧，不用横向滚动也能看到哪条要修正。
+                fixed: 'right' as const,
                 render: (_, entry) =>
                   entry.errors.length ? (
                     <Space orientation="vertical" size={0}>

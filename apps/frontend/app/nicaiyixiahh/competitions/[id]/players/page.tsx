@@ -10,8 +10,19 @@ import { AuditOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, FileExce
 import dayjs from 'dayjs';
 import { apiFetch } from '@/lib/api';
 import { GroupAdminFields } from '@/components/admin/GroupAdminFields';
-import type { GroupFields } from '@/lib/registration-groups';
+import type { AgeRule, GroupFields } from '@/lib/registration-groups';
 import { importTeamRoster, parseTeamRoster, TeamRosterImportInput, type TeamImportCompetition } from '@/components/TeamRosterImport';
+import {
+  duplicateIdentities,
+  fieldStateText,
+  identityForSubmit,
+  identityImportError,
+  ignoredFieldsNotice,
+  importFieldRules,
+  maskIdentityNumber,
+  normalizeIdentityNumber,
+  type ImportFieldRules,
+} from '@/lib/import-fields';
 import SocialPlayerImportModal from '@/components/SocialPlayerImport';
 import ExcelRosterImportModal from '@/components/ExcelRosterImport';
 import {
@@ -31,6 +42,7 @@ type CompetitionEventOption = {
   groupLabel?: string | null;
   groupId?: string | null;
   groupFields?: GroupFields | null;
+  ageRule?: AgeRule | null;
 };
 
 type Competition = {
@@ -113,6 +125,9 @@ type BatchImportItem = {
   partnerCollege?: string;
   partnerMajorGrade?: string;
   partnerContact?: string;
+  // 行末可选的身份证号列（组别收身份证号时）。
+  identityNumber?: string;
+  partnerIdentityNumber?: string;
 };
 
 type ParsedBatchRow = Partial<BatchImportItem> & {
@@ -184,19 +199,27 @@ function splitClipboardLine(line: string) {
     .filter(Boolean);
 }
 
-function parseBatchRows(text: string, isDouble: boolean): ParsedBatchRow[] {
+// 行末可以加身份证号：单打 1 列；双打 2 列（本人、搭档），只填本人的也行。组别不收集身份证号时这几列忽略。
+function parseBatchRows(text: string, isDouble: boolean, idCollected: boolean): ParsedBatchRow[] {
   const expectedCount = isDouble ? 13 : 6;
+  const allowedCounts = isDouble ? [13, 14, 15] : [6, 7];
   return text
     .split(/\r?\n/)
     .map((line, index) => ({ line, lineNumber: index + 1 }))
     .filter(({ line }) => line.trim())
     .map(({ line, lineNumber }) => {
       const parts = splitClipboardLine(line);
-      const base = { key: `${lineNumber}-${line}`, lineNumber, raw: line };
-      if (parts.length !== expectedCount) {
+      const base = {
+        key: `${lineNumber}-${line}`,
+        lineNumber,
+        raw: line,
+        identityNumber: parts[expectedCount],
+        partnerIdentityNumber: parts[expectedCount + 1],
+      };
+      if (!allowedCounts.includes(parts.length)) {
         return {
           ...base,
-          error: `需要 ${expectedCount} 个字段，当前 ${parts.length} 个`,
+          error: `需要 ${expectedCount} 个字段${idCollected ? `（行末可再加${isDouble ? '本人、搭档' : ''}身份证号）` : ''}，当前 ${parts.length} 个`,
         };
       }
 
@@ -260,6 +283,31 @@ function parseBatchRows(text: string, isDouble: boolean): ParsedBatchRow[] {
     });
 }
 
+/**
+ * 按组别「报名字段」检查身份证号：必填没填、号码或年龄不符、本人和搭档相同、同一批里重复。
+ * 不收集时不检查，导入时忽略。服务端遇到第一个问题就整批拒绝，这里先把每一行都标出来。
+ */
+function checkBatchIdentities(rows: ParsedBatchRow[], rules: ImportFieldRules, isDouble: boolean): ParsedBatchRow[] {
+  if (rules.fields.identityNumber === 'hidden') return rows;
+  const duplicates = duplicateIdentities(rows.flatMap((row) => (row.error ? [] : [
+    { key: `${row.lineNumber}`, identityNumber: row.identityNumber },
+    ...(isDouble ? [{ key: `${row.lineNumber}-partner`, identityNumber: row.partnerIdentityNumber }] : []),
+  ])));
+  return rows.map((row) => {
+    if (row.error) return row;
+    const own = identityImportError(row.identityNumber, rules);
+    const partner = isDouble ? identityImportError(row.partnerIdentityNumber, rules, '搭档') : undefined;
+    const same = isDouble && row.identityNumber
+      && normalizeIdentityNumber(row.identityNumber) === normalizeIdentityNumber(row.partnerIdentityNumber)
+      ? '本人和搭档不能使用同一身份证号' : undefined;
+    const duplicateOf = duplicates.get(`${row.lineNumber}`) ?? duplicates.get(`${row.lineNumber}-partner`);
+    const duplicate = duplicateOf ? `身份证号与第 ${duplicateOf.split('-')[0]} 行重复` : undefined;
+    const error = own ?? partner ?? same ?? duplicate;
+    if (!error) return row;
+    return { ...row, error: error.startsWith('本组要求') ? `${error}（加在行末${isDouble ? '，本人、搭档各一列' : ''}）` : error };
+  });
+}
+
 export default function AdminCompetitionPlayersPage() {
   const params = useParams<{ id: string }>();
   const id = normalizeRouteParam(params?.id);
@@ -281,6 +329,9 @@ export default function AdminCompetitionPlayersPage() {
   const [batchEventId, setBatchEventId] = useState<string>();
   const [batchText, setBatchText] = useState('');
   const [batchSubmitting, setBatchSubmitting] = useState(false);
+  const [teamBatchParsing, setTeamBatchParsing] = useState(false);
+  // 结合组别报名字段的校验（如身份证号必填却没填），由导入组件回报。
+  const [teamBatchFieldsValid, setTeamBatchFieldsValid] = useState(true);
   const [socialModalOpen, setSocialModalOpen] = useState(false);
   // Excel 模板批量导入（.xls/.xlsx）：自动识别项目与双打配对。
   const [excelModalOpen, setExcelModalOpen] = useState(false);
@@ -365,10 +416,25 @@ export default function AdminCompetitionPlayersPage() {
         label: `${player.name} · ${genderText(player.gender)} · ${player.affiliation}`,
       }));
   }, [eligibleLibraryPlayers, libraryPlayer1, selectedLibraryEvent, watchedLibraryPlayer1Id]);
-  const parsedBatchRows = useMemo(
-    () => parseBatchRows(batchText, Boolean(selectedBatchEvent?.isDouble)),
-    [batchText, selectedBatchEvent?.isDouble],
+  // 批量新增按所选项目的组别报名字段检查；没有组别的老赛事不收身份证号。
+  const batchRules = useMemo(
+    () => importFieldRules(selectedBatchEvent?.groupFields, selectedBatchEvent?.ageRule, selectedBatchEvent?.entrantType === 'SCHOOL'),
+    [selectedBatchEvent],
   );
+  const parsedBatchRows = useMemo(() => {
+    const isDouble = Boolean(selectedBatchEvent?.isDouble);
+    const rows = parseBatchRows(batchText, isDouble, batchRules.fields.identityNumber !== 'hidden');
+    return checkBatchIdentities(rows, batchRules, isDouble);
+  }, [batchText, selectedBatchEvent?.isDouble, batchRules]);
+  // 组别不收集却填了的列：不拦，提示导入时忽略（服务端会丢掉）。
+  const batchIgnoredNotice = useMemo(() => {
+    const rowsWith = (has: (row: ParsedBatchRow) => unknown) => parsedBatchRows.filter((row) => !row.error && has(row)).map((row) => row.lineNumber);
+    return ignoredFieldsNotice([
+      { label: '身份证号', rows: batchRules.fields.identityNumber === 'hidden' ? rowsWith((row) => row.identityNumber || row.partnerIdentityNumber) : [] },
+      { label: '学号', rows: batchRules.grouped && batchRules.fields.studentId === 'hidden' ? rowsWith((row) => row.studentId || row.partnerStudentId) : [] },
+      { label: '性别', rows: batchRules.grouped && batchRules.fields.gender === 'hidden' ? rowsWith((row) => row.gender || row.partnerGender) : [] },
+    ], batchRules.grouped);
+  }, [batchRules, parsedBatchRows]);
   const batchErrorCount = parsedBatchRows.filter((row) => row.error).length;
   const batchTeam = teamCompetitions.find(team => team.id === batchEventId);
   const parsedTeamBatch = parseTeamRoster(batchText);
@@ -559,6 +625,8 @@ export default function AdminCompetitionPlayersPage() {
       partnerClassName: row.partnerClassName,
       partnerCollege: row.partnerCollege ?? row.partnerClassName,
       partnerContact: row.partnerContact,
+      identityNumber: identityForSubmit(row.identityNumber, batchRules),
+      partnerIdentityNumber: selectedBatchEvent?.isDouble ? identityForSubmit(row.partnerIdentityNumber, batchRules) : undefined,
     }));
 
     setBatchSubmitting(true);
@@ -931,18 +999,41 @@ export default function AdminCompetitionPlayersPage() {
         </Space>
       ),
     },
+    ...(batchRules.fields.identityNumber !== 'hidden' || parsedBatchRows.some((row) => row.identityNumber || row.partnerIdentityNumber)
+      ? [{
+          title: `身份证号（${fieldStateText(batchRules.fields.identityNumber)}）`,
+          key: 'identityNumber',
+          width: 170,
+          render: (_: unknown, record: ParsedBatchRow) => {
+            // 不收集时划掉并变灰：导入时忽略。
+            const ignored = batchRules.fields.identityNumber === 'hidden';
+            const show = (value?: string) => (value
+              ? <Typography.Text type={ignored ? 'secondary' : undefined} delete={ignored}>{maskIdentityNumber(value)}</Typography.Text>
+              : <Typography.Text type="secondary">-</Typography.Text>);
+            return (
+              <Space direction="vertical" size={0}>
+                {show(record.identityNumber)}
+                {selectedBatchEvent?.isDouble ? show(record.partnerIdentityNumber) : null}
+              </Space>
+            );
+          },
+        }]
+      : []),
     {
       title: '状态',
       key: 'status',
-      width: 180,
+      width: 220,
       render: (_: unknown, record: ParsedBatchRow) =>
-        record.error ? <Tag color="red">{record.error}</Tag> : <Tag color="green">可导入</Tag>,
+        record.error ? <Tag color="red" style={{ whiteSpace: 'normal' }}>{record.error}</Tag> : <Tag color="green">可导入</Tag>,
     },
   ];
 
-  const batchFormatText = selectedBatchEvent?.isDouble
+  const batchFormatText = (selectedBatchEvent?.isDouble
     ? '双打：队伍名称、姓名、性别、学号、学校、学院班级、联系方式、搭档姓名、搭档性别、搭档学号、搭档学校、搭档学院班级、搭档联系方式'
-    : '单打：姓名、性别、学号、学校、学院班级、联系方式';
+    : '单打：姓名、性别、学号、学校、学院班级、联系方式')
+    + (batchRules.fields.identityNumber === 'hidden'
+      ? ''
+      : `；行末再加${selectedBatchEvent?.isDouble ? '本人身份证号、搭档身份证号' : '身份证号'}（本组${fieldStateText(batchRules.fields.identityNumber)}）`);
   const rowSelection = canManage
     ? {
         selectedRowKeys: selectedPlayerIds,
@@ -1175,8 +1266,9 @@ export default function AdminCompetitionPlayersPage() {
         open={batchModalOpen}
         onCancel={() => setBatchModalOpen(false)}
         onOk={submitBatchPlayers}
+        cancelText="取消"
         okText={batchTeam ? `导入 ${parsedTeamBatch.groups.length} 个团体、${parsedTeamBatch.rows.length} 人` : `新增 ${parsedBatchRows.length - batchErrorCount} 条`}
-        okButtonProps={{ disabled: batchTeam ? !parsedTeamBatch.valid : !parsedBatchRows.length || batchErrorCount > 0 }}
+        okButtonProps={{ disabled: batchTeam ? !parsedTeamBatch.valid || !teamBatchFieldsValid || teamBatchParsing : !parsedBatchRows.length || batchErrorCount > 0 }}
         confirmLoading={batchSubmitting}
         width={1100}
       >
@@ -1191,13 +1283,14 @@ export default function AdminCompetitionPlayersPage() {
             placeholder="选择参赛项目"
             style={{ width: '100%', maxWidth: 480 }}
           />
-          {batchTeam ? <TeamRosterImportInput competition={batchTeam} text={batchText} onChange={setBatchText} /> : <>
+          {batchTeam ? <TeamRosterImportInput competition={batchTeam} text={batchText} onChange={setBatchText} token={token} onBusyChange={setTeamBatchParsing} onValidChange={setTeamBatchFieldsValid} /> : <>
           <Alert
             type={batchErrorCount ? 'error' : 'info'}
             showIcon
             message={batchFormatText}
             description="每行一条记录，字段可用空格、顿号、逗号或制表符分隔。"
           />
+          {batchIgnoredNotice ? <Alert type="warning" showIcon title={batchIgnoredNotice} /> : null}
           <Input.TextArea
             rows={8}
             value={batchText}
@@ -1214,7 +1307,7 @@ export default function AdminCompetitionPlayersPage() {
             columns={batchPreviewColumns}
             dataSource={parsedBatchRows}
             pagination={false}
-            scroll={{ x: 980, y: 260 }}
+            scroll={{ x: 1180, y: 260 }}
           />
           </>}
         </Space>

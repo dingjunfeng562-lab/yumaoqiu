@@ -8,9 +8,13 @@
 //   - 基础 5 列：姓名、性别、联系方式、单位、项目；
 //   - 出现 学号/学院/年级专业 → 学生组；都没有 → 第三方；
 //   - 有学生字段但缺学号 → 报错；
-//   - 学生字段是否必填由赛事 registrationFieldRules 决定。
+//   - 学生字段是否必填由赛事 registrationFieldRules 决定；项目属于某个组别时以组别「报名字段」为准（与服务端一致）；
+//   - 可选「身份证号」列：组别要求必填时没有这一列或没填会报错；组别不收集时忽略、不保存。
 //
 // 本文件不依赖 xlsx，输入是普通二维数组 + 合并区域，方便单测。
+
+import type { AgeRule, GroupFields } from './registration-groups';
+import { identityImportError, ignoredFieldsNotice, importFieldRules, normalizeIdentityNumber, type ImportFieldRules } from './import-fields';
 
 export type Gender = 'MALE' | 'FEMALE';
 export type EntrantType = 'SCHOOL' | 'SOCIAL';
@@ -37,6 +41,10 @@ export type RosterEventOption = {
   label: string;
   isDouble: boolean;
   entrantType?: RosterTemplateKind;
+  groupLabel?: string | null;
+  /** 项目所属组别的报名字段和年龄要求；没有组别时为空。 */
+  groupFields?: GroupFields | null;
+  ageRule?: AgeRule | null;
 };
 
 export type RosterPerson = {
@@ -48,6 +56,9 @@ export type RosterPerson = {
   studentId?: string;
   college?: string;
   majorGrade?: string;
+  identityNumber?: string;
+  /** 组别不收集身份证号：预览里划掉，导入时不提交。 */
+  identityIgnored?: boolean;
 };
 
 export type RosterEntry = {
@@ -74,6 +85,7 @@ export type RosterColumnMap = {
   studentId: number | null;
   college: number | null;
   majorGrade: number | null;
+  identityNumber: number | null;
 };
 
 export type RosterSheetResult = {
@@ -107,6 +119,8 @@ export type RosterImportPlayer = {
   partnerClassName?: string;
   partnerContact?: string;
   teamName?: string;
+  identityNumber?: string;
+  partnerIdentityNumber?: string;
 };
 
 const PROJECT_TYPES: Record<string, string> = {
@@ -148,6 +162,7 @@ type HeaderField = keyof RosterColumnMap;
 
 const HEADER_PATTERNS: Array<{ field: HeaderField; test: RegExp }> = [
   { field: 'seq', test: /^(序号|编号|no\.?)$/i },
+  { field: 'identityNumber', test: /身份证|证件号/ },
   { field: 'studentId', test: /学号|学生编号|学籍号/ },
   { field: 'college', test: /^(学院|院系|所在学院|系别)$/ },
   { field: 'majorGrade', test: /年级专业|专业年级|^(年级|专业|班级)$/ },
@@ -320,6 +335,7 @@ export function detectTemplate(
         studentId: found.studentId ?? null,
         college: found.college ?? null,
         majorGrade: found.majorGrade ?? null,
+        identityNumber: found.identityNumber ?? null,
       },
       messages,
       error,
@@ -410,6 +426,9 @@ export function parseRosterSheet(input: {
   let skipped = 0;
   const read = (row: RosterCell[], column: number | null) =>
     column === null ? '' : cellText(row[column]);
+  // 组别不收集却填了的列，按字段记行号，最后统一提示。
+  const ignored = { identityNumber: [] as number[], studentId: [] as number[], gender: [] as number[] };
+  let anyGrouped = false;
 
   for (let r = detected.headerRow + 1; r < grid.length; r += 1) {
     const row = grid[r] ?? [];
@@ -448,28 +467,12 @@ export function parseRosterSheet(input: {
     if (!project) errors.push('项目不能为空');
 
     if (kind === 'SCHOOL') {
-      const studentId = read(row, columns.studentId);
-      const college = read(row, columns.college);
-      const majorGrade = read(row, columns.majorGrade);
-      if (columns.studentId === null && fieldRules.SCHOOL.studentId === 'required') {
-        errors.push('本赛事要求学号，但模板缺少「学号」列');
-      } else if (fieldRules.SCHOOL.studentId === 'required' && !studentId) {
-        errors.push('学号不能为空');
-      }
-      if (columns.college === null && fieldRules.SCHOOL.college === 'required') {
-        errors.push('本赛事要求学院，但模板缺少「学院」列');
-      } else if (fieldRules.SCHOOL.college === 'required' && !college) {
-        errors.push('学院不能为空');
-      }
-      if (columns.majorGrade === null && fieldRules.SCHOOL.majorGrade === 'required') {
-        errors.push('本赛事要求年级专业，但模板缺少「年级专业」列');
-      } else if (fieldRules.SCHOOL.majorGrade === 'required' && !majorGrade) {
-        errors.push('年级专业不能为空');
-      }
-      person.studentId = studentId || undefined;
-      person.college = college || undefined;
-      person.majorGrade = majorGrade || undefined;
+      person.studentId = read(row, columns.studentId) || undefined;
+      person.college = read(row, columns.college) || undefined;
+      person.majorGrade = read(row, columns.majorGrade) || undefined;
     }
+    const identityCell = columns.identityNumber === null ? undefined : row[columns.identityNumber];
+    person.identityNumber = normalizeIdentityNumber(read(row, columns.identityNumber)) || undefined;
 
     const eventType = projectToEventType(project);
     if (project && !eventType) {
@@ -482,6 +485,34 @@ export function parseRosterSheet(input: {
       errors.push(
         `当前赛事未配置${ENTRANT_LABELS[kind]}「${eventTypeLabel(eventType) ?? project}」项目`,
       );
+    }
+
+    const groupRules = event?.groupFields ? importFieldRules(event.groupFields, event.ageRule, kind === 'SCHOOL') : null;
+    if (groupRules) {
+      anyGrouped = true;
+      // 服务端对有组别的项目按组别检查学号/学院/年级专业（第三方模板也一样）。
+      checkStudentFields(errors, person, columns, groupRules.fields, '本组');
+      if (person.studentId && groupRules.fields.studentId === 'hidden') ignored.studentId.push(r + 1);
+      if (person.gender && groupRules.fields.gender === 'hidden') ignored.gender.push(r + 1);
+    } else if (kind === 'SCHOOL') {
+      checkStudentFields(errors, person, columns, fieldRules.SCHOOL, '本赛事');
+    }
+    if (event) {
+      const rules: ImportFieldRules = groupRules ?? importFieldRules(null, null, kind === 'SCHOOL');
+      const who = event.isDouble ? `${name || `第 ${r + 1} 行`}：` : '';
+      if (rules.fields.identityNumber === 'hidden') {
+        if (person.identityNumber) {
+          person.identityIgnored = true;
+          ignored.identityNumber.push(r + 1);
+        }
+      } else if (columns.identityNumber === null && rules.fields.identityNumber === 'required') {
+        errors.push('本组要求填写身份证号，但表格缺少「身份证号」列');
+      } else if (typeof identityCell === 'number') {
+        errors.push(`${who}身份证号被 Excel 存成了数字，后几位可能已经丢失，请把这一列设为「文本」后重新填写`);
+      } else {
+        const identityError = identityImportError(person.identityNumber, rules);
+        if (identityError) errors.push(`${who}${identityError}`);
+      }
     }
 
     const mergeKey = mergeKeyAt(input.merges, r, columns.unit);
@@ -559,6 +590,11 @@ export function parseRosterSheet(input: {
   markDuplicates(entries);
   markMaxEvents(entries, maxEvents, allowCross);
   entries.sort((a, b) => (a.rows[0] ?? 0) - (b.rows[0] ?? 0));
+  const notice = ignoredFieldsNotice([
+    { label: '身份证号', rows: ignored.identityNumber },
+    { label: '学号', rows: ignored.studentId },
+    { label: '性别', rows: ignored.gender },
+  ], anyGrouped);
 
   return {
     sheet,
@@ -567,8 +603,29 @@ export function parseRosterSheet(input: {
     columns,
     entries,
     skipped,
-    messages: detected.messages,
+    messages: notice ? [...detected.messages, notice] : detected.messages,
   };
+}
+
+const STUDENT_FIELDS = [
+  { key: 'studentId', label: '学号' },
+  { key: 'college', label: '学院' },
+  { key: 'majorGrade', label: '年级专业' },
+] as const;
+
+/** 学号 / 学院 / 年级专业：必填时缺列或没填报错。scope 是提示里的「本赛事」或「本组」。 */
+function checkStudentFields(
+  errors: string[],
+  person: RosterPerson,
+  columns: RosterColumnMap,
+  rules: Record<'studentId' | 'college' | 'majorGrade', FieldState>,
+  scope: string,
+) {
+  for (const { key, label } of STUDENT_FIELDS) {
+    if (rules[key] !== 'required') continue;
+    if (columns[key] === null) errors.push(`${scope}要求${label}，但模板缺少「${label}」列`);
+    else if (!person[key]) errors.push(`${label}不能为空`);
+  }
 }
 
 function unique(values: string[]): string[] {
@@ -597,6 +654,18 @@ function markDuplicates(entries: RosterEntry[]) {
       if (firstRow !== person.row) {
         entry.errors.push(`与第 ${firstRow} 行重复：${person.name}（${person.contact}）`);
       }
+    }
+  }
+  // 同一个项目里身份证号也不能重复（姓名、电话不同但证件号相同，多半是填错了）。
+  const identities = new Map<string, number>();
+  for (const entry of entries) {
+    if (!entry.eventId) continue;
+    for (const person of entry.people) {
+      if (!person.identityNumber || person.identityIgnored) continue;
+      const composite = `${entry.eventId}\u0000${person.identityNumber}`;
+      const firstRow = identities.get(composite);
+      if (firstRow === undefined) identities.set(composite, person.row);
+      else if (firstRow !== person.row) entry.errors.push(`第 ${person.row} 行身份证号与第 ${firstRow} 行重复`);
     }
   }
 }
@@ -651,6 +720,7 @@ export function rosterImportGroups(entries: RosterEntry[]): Array<{
       name: first.name,
       gender: first.gender,
       contact: first.contact,
+      identityNumber: first.identityIgnored ? undefined : first.identityNumber,
       ...(isSchool
         ? {
             studentId: first.studentId,
@@ -664,6 +734,7 @@ export function rosterImportGroups(entries: RosterEntry[]): Array<{
             partnerName: second.name,
             partnerGender: second.gender as Gender,
             partnerContact: second.contact,
+            partnerIdentityNumber: second.identityIgnored ? undefined : second.identityNumber,
             ...(isSchool
               ? {
                   partnerStudentId: second.studentId,
