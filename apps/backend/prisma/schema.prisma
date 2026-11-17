@@ -365,7 +365,7 @@ model Tournament {
   organizer             String?
   coverImageUrl         String?
   location              String?
-  projectText           String?
+  projectText           String?          @db.Text
   formatText            String?
   registrationStartDate DateTime?
   registrationEndDate   DateTime?
