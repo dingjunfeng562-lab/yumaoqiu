@@ -75,3 +75,31 @@ describe('team orderbook final rankings', () => {
     expect(rows.slice(1).every(row => row[0] === '未设置' && row[3] === '待定')).toBe(true);
   });
 });
+
+describe('超过 26 组的组别顺序', () => {
+  it('流程表小组按 A…Z、AA、AB 排列，AA 不会插到 A 和 B 之间', async () => {
+    const codes = [...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split(''), 'AA', 'AB'];
+    const day = new Date('2026-11-28T00:00:00Z');
+    const registrations = codes.flatMap((code) => [1, 2].map((k) => ({
+      id: `${code}${k}`, eventId: 'e', studentId: null, createdAt: day, className: null, groupName: code, teamName: null,
+      isSeed: false, seedRank: null, player1: { name: `${code}组${k}号`, gender: 'MALE', affiliation: '', contact: null },
+      player2: null, competitionRegistration: null,
+    })));
+    const matches = codes.map((code, index) => ({
+      id: `m${index}`, round: code, roundNo: 0, matchNo: index + 1, venueId: null, scheduledAt: null, status: 'PENDING',
+      durationMinutes: 30, side1Id: `${code}1`, side2Id: `${code}2`, winnerSide: null, updatedAt: day, venue: null,
+      referee: null, games: [],
+    }));
+    const tournament: ExportTournament = {
+      name: '多组测试', startDate: day, endDate: day,
+      events: [{ type: 'MENS_SINGLES', format: 'GROUP_PLUS_KNOCKOUT_STD', qualifiersPerGroup: 1, registrations, matches, secondStage: null }],
+    };
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(await buildOrderbookWorkbook(tournament) as never);
+    const titles: string[] = [];
+    workbook.getWorksheet('流程表')!.eachRow((row) => row.eachCell((cell) => {
+      if (cell.master.address === cell.address && /^[A-Z]{1,2}组$/.test(cell.text)) titles.push(cell.text);
+    }));
+    expect(titles).toEqual(codes.map((code) => `${code}组`));
+  });
+});

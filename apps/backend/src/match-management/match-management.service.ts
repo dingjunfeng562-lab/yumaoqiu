@@ -136,6 +136,7 @@ function roundLabel(round: string) {
     R1: '1/8 决赛',
     R2: '1/16 决赛',
     R3: '1/32 决赛',
+    R4: '1/64 决赛',
     BRONZE: '季军赛',
   };
   if (fixed[value]) return fixed[value];

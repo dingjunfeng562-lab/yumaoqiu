@@ -9,6 +9,7 @@ import { eventEntryCounts } from '../common/registration-capacity';
 import { ChangeActor, deleteOrphanPlayers, lockEvents } from '../common/registration-changes';
 import { registrationDisplayName } from '../payments/payment-rules';
 import { collectEventDeleteImpact } from './event-delete';
+import { GROUP_COUNT_MAX } from '../draws/draw-algorithm.service';
 import {
   CreateEventDto,
   STAGE_SCORING_KEYS,
@@ -297,8 +298,8 @@ export class EventsService {
       format === Format.GROUP_PLUS_KNOCKOUT || format === Format.GROUP_PLUS_KNOCKOUT_STD;
     if (!usesGroups) return { groupSize: null, groupCount: null };
     if (groupCount != null) {
-      if (groupCount < 1 || groupCount > 26) {
-        throw new BadRequestException('小组数量需在 1–26 之间');
+      if (groupCount < 1 || groupCount > GROUP_COUNT_MAX) {
+        throw new BadRequestException(`小组数量需在 1–${GROUP_COUNT_MAX} 之间`);
       }
       return { groupSize: null, groupCount };
     }

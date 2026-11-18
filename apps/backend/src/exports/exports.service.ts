@@ -320,6 +320,7 @@ const KNOCKOUT_ROUND_LABELS: Record<string, string> = {
   R1: '1/8决赛',
   R2: '1/16决赛',
   R3: '1/32决赛',
+  R4: '1/64决赛',
   BRONZE: '季军赛',
 };
 

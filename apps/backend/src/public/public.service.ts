@@ -1043,7 +1043,7 @@ export class PublicService {
     return {
       id: match.id,
       roundNo: match.roundNo,
-      roundLabel: this.publicRoundLabel(match.round),
+      roundLabel: this.publicRoundLabel(match.round, match.roundNo),
       matchNo: match.matchNo,
       status: match.status,
       side1Id: match.side1Id,
@@ -1305,7 +1305,7 @@ export class PublicService {
     return null;
   }
 
-  private publicRoundLabel(round: string) {
+  private publicRoundLabel(round: string, roundNo?: number | null) {
     const labels: Record<string, string> = {
       F: '决赛',
       SF: '半决赛',
@@ -1313,15 +1313,18 @@ export class PublicService {
       R1: '1/8 决赛',
       R2: '1/16 决赛',
       R3: '1/32 决赛',
+      R4: '1/64 决赛',
       BRONZE: '季军赛',
     };
+    // 小组赛场次：round = 组别代码（A…Z 之后接 AA、AB…）。决赛的 round 也是 F，不能只看字母。
+    if (roundNo === 0) return this.publicGroupLabel(round);
     // 交叉排位赛：round = `P{高位名次}`，例如 P1 = 1-2 名决赛、P3 = 3-4 名决赛。
     const playoff = /^P(\d+)$/.exec(round);
     if (playoff) {
       const hi = Number(playoff[1]);
       return `${hi}-${hi + 1} 名决赛`;
     }
-    if (/^[A-Z]$/.test(round)) return this.publicGroupLabel(round);
+    if (roundNo == null && /^[A-Z]{1,2}$/.test(round) && !labels[round]) return this.publicGroupLabel(round);
     return labels[round] ?? round;
   }
 

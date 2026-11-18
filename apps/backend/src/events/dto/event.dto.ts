@@ -1,6 +1,7 @@
 import { ArrayMaxSize, IsArray, IsString, IsEnum, IsOptional, IsInt, Min, Max, MaxLength, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { EntrantType, EventType, Format, ScoringRule, ScoringMode } from '@prisma/client';
+import { GROUP_COUNT_MAX } from '../../draws/draw-algorithm.service';
 
 /**
  * 支持分阶段规则的键。
@@ -128,7 +129,7 @@ export class CreateEventDto {
   @IsOptional()
   @IsInt()
   @Min(1)
-  @Max(26)
+  @Max(GROUP_COUNT_MAX)
   groupCount?: number;
 
   @IsOptional()
@@ -204,7 +205,7 @@ export class UpdateEventDto {
   @IsOptional()
   @IsInt()
   @Min(1)
-  @Max(26)
+  @Max(GROUP_COUNT_MAX)
   groupCount?: number;
 
   @IsOptional()

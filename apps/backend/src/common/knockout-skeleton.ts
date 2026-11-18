@@ -54,7 +54,8 @@ function roundCode(slotCount: number) {
 }
 
 // 组别排序：先比长度再字典序，保证 A<…<Z<AA<AB。
-function compareGroupCode(a: string, b: string) {
+/** 组别代码排序：A…Z 之后 AA、AB…（先比长度再比字母）。 */
+export function compareGroupCode(a: string, b: string) {
   return a.length - b.length || a.localeCompare(b, 'en');
 }
 

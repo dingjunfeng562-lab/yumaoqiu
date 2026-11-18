@@ -1,6 +1,7 @@
 import * as ExcelJS from 'exceljs';
 import {
   buildKnockoutSkeleton,
+  compareGroupCode,
   groupSizesFromGroupMatches,
 } from '../common/knockout-skeleton';
 import { isByeMatch, knockoutPlacements } from '../common/knockout-placement';
@@ -65,6 +66,7 @@ const KNOCKOUT_ROUND_LABELS: Record<string, string> = {
   R1: '1/8决赛',
   R2: '1/16决赛',
   R3: '1/32决赛',
+  R4: '1/64决赛',
   BRONZE: '季军赛',
 };
 
@@ -176,7 +178,7 @@ function eventGroupCodes(event: ExportEvent) {
         .map((m) => (typeof m.round === 'string' ? m.round : m.round != null ? String(m.round) : ''))
         .filter(Boolean),
     ),
-  ].sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  ].sort(compareGroupCode);
 }
 
 function playoffRank(match: ExportMatch) {
@@ -858,7 +860,7 @@ function renderGroupGrids(
   const STAT_W = 2;
 
   let row = startRow;
-  for (const groupCode of [...groups.keys()].sort((a, b) => a.localeCompare(b, 'en'))) {
+  for (const groupCode of [...groups.keys()].sort(compareGroupCode)) {
     const members = groups.get(groupCode)!;
     const n = members.length;
 
@@ -1418,7 +1420,7 @@ function eventGroups(event: ExportEvent) {
     groups.set(position.group, list);
   }
   for (const list of groups.values()) list.sort((a, b) => a.pos - b.pos);
-  return [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0], 'zh-CN'));
+  return [...groups.entries()].sort((a, b) => compareGroupCode(a[0], b[0]));
 }
 
 function buildGroupStandingSheet(wb: ExcelJS.Workbook, tournament: ExportTournament) {

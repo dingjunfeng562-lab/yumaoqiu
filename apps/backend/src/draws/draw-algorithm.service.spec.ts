@@ -63,10 +63,24 @@ describe('DrawAlgorithmService.planGroups', () => {
     expect(plan.sizes).toEqual([3]);
   });
 
-  it('按每组 4 人要 30 组时超过 26 组上限并报错', () => {
-    const plan = svc.planGroups({ entrantCount: 120, groupSize: 4, qualifiersPerGroup: 1 });
-    expect(plan.errors.join()).toContain('26 组上限');
-    expect(plan.groupCount).toBe(26);
+  it('114 人每组 3 人分 38 组：超过 26 组也能抽，组代码接 AA…AL', () => {
+    const plan = svc.planGroups({ entrantCount: 114, groupSize: 3, qualifiersPerGroup: 2 });
+    expect(plan.errors).toEqual([]);
+    expect(plan.groupCount).toBe(38);
+    expect(plan.sizes.every((size) => size === 3)).toBe(true);
+    expect(plan.qualifiersTotal).toBe(76);
+    const groups = svc.buildGroups(entrants(114), [], plan.sizes);
+    expect(groups.map((group) => group.groupCode).slice(24)).toEqual([
+      'Y', 'Z', 'AA', 'AB', 'AC', 'AD', 'AE', 'AF', 'AG', 'AH', 'AI', 'AJ', 'AK', 'AL',
+    ]);
+  });
+
+  it('手动 100 组可以，101 组起超过上限报错', () => {
+    expect(svc.planGroups({ entrantCount: 200, groupCount: 100, qualifiersPerGroup: 1 }).errors).toEqual([]);
+    const plan = svc.planGroups({ entrantCount: 404, groupSize: 4, qualifiersPerGroup: 1 });
+    expect(plan.errors.join()).toContain('需要 101 个小组，超过 100 组上限');
+    expect(plan.groupCount).toBe(100);
+    expect(svc.buildGroups(entrants(200), [], Array.from({ length: 100 }, () => 2))[99].groupCode).toBe('CV');
   });
 
   it('手动组数会导致 1 人组时报错', () => {

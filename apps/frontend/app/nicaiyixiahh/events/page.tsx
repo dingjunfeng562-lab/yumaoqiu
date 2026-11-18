@@ -672,9 +672,9 @@ export default function EventsPage() {
                       name="groupCount"
                       label="小组数量"
                       rules={[{ required: true, message: '请输入小组数量' }]}
-                      extra="1–26 组（A–Z）。抽签时按实际报名人数均分到各组，余数先给 A 组；每组至少 2 人。"
+                      extra="1–100 组（A–Z 之后接 AA、AB…）。抽签时按实际报名人数均分到各组，余数先给 A 组；每组至少 2 人。"
                     >
-                      <InputNumber min={1} max={26} style={{ width: '100%' }} />
+                      <InputNumber min={1} max={100} style={{ width: '100%' }} />
                     </Form.Item>
                   ) : (
                     <Form.Item

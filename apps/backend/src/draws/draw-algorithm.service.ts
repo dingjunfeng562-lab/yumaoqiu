@@ -39,8 +39,8 @@ import { Injectable } from '@nestjs/common';
 export const GROUP_SIZE_DEFAULT = 4;
 export const GROUP_SIZE_MIN = 2;
 export const GROUP_SIZE_MAX = 8;
-/** 小组数量上限：组代码用 A–Z（超出后 AA/AB…，但业务上限保持 26）。 */
-export const GROUP_COUNT_MAX = 26;
+/** 小组数量上限：组代码 A–Z 之后接 AA、AB…（100 组到 CV 组）。 */
+export const GROUP_COUNT_MAX = 100;
 /** 每组出线数范围：A–H 第二阶段最多 8 个签位。 */
 export const QUALIFIERS_PER_GROUP_MIN = 1;
 export const QUALIFIERS_PER_GROUP_MAX = 8;
@@ -210,7 +210,7 @@ export class DrawAlgorithmService {
    * 计算分组计划。规则（不再有「每组最多 4 人」和「出线总数必须是 ≥8 的 2 的幂」两条硬编码）：
    * - 手动给了小组数量：以它为准；
    * - 否则按每组人数（默认 4）推导组数 = ceil(报名数 / 每组人数)；
-   * - 组数上限 26（A–Z），且每组至少 2 人（人数不足时宁可少分一组，不产生 1 人组）；
+   * - 组数上限 100（A–Z 之后接 AA、AB…），且每组至少 2 人（人数不足时宁可少分一组，不产生 1 人组）；
    * - 每组出线数不能超过最小组人数（否则「出线」名次不存在）。
    */
   planGroups(request: GroupPlanRequest): GroupPlan {
@@ -257,7 +257,7 @@ export class DrawAlgorithmService {
     }
     if (groupCount > GROUP_COUNT_MAX) {
       errors.add(
-        `需要 ${groupCount} 个小组，超过 ${GROUP_COUNT_MAX} 组上限（A–Z），请增大每组人数`,
+        `需要 ${groupCount} 个小组，超过 ${GROUP_COUNT_MAX} 组上限，请增大每组人数`,
       );
       groupCount = GROUP_COUNT_MAX;
     }
@@ -295,7 +295,7 @@ export class DrawAlgorithmService {
     return Array.from({ length: groups }, (_, index) => base + (index < remainder ? 1 : 0));
   }
 
-  /** 0 → A，25 → Z，26 → AA…（业务上限定 26 组，这里仍按 26 进制输出，避免出现 '['）。 */
+  /** 0 → A，25 → Z，26 → AA，51 → AZ，52 → BA…（按 26 进制字母输出，99 → CV）。 */
   private groupCodeLabel(index: number): string {
     let value = Math.max(0, Math.floor(index));
     let label = '';
