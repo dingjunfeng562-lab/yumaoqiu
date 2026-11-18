@@ -25,6 +25,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { TeamCompetitionsService } from '../team-competitions/team-competitions.service';
 import { ScoringGateway } from './scoring.gateway';
 import { isSecondStageFormalRoundNo } from '../common/second-stage-bracket';
+import { placeGroupQualifiers } from '../common/knockout-skeleton';
 import { SecondStageProgressService } from '../common/second-stage-progress.service';
 import { randomBytes } from 'node:crypto';
 import { MatchScoreSheetService } from './match-score-sheet.service';
@@ -2812,8 +2813,9 @@ export class ScoringService {
 
   /**
    * 标准小组循环+淘汰(GROUP_PLUS_KNOCKOUT_STD)专用：小组赛(roundNo=0)全部完赛后，
-   * 按《羽毛球竞赛规则2023》官方名次规则取各组前 N 名，用标准种子交叉编入单淘汰签表
-   * 并落库；之后的晋级推进沿用 advanceSingleEliminationWinner。
+   * 按《羽毛球竞赛规则2023》官方名次规则取各组前 N 名；出线超过 8 人时按 placeGroupQualifiers
+   * 编入单淘汰签表并落库（轮空优先给小组第 1 名，同组第 1、2 名分在上下半区，与对阵骨架同一排法）；
+   * 之后的晋级推进沿用 advanceSingleEliminationWinner。出线不超过 8 人走抽签编排页的 A-H 第二阶段。
    * 幂等：已存在淘汰赛场次(roundNo>=1)时直接返回，避免重复生成。
    */
   private async fillGroupKnockoutIfReady(
@@ -2845,13 +2847,16 @@ export class ScoringService {
     const rankedByGroup = this.computeOfficialGroupRanking(groupMatches);
     const qualifiersPerGroup = Math.max(1, event.qualifiersPerGroup ?? 2);
 
-    const seedList = this.buildStandardQualifierOrder(rankedByGroup, qualifiersPerGroup);
-    if (seedList.length < 2) return;
-    if (seedList.length <= 8) return;
+    const groupCodes = [...rankedByGroup.keys()].sort((a, b) => this.groupNameCompare(a, b));
+    const qualifiers = groupCodes.flatMap((group) =>
+      (rankedByGroup.get(group) ?? [])
+        .slice(0, qualifiersPerGroup)
+        .map((entrantId, index) => ({ group, rank: index + 1, entrant: entrantId })),
+    );
+    if (qualifiers.length < 2) return;
+    if (qualifiers.length <= 8) return;
 
-    const slots = qualifiersPerGroup > 1
-      ? this.buildDirectKnockoutSlots(seedList)
-      : this.buildCanonicalKnockoutSlots(seedList);
+    const slots = placeGroupQualifiers(groupCodes, qualifiers);
     const drafts = this.buildEliminationDrafts(slots);
     await this.createKnockoutMatches(tx, eventId, drafts);
   }
@@ -2963,64 +2968,6 @@ export class ScoringService {
     return ranked;
   }
 
-  /** 单淘汰标准种子位序列(递归对折)：返回每个签位对应的种子号。 */
-  private canonicalSeedOrder(bracketSize: number): number[] {
-    let seeds = [1, 2];
-    while (seeds.length < bracketSize) {
-      const sum = seeds.length * 2 + 1;
-      const next: number[] = [];
-      for (const s of seeds) {
-        next.push(s);
-        next.push(sum - s);
-      }
-      seeds = next;
-    }
-    return seeds;
-  }
-
-  private buildStandardQualifierOrder(
-    rankedByGroup: Map<string, string[]>,
-    qualifiersPerGroup: number,
-  ): string[] {
-    const q = Math.max(1, qualifiersPerGroup || 2);
-    const groupCodes = [...rankedByGroup.keys()].sort((a, b) => this.groupNameCompare(a, b));
-    if (q <= 1) {
-      return groupCodes
-        .map((code) => rankedByGroup.get(code)?.[0])
-        .filter((id): id is string => Boolean(id));
-    }
-
-    const ordered: string[] = [];
-    const used = new Set<string>();
-    const append = (id?: string) => {
-      if (!id || used.has(id)) return;
-      ordered.push(id);
-      used.add(id);
-    };
-
-    for (let index = 0; index < groupCodes.length; index += 2) {
-      const groupA = rankedByGroup.get(groupCodes[index]);
-      const groupB = rankedByGroup.get(groupCodes[index + 1]);
-      if (groupB) {
-        append(groupA?.[0]);
-        append(groupB[1]);
-        append(groupA?.[1]);
-        append(groupB[0]);
-        for (let rank = 2; rank < q; rank += 1) {
-          append(groupA?.[rank]);
-          append(groupB[rank]);
-        }
-      } else {
-        for (let rank = 0; rank < q; rank += 1) append(groupA?.[rank]);
-      }
-    }
-
-    for (let rank = 0; rank < q; rank += 1) {
-      for (const code of groupCodes) append(rankedByGroup.get(code)?.[rank]);
-    }
-    return ordered;
-  }
-
   private groupNameCompare(a: string, b: string) {
     return this.groupNameSortValue(a) - this.groupNameSortValue(b)
       || a.localeCompare(b, 'zh-CN', { numeric: true });
@@ -3030,20 +2977,6 @@ export class ScoringService {
     const letters = /^[A-Z]+/.exec(value.trim().toUpperCase())?.[0];
     if (!letters) return Number.MAX_SAFE_INTEGER;
     return [...letters].reduce((sum, char) => sum * 26 + char.charCodeAt(0) - 64, 0);
-  }
-
-  /** 按种子序把出线选手放进 2 的幂签表，空位为轮空(null)，轮空落在高种子侧。 */
-  private buildCanonicalKnockoutSlots(seedList: string[]): Array<string | null> {
-    const n = seedList.length;
-    const bracketSize = 2 ** Math.ceil(Math.log2(Math.max(2, n)));
-    return this.canonicalSeedOrder(bracketSize).map((seedNo) =>
-      seedNo <= n ? seedList[seedNo - 1] : null,
-    );
-  }
-
-  private buildDirectKnockoutSlots(entrantIds: string[]): Array<string | null> {
-    const bracketSize = 2 ** Math.ceil(Math.log2(Math.max(2, entrantIds.length)));
-    return Array.from({ length: bracketSize }, (_, index) => entrantIds[index] ?? null);
   }
 
   /** 由签位顺序生成整张单淘汰签表草稿(含轮空直接晋级、季军赛占位)。 */

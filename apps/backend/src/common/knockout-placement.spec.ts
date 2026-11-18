@@ -1,4 +1,5 @@
 import {
+  isByeMatch,
   knockoutPlacements,
   type KnockoutMatchLike,
 } from './knockout-placement';
@@ -91,6 +92,26 @@ describe('knockoutPlacements 淘汰赛名次折算', () => {
     expect(rows.some((row) => row.label === '第1名')).toBe(false);
   });
 
+  it('有季军赛、半决赛还没打：四强先列「第3-4名」待定，不会从名次表里消失', () => {
+    const { rows } = knockoutPlacements([
+      match('QF', 1, 'a', 'b', 1),
+      match('QF', 1, 'c', 'd', 1),
+      match('QF', 1, 'e', 'f', 1),
+      match('QF', 1, 'g', 'h', 1),
+      match('SF', 2, 'a', 'c', null),
+      match('SF', 2, 'e', 'g', null),
+      match('BRONZE', 3, null, null, null),
+      match('F', 3, null, null, null),
+    ]);
+    expect(
+      rows
+        .filter((row) => row.label === '第3-4名' && row.status === '待定')
+        .map((row) => row.entrantId)
+        .sort(),
+    ).toEqual(['a', 'c', 'e', 'g']);
+    expect(rows.filter((row) => row.label === '并列第5名')).toHaveLength(4);
+  });
+
   it('没有季军赛时分出四强：两场半决赛负者并列第3名', () => {
     const { rows } = knockoutPlacements(draw16({ rounds: 3, bronze: false }));
     expect(rows.filter((row) => row.label === '并列第3名')).toHaveLength(2);
@@ -121,6 +142,32 @@ describe('knockoutPlacements 淘汰赛名次折算', () => {
     expect(rows.filter((row) => row.label === '并列第17名')).toHaveLength(16);
   });
 
+  it('128 签：1/64 决赛负者并列第65名、1/32 决赛负者并列第33名，轮空场不产生名次', () => {
+    const matches: KnockoutMatchLike[] = [];
+    // 1/64 决赛 64 场：前 52 场轮空（只有一方、已结束），后 12 场真打。
+    for (let i = 1; i <= 64; i += 1) {
+      matches.push(
+        i <= 52
+          ? match('R4', 1, `r4-${i}a`, null, 1)
+          : match('R4', 1, `r4-${i}a`, `r4-${i}b`, 1),
+      );
+    }
+    for (let i = 1; i <= 32; i += 1)
+      matches.push(match('R3', 2, `r3-${i}a`, `r3-${i}b`, 1));
+    const { rows } = knockoutPlacements(matches);
+    expect(rows.filter((row) => row.label === '并列第65名')).toHaveLength(12);
+    expect(rows.filter((row) => row.label === '并列第33名')).toHaveLength(32);
+    expect(rows.some((row) => row.entrantId === null)).toBe(false);
+  });
+
+  it('未打完的 1/64 决赛列「第65-128名」待定', () => {
+    const { rows } = knockoutPlacements([match('R4', 1, 'a', 'b', null)]);
+    expect(rows.map((row) => [row.label, row.status])).toEqual([
+      ['第65-128名', '待定'],
+      ['第65-128名', '待定'],
+    ]);
+  });
+
   it('排位赛（P 开头轮次）与第二阶段（roundNo ≥ 100）不参与折算', () => {
     const { rows, decided } = knockoutPlacements([
       match('P5', 5, 'a', 'b', 1),
@@ -128,5 +175,25 @@ describe('knockoutPlacements 淘汰赛名次折算', () => {
     ]);
     expect(rows).toEqual([]);
     expect(decided).toBe(false);
+  });
+});
+
+describe('isByeMatch 轮空场', () => {
+  it('已结束且只有一方有人才算轮空', () => {
+    const bye = {
+      status: 'COMPLETED',
+      winnerSide: 1,
+      side1Id: 'a',
+      side2Id: null,
+    };
+    expect(isByeMatch(bye)).toBe(true);
+    expect(
+      isByeMatch({ ...bye, side1Id: null, side2Id: 'b', winnerSide: 2 }),
+    ).toBe(true);
+    expect(isByeMatch({ ...bye, status: 'PENDING', winnerSide: null })).toBe(
+      false,
+    );
+    expect(isByeMatch({ ...bye, side2Id: 'b' })).toBe(false);
+    expect(isByeMatch({ ...bye, side1Id: null })).toBe(false);
   });
 });

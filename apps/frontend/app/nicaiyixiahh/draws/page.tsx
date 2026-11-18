@@ -183,6 +183,8 @@ interface BracketData {
   groupPlan?: GroupPlanView | null;
   knockoutSkeleton?: KnockoutBracketData['knockoutSkeleton'];
   secondStage?: SecondStageData | null;
+  // 标准2023 出线超过 8 人：小组赛结束后自动生成淘汰赛，不走 A-H 第二阶段（此时 secondStage 为 null）。
+  autoKnockout?: { qualifiers: number } | null;
 }
 
 interface RedrawRequestItem {
@@ -323,6 +325,38 @@ function toKnockoutBracketData(data: BracketData): KnockoutBracketData {
   };
 }
 
+// 标准2023 出线超过 8 人、淘汰赛尚未生成时：直接把预排骨架当作一张对阵图显示
+//（签位为「X组第N名」），不再多出一张空的「0 个签位」卡片。
+function toSkeletonBracketData(
+  data: BracketData,
+  skeleton: NonNullable<KnockoutBracketData['knockoutSkeleton']>,
+): KnockoutBracketData {
+  return {
+    id: `${data.event.id}-skeleton`,
+    tournamentId: data.event.tournamentId,
+    title: `${EVENT_TYPE_LABELS[data.event.type] ?? data.event.type} 淘汰赛预览`,
+    subtitle: `${skeleton.bracketSize} 签 · 出线 ${skeleton.participants.filter((item) => !item.isBye).length} 人 · 签位为「X组第N名」，小组赛全部结束后按此签表自动生成`,
+    participants: skeleton.participants.map((item) => ({
+      id: item.id,
+      position: item.position,
+      name: item.name,
+      isBye: item.isBye,
+    })),
+    matches: skeleton.matches
+      .filter((match) => match.round !== 'BRONZE')
+      .map((match) => ({
+        id: match.id,
+        roundNo: match.roundNo,
+        roundLabel: roundCn(match.round),
+        matchNo: match.matchNo,
+        status: match.status,
+        side1Id: match.side1Id,
+        side2Id: match.side2Id,
+        winnerSide: match.winnerSide,
+      })),
+  };
+}
+
 function BracketRenderer({ data }: { data?: BracketData | null }) {
   if (!data) return <Empty description="请选择单项查看对阵" />;
   if (!data.rounds.length && !data.groups.length) return <Empty description="暂无抽签结果，请先点击抽签" />;
@@ -340,7 +374,7 @@ function BracketRenderer({ data }: { data?: BracketData | null }) {
         ? {
             message: '小组循环已生成（标准2023）',
             description:
-              '蛇形分组 + 组内循环。小组赛全部完赛后，系统会按官方名次（胜场→相互胜负→净胜局→净胜分）取各组出线选手，自动生成单淘汰对阵（组冠军分散、首轮不同组）。',
+              '蛇形分组 + 组内循环。小组赛全部完赛后，系统按官方名次（胜场→相互胜负→净胜局→净胜分）取各组出线选手：出线不超过 8 人进入下方 A-H 第二阶段；超过 8 人自动生成单淘汰对阵（轮空优先给小组第一，同组第一、第二分在上下半区，决赛前不会再相遇）。',
           }
         : format === 'ROUND_ROBIN'
         ? {
@@ -389,12 +423,18 @@ function BracketRenderer({ data }: { data?: BracketData | null }) {
             </Col>
           ))}
         </Row>
-        {format === 'GROUP_PLUS_KNOCKOUT_STD' && data.rounds.length ? (
+        {format === 'GROUP_PLUS_KNOCKOUT_STD' && (data.rounds.length || data.knockoutSkeleton) ? (
           <>
             <Typography.Title level={5} style={{ margin: '8px 0 0' }}>
-              淘汰赛对阵
+              {data.rounds.length ? '淘汰赛对阵' : '淘汰赛对阵（预览：小组赛全部结束后按此签表自动生成）'}
             </Typography.Title>
-            <KnockoutBracket data={toKnockoutBracketData(data)} />
+            <KnockoutBracket
+              data={
+                !data.rounds.length && data.knockoutSkeleton
+                  ? toSkeletonBracketData(data, data.knockoutSkeleton)
+                  : toKnockoutBracketData(data)
+              }
+            />
           </>
         ) : null}
       </Space>
@@ -459,6 +499,8 @@ export default function DrawsPage() {
   const isManualSecondStageFormat = selectedEvent?.format === 'SINGLE_ELIMINATION_PLUS_GROUP_RANKING';
   const isStandardSecondStageFormat = selectedEvent?.format === 'GROUP_PLUS_KNOCKOUT_STD';
   const isSecondStageFormat = isManualSecondStageFormat || isStandardSecondStageFormat;
+  // 标准2023 出线超过 8 人：小组赛结束后自动生成淘汰赛，不显示 A-H 第二阶段区块。
+  const standardAutoKnockout = isStandardSecondStageFormat ? visibleBracket?.autoKnockout ?? null : null;
   const standardEligibleEntrants = visibleBracket?.secondStage?.eligibleEntrants ?? [];
   // 标准2023的官方出线名次只有在小组赛全部完赛后才会产生。出线名次尚未产生时，
   // 回退到「全部已通过报名」作为候选，让管理员仍能在第二阶段区块手动指定签位
@@ -1363,7 +1405,15 @@ export default function DrawsPage() {
                   <BracketRenderer data={visibleBracket} />
                 </div>
               </section>
-              {isSecondStageFormat && (
+              {standardAutoKnockout && (
+                <Alert
+                  type="info"
+                  showIcon
+                  message={`本项目出线 ${standardAutoKnockout.qualifiers} 人，超过 A-H 的 8 个签位，不使用 A-H 第二阶段`}
+                  description="小组赛全部结束后，系统按官方名次自动生成淘汰赛：轮空优先给小组第一，同组第一、第二分在上下半区。抽签后可在上方「淘汰赛对阵（预览）」查看签表；前台对阵表、秩序册使用同一份签表。"
+                />
+              )}
+              {isSecondStageFormat && !standardAutoKnockout && (
                 <section style={{ border: '1px solid #d9f7be', borderRadius: 8, padding: 16, background: '#fff' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12, flexWrap: 'wrap' }}>
                     <div>

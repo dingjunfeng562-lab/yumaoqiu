@@ -5,7 +5,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { SECOND_STAGE_FORMAL_ROUND_NO_BASE } from '../common/second-stage-bracket';
 import * as ExcelJS from 'exceljs';
 import { applyFinalRankings, teamStandings } from '../common/final-rankings';
-import { knockoutPlacements } from '../common/knockout-placement';
+import { isByeMatch, knockoutPlacements } from '../common/knockout-placement';
 import { buildOrderbookWorkbook, teamCompetitionEvents } from './orderbook-workbook';
 import { applyEventMixes, hasEventMix } from './export-mix';
 import { hostDisplayLabel, mixOriginLabel } from '../common/event-mix';
@@ -364,7 +364,7 @@ export class ExportsService {
       : applyEventMixes(found);
 
     // 生成器版本也进指纹：改了出片逻辑（如淘汰赛名次折算）后，旧缓存文件会在下次下载/巡检时自动重建。
-    const fingerprint = createHash('sha256').update(kind === 'orderbook' ? 'team-orderbook-v7-knockout-placements' : 'team-standings-v5-round-labels').update(kind).update(JSON.stringify(tournament)).digest('hex');
+    const fingerprint = createHash('sha256').update(kind === 'orderbook' ? 'team-orderbook-v9-bye-and-placings' : 'team-standings-v6-bye-and-placings').update(kind).update(JSON.stringify(tournament)).digest('hex');
     return { kind, tournament, fingerprint };
   }
 
@@ -905,10 +905,10 @@ export class ExportsService {
   ) {
     const snapshot = side === 1 ? match.side1Name : match.side2Name;
     if (snapshot) return snapshot;
-    return this.sideName(
-      side === 1 ? match.side1Id : match.side2Id,
-      registrationMap,
-    );
+    // 轮空场（已结束、只有一方）空的一方写「轮空」，不写「待定」。
+    const id = side === 1 ? match.side1Id : match.side2Id;
+    if (!id && isByeMatch(match)) return '轮空';
+    return this.sideName(id, registrationMap);
   }
 
   private matchWinnerLabel(

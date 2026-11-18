@@ -11,7 +11,14 @@ import { effectiveTournamentStatus } from '../tournaments/tournament-status';
 import { applyFinalRankings, limitRankings, teamStandings } from '../common/final-rankings';
 import { tournamentResultsReady } from '../common/tournament-results-ready';
 import { hostDisplayLabel, mergeMixRegistrations, mixEventIds } from '../common/event-mix';
-import { buildKnockoutSkeleton } from '../common/knockout-skeleton';
+import {
+  buildKnockoutSkeleton,
+  groupSizesFromGroupMatches,
+} from '../common/knockout-skeleton';
+import {
+  knockoutPlacements,
+  type KnockoutMatchLike,
+} from '../common/knockout-placement';
 import { VersionedCache } from '../common/versioned-cache';
 import { CoalescingRunner } from '../common/coalescing-runner';
 import { teamCompetitionLabel } from '../common/team-competition-label';
@@ -967,8 +974,8 @@ export class PublicService {
       .filter((match: any) => match.roundNo === 1)
       .sort((a: any, b: any) => a.matchNo - b.matchNo);
 
-    // GROUP_PLUS_KNOCKOUT_STD：小组赛出线前淘汰赛尚未生成，按 组数×出线数 预画对阵骨架
-    //（签位用「X组第N名」占位，出线后由真实签表无缝替换）。
+    // GROUP_PLUS_KNOCKOUT_STD：小组赛出线前淘汰赛尚未生成，按 各组人数×出线数 预画对阵骨架
+    //（签位用「X组第N名」占位，排法与实际生成相同，出线后由真实签表无缝替换）。
     const hasKnockout = bracketMatches.some((match: any) => match.roundNo >= 1);
     const skeleton =
       !hasKnockout && event.format === Format.GROUP_PLUS_KNOCKOUT_STD
@@ -982,6 +989,7 @@ export class PublicService {
               ),
             ] as string[],
             event.qualifiersPerGroup ?? 2,
+            groupSizesFromGroupMatches(bracketMatches),
           )
         : null;
 
@@ -1506,7 +1514,7 @@ export class PublicService {
    * 标准小组循环+淘汰(GROUP_PLUS_KNOCKOUT_STD)的最终名次：
    * - 淘汰赛尚未生成(仍在小组阶段)时，回退到小组循环战绩排名；
    * - 淘汰赛已生成后：出线选手按淘汰赛成绩排在前(决赛定冠亚军、季军赛定三四名，
-   *   其余按被淘汰轮次越晚越靠前)，未出线选手按小组循环战绩接在其后。
+   *   其余按出局轮次并列)，未出线选手并列在其后，同档内按战绩先后列出。
    */
   private groupPlusKnockoutStdStandings(
     event: any,
@@ -1541,71 +1549,42 @@ export class PublicService {
       }
     }
 
-    // 淘汰赛参赛者与被淘汰轮次（轮次越大=越晚被淘汰=名次越前）。
+    // 淘汰赛参赛者（轮空场只有一方，空的一方不算）。
     const knockoutIds = new Set<string>();
-    const eliminatedRound = new Map<string, number>();
     for (const m of knockoutMatches) {
       if (m.side1Id) knockoutIds.add(m.side1Id);
       if (m.side2Id) knockoutIds.add(m.side2Id);
-      if (m.status === MatchStatus.COMPLETED && m.winnerSide && m.side1Id && m.side2Id) {
-        const loserId = m.winnerSide === 1 ? m.side2Id : m.side1Id;
-        eliminatedRound.set(loserId, m.roundNo);
-      }
     }
 
-    // 决赛定冠亚军、季军赛定三四名。
-    const rankMap = new Map<string, number>();
-    const finalMatch = knockoutMatches.find(
-      (m) => m.round === 'F' && m.status === MatchStatus.COMPLETED && m.winnerSide,
+    // 名次与导出（秩序册、成绩册）同一口径（knockoutPlacements）：决赛定冠亚、季军赛定三四，
+    // 其余按出局轮次并列——1/4 决赛负者并列第5、1/8 并列第9、1/16 并列第17、1/32 并列第33、
+    // 1/64 并列第65；还没打完的取该轮名次区间的起点。未出线的并列在全部淘汰赛选手之后。
+    const placementRank = new Map<string, number>();
+    const placements = knockoutPlacements(
+      knockoutMatches as KnockoutMatchLike[],
     );
-    if (finalMatch) {
-      const champ = finalMatch.winnerSide === 1 ? finalMatch.side1Id : finalMatch.side2Id;
-      const runner = finalMatch.winnerSide === 1 ? finalMatch.side2Id : finalMatch.side1Id;
-      if (champ) rankMap.set(champ, 1);
-      if (runner) rankMap.set(runner, 2);
-    }
-    const bronzeMatch = knockoutMatches.find(
-      (m) => m.round === 'BRONZE' && m.status === MatchStatus.COMPLETED && m.winnerSide,
-    );
-    if (bronzeMatch) {
-      const third = bronzeMatch.winnerSide === 1 ? bronzeMatch.side1Id : bronzeMatch.side2Id;
-      const fourth = bronzeMatch.winnerSide === 1 ? bronzeMatch.side2Id : bronzeMatch.side1Id;
-      if (third) rankMap.set(third, 3);
-      if (fourth) rankMap.set(fourth, 4);
-    }
-
-    const sorted = [...rows].sort((a, b) => {
-      const aIn = knockoutIds.has(a.id);
-      const bIn = knockoutIds.has(b.id);
-      if (aIn !== bIn) return aIn ? -1 : 1; // 出线(淘汰赛)选手整体排在未出线之前
-      if (aIn && bIn) {
-        const ra = rankMap.get(a.id) ?? Number.MAX_SAFE_INTEGER;
-        const rb = rankMap.get(b.id) ?? Number.MAX_SAFE_INTEGER;
-        if (ra !== rb) return ra - rb;
-        const ea = eliminatedRound.get(a.id) ?? 0;
-        const eb = eliminatedRound.get(b.id) ?? 0;
-        if (eb !== ea) return eb - ea;
+    for (const item of placements.rows) {
+      if (item.entrantId && !placementRank.has(item.entrantId)) {
+        placementRank.set(item.entrantId, item.rank);
       }
-      return (
+    }
+    const nonQualifierPlace = knockoutIds.size + 1;
+    const rankOf = (id: string) =>
+      knockoutIds.has(id)
+        ? (placementRank.get(id) ?? nonQualifierPlace - 1)
+        : nonQualifierPlace;
+
+    const sorted = [...rows].sort(
+      (a, b) =>
+        rankOf(a.id) - rankOf(b.id) ||
         b.wins - a.wins ||
         b.gameDiff - a.gameDiff ||
         a.losses - b.losses ||
-        a.name.localeCompare(b.name, 'zh-CN')
-      );
-    });
+        a.name.localeCompare(b.name, 'zh-CN'),
+    );
 
-    // 决出名次（决赛定冠亚、季军赛定三四）之外的选手不再依次排序，而是并列：
-    // 进了淘汰赛但未决出名次的并列同一档（如并列第 5），未出线的再并列到其后一档。
-    const fixedRanks = [...rankMap.values()];
-    const tiedKnockoutPlace = fixedRanks.length ? Math.max(...fixedRanks) + 1 : 1;
-    const tiedKnockoutCount = sorted.filter(
-      (row) => knockoutIds.has(row.id) && !rankMap.has(row.id),
-    ).length;
-    const tiedNonQualifierPlace = tiedKnockoutPlace + tiedKnockoutCount;
     return sorted.map((row) => {
-      const fixedRank = rankMap.get(row.id);
-      const rank =
-        fixedRank ?? (knockoutIds.has(row.id) ? tiedKnockoutPlace : tiedNonQualifierPlace);
+      const rank = rankOf(row.id);
       return {
         rank,
         ...row,

@@ -43,7 +43,10 @@ import {
   secondStageFormalRoundNo,
 } from '../common/second-stage-bracket';
 import { SecondStageProgressService } from '../common/second-stage-progress.service';
-import { buildKnockoutSkeleton } from '../common/knockout-skeleton';
+import {
+  buildKnockoutSkeleton,
+  groupSizesFromGroupMatches,
+} from '../common/knockout-skeleton';
 
 type RegistrationWithPlayers = Registration & {
   player1: { id: string; name: string; gender: string | null; affiliation: string };
@@ -1201,13 +1204,22 @@ export class DrawsService {
       .filter((match) => isSecondStageFormalRoundNo(match.roundNo))
       .map((match) => hydrateMatch(match));
 
-    // GROUP_PLUS_KNOCKOUT_STD：小组赛出线前淘汰赛尚未生成，按 组数×出线数 预画对阵骨架
-    //（签位用「X组第N名」占位，出线后由真实签表无缝替换）。
+    // GROUP_PLUS_KNOCKOUT_STD 出线超过 A-H 的 8 个签位：小组赛全部完赛后自动生成单淘汰
+    //（scoring.fillGroupKnockoutIfReady）。生成前按 各组人数×出线数 预画对阵骨架，签位用
+    //「X组第N名」占位，排法与实际生成相同，出线后由真实签表无缝替换。
+    // 出线不超过 8 人走 A-H 第二阶段，第二阶段区块有自己的对阵预览，这里不画骨架。
+    const groupSizes = groupSizesFromGroupMatches(matches);
     const knockoutSkeleton =
-      rounds.length === 0 && event.format === Format.GROUP_PLUS_KNOCKOUT_STD
+      rounds.length === 0 &&
+      event.format === Format.GROUP_PLUS_KNOCKOUT_STD &&
+      this.standardQualifierTotal(
+        [...groupSizes.values()],
+        event.qualifiersPerGroup,
+      ) > SECOND_STAGE_SLOTS.length
         ? buildKnockoutSkeleton(
             groups.map((group) => group.name),
             event.qualifiersPerGroup ?? 2,
+            groupSizes,
           )
         : null;
     const secondStageEntrants =
@@ -1222,6 +1234,19 @@ export class DrawsService {
       this.drawFormatForEvent(event.format),
       registrations.length,
     );
+    // 标准2023 出线超过 8 人：不走 A-H 第二阶段（不返回第二阶段预览），抽签编排页改为提示自动生成淘汰赛。
+    // 已确认过的第二阶段照常返回。
+    const standardQualifiers = this.standardQualifierTotal(
+      [...groupSizes.values()],
+      event.qualifiersPerGroup,
+      groupPlan?.qualifiersTotal,
+    );
+    const autoKnockout =
+      event.format === Format.GROUP_PLUS_KNOCKOUT_STD &&
+      !secondStage &&
+      standardQualifiers > SECOND_STAGE_SLOTS.length
+        ? { qualifiers: standardQualifiers }
+        : null;
 
     return {
       event,
@@ -1231,21 +1256,24 @@ export class DrawsService {
       groups,
       groupPlan,
       knockoutSkeleton,
-      secondStage: this.secondStageView(
-        secondStage,
-        event.format,
-        new Map(registrations.map((registration) => [registration.id, registration])),
-        secondStageEntrants,
-        event.qualifiersPerGroup ?? 2,
-        groups.map((group) => group.name),
-      ),
+      secondStage: autoKnockout
+        ? null
+        : this.secondStageView(
+            secondStage,
+            event.format,
+            new Map(registrations.map((registration) => [registration.id, registration])),
+            secondStageEntrants,
+            event.qualifiersPerGroup ?? 2,
+            groups.map((group) => group.name),
+          ),
       secondStageFormalMatches,
+      autoKnockout,
     };
   }
 
   async getSecondStage(eventId: string) {
     const event = await this.ensureEvent(eventId);
-    const [stage, registrations] = await Promise.all([
+    const [stage, registrations, groupMatches] = await Promise.all([
       this.prisma.secondStage.findUnique({
         where: { eventId },
         include: {
@@ -1258,7 +1286,22 @@ export class DrawsService {
         where: { eventId: await this.entrantScope(eventId), status: RegistrationStatus.APPROVED },
         include: { player1: true, player2: true },
       }),
+      this.prisma.match.findMany({
+        where: { eventId, roundNo: 0 },
+        select: { roundNo: true, round: true, side1Id: true, side2Id: true },
+      }),
     ]);
+    // 标准2023 出线超过 8 人：小组赛结束后自动生成淘汰赛，没有 A-H 第二阶段（已确认过的照常返回）。
+    if (
+      !stage &&
+      this.standardAutoKnockoutTotal(
+        event,
+        groupMatches,
+        registrations.length,
+      ) !== null
+    ) {
+      return null;
+    }
     const groupCodes = [
       ...new Set(
         registrations
@@ -1290,6 +1333,29 @@ export class DrawsService {
     const isStandard2023Format = event.format === Format.GROUP_PLUS_KNOCKOUT_STD;
     if (!isManualRankingFormat && !isStandard2023Format) {
       throw new BadRequestException('当前单项不支持第二阶段 A-H 签位编排');
+    }
+    if (isStandard2023Format) {
+      // 出线超过 8 人时小组赛结束后自动生成淘汰赛。若在这里确认了 A-H，第二阶段场次会挡住自动生成。
+      const scope = await this.entrantScope(eventId);
+      const [groupMatches, approvedCount] = await Promise.all([
+        this.prisma.match.findMany({
+          where: { eventId, roundNo: 0 },
+          select: { roundNo: true, round: true, side1Id: true, side2Id: true },
+        }),
+        this.prisma.registration.count({
+          where: { eventId: scope, status: RegistrationStatus.APPROVED },
+        }),
+      ]);
+      const autoKnockoutTotal = this.standardAutoKnockoutTotal(
+        event,
+        groupMatches,
+        approvedCount,
+      );
+      if (autoKnockoutTotal !== null) {
+        throw new BadRequestException(
+          `本项目小组赛出线 ${autoKnockoutTotal} 人，超过 A-H 的 8 个签位：小组赛全部结束后系统会自动生成淘汰赛，不使用 A-H 第二阶段`,
+        );
+      }
     }
 
     // A-H 签位允许留空（轮空）：留空/未选的签位无选手，对应初始赛由对手不战而胜。
@@ -2030,6 +2096,54 @@ export class DrawsService {
     const letters = /^[A-Z]+/.exec(value.trim().toUpperCase())?.[0];
     if (!letters) return Number.MAX_SAFE_INTEGER;
     return [...letters].reduce((sum, char) => sum * 26 + char.charCodeAt(0) - 64, 0);
+  }
+
+  /**
+   * 标准2023 预计出线人数：已抽签时按各组人数（每组最多取「每组出线数」人，与 scoring 实际出线一致），
+   * 未抽签时按当前报名的分组计划。
+   */
+  private standardQualifierTotal(
+    groupSizes: number[],
+    qualifiersPerGroup: number | null | undefined,
+    plannedTotal?: number | null,
+  ) {
+    const q = Math.max(1, qualifiersPerGroup || 2);
+    if (groupSizes.length) {
+      return groupSizes.reduce((sum, size) => sum + Math.min(q, size), 0);
+    }
+    return plannedTotal ?? 0;
+  }
+
+  /**
+   * 标准2023 出线超过 A-H 的 8 个签位时返回预计出线人数（小组赛结束后自动生成淘汰赛，
+   * 不走 A-H 第二阶段）；其它情况返回 null。
+   */
+  private standardAutoKnockoutTotal(
+    event: {
+      format: Format;
+      groupCount?: number | null;
+      groupSize?: number | null;
+      qualifiersPerGroup?: number | null;
+    },
+    groupMatches: Array<{
+      roundNo: number;
+      round: string;
+      side1Id: string | null;
+      side2Id: string | null;
+    }>,
+    approvedCount: number,
+  ): number | null {
+    if (event.format !== Format.GROUP_PLUS_KNOCKOUT_STD) return null;
+    const total = this.standardQualifierTotal(
+      [...groupSizesFromGroupMatches(groupMatches).values()],
+      event.qualifiersPerGroup,
+      this.groupPlanFor(
+        event,
+        this.drawFormatForEvent(event.format),
+        approvedCount,
+      )?.qualifiersTotal,
+    );
+    return total > SECOND_STAGE_SLOTS.length ? total : null;
   }
 
   private supportsSecondStageBracket(eventFormat?: Format) {

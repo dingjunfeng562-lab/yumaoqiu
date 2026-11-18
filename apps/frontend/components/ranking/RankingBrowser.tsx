@@ -73,10 +73,16 @@ export function RankingBrowser({ tournaments, loadError }: { tournaments: Rankin
   }, [selected, load]);
 
   const query = search.trim().toLocaleLowerCase();
-  const events = tournament?.events.map((event) => ({
-    ...event,
-    standings: event.standings.filter((row) => `${row.name} ${row.teamName ?? ''}`.toLocaleLowerCase().includes(query)),
-  })).filter((event) => event.standings.length) ?? [];
+  const events = tournament?.events.map((event) => {
+    // 同一名次有多人时写「并列第N名」（与秩序册、成绩册一致）；按搜索前的完整名单判断。
+    const rankCounts = new Map<number, number>();
+    for (const row of event.standings) rankCounts.set(row.rank, (rankCounts.get(row.rank) ?? 0) + 1);
+    return {
+      ...event,
+      tiedRanks: new Set([...rankCounts].filter(([, count]) => count > 1).map(([rank]) => rank)),
+      standings: event.standings.filter((row) => `${row.name} ${row.teamName ?? ''}`.toLocaleLowerCase().includes(query)),
+    };
+  }).filter((event) => event.standings.length) ?? [];
 
   return <div className="ranking-browser space-y-5">
     <style jsx>{`
@@ -135,7 +141,7 @@ export function RankingBrowser({ tournaments, loadError }: { tournaments: Rankin
                 <th className="w-28 px-4 py-3">最终名次</th><th className="px-4 py-3">参赛选手／队伍</th>
               </tr></thead>
               <tbody>{event.standings.map((row) => <tr key={row.id} className="border-t border-slate-100">
-                <td className="whitespace-nowrap px-4 py-3 font-black text-blue-700">第{row.rank}名</td>
+                <td className="whitespace-nowrap px-4 py-3 font-black text-blue-700">{event.tiedRanks.has(row.rank) ? '并列' : ''}第{row.rank}名</td>
                 <td className="break-words px-4 py-3 font-bold text-slate-950">{row.name}
                   {row.teamName && row.teamName !== row.name && <span className="mt-1 block text-xs font-normal text-slate-500">{row.teamName}</span>}
                 </td>

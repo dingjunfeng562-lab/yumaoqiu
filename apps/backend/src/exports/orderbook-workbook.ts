@@ -1,6 +1,9 @@
 import * as ExcelJS from 'exceljs';
-import { buildKnockoutSkeleton } from '../common/knockout-skeleton';
-import { knockoutPlacements } from '../common/knockout-placement';
+import {
+  buildKnockoutSkeleton,
+  groupSizesFromGroupMatches,
+} from '../common/knockout-skeleton';
+import { isByeMatch, knockoutPlacements } from '../common/knockout-placement';
 import { teamStandings } from '../common/final-rankings';
 import { withOfficialTeamResult } from '../common/team-official-result';
 import { teamResultsReady } from '../common/tournament-results-ready';
@@ -1163,7 +1166,8 @@ function renderKnockoutBracket(
   return layoutBracketTree(ws, startRow, rounds, bronzeMatch ? toBox(bronzeMatch) : null);
 }
 
-// 第二阶段（GROUP_PLUS_KNOCKOUT_STD 出线前）：按组数×出线数预生成对阵骨架，签位用「X组第N名」占位。
+// 第二阶段（GROUP_PLUS_KNOCKOUT_STD 出线前）：按各组人数×出线数预生成对阵骨架，签位用「X组第N名」占位，
+// 排法与小组赛结束后实际生成的淘汰赛相同。
 function renderSkeletonBracket(ws: ExcelJS.Worksheet, startRow: number, event: ExportEvent) {
   const groupCodes = [
     ...new Set(
@@ -1173,7 +1177,11 @@ function renderSkeletonBracket(ws: ExcelJS.Worksheet, startRow: number, event: E
         .filter(Boolean),
     ),
   ];
-  const skeleton = buildKnockoutSkeleton(groupCodes, event.qualifiersPerGroup ?? 2);
+  const skeleton = buildKnockoutSkeleton(
+    groupCodes,
+    event.qualifiersPerGroup ?? 2,
+    groupSizesFromGroupMatches(event.matches),
+  );
   if (!skeleton) return startRow;
 
   const nameById = new Map(skeleton.participants.map((p) => [p.id, p.name]));
@@ -1301,6 +1309,8 @@ function displayMatchSide(
     const name = registrationName(registration);
     return team ? `${team}（${name}）` : name;
   }
+  // 轮空场（已结束、只有一方）空的一方写「轮空」，不写「待定」。
+  if (!id && isByeMatch(match)) return '轮空';
   const planning = secondStagePlanningMatch(event, match);
   const source = side === 1 ? planning?.side1Source : planning?.side2Source;
   const snapshot = side === 1 ? planning?.side1NameSnapshot : planning?.side2NameSnapshot;

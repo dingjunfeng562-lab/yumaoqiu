@@ -477,7 +477,16 @@ export function KnockoutBracket({
 
   const matchByKey = useMemo(() => new Map(matches.map((m) => [m.layoutKey, m])), [matches]);
 
-  const participantById = useMemo(() => new Map(slots.map((slot) => [slot.id, slot])), [slots]);
+  // 淘汰赛签位（slots）只有进了淘汰赛的人；小组赛卡片里没出线的人从分组名单里取名字，
+  // 否则淘汰赛一生成，他们在小组赛卡片上就变成「待定」。
+  const participantById = useMemo(() => {
+    const map = new Map<string, BracketParticipant>();
+    for (const group of data.groups ?? []) {
+      for (const member of group.members) map.set(member.id, member);
+    }
+    for (const slot of slots) map.set(slot.id, slot);
+    return map;
+  }, [data.groups, slots]);
 
   const slotIndexById = useMemo(() => {
     const map = new Map<string, number>();
@@ -503,7 +512,13 @@ export function KnockoutBracket({
       return slots[(match.matchNo - 1) * 2 + (side === 1 ? 0 : 1)] ?? null;
     }
     const id = side === 1 ? match.side1Id : match.side2Id;
-    return id ? participantById.get(id) ?? null : null;
+    if (id) return participantById.get(id) ?? null;
+    // 轮空场（已结束、只有一方）：空的一方是轮空，不是「待定」。
+    const otherId = side === 1 ? match.side2Id : match.side1Id;
+    if (otherId && match.winnerSide && normalizeStatus(match.status) === 'COMPLETED') {
+      return { id: `bye-${match.id}-${side}`, position: 0, name: '— 轮空 —', isBye: true };
+    }
+    return null;
   }
 
   function winnerFor(match: BracketMatch): BracketParticipant | null {
