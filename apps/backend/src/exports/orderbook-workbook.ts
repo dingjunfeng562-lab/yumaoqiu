@@ -3,6 +3,7 @@ import {
   buildKnockoutSkeleton,
   compareGroupCode,
   groupSizesFromGroupMatches,
+  type SkeletonMatch,
 } from '../common/knockout-skeleton';
 import { isByeMatch, knockoutPlacements } from '../common/knockout-placement';
 import { teamStandings } from '../common/final-rankings';
@@ -398,7 +399,7 @@ function venues(tournament: ExportTournament): ExportVenue[] {
 }
 
 // 每个项目内，已排程场次按时间→场地→场序编「场次号」（男双1、男双2…）。
-function matchCodeMap(tournament: ExportTournament) {
+function matchCodeMap(tournament: Pick<ExportTournament, 'events'>) {
   const map = new Map<string, string>();
   for (const event of tournament.events) {
     const abbr = event.codePrefix ?? EVENT_TYPE_ABBR[event.type] ?? '场';
@@ -448,12 +449,15 @@ function pairKey(a: string, b: string) {
 }
 
 // 团体赛一场对外对阵包含多个子项场次；流程表/对阵表按“场”呈现，
-// 因此同一轮次、同一对阵只保留一条。
+// 因此同一轮次、同一场团体对阵（第N场）只保留一条。单项每条都是独立场次，不去重——
+// 否则淘汰赛后面几轮双方都还是「待定」的场次会被当成同一场，只剩一个框。
 function dedupeFixtures(matches: ExportMatch[]) {
   const seen = new Set<string>();
   const kept: ExportMatch[] = [];
   for (const match of matches) {
-    const key = `${match.roundNo ?? 0}|${String(match.round)}|${match.side1Id}|${match.side2Id}`;
+    const key = match.matchNoText
+      ? `${match.roundNo ?? 0}|${String(match.round)}|${match.matchNoText}`
+      : match.id;
     if (seen.has(key)) continue;
     seen.add(key);
     kept.push(match);
@@ -775,7 +779,10 @@ function buildFlowSheet(
   tournament: ExportTournament,
   stage?: 'first' | 'second',
 ) {
-  const ws = wb.addWorksheet('流程表');
+  // 打印：横向、缩到一页宽，高度按内容分页；对阵树每段从新的一页开始（见 renderBracketTree）。
+  const ws = wb.addWorksheet('流程表', {
+    pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 },
+  });
   ws.properties.defaultColWidth = 8;
   const regMap = registrationMap(tournament);
   const codeMap = matchCodeMap(tournament);
@@ -793,23 +800,25 @@ function buildFlowSheet(
       row = renderGroupGrids(ws, row, event, regMap, codeMap);
       row += 1;
     }
-    // 第二阶段：优先用后台手动指定的「前8/前6晋级赛」对阵图；否则退回到淘汰赛对阵树
-    //（无任何场次时仅留标题占位，与参考件一致）。
+    // 第二阶段：优先用后台手动指定的「前8/前6晋级赛」对阵图；否则画淘汰赛对阵树（已生成的
+    // 淘汰赛场次，或标准2023 出线前按「X组第N名」预排的骨架）。都没有时仅留标题占位，与参考件一致。
     if (stage !== 'first') {
-      row = sectionTitle(ws, row, `${label}第二阶段：`);
-      if (teamRoundRobin) {
-        // 保留秩序册模板的第二阶段占位；单组循环打完即结束，不生成淘汰场次。
-        ws.getCell(row, 1).value = '单组循环全部结束后确定各队名次，见“名次汇总”。';
-        row += 2;
-      } else if (event.secondStage && event.secondStage.matches.length) {
-        row = renderSecondStagePlacement(ws, row, event, event.secondStage, regMap);
-      } else if (event.matches.some((m) => isPlayoff(m))) {
-        row = renderPlayoffPlacementMatches(ws, row, event, regMap);
-      } else if (event.matches.some((m) => (m.roundNo ?? 0) >= 1 && (m.roundNo ?? 0) < 100 && !isPlayoff(m))) {
-        row = renderKnockoutBracket(ws, row, event, regMap);
-      } else if (event.format === GROUP_KNOCKOUT_STD) {
-        // 出线前也按组数×出线数预画对阵骨架（X组第N名占位）。
-        row = renderSkeletonBracket(ws, row, event);
+      const placement = Boolean(event.secondStage && event.secondStage.matches.length);
+      const playoff = event.matches.some((m) => isPlayoff(m));
+      const tree = teamRoundRobin || placement || playoff ? null : eventBracketTree(event, regMap, codeMap);
+      if (tree) {
+        row = renderBracketTree(ws, row, tree, `${label}第二阶段`);
+      } else {
+        row = sectionTitle(ws, row, `${label}第二阶段：`);
+        if (teamRoundRobin) {
+          // 保留秩序册模板的第二阶段占位；单组循环打完即结束，不生成淘汰场次。
+          ws.getCell(row, 1).value = '单组循环全部结束后确定各队名次，见“名次汇总”。';
+          row += 2;
+        } else if (event.secondStage && event.secondStage.matches.length) {
+          row = renderSecondStagePlacement(ws, row, event, event.secondStage, regMap);
+        } else if (playoff) {
+          row = renderPlayoffPlacementMatches(ws, row, event, regMap);
+        }
       }
     }
     row += 2;
@@ -1049,164 +1058,331 @@ function computeGroupStandings(
   return result;
 }
 
-// 第二阶段对阵树的一个「场次盒子」（已脱离数据源，供统一布局复用）。
-type BracketBox = {
-  side1: string;
-  side2: string;
-  winnerSide: number | null;
-  score: string;
+// ===== 第二阶段淘汰对阵树 =====
+// 秩序册「流程表」第二阶段与后台「对阵图（PNG）」共用同一份数据（eventBracketTree），
+// 名字、比分、场次号、轮空、冠军都从这里来，两边内容一致。
+
+export type BracketTreeSide = {
+  name: string;
+  /** 单位（学校/队伍），PNG 对阵图用。 */
+  unit: string;
+  /** 每局得分（团体赛为团体总比分），打了才有。 */
+  scores: string[];
+  winner: boolean;
+  /** 轮空场空着的一方（写「轮空」）。 */
+  bye: boolean;
 };
 
-// 通用对阵树布局：rounds 升序为列，每场两行盒子，季军赛置于树下方。返回下一可用行。
-function layoutBracketTree(
-  ws: ExcelJS.Worksheet,
-  startRow: number,
-  rounds: Array<{ label: string; boxes: BracketBox[] }>,
-  bronze: BracketBox | null,
-) {
-  const SLOT = 3; // 首轮每场占的纵向基准格数
-  const BOX_W = 5;
-  const GAP = 2; // 轮间空列，承载比分
+export type BracketTreeMatch = {
+  /** 场次号 · 时间 · 场地，排了才有。 */
+  info: string;
+  sides: [BracketTreeSide, BracketTreeSide];
+};
 
-  // 每轮每场的纵向中心：首轮等距，后续轮取两个来源场的中点。
-  const centers: number[][] = [];
-  rounds.forEach((round, k) => {
-    if (k === 0) {
-      centers[k] = round.boxes.map((_, m) => m * SLOT + 0.5);
-    } else {
-      centers[k] = round.boxes.map((_, m) => {
-        const a = centers[k - 1][2 * m] ?? m * SLOT + 0.5;
-        const b = centers[k - 1][2 * m + 1] ?? a;
-        return (a + b) / 2;
-      });
-    }
-  });
+export type BracketTreeRound = { label: string; matches: BracketTreeMatch[] };
 
-  const headerRow = startRow;
-  const bodyTop = startRow + 1;
-  let maxRow = bodyTop;
-  rounds.forEach((round, k) => {
-    const col = 1 + k * (BOX_W + GAP);
-    ws.mergeCells(headerRow, col, headerRow, col + BOX_W - 1);
-    const head = ws.getCell(headerRow, col);
-    head.value = round.label;
-    styleHeaderCell(head);
-    round.boxes.forEach((box, m) => {
-      const top = bodyTop + Math.floor(centers[k][m]);
-      drawBracketBox(ws, top, col, BOX_W, box);
-      maxRow = Math.max(maxRow, top + 2);
-    });
-  });
+export type BracketTree = {
+  /** 按轮次升序；每轮场次按签位顺序，第 2m、2m+1 场的胜者进下一轮第 m 场。 */
+  rounds: BracketTreeRound[];
+  bronze: BracketTreeMatch | null;
+  /** 最后一轮只有一场（决赛）时画冠军位：'' = 还没决出；null = 不画。 */
+  champion: string | null;
+  /** 小组赛结束前按出线名次预排的骨架（签位写「X组第N名」）。 */
+  preview: boolean;
+  /** 签位数 = 首轮场次 × 2。 */
+  drawSize: number;
+};
 
-  if (bronze) {
-    const col = 1;
-    const top = maxRow + 2;
-    ws.mergeCells(top - 1, col, top - 1, col + BOX_W - 1);
-    const head = ws.getCell(top - 1, col);
-    head.value = '季军赛';
-    styleHeaderCell(head);
-    drawBracketBox(ws, top, col, BOX_W, bronze);
-    maxRow = top + 2;
-  }
-  return maxRow + 1;
+function knockoutTreeMatches(event: ExportEvent) {
+  return event.matches.filter((m) => (m.roundNo ?? 0) >= 1 && (m.roundNo ?? 0) < 100 && !isPlayoff(m));
 }
 
-function drawBracketBox(ws: ExcelJS.Worksheet, top: number, col: number, width: number, box: BracketBox) {
-  ws.mergeCells(top, col, top, col + width - 1);
-  ws.mergeCells(top + 1, col, top + 1, col + width - 1);
-  const c1 = ws.getCell(top, col);
-  const c2 = ws.getCell(top + 1, col);
-  c1.value = box.side1;
-  c2.value = box.side2;
-  c1.alignment = { vertical: 'middle', wrapText: true };
-  c2.alignment = { vertical: 'middle', wrapText: true };
-  c1.border = thinBorder();
-  c2.border = thinBorder();
-  if (box.winnerSide === 1) c1.font = { bold: true };
-  if (box.winnerSide === 2) c2.font = { bold: true };
-  if (box.score) {
-    ws.mergeCells(top, col + width, top + 1, col + width);
-    const scoreCell = ws.getCell(top, col + width);
-    scoreCell.value = box.score;
-    scoreCell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-    scoreCell.font = { size: 9, color: { argb: 'FF6B7280' } };
-  }
+function shortMatchDateTime(match: ExportMatch) {
+  const parts = scheduleDatePartsForMatch(match);
+  return parts ? `${pad2(parts.month)}-${pad2(parts.day)} ${pad2(parts.hour)}:${pad2(parts.minute)}` : '';
 }
 
-// 第二阶段：把已生成的淘汰赛场次铺成对阵树。
-function renderKnockoutBracket(
-  ws: ExcelJS.Worksheet,
-  startRow: number,
+// 对阵图上的单位：双打两人同单位只写一次。
+function treeUnit(registration: ExportRegistration | null | undefined) {
+  if (!registration) return '';
+  const team = registration.teamName?.trim();
+  if (team) return team;
+  const units = [registration.player1.affiliation, registration.player2?.affiliation]
+    .map((unit) => unit?.trim() ?? '')
+    .filter(Boolean);
+  return [...new Set(units)].join('/');
+}
+
+function treeMatchFromExport(
+  match: ExportMatch,
+  regMap: Map<string, ExportRegistration>,
+  codeMap: Map<string, string>,
+): BracketTreeMatch {
+  const bye = isByeMatch(match);
+  // 团体赛：scoreText 是团体总比分（子项胜场），胜负也按它算；子项场次的胜负不代表整场。
+  const team = /^(\d+):(\d+)$/.exec(match.scoreText ?? '');
+  const winnerSide = team
+    ? Number(team[1]) > Number(team[2]) ? 1 : Number(team[2]) > Number(team[1]) ? 2 : null
+    : match.winnerSide;
+  const side = (no: 1 | 2): BracketTreeSide => {
+    const id = no === 1 ? match.side1Id : match.side2Id;
+    const named = no === 1 ? match.side1Name : match.side2Name;
+    const registration = id ? regMap.get(id) ?? null : null;
+    const scores = team
+      ? [team[no]]
+      : match.games.map((game) => String(no === 1 ? game.side1Score : game.side2Score));
+    return {
+      name: named || (id ? registrationName(registration) || '待定' : bye ? '轮空' : '待定'),
+      unit: named ? '' : treeUnit(registration),
+      scores: bye ? [] : scores,
+      winner: !bye && winnerSide === no,
+      bye: bye && !id,
+    };
+  };
+  return {
+    info: bye ? '' : [codeMap.get(match.id), shortMatchDateTime(match), match.venue?.name].filter(Boolean).join('  '),
+    sides: [side(1), side(2)],
+  };
+}
+
+function finishTree(rounds: BracketTreeRound[], bronze: BracketTreeMatch | null, preview: boolean): BracketTree {
+  const last = rounds[rounds.length - 1];
+  const final = last?.matches.length === 1 ? last.matches[0] : null;
+  const champion = final ? final.sides.find((side) => side.winner)?.name ?? '' : null;
+  return { rounds, bronze, champion, preview, drawSize: (rounds[0]?.matches.length ?? 0) * 2 };
+}
+
+/**
+ * 项目的淘汰对阵树：已生成淘汰赛按真实场次；标准2023 出线前按各组人数×出线数预排骨架。
+ * 没有淘汰赛（循环赛、排位赛、还没抽签）返回 null。
+ */
+function eventBracketTree(
   event: ExportEvent,
   regMap: Map<string, ExportRegistration>,
-) {
-  const knockout = event.matches.filter(
-    (m) => (m.roundNo ?? 0) >= 1 && (m.roundNo ?? 0) < 100 && !isPlayoff(m),
-  );
-  if (!knockout.length) return startRow; // 无淘汰赛时仅保留标题占位。
+  codeMap: Map<string, string>,
+): BracketTree | null {
+  const knockout = knockoutTreeMatches(event);
+  if (knockout.length) {
+    const main = knockout.filter((m) => m.round !== 'BRONZE');
+    const roundNos = [...new Set(main.map((m) => m.roundNo ?? 0))].sort((a, b) => a - b);
+    const rounds = roundNos.map((roundNo) => {
+      const list = main
+        .filter((m) => (m.roundNo ?? 0) === roundNo)
+        .sort((a, b) => (a.matchNo ?? 0) - (b.matchNo ?? 0) || a.id.localeCompare(b.id));
+      return {
+        label: KNOCKOUT_ROUND_LABELS[String(list[0].round)] ?? roundLabel(list[0]),
+        matches: list.map((m) => treeMatchFromExport(m, regMap, codeMap)),
+      };
+    });
+    const bronze = knockout.find((m) => m.round === 'BRONZE');
+    return finishTree(rounds, bronze ? treeMatchFromExport(bronze, regMap, codeMap) : null, false);
+  }
 
-  const rn = (m: ExportMatch) => m.roundNo ?? 0;
-  const sideName = (id: string | null, match: ExportMatch) =>
-    id ? registrationName(regMap.get(id) ?? null) || '待定' : match.status === 'COMPLETED' ? '轮空' : '待定';
-  const toBox = (m: ExportMatch): BracketBox => ({
-    side1: sideName(m.side1Id, m),
-    side2: sideName(m.side2Id, m),
-    winnerSide: m.winnerSide ?? null,
-    score: m.winnerSide && m.games.length ? m.games.map((g) => `${g.side1Score}:${g.side2Score}`).join('  ') : '',
-  });
-
-  const main = knockout.filter((m) => m.round !== 'BRONZE');
-  const roundNos = [...new Set(main.map(rn))].sort((a, b) => a - b);
-  const rounds = roundNos.map((roundNo) => {
-    const boxes = main.filter((m) => rn(m) === roundNo).sort((a, b) => (a.matchNo ?? 0) - (b.matchNo ?? 0));
-    return {
-      label: KNOCKOUT_ROUND_LABELS[boxes[0].round as string] ?? roundLabel(boxes[0]),
-      boxes: boxes.map(toBox),
-    };
-  });
-  const bronzeMatch = knockout.find((m) => m.round === 'BRONZE');
-  return layoutBracketTree(ws, startRow, rounds, bronzeMatch ? toBox(bronzeMatch) : null);
-}
-
-// 第二阶段（GROUP_PLUS_KNOCKOUT_STD 出线前）：按各组人数×出线数预生成对阵骨架，签位用「X组第N名」占位，
-// 排法与小组赛结束后实际生成的淘汰赛相同。
-function renderSkeletonBracket(ws: ExcelJS.Worksheet, startRow: number, event: ExportEvent) {
-  const groupCodes = [
-    ...new Set(
-      event.matches
-        .filter((m) => (m.roundNo ?? 0) === 0)
-        .map((m) => (typeof m.round === 'string' ? m.round : m.round != null ? String(m.round) : ''))
-        .filter(Boolean),
-    ),
-  ];
-  const skeleton = buildKnockoutSkeleton(
-    groupCodes,
-    event.qualifiersPerGroup ?? 2,
-    groupSizesFromGroupMatches(event.matches),
-  );
-  if (!skeleton) return startRow;
-
+  if (event.format !== GROUP_KNOCKOUT_STD) return null;
+  // 出线前：签位排法与小组赛结束后实际生成的淘汰赛相同（placeGroupQualifiers）。
+  // 按阶段导出第二阶段时 matches 里没有小组赛场次，各组人数由 groupSizes 带进来。
+  const sizes = event.groupSizes
+    ? new Map(Object.entries(event.groupSizes))
+    : groupSizesFromGroupMatches(event.matches);
+  const skeleton = buildKnockoutSkeleton([...sizes.keys()], event.qualifiersPerGroup ?? 2, sizes);
+  if (!skeleton) return null;
   const nameById = new Map(skeleton.participants.map((p) => [p.id, p.name]));
-  const sideName = (id: string | null, status: string) =>
-    id ? nameById.get(id) ?? '待定' : status === 'COMPLETED' ? '轮空' : '待定';
+  const toTree = (m: SkeletonMatch): BracketTreeMatch => {
+    const bye = isByeMatch(m);
+    const side = (id: string | null): BracketTreeSide => ({
+      name: id ? nameById.get(id) ?? '待定' : bye ? '轮空' : '待定',
+      unit: '',
+      scores: [],
+      winner: false,
+      bye: bye && !id,
+    });
+    return { info: '', sides: [side(m.side1Id), side(m.side2Id)] };
+  };
   const main = skeleton.matches.filter((m) => m.round !== 'BRONZE');
   const roundNos = [...new Set(main.map((m) => m.roundNo))].sort((a, b) => a - b);
   const rounds = roundNos.map((roundNo) => {
-    const boxes = main.filter((m) => m.roundNo === roundNo).sort((a, b) => a.matchNo - b.matchNo);
-    return {
-      label: KNOCKOUT_ROUND_LABELS[boxes[0].round] ?? `第${roundNo}轮`,
-      boxes: boxes.map((m) => ({
-        side1: sideName(m.side1Id, m.status),
-        side2: sideName(m.side2Id, m.status),
-        winnerSide: null,
-        score: '',
-      })),
-    };
+    const list = main.filter((m) => m.roundNo === roundNo).sort((a, b) => a.matchNo - b.matchNo);
+    return { label: KNOCKOUT_ROUND_LABELS[list[0].round] ?? `第${roundNo}轮`, matches: list.map(toTree) };
   });
-  const bronze = skeleton.matches.some((m) => m.round === 'BRONZE')
-    ? { side1: '待定', side2: '待定', winnerSide: null, score: '' }
-    : null;
-  return layoutBracketTree(ws, startRow, rounds, bronze);
+  const bronze = skeleton.matches.find((m) => m.round === 'BRONZE');
+  return finishTree(rounds, bronze ? toTree(bronze) : null, true);
+}
+
+/**
+ * 后台「对阵图（PNG）」：单个项目的淘汰对阵树，与秩序册流程表第二阶段同一份数据。
+ * 循环赛、第二阶段是「前8/前6晋级赛」或排位赛、还没有淘汰赛时返回画不了的原因。
+ */
+export function eventBracketTreeForImage(event: ExportEvent): { tree: BracketTree } | { reason: string } {
+  if (event.format === 'ROUND_ROBIN') return { reason: '循环赛没有淘汰对阵图' };
+  if (event.secondStage?.matches.length || event.matches.some((m) => isPlayoff(m))) {
+    return { reason: '该项目第二阶段是排位赛，没有淘汰对阵图，请看秩序册「流程表」' };
+  }
+  const regMap = new Map(event.registrations.map((registration) => [registration.id, registration]));
+  const tree = eventBracketTree(event, regMap, matchCodeMap({ events: [event] }));
+  return tree ? { tree } : { reason: '该项目还没有淘汰赛对阵（抽签后再下载）' };
+}
+
+// ---- 秩序册流程表里的对阵树（单元格画框、边框画连线）----
+// 每轮占 4 列：名字 2 列 + 比分 1 列 + 连线 1 列；首轮每场占 4 行：场次信息、双方各一行、空行。
+// 下一轮的框画在上一轮两场正中，连线的竖线就是下一轮框的左边。
+const TREE_NAME_COLS = 2;
+const TREE_ROUND_COLS = 4;
+const TREE_SLOT_ROWS = 4;
+// 超过 32 签时每 32 个签位一段（首轮 16 场），各段画到该段只剩一场，最后单独画「决赛阶段」。
+const TREE_SECTION_FIRST_ROUND = 16;
+const TREE_LINE_COLOR = 'FF6B7280';
+const TREE_MUTED_COLOR = 'FF9CA3AF';
+
+type TreeSection = {
+  title: string | null;
+  rounds: BracketTreeRound[];
+  bronze: BracketTreeMatch | null;
+  champion: string | null;
+};
+
+function bracketTreeSections(tree: BracketTree): TreeSection[] {
+  const whole: TreeSection = { title: null, rounds: tree.rounds, bronze: tree.bronze, champion: tree.champion };
+  const first = tree.rounds[0]?.matches.length ?? 0;
+  const depth = Math.log2(TREE_SECTION_FIRST_ROUND) + 1;
+  const halving = tree.rounds.every(
+    (round, k) => k === 0 || round.matches.length * 2 === tree.rounds[k - 1].matches.length,
+  );
+  if (first <= TREE_SECTION_FIRST_ROUND || first % TREE_SECTION_FIRST_ROUND || !halving || tree.rounds.length <= depth) {
+    return [whole];
+  }
+  const count = first / TREE_SECTION_FIRST_ROUND;
+  const slots = TREE_SECTION_FIRST_ROUND * 2;
+  const sections: TreeSection[] = Array.from({ length: count }, (_, s) => ({
+    title: `第${s * slots + 1}–${(s + 1) * slots}号签位`,
+    rounds: tree.rounds.slice(0, depth).map((round) => {
+      const per = round.matches.length / count;
+      return { label: round.label, matches: round.matches.slice(s * per, (s + 1) * per) };
+    }),
+    bronze: null,
+    champion: null,
+  }));
+  sections.push({ title: '决赛阶段', rounds: tree.rounds.slice(depth), bronze: tree.bronze, champion: tree.champion });
+  return sections;
+}
+
+function addCellBorder(cell: Cell, edges: Partial<ExcelJS.Borders>) {
+  cell.border = { ...(cell.border ?? {}), ...edges };
+}
+
+function treeLine(style: ExcelJS.BorderStyle = 'thin'): Partial<ExcelJS.Border> {
+  return { style, color: { argb: TREE_LINE_COLOR } };
+}
+
+// 一场：side1 行 = row，side2 行 = row + 1，场次信息在 row - 1；两方之间的横线就是出线的高度。
+function drawTreeMatch(ws: ExcelJS.Worksheet, row: number, col: number, match: BracketTreeMatch, caption?: string) {
+  const infoText = [caption, match.info].filter(Boolean).join('  ');
+  if (infoText) {
+    ws.mergeCells(row - 1, col, row - 1, col + TREE_NAME_COLS);
+    const info = ws.getCell(row - 1, col);
+    info.value = infoText;
+    info.font = { size: 8, bold: Boolean(caption), color: { argb: caption ? ACCENT : 'FF6B7280' } };
+    info.alignment = { horizontal: 'left', vertical: 'bottom', shrinkToFit: true };
+  }
+  match.sides.forEach((side, index) => {
+    const r = row + index;
+    const outer = index === 0 ? { top: treeLine() } : { bottom: treeLine() };
+    const inner = index === 0 ? { bottom: treeLine('hair') } : { top: treeLine('hair') };
+    ws.mergeCells(r, col, r, col + TREE_NAME_COLS - 1);
+    const name = ws.getCell(r, col);
+    name.value = side.name;
+    name.font = {
+      size: 10,
+      bold: side.winner,
+      color: { argb: side.bye || side.name === '待定' ? TREE_MUTED_COLOR : 'FF111827' },
+    };
+    name.alignment = { horizontal: 'left', vertical: 'middle', indent: 1, shrinkToFit: true };
+    name.border = { left: treeLine(), right: { style: 'hair', color: { argb: TREE_LINE_COLOR } }, ...outer, ...inner };
+    const score = ws.getCell(r, col + TREE_NAME_COLS);
+    score.value = side.scores.join(' ');
+    score.font = { size: 9, bold: side.winner, color: { argb: 'FF374151' } };
+    score.alignment = { horizontal: 'center', vertical: 'middle', shrinkToFit: true };
+    score.border = { right: treeLine(), ...outer, ...inner };
+  });
+}
+
+function renderTreeSection(ws: ExcelJS.Worksheet, startRow: number, section: TreeSection) {
+  const { rounds } = section;
+  if (!rounds.length) return startRow;
+  const headerRow = startRow;
+  const bodyTop = startRow + 1;
+  // 每场 side1 所在行：首轮等距，后面各轮取两场来源的正中（间距是偶数，正好落在整行上）。
+  const rows: number[][] = [];
+  rounds.forEach((round, k) => {
+    rows[k] = round.matches.map((_, m) => {
+      if (k === 0) return bodyTop + 1 + m * TREE_SLOT_ROWS;
+      const a = rows[k - 1][2 * m];
+      const b = rows[k - 1][2 * m + 1];
+      if (a === undefined) return bodyTop + 1 + m * TREE_SLOT_ROWS * 2 ** k;
+      return b === undefined ? a : Math.floor((a + b) / 2);
+    });
+  });
+
+  let bottom = bodyTop;
+  rounds.forEach((round, k) => {
+    const col = 1 + k * TREE_ROUND_COLS;
+    ws.mergeCells(headerRow, col, headerRow, col + TREE_NAME_COLS);
+    const head = ws.getCell(headerRow, col);
+    head.value = round.label;
+    styleHeaderCell(head);
+    const lineCol = col + TREE_NAME_COLS + 1;
+    const next = rounds[k + 1];
+    round.matches.forEach((match, m) => {
+      const row = rows[k][m];
+      drawTreeMatch(ws, row, col, match);
+      bottom = Math.max(bottom, row + 1);
+      if (!next) return;
+      // 出线：从两方之间横着连到下一轮那一场的左边；每两场之间再连一条竖线。
+      addCellBorder(ws.getCell(row, lineCol), { bottom: treeLine() });
+      const partner = rows[k][m + 1];
+      if (m % 2 === 0 && partner !== undefined) {
+        for (let r = row + 1; r <= partner; r += 1) addCellBorder(ws.getCell(r, lineCol), { right: treeLine() });
+      }
+    });
+  });
+
+  const lastIndex = rounds.length - 1;
+  const lastCol = 1 + lastIndex * TREE_ROUND_COLS;
+  const finalRow = rounds[lastIndex].matches.length === 1 ? rows[lastIndex][0] : null;
+  if (section.champion !== null && finalRow !== null) {
+    // 冠军：决赛出线横线接到冠军名字下面。
+    const lineCol = lastCol + TREE_NAME_COLS + 1;
+    const nameCol = lineCol + 1;
+    addCellBorder(ws.getCell(finalRow, lineCol), { bottom: treeLine() });
+    ws.mergeCells(headerRow, nameCol, headerRow, nameCol + TREE_NAME_COLS - 1);
+    const head = ws.getCell(headerRow, nameCol);
+    head.value = '冠军';
+    styleHeaderCell(head);
+    ws.mergeCells(finalRow, nameCol, finalRow, nameCol + TREE_NAME_COLS - 1);
+    const champion = ws.getCell(finalRow, nameCol);
+    champion.value = section.champion || '待定';
+    champion.font = { size: 11, bold: Boolean(section.champion), color: { argb: section.champion ? 'FFB45309' : TREE_MUTED_COLOR } };
+    champion.alignment = { horizontal: 'center', vertical: 'bottom', shrinkToFit: true };
+    champion.border = { bottom: treeLine('medium') };
+  }
+  if (section.bronze) {
+    // 季军赛：画在决赛下面（同一列）；没有单场决赛时画在树下方。
+    const row = finalRow !== null ? finalRow + 5 : bottom + 3;
+    const col = finalRow !== null ? lastCol : 1;
+    drawTreeMatch(ws, row, col, section.bronze, '季军赛');
+    bottom = Math.max(bottom, row + 1);
+  }
+  return bottom + 2;
+}
+
+/** 流程表第二阶段：画对阵树；超过 32 签时按签位分段，每段从新的一页开始。返回下一可用行。 */
+function renderBracketTree(ws: ExcelJS.Worksheet, startRow: number, tree: BracketTree, title: string) {
+  let row = startRow;
+  for (const section of bracketTreeSections(tree)) {
+    if (row > 1) ws.getRow(row - 1).addPageBreak();
+    row = sectionTitle(ws, row, section.title ? `${title}（${section.title}）：` : `${title}：`);
+    row = renderTreeSection(ws, row, section);
+  }
+  return row;
 }
 
 const MATCH_STATUS_LABELS: Record<string, string> = {

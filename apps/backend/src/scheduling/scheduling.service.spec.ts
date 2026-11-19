@@ -1,6 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { SchedulingService, normalizePlayDates } from './scheduling.service';
+import type { AutoScheduleDto } from './dto/scheduling.dto';
 
 type TestDailyWindow = {
   startMinutes: number;
@@ -298,5 +299,153 @@ describe('scheduling with group play dates', () => {
     ]);
     await expect(service.previewMatchSchedule('a1', { venueId: 'court1', findNextAvailable: true }))
       .rejects.toThrow('甲组的比赛日期（10月22日）内没有可用时段');
+  });
+});
+
+describe('auto schedule by stage, player rest and keeping placed matches', () => {
+  // 赛事 10-22、10-23 两天（比赛地时间 08:00–18:00 = 00:00–10:00Z），每场 30 分钟、场间间隔 10 分钟。
+  const group = { id: 'g1', name: '甲组', restrictVenues: false, allowedVenues: [], events: [], playDates: null as string[] | null };
+  type Extra = Record<string, unknown>;
+  function eventMatch(id: string, eventId: string, format: string, roundNo: number, matchNo: number, extra: Extra = {}) {
+    return {
+      id, matchNo, roundNo, round: roundNo === 0 ? 'A' : 'R1', teamMatchId: null as string | null, teamMatch: null as unknown, teamCompetitionItem: null as unknown, eventId: eventId as string | null,
+      event: { id: eventId, tournamentId: 't', groupId: 'g1', type: 'MENS_SINGLES', format, venueRule: 'INHERIT', allowedVenues: [], defaultMatchMinutes: null, group } as unknown,
+      status: 'PENDING', startedAt: null, finishedAt: null, side1Id: null as string | null, side2Id: null as string | null, winnerSide: null,
+      venueId: null as string | null, venue: null, durationMinutes: 30, updatedAt: new Date('2026-10-01T00:00:00Z'),
+      scheduleLocked: false, scheduleOverride: false, dateOverride: false, unscheduledReason: null,
+      scheduledAt: null as Date | null,
+      ...extra,
+    };
+  }
+  type MockMatch = ReturnType<typeof eventMatch>;
+  function teamMatch(id: string, format: string, stage: string, roundNo: number) {
+    const encounter = { id: `tm-${id}`, teamCompetitionId: 'tc1', team1Id: `${id}-T1`, team2Id: `${id}-T2`, stage, roundNo,
+      teamCompetition: { id: 'tc1', format, groupId: 'g1', group }, team1: { name: '甲队' }, team2: { name: '乙队' } };
+    return eventMatch(id, '', 'ROUND_ROBIN', roundNo, 1, { eventId: null, event: null, teamMatchId: encounter.id, teamMatch: encounter, teamCompetitionItem: { eventType: 'MENS_DOUBLES' } });
+  }
+  const registrations = ['r1:p1', 'r2:p2', 'r3:p1', 'r4:p4'].map(item => {
+    const [id, playerId] = item.split(':');
+    return { id, player1Id: playerId, player2Id: null, player1: { name: playerId, affiliation: '' }, player2: null };
+  });
+  function setup(matches: MockMatch[], courts = 1) {
+    const prisma = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      match: {
+        findUnique: jest.fn().mockImplementation(({ where }) => matches.find(m => m.id === where.id)),
+        // 只认按单项过滤（event.id 为字符串或 { in }），其余返回全部。
+        findMany: jest.fn().mockImplementation(({ where }) => {
+          const id = where?.event?.id as string | { in: string[] } | undefined;
+          if (!id) return matches;
+          const ids = typeof id === 'string' ? [id] : id.in;
+          return matches.filter(m => m.eventId && ids.includes(m.eventId));
+        }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      registration: { findMany: jest.fn().mockResolvedValue(registrations) },
+      tournament: { findUnique: jest.fn().mockResolvedValue({ id: 't', defaultMatchMinutes: 30, breakMinutes: 10,
+        startDate: new Date('2026-10-21T16:00:00Z'), endDate: new Date('2026-10-23T15:59:00Z'), dailyStartTime: '08:00', dailyEndTime: '18:00' }) },
+      venue: { findMany: jest.fn().mockResolvedValue(Array.from({ length: courts }, (_, i) => ({ id: `court${i + 1}`, name: `${i + 1}号场`, isActive: true, tournamentId: 't', sortOrder: i }))) },
+      teamCompetition: { findMany: jest.fn().mockResolvedValue([]) },
+      tournamentGroup: { findMany: jest.fn().mockResolvedValue([group]) },
+      event: { count: jest.fn().mockResolvedValue(2) },
+      scheduleOperationLog: { create: jest.fn().mockResolvedValue({}) },
+      $transaction: jest.fn(),
+    };
+    prisma.$transaction.mockImplementation(callback => callback(prisma));
+    const service = new SchedulingService(prisma as unknown as PrismaService, { emitBracketUpdate: jest.fn() } as never);
+    return { service, tx: prisma };
+  }
+  type Preview = {
+    scheduledCount: number; keptCount: number;
+    matches: Array<{ id: string; scheduledAt: string | null; venueId: string | null }>;
+    unscheduled: Array<{ matchId: string; reason: string }>;
+  };
+  async function preview(matches: MockMatch[], options: Partial<AutoScheduleDto>, courts = 1) {
+    const { service } = setup(matches, courts);
+    const result = (await service.autoSchedule({ tournamentId: 't', startAt: '2026-10-22T00:00:00.000Z', preview: true, ...options })) as unknown as { preview: Preview };
+    const at = (id: string) => result.preview.matches.find(m => m.id === id)?.scheduledAt ?? null;
+    return { ...result.preview, at };
+  }
+  const STD = 'GROUP_PLUS_KNOCKOUT_STD';
+
+  it('仅第一阶段：排小组赛和单淘汰这类单阶段项目，不动淘汰赛', async () => {
+    const result = await preview([
+      eventMatch('g1', 'eA', STD, 0, 1), eventMatch('g2', 'eA', STD, 0, 2), eventMatch('k1', 'eA', STD, 1, 1),
+      eventMatch('s1', 'eS', 'SINGLE_ELIMINATION', 1, 1),
+    ], { scheduleStage: 'first' });
+    expect(result.scheduledCount).toBe(3);
+    expect(result.at('k1')).toBeNull();
+    expect([result.at('g1'), result.at('g2'), result.at('s1')].every(Boolean)).toBe(true);
+  });
+
+  it('仅第二阶段：团体循环赛第 2 轮不算第二阶段，团体「小组+淘汰」的淘汰赛算', async () => {
+    const result = await preview([teamMatch('rr', 'ROUND_ROBIN', 'GROUP', 2), teamMatch('ko', 'GROUP_PLUS_KNOCKOUT', 'KNOCKOUT', 3)], { scheduleStage: 'second' });
+    expect(result.at('ko')).toBe('2026-10-22T00:00:00.000Z');
+    expect(result.at('rr')).toBeNull();
+  });
+
+  it('紧接：淘汰赛排在本项目小组赛最后一场之后，不和小组赛同时打', async () => {
+    // 两片场：g1、g2 08:00，g3 08:40；淘汰赛原来会挤进 08:40 的 2 号场，现在等 g3 打完（09:10）再隔 10 分钟。
+    const result = await preview([
+      eventMatch('g1', 'eA', STD, 0, 1), eventMatch('g2', 'eA', STD, 0, 2), eventMatch('g3', 'eA', STD, 0, 3), eventMatch('k1', 'eA', STD, 1, 1),
+    ], {}, 2);
+    expect(result.at('g3')).toBe('2026-10-22T00:40:00.000Z');
+    expect(result.at('k1')).toBe('2026-10-22T01:20:00.000Z');
+  });
+
+  it('另定第二阶段开始时间：小组赛排在第一天，淘汰赛从第二天早上开始', async () => {
+    const result = await preview([
+      eventMatch('g1', 'eA', STD, 0, 1), eventMatch('g2', 'eA', STD, 0, 2), eventMatch('k1', 'eA', STD, 1, 1),
+    ], { secondStageStartAtLocal: '2026-10-23 08:00', secondStageStartAt: '2026-10-23T00:00:00.000Z' });
+    expect(result.at('g2')).toBe('2026-10-22T00:40:00.000Z');
+    expect(result.at('k1')).toBe('2026-10-23T00:00:00.000Z');
+  });
+
+  it('第二阶段开始时间不能早于首日开始时间', async () => {
+    const { service } = setup([eventMatch('g1', 'eA', STD, 0, 1)]);
+    await expect(service.autoSchedule({ tournamentId: 't', startAt: '2026-10-22T02:00:00.000Z', secondStageStartAt: '2026-10-22T01:00:00.000Z', preview: true }))
+      .rejects.toThrow('第二阶段开始时间不能早于首日开始时间');
+  });
+
+  it('本项目还有没排上的小组赛时，不排淘汰赛并说明原因', async () => {
+    const result = await preview([eventMatch('g1', 'eA', STD, 0, 1), eventMatch('k1', 'eA', STD, 1, 1)], { scheduleStage: 'second' });
+    expect(result.unscheduled).toEqual([{ matchId: 'k1', reason: '本项目第一阶段还有比赛没排上，请先安排第一阶段' }]);
+  });
+
+  it('只排还没安排的场次：已排好的保持原样，新场次插到空档里', async () => {
+    const placed = { venueId: 'court1', scheduledAt: new Date('2026-10-22T01:00:00Z') };
+    const matches = [eventMatch('a', 'eA', 'SINGLE_ELIMINATION', 1, 1, placed), eventMatch('b', 'eA', 'SINGLE_ELIMINATION', 1, 2)];
+    const kept = await preview(matches, { onlyUnscheduled: true });
+    expect(kept.at('a')).toBe('2026-10-22T01:00:00.000Z');
+    expect(kept.at('b')).toBe('2026-10-22T00:00:00.000Z');
+    expect(kept.keptCount).toBe(1);
+    expect(kept.scheduledCount).toBe(1);
+    // 不勾选时整体重排，a 会被挪到最早的时段。
+    const all = await preview(matches, {});
+    expect(all.at('a')).toBe('2026-10-22T00:00:00.000Z');
+  });
+
+  it('只排还没安排的场次但全都排好了时，提示取消勾选', async () => {
+    const placed = { venueId: 'court1', scheduledAt: new Date('2026-10-22T01:00:00Z') };
+    const { service } = setup([eventMatch('a', 'eA', 'SINGLE_ELIMINATION', 1, 1, placed)]);
+    await expect(service.autoSchedule({ tournamentId: 't', startAt: '2026-10-22T00:00:00.000Z', onlyUnscheduled: true, preview: true }))
+      .rejects.toThrow('都已安排了场地和时间');
+  });
+
+  it('运动员两场之间至少休息：兼项选手的两场按设定隔开', async () => {
+    // p1 同时报了 eA（r1）和 eB（r3），两片场。
+    const matches = [
+      eventMatch('a', 'eA', 'SINGLE_ELIMINATION', 1, 1, { side1Id: 'r1', side2Id: 'r2' }),
+      eventMatch('b', 'eB', 'SINGLE_ELIMINATION', 1, 1, { side1Id: 'r3', side2Id: 'r4' }),
+    ];
+    const gap = (r: { at: (id: string) => string | null }) => Math.abs(Date.parse(r.at('b')!) - Date.parse(r.at('a')!)) / 60000;
+    expect(gap(await preview(matches, {}, 2))).toBe(30);
+    expect(gap(await preview(matches, { playerRestMinutes: 20 }, 2))).toBe(50);
+  });
+
+  it('多选单项：只排选中的单项', async () => {
+    const result = await preview([eventMatch('a', 'eA', 'SINGLE_ELIMINATION', 1, 1), eventMatch('b', 'eB', 'SINGLE_ELIMINATION', 1, 1)], { eventIds: ['eB'] });
+    expect(result.matches.map(m => m.id)).toEqual(['b']);
+    expect(result.at('b')).toBe('2026-10-22T00:00:00.000Z');
   });
 });

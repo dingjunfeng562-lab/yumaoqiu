@@ -125,9 +125,39 @@ export class AutoScheduleDto {
   @IsBoolean()
   prioritizeSecondStage?: boolean;
 
+  // first：小组赛及单循环、单淘汰等单阶段赛制；second：两阶段赛制的后一阶段（淘汰 / 排位）。
   @IsOptional()
   @IsIn(['all', 'first', 'second'])
   scheduleStage?: 'all' | 'first' | 'second';
+
+  // 只排这几个单项（不含团体赛）；优先于 eventId。不传按 eventId，再不传为全部单项和团体赛。
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(500)
+  @IsString({ each: true })
+  eventIds?: string[];
+
+  // 「全部场次」时第二阶段另定开始时间（不紧接第一阶段）；不传为紧接。
+  @IsOptional()
+  @IsDateString()
+  secondStageStartAt?: string;
+
+  @IsOptional()
+  @IsString()
+  secondStageStartAtLocal?: string;
+
+  // 只排还没安排场地和时间的场次，已排好的不动。
+  @IsOptional()
+  @IsBoolean()
+  onlyUnscheduled?: boolean;
+
+  // 同一运动员两场比赛之间至少休息几分钟；0 或不传为只要不同时上场即可。
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(600)
+  playerRestMinutes?: number;
 }
 
 export class ClearScheduleDto {

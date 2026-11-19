@@ -6,7 +6,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { createHash } from 'node:crypto';
-import { Format, MatchStatus, Prisma, VenueRuleMode } from '@prisma/client';
+import { Format, MatchStatus, Prisma, TeamCompetitionFormat, VenueRuleMode } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TeamCompetitionsService } from '../team-competitions/team-competitions.service';
 import { hostDisplayLabel } from '../common/event-mix';
@@ -31,6 +31,9 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
 const EVENT_TYPE_ORDER = ['MENS_SINGLES', 'WOMENS_SINGLES', 'MENS_DOUBLES', 'WOMENS_DOUBLES', 'MIXED_DOUBLES'];
 
 const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+// 先打小组赛、小组赛打完才有第二阶段对阵的赛制。
+const GROUP_STAGE_FORMATS: Format[] = [Format.GROUP_PLUS_KNOCKOUT, Format.GROUP_PLUS_KNOCKOUT_STD, Format.GROUP_PLUS_PLAYOFF];
 
 /** 组别比赛日期（TournamentGroup.playDates）：只认 YYYY-MM-DD，去重并按日期排序；空的或格式不对按不限（null）。 */
 export function normalizePlayDates(value: unknown): string[] | null {
@@ -112,6 +115,8 @@ type ConflictItem = {
 type BusyInterval = {
   start: number;
   end: number;
+  /** 运动员占用来自哪场团体对阵：同一对阵的各子项连着打，不算两场之间的休息。 */
+  teamMatchId?: string | null;
 };
 
 type DailyBreakInterval = {
@@ -412,6 +417,18 @@ export class SchedulingService {
       startAt.getTime(),
       this.withMinutesOfDay(tournament.startDate, dailyWindow.startMinutes).getTime(),
     );
+    const scheduleStage: ScheduleStage = dto.scheduleStage ?? 'all';
+    // 「全部场次」可以让第二阶段另起一个开始时间（例如第二天早上），两个阶段不连着排。
+    const secondStageStartAt = scheduleStage === 'all' && (dto.secondStageStartAt || dto.secondStageStartAtLocal)
+      ? this.parseScheduleDate(dto.secondStageStartAt ?? '', dto.secondStageStartAtLocal, '第二阶段开始时间无效')
+      : null;
+    if (secondStageStartAt && secondStageStartAt.getTime() < startAt.getTime()) {
+      throw new BadRequestException('第二阶段开始时间不能早于首日开始时间');
+    }
+    const playerRestMs = (dto.playerRestMinutes ?? 0) * 60 * 1000;
+    // 排程范围：多选单项 > 单个单项 > 全部（含团体赛）。
+    const scopeEventIds = dto.eventIds?.length ? dto.eventIds : dto.eventId ? [dto.eventId] : null;
+    const inScope = (match: { eventId: string | null }) => !scopeEventIds || (match.eventId !== null && scopeEventIds.includes(match.eventId));
 
     const venueWhere: Prisma.VenueWhereInput = {
       tournamentId: dto.tournamentId,
@@ -428,7 +445,7 @@ export class SchedulingService {
     }
 
     const scopeMatches = await this.prisma.match.findMany({
-      where: this.tournamentMatches(dto.tournamentId, dto.eventId),
+      where: this.tournamentMatches(dto.tournamentId, dto.eventId, dto.eventIds),
       include: {
         event: { include: { group: { include: { allowedVenues: true } }, allowedVenues: true } },
         teamMatch: { include: { teamCompetition: { include: { group: { include: { allowedVenues: true } } } } } },
@@ -436,12 +453,10 @@ export class SchedulingService {
       orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }],
     });
     if (!scopeMatches.length) throw new BadRequestException('暂无可排程场次，请先完成抽签编排');
-    const courtLimits = dto.eventId ? [] : await this.teamCourtLimits(dto.tournamentId);
+    const courtLimits = scopeEventIds ? [] : await this.teamCourtLimits(dto.tournamentId);
     const limitsByCompetition = new Map(courtLimits.map(limit => [limit.competitionId, limit.maxCourts]));
-    const scheduleStage: ScheduleStage = dto.scheduleStage ?? 'all';
-    const targetMatches = scopeMatches.filter((match) =>
-      this.isScheduleStageMatch(match.event?.format ?? null, match.roundNo, scheduleStage),
-    );
+    const stageOf = (match: (typeof scopeMatches)[number]) => this.matchStage(match);
+    const targetMatches = scopeMatches.filter((match) => scheduleStage === 'all' || stageOf(match) === scheduleStage);
     if (!targetMatches.length) {
       throw new BadRequestException(
         scheduleStage === 'second'
@@ -481,15 +496,27 @@ export class SchedulingService {
       options: { ...dto, preview: undefined, fingerprint: undefined },
     })).digest('hex');
     if (dto.fingerprint && dto.fingerprint !== fingerprint) throw new ConflictException('赛程、场地或规则已变化，请重新预览后应用');
-    const adjustableIds = new Set(targetMatches.filter(match => match.status === MatchStatus.PENDING && !match.startedAt && !match.scheduleLocked).map(match => match.id));
+    const movable = targetMatches.filter(match => match.status === MatchStatus.PENDING && !match.startedAt && !match.scheduleLocked);
+    // 「只排还没安排的场次」：已有场地和时间的保持不动，和人工固定的一样当作占用。
+    const alreadyPlaced = (match: (typeof scopeMatches)[number]) => Boolean(match.scheduledAt && match.venueId);
+    const keptMatches = dto.onlyUnscheduled ? movable.filter(alreadyPlaced) : [];
+    const adjustableIds = new Set(movable.filter(match => !dto.onlyUnscheduled || !alreadyPlaced(match)).map(match => match.id));
+    if (dto.onlyUnscheduled && !adjustableIds.size && keptMatches.length) {
+      throw new BadRequestException(`当前范围内未开始的 ${keptMatches.length} 场比赛都已安排了场地和时间，没有需要新排的场次；如需整体重排，请取消勾选「只排还没安排时间的场次」`);
+    }
     const anchors = allScheduled.filter(match => !adjustableIds.has(match.id) && Boolean(match.scheduledAt) && match.status !== MatchStatus.CANCELLED);
+    // 淘汰赛等后续场次要等前面的比赛打完：至少隔场间间隔，设了运动员休息时间时取两者较大值。
+    const releaseGapMinutes = Math.max(breakMinutes, dto.playerRestMinutes ?? 0);
     const reasons = new Map<string, string>();
+    // 每场的「后续比赛最早可开始时间」（结束 + 间隔），按场次 id 记录，已排的和本次新排的都在里面。
+    const releaseById = new Map<string, number>();
     const venueBusy = new Map<string, BusyInterval[]>(
       (await this.listVenues(dto.tournamentId)).map((venue) => [venue.id, []]),
     );
     const playerBusy = new Map<string, BusyInterval[]>();
     for (const anchor of anchors) {
       const endAt = this.addMinutes(anchor.scheduledAt!, anchor.durationMinutes).getTime();
+      releaseById.set(anchor.id, this.addMinutes(anchor.scheduledAt!, anchor.durationMinutes + releaseGapMinutes).getTime());
       if (anchor.venueId && venueBusy.has(anchor.venueId)) {
         this.addBusyInterval(venueBusy, anchor.venueId, {
           start: anchor.scheduledAt!.getTime(),
@@ -500,6 +527,7 @@ export class SchedulingService {
         this.addBusyInterval(playerBusy, playerId, {
           start: anchor.scheduledAt!.getTime(),
           end: endAt,
+          teamMatchId: anchor.teamMatchId,
         });
       }
     }
@@ -529,17 +557,21 @@ export class SchedulingService {
       if (!anchor.eventId || !anchor.scheduledAt) continue;
       scheduledEndByKey.set(
         this.matchKey(anchor.eventId, anchor.roundNo, anchor.matchNo),
-        this.addMinutes(anchor.scheduledAt, anchor.durationMinutes + breakMinutes).getTime(),
+        this.addMinutes(anchor.scheduledAt, anchor.durationMinutes + releaseGapMinutes).getTime(),
       );
     }
 
     const schedulableMatches = targetMatches
       .filter((match) => adjustableIds.has(match.id))
       .sort((a, b) => {
-        const stagePriority = (dto.prioritizeSecondStage ?? true)
-          ? Number(!isSecondStageFormalRoundNo(a.roundNo)) -
-            Number(!isSecondStageFormalRoundNo(b.roundNo))
-          : 0;
+        // 第二阶段另定开始时间时，先把第一阶段（含其他项目没打完的小组赛）排完，再排第二阶段；
+        // 紧接时沿用原来的做法，A-H 第二阶段的场次在前置比赛排好后优先安排。
+        const stagePriority = secondStageStartAt
+          ? Number(stageOf(a) === 'second') - Number(stageOf(b) === 'second')
+          : (dto.prioritizeSecondStage ?? true)
+            ? Number(!isSecondStageFormalRoundNo(a.roundNo)) -
+              Number(!isSecondStageFormalRoundNo(b.roundNo))
+            : 0;
         const aRank = eventTypeRank.get(a.event?.type ?? '') ?? Number.MAX_SAFE_INTEGER;
         const bRank = eventTypeRank.get(b.event?.type ?? '') ?? Number.MAX_SAFE_INTEGER;
         return stagePriority || aRank - bRank || playDayCount(a) - playDayCount(b) || a.roundNo - b.roundNo || eligibleVenues(a).length - eligibleVenues(b).length
@@ -550,13 +582,44 @@ export class SchedulingService {
     // Topological selection preserves dependencies even when stage priority
     // places a later round first. Never place a dependent whose upstream did not fit.
     const remaining = [...schedulableMatches];
+    // 小组类赛制（小组+淘汰、小组+交叉排位）的第二阶段要等本项目小组赛全部打完才有对阵，
+    // 所以排在本项目第一阶段最后一场之后；本次要排的第一阶段场次没排完之前先不排它。
+    const waitsForFirstStage = (match: (typeof scopeMatches)[number]) =>
+      Boolean(match.event && GROUP_STAGE_FORMATS.includes(match.event.format) && stageOf(match) === 'second');
+    const remainingFirstStage = new Map<string, number>();
+    for (const item of remaining) {
+      if (item.eventId && stageOf(item) === 'first') remainingFirstStage.set(item.eventId, (remainingFirstStage.get(item.eventId) ?? 0) + 1);
+    }
+    const firstStageRelease = new Map<string, { release: number; missing: boolean }>();
+    const firstStageReleaseFor = (eventId: string) => {
+      let result = firstStageRelease.get(eventId);
+      if (!result) {
+        result = { release: 0, missing: false };
+        for (const item of scopeMatches) {
+          if (item.eventId !== eventId || stageOf(item) !== 'first' || item.status === MatchStatus.CANCELLED) continue;
+          const release = releaseById.get(item.id);
+          if (release !== undefined) result.release = Math.max(result.release, release);
+          // 没开始又没排上的才算缺；已完赛或已开赛但没有排程记录的不挡后面。
+          else if (item.status === MatchStatus.PENDING) result.missing = true;
+        }
+        firstStageRelease.set(eventId, result);
+      }
+      return result;
+    };
     while (remaining.length) {
-      const index = remaining.findIndex(item => !this.dependencyMatches(item, matchMap).some(dep => remaining.some(m => m.id === dep.id)));
+      const index = remaining.findIndex(item =>
+        !(waitsForFirstStage(item) && (remainingFirstStage.get(item.eventId!) ?? 0) > 0)
+        && !this.dependencyMatches(item, matchMap).some(dep => remaining.some(m => m.id === dep.id)));
       if (index < 0) { for (const item of remaining) reasons.set(item.id, '前置比赛依赖异常，请核对签表'); break; }
       const [match] = remaining.splice(index, 1);
+      if (match.eventId && stageOf(match) === 'first' && remainingFirstStage.has(match.eventId)) {
+        remainingFirstStage.set(match.eventId, remainingFirstStage.get(match.eventId)! - 1);
+      }
       const missingDependency = this.dependencyMatches(match, matchMap).some(dep =>
         dep.status !== MatchStatus.COMPLETED && !scheduledEndByKey.has(this.matchKey(dep.eventId!, dep.roundNo, dep.matchNo)));
       if (missingDependency) { reasons.set(match.id, '前置比赛尚未排入，请先安排前置比赛'); continue; }
+      const firstStage = waitsForFirstStage(match) ? firstStageReleaseFor(match.eventId!) : null;
+      if (firstStage?.missing) { reasons.set(match.id, '本项目第一阶段还有比赛没排上，请先安排第一阶段'); continue; }
       const playerIds = [
         ...this.playerIds(registrationMap.get(match.side1Id!)),
         ...this.playerIds(registrationMap.get(match.side2Id!)),
@@ -573,7 +636,8 @@ export class SchedulingService {
       const competitionId = match.teamMatch?.teamCompetitionId;
       const courtLimit = competitionId ? limitsByCompetition.get(competitionId) : undefined;
       const previousRoundEnd = competitionId && courtLimit ? roundRelease.get(`${competitionId}:${match.roundNo - 1}`) ?? 0 : 0;
-      const earliestMatchStart = Math.max(earliestScheduleStart, dependencyReleaseTime, previousRoundEnd, match.teamMatchId ? teamRelease.get(match.teamMatchId) ?? 0 : 0);
+      const stageStart = secondStageStartAt && stageOf(match) === 'second' ? secondStageStartAt.getTime() : 0;
+      const earliestMatchStart = Math.max(earliestScheduleStart, stageStart, firstStage?.release ?? 0, dependencyReleaseTime, previousRoundEnd, match.teamMatchId ? teamRelease.get(match.teamMatchId) ?? 0 : 0);
       const fixedVenue = match.teamMatchId ? teamVenue.get(match.teamMatchId) : undefined;
       const allowed = eligibleVenues(match);
       // Already-started team encounters remain on their original court even
@@ -596,6 +660,8 @@ export class SchedulingService {
             venueBusy,
             playerBusy,
             playDays,
+            playerRestMs,
+            match.teamMatchId,
           ),
         }))
         .filter(
@@ -613,7 +679,9 @@ export class SchedulingService {
           ? `${scopeName}指定场地与本次启用场地无交集，请调整场地范围`
           : playDays
             ? `${groupFor(match)?.name ?? '本组'}的比赛日期（${daysLabel(playDays)}）内已无空位，请增加场地、延长每日时间或增加比赛日期`
-            : '指定场地在赛事日期和可用时段内已无空位，请增加场地或延长时间');
+            : stageStart
+              ? '第二阶段开始时间之后，赛事日期内已无空位，请提前第二阶段开始时间、增加场地或延长时间'
+              : '指定场地在赛事日期和可用时段内已无空位，请增加场地或延长时间');
         continue;
       }
       // 同一可用范围内优先最早时间，再按场地序号稳定排序。
@@ -637,10 +705,11 @@ export class SchedulingService {
       }
 
       updates.push({ matchId: match.id, venueId: winner.venue.id, scheduledAt, minutes: perMatchMinutes });
+      releaseById.set(match.id, this.addMinutes(scheduledAt, perMatchMinutes + releaseGapMinutes).getTime());
       if (match.eventId) {
         scheduledEndByKey.set(
           this.matchKey(match.eventId, match.roundNo, match.matchNo),
-          this.addMinutes(scheduledAt, perMatchMinutes + breakMinutes).getTime(),
+          this.addMinutes(scheduledAt, perMatchMinutes + releaseGapMinutes).getTime(),
         );
       }
       this.addBusyInterval(venueBusy, winner.venue.id, {
@@ -651,6 +720,7 @@ export class SchedulingService {
         this.addBusyInterval(playerBusy, playerId, {
           start: scheduledAt.getTime(),
           end: matchEndAt,
+          teamMatchId: match.teamMatchId,
         });
       }
     }
@@ -676,7 +746,7 @@ export class SchedulingService {
       estimatedEnd: items.some(m => m.scheduledAt) ? new Date(Math.max(...items.filter(m => m.scheduledAt).map(m => this.endTime(m).getTime()))).toISOString() : null,
     });
     const summary = groups.map(group => {
-      const items = projected.filter(m => m.groupId === group.groupId && (!dto.eventId || m.eventId === dto.eventId));
+      const items = projected.filter(m => m.groupId === group.groupId && inScope(m));
       return {
         ...group,
         ...summaryStats(items),
@@ -689,8 +759,10 @@ export class SchedulingService {
     });
     const preview = { fingerprint, groups: summary, scheduledCount: updates.length,
       preservedCount: targetMatches.filter(m => m.scheduleLocked).length,
+      // 勾了「只排还没安排的场次」时保持原样的已排场次。
+      keptCount: keptMatches.length,
       unscheduled: [...reasons].map(([matchId, reason]) => ({ matchId, reason })),
-      matches: projected.filter(m => !dto.eventId || m.eventId === dto.eventId).map(m => ({ ...m, scheduledAt: m.scheduledAt?.toISOString() ?? null })),
+      matches: projected.filter(m => inScope(m)).map(m => ({ ...m, scheduledAt: m.scheduledAt?.toISOString() ?? null })),
     };
     if (dto.preview) return { preview };
     for (const match of projected.filter(m => adjustableIds.has(m.id))) {
@@ -1105,6 +1177,9 @@ export class SchedulingService {
     playerBusy: Map<string, BusyInterval[]>,
     // 组别比赛日期（已按日期排序）；null 或不传为不限。
     allowedDays?: readonly string[] | null,
+    // 同一运动员两场之间至少休息（毫秒）；同一团体对阵的各子项之间不算。
+    playerRestMs = 0,
+    teamMatchId: string | null = null,
   ): number | null {
     let start = this.normalizeToDailyWindow(earliest, matchMinutes, dailyWindow, allowedDays);
     const latestEnd = this.endOfDay(tournamentEndDate).getTime();
@@ -1123,8 +1198,13 @@ export class SchedulingService {
         continue;
       }
 
+      // 运动员的占用时段前后各留出休息时间：本场开始前、结束后都要隔开这么久。
       const playerConflict = playerIds
         .flatMap((playerId) => playerBusy.get(playerId) ?? [])
+        .map((interval) => {
+          const rest = interval.teamMatchId && interval.teamMatchId === teamMatchId ? 0 : playerRestMs;
+          return { start: interval.start - rest, end: interval.end + rest };
+        })
         .sort((a, b) => a.start - b.start)
         .find((interval) =>
           this.intervalsOverlap(interval, {
@@ -1162,20 +1242,31 @@ export class SchedulingService {
     );
   }
 
-  private isScheduleStageMatch(format: Format | null, roundNo: number, stage: ScheduleStage) {
-    if (stage === 'all') return true;
-    if (format === Format.SINGLE_ELIMINATION_PLUS_GROUP_RANKING) {
-      return stage === 'first'
-        ? roundNo >= 1 && roundNo < SECOND_STAGE_FORMAL_ROUND_NO_BASE
-        : roundNo >= SECOND_STAGE_FORMAL_ROUND_NO_BASE;
+  /**
+   * 场次属于第一还是第二阶段。第二阶段：小组后的淘汰赛 / 交叉排位赛（roundNo ≥ 1）、
+   * 淘汰+分组排名的排位赛和 A-H 第二阶段（roundNo ≥ 100）、团体「小组+淘汰」的淘汰赛。
+   * 其余都算第一阶段，包括单循环、单淘汰这类只有一个阶段的赛制。
+   */
+  private matchStage(match: {
+    roundNo: number;
+    event?: { format: Format } | null;
+    teamMatch?: { stage: string | null; teamCompetition: { format: TeamCompetitionFormat } } | null;
+  }): 'first' | 'second' {
+    if (match.event) {
+      switch (match.event.format) {
+        case Format.ROUND_ROBIN:
+        case Format.SINGLE_ELIMINATION:
+          return 'first';
+        case Format.SINGLE_ELIMINATION_PLUS_GROUP_RANKING:
+          return match.roundNo >= SECOND_STAGE_FORMAL_ROUND_NO_BASE ? 'second' : 'first';
+        default:
+          return match.roundNo >= 1 ? 'second' : 'first';
+      }
     }
-    if (stage === 'first') {
-      return roundNo === 0;
+    if (match.teamMatch?.teamCompetition.format === TeamCompetitionFormat.GROUP_PLUS_KNOCKOUT) {
+      return match.teamMatch.stage === 'KNOCKOUT' || match.teamMatch.stage === 'FINAL' ? 'second' : 'first';
     }
-    if (format === Format.ROUND_ROBIN || format === Format.SINGLE_ELIMINATION) {
-      return false;
-    }
-    return roundNo >= 1;
+    return 'first';
   }
 
   private parseScheduleDate(value: string, localValue: string | undefined, errorMessage: string) {
@@ -1524,7 +1615,8 @@ export class SchedulingService {
     return teamMatch.teamCompetition.tournamentId;
   }
 
-  private tournamentMatches(tournamentId: string, eventId?: string): Prisma.MatchWhereInput {
+  private tournamentMatches(tournamentId: string, eventId?: string, eventIds?: string[]): Prisma.MatchWhereInput {
+    if (eventIds?.length) return { event: { tournamentId, id: { in: eventIds } } };
     if (eventId) return { event: { tournamentId, id: eventId } };
     return { OR: [{ event: { tournamentId } }, { teamMatch: { teamCompetition: { tournamentId } } }] };
   }

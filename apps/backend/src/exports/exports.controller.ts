@@ -43,6 +43,12 @@ export class ExportsController {
     this.sendFile(res, file);
   }
 
+  /** 数据导出页「对阵图（PNG）」：返回 { filename, svg, width, height }，浏览器转成 PNG 下载。 */
+  @Get('events/:eventId/bracket-image')
+  eventBracketImage(@Param('eventId') eventId: string) {
+    return this.exportsService.exportEventBracketImage(eventId);
+  }
+
   private sendFile(
     res: Response,
     file: { filename: string; content: Buffer | string; contentType: string },

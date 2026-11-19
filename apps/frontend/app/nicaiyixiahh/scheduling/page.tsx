@@ -18,6 +18,7 @@ import {
   InputNumber,
   Modal,
   Popconfirm,
+  Radio,
   Select,
   Space,
   Switch,
@@ -41,7 +42,7 @@ const SECOND_STAGE_FORMATS = [
   'SINGLE_ELIMINATION_PLUS_GROUP_RANKING',
 ];
 
-type ScheduleStage = 'all' | 'second';
+type ScheduleStage = 'all' | 'first' | 'second';
 
 const EVENT_TYPE_LABELS: Record<string, string> = {
   MENS_SINGLES: '男子单打',
@@ -165,6 +166,8 @@ interface ScheduleData {
 
 type AutoPreview = {
   fingerprint: string; scheduledCount: number; preservedCount: number;
+  /** 勾了「只排还没安排时间的场次」时，保持原样的已排场次数。 */
+  keptCount?: number;
   groups: Array<GroupVenueRule & {
     scheduled: number; unscheduled: number; estimatedEnd: string | null;
     // 精确到单项的排程统计。
@@ -271,9 +274,18 @@ export default function AdminSchedulingPage() {
   const canExportStageOrder = Boolean(
     selectedEventId && selectedEvent && hasSecondStageFormat(selectedEvent.format),
   );
-  const canScheduleSecondStage = selectedEventId
-    ? hasSecondStageFormat(selectedEvent?.format)
+  // 自动排程弹窗：按弹窗里选的单项判断有没有第二阶段（不选单项时看全部单项）。
+  const autoEventIds = Form.useWatch('eventIds', autoForm) as string[] | undefined;
+  const autoStage = (Form.useWatch('scheduleStage', autoForm) as ScheduleStage | undefined) ?? 'all';
+  const autoSecondStageMode = Form.useWatch('secondStageMode', autoForm) as 'follow' | 'separate' | undefined;
+  const autoHasSecondStage = autoEventIds?.length
+    ? events.some((event) => autoEventIds.includes(event.id) && hasSecondStageFormat(event.format))
     : events.some((event) => hasSecondStageFormat(event.format));
+  // 并入混编的单项没有自己的场次，不单独列出；混编主项目显示混编名。
+  const eventOptions = events.filter((item) => !item.mixHostId).map((item) => ({
+    value: item.id,
+    label: item.mixLabel ?? `${item.group?.name ?? item.groupLabel ?? ''} ${EVENT_TYPE_LABELS[item.type] ?? item.type}`.trim(),
+  }));
   const configuredVenues = schedule.venues;
   const activeVenues = useMemo(() => configuredVenues.filter((venue) => venue.isActive), [configuredVenues]);
 
@@ -350,17 +362,24 @@ export default function AdminSchedulingPage() {
     breakPeriods?: Array<{ startTime: Dayjs; durationMinutes: number }>;
     matchMinutes: number; breakMinutes: number; venueIds?: string[]; eventTypeOrder?: string[];
     scheduleStage?: ScheduleStage; overrideMatchMinutes?: boolean;
+    eventIds?: string[]; secondStageMode?: 'follow' | 'separate'; secondStageStartAt?: Dayjs;
+    onlyUnscheduled?: boolean; playerRestMinutes?: number;
   }) {
     if (!token || !selectedTournamentId) return;
     setScheduleBusy(true);
     try {
+      const stage = values.scheduleStage ?? 'all';
+      // 「全部场次」选了「另定开始时间」时，第二阶段不紧接第一阶段。
+      const secondStart = stage === 'all' && values.secondStageMode === 'separate' ? values.secondStageStartAt : undefined;
       const payload = {
-        tournamentId: selectedTournamentId, eventId: selectedEventId || undefined,
+        tournamentId: selectedTournamentId, eventIds: values.eventIds?.length ? values.eventIds : undefined,
         startAt: values.startAt.toISOString(), startAtLocal: values.startAt.format('YYYY-MM-DD HH:mm'),
         dailyStartTime: values.startAt.format('HH:mm'), dailyEndTime: values.dailyEndTime.format('HH:mm'),
         breakPeriods: values.hasBreakPeriods ? (values.breakPeriods ?? []).map(p => ({ startTime: p.startTime.format('HH:mm'), durationMinutes: p.durationMinutes })) : [],
         matchMinutes: values.matchMinutes, breakMinutes: values.breakMinutes, venueIds: values.venueIds,
-        eventTypeOrder: values.eventTypeOrder, prioritizeSecondStage: true, scheduleStage: values.scheduleStage ?? 'all',
+        eventTypeOrder: values.eventTypeOrder, prioritizeSecondStage: true, scheduleStage: stage,
+        secondStageStartAt: secondStart?.toISOString(), secondStageStartAtLocal: secondStart?.format('YYYY-MM-DD HH:mm'),
+        onlyUnscheduled: values.onlyUnscheduled ?? false, playerRestMinutes: values.playerRestMinutes ?? 0,
         overrideMatchMinutes: values.overrideMatchMinutes ?? false,
       };
       const result = await apiFetch<{ preview: AutoPreview }>('/scheduling/auto', { method: 'POST', token, body: JSON.stringify({ ...payload, preview: true }) });
@@ -449,8 +468,14 @@ export default function AdminSchedulingPage() {
   }
 
   function openAutoSchedule() {
+    const startAt = defaultAutoStart(selectedTournament);
     autoForm.setFieldsValue({
-      startAt: defaultAutoStart(selectedTournament),
+      eventIds: selectedEventId ? [selectedEventId] : [],
+      startAt,
+      secondStageMode: 'follow',
+      secondStageStartAt: startAt.add(1, 'day'),
+      onlyUnscheduled: true,
+      playerRestMinutes: 0,
       dailyEndTime: dailyTimeValue(selectedTournament?.dailyEndTime),
       hasBreakPeriods: false,
       breakPeriods: [{ startTime: dailyTimeValue('12:00'), durationMinutes: 60 }],
@@ -822,11 +847,67 @@ export default function AdminSchedulingPage() {
             breakPeriods: [{ startTime: dailyTimeValue('12:00'), durationMinutes: 60 }],
             matchMinutes: selectedTournament?.defaultMatchMinutes ?? 45,
             breakMinutes: selectedTournament?.breakMinutes ?? 10,
+            scheduleStage: 'all',
+            secondStageMode: 'follow',
+            onlyUnscheduled: true,
+            playerRestMinutes: 0,
           }}
         >
-          <Form.Item name="startAt" label="首日开始时间" rules={[{ required: true, message: '请选择首日开始时间' }]}>
+          <Form.Item name="eventIds" label="排程单项" extra="不选为全部单项（含团体赛）；选了单项就只排这些单项，团体赛不动。">
+            <Select mode="multiple" allowClear placeholder="全部单项（含团体赛）" options={eventOptions} optionFilterProp="label" maxTagCount="responsive" />
+          </Form.Item>
+          <Form.Item
+            name="scheduleStage"
+            label="排程范围"
+            rules={[{ required: true }]}
+            extra="第一阶段：小组赛，以及单循环、单淘汰等只有一个阶段的项目。第二阶段：小组后的淘汰赛、交叉排位赛、A-H 第二阶段，团体「小组+淘汰」的淘汰赛。淘汰赛要等小组赛打完（或 A-H 签位确认）后才生成，生成后才能排。"
+          >
+            <Select
+              options={[
+                { value: 'all', label: '全部场次' },
+                { value: 'first', label: '仅第一阶段（小组赛等）', disabled: !autoHasSecondStage },
+                { value: 'second', label: '仅第二阶段（淘汰赛等）', disabled: !autoHasSecondStage },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item
+            name="startAt"
+            label={autoStage === 'second' ? '第二阶段开始时间' : '首日开始时间'}
+            rules={[{ required: true, message: autoStage === 'second' ? '请选择第二阶段开始时间' : '请选择首日开始时间' }]}
+          >
             <DatePicker showTime format="YYYY-MM-DD HH:mm" style={{ width: '100%' }} />
           </Form.Item>
+          {autoStage === 'all' && autoHasSecondStage ? (
+            <>
+              <Form.Item
+                name="secondStageMode"
+                label="第二阶段"
+                extra="紧接：第一阶段打完，当天还有时间就接着排第二阶段。另定开始时间：第二阶段不早于所选时间（比如第二天早上），两个阶段不连着。"
+              >
+                <Radio.Group options={[{ value: 'follow', label: '紧接第一阶段' }, { value: 'separate', label: '另定开始时间' }]} />
+              </Form.Item>
+              {autoSecondStageMode === 'separate' ? (
+                <Form.Item
+                  name="secondStageStartAt"
+                  label="第二阶段开始时间"
+                  dependencies={['startAt']}
+                  rules={[
+                    { required: true, message: '请选择第二阶段开始时间' },
+                    ({ getFieldValue }) => ({
+                      validator(_, value: Dayjs | undefined) {
+                        const startAt: Dayjs | undefined = getFieldValue('startAt');
+                        return !value || !startAt || !value.isBefore(startAt)
+                          ? Promise.resolve()
+                          : Promise.reject(new Error('第二阶段开始时间不能早于首日开始时间'));
+                      },
+                    }),
+                  ]}
+                >
+                  <DatePicker showTime format="YYYY-MM-DD HH:mm" style={{ width: '100%' }} />
+                </Form.Item>
+              ) : null}
+            </>
+          ) : null}
           <Form.Item
             name="dailyEndTime"
             label="每日结束时间"
@@ -914,13 +995,19 @@ export default function AdminSchedulingPage() {
               ) : null
             }
           </Form.Item>
-          <Form.Item name="scheduleStage" label="排程范围" rules={[{ required: true }]}>
-            <Select
-              options={[
-                { value: 'all', label: '全部场次' },
-                { value: 'second', label: '仅第二阶段', disabled: !canScheduleSecondStage },
-              ]}
-            />
+          <Form.Item
+            name="onlyUnscheduled"
+            valuePropName="checked"
+            extra="不勾选时，范围内没开始、没人工固定的场次会全部重新排，已经通知的时间可能会变。"
+          >
+            <Checkbox>只排还没安排时间的场次（已排好的不动）</Checkbox>
+          </Form.Item>
+          <Form.Item
+            name="playerRestMinutes"
+            label="运动员两场之间至少休息"
+            extra="0 表示只要不同时上场就行。同一场团体对阵里的各子项之间不受这个限制；手动调整时不检查。"
+          >
+            <InputNumber min={0} max={600} addonAfter="分钟" style={{ width: '100%' }} />
           </Form.Item>
           <Form.Item name="overrideMatchMinutes" valuePropName="checked"><Checkbox>统一覆盖未固定比赛的预估时长（否则保留各场时长）</Checkbox></Form.Item>
           <Form.Item name="matchMinutes" label="单场预估时长（分钟）" rules={[{ required: true }]}>
@@ -978,7 +1065,7 @@ export default function AdminSchedulingPage() {
       </Modal>
       <Modal title="自动排程预览" open={Boolean(autoPreview)} onCancel={() => { setAutoPreview(null); setAutoModalOpen(true); }} onOk={applyAutoSchedule} okText="应用排程并同步大屏" cancelText="返回调整" confirmLoading={scheduleBusy} width={1050}>
         {autoPreview && <>
-          <Alert showIcon type={autoPreview.unscheduled.length ? 'warning' : 'success'} title={`本次安排 ${autoPreview.scheduledCount} 场，保留人工固定 ${autoPreview.preservedCount} 场，未排入 ${autoPreview.unscheduled.length} 场`} description="预览尚未保存。应用后，后台、公开赛程、裁判端和赛事大屏同步更新；结束时间为估算值。" style={{ marginBottom: 12 }} />
+          <Alert showIcon type={autoPreview.unscheduled.length ? 'warning' : 'success'} title={`本次安排 ${autoPreview.scheduledCount} 场，保留人工固定 ${autoPreview.preservedCount} 场${autoPreview.keptCount ? `，已排好不动 ${autoPreview.keptCount} 场` : ''}，未排入 ${autoPreview.unscheduled.length} 场`} description="预览尚未保存。应用后，后台、公开赛程、裁判端和赛事大屏同步更新；结束时间为估算值。" style={{ marginBottom: 12 }} />
           <Table rowKey="groupId" size="small" dataSource={autoPreview.groups} pagination={false}
             expandable={{
               rowExpandable: (row) => Boolean(row.events?.length),

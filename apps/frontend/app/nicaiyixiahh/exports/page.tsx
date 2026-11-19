@@ -3,10 +3,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import { Button, Card, Select, Space, Table, Tag, Typography, message } from 'antd';
-import { DownloadOutlined, FileExcelOutlined, ReloadOutlined } from '@ant-design/icons';
+import { DownloadOutlined, FileExcelOutlined, PictureOutlined, ReloadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useCurrentAccess } from '@/lib/use-current-role';
 import { apiFetch } from '@/lib/api';
+import { downloadBlob, svgToPngBlob } from '@/lib/svg-to-png';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 
@@ -38,6 +39,29 @@ const exportKinds = [
   { key: 'bracket', title: '对阵表', description: '按场地排程输出对阵、时间与场地内场次。' },
   { key: 'orderbook', title: '秩序册', description: '按参考模板生成秩序表、分组表、小组赛、日程表、名次汇总、淘汰赛和流程表。' },
 ];
+
+// 对阵图（PNG）：可选的单项。并入混编的单项没有自己的场次；循环赛没有淘汰对阵。
+type BracketEvent = {
+  id: string;
+  type: string;
+  format?: string;
+  groupLabel?: string | null;
+  group?: { name: string } | null;
+  mixLabel?: string | null;
+  mixHostId?: string | null;
+};
+
+const EVENT_TYPE_LABELS: Record<string, string> = {
+  MENS_SINGLES: '男子单打',
+  WOMENS_SINGLES: '女子单打',
+  MENS_DOUBLES: '男子双打',
+  WOMENS_DOUBLES: '女子双打',
+  MIXED_DOUBLES: '混合双打',
+};
+
+function bracketEventLabel(event: BracketEvent) {
+  return event.mixLabel ?? `${event.group?.name ?? event.groupLabel ?? ''} ${EVENT_TYPE_LABELS[event.type] ?? event.type}`.trim();
+}
 
 type StoredExportFile = {
   kind: string;
@@ -79,6 +103,11 @@ export default function AdminExportsPage() {
   const [downloading, setDownloading] = useState('');
   const [storedFileState, setStoredFileState] = useState<{ tournamentId: string; files: Record<string, StoredExportFile> }>({ tournamentId: '', files: {} });
   const storedFiles = storedFileState.tournamentId === selectedTournamentId ? storedFileState.files : {};
+  const [bracketEventState, setBracketEventState] = useState<{ tournamentId: string; events: BracketEvent[] }>({ tournamentId: '', events: [] });
+  const bracketEvents = bracketEventState.tournamentId === selectedTournamentId ? bracketEventState.events : [];
+  const [bracketEventId, setBracketEventId] = useState('');
+  const selectedBracketEventId = bracketEvents.some((item) => item.id === bracketEventId) ? bracketEventId : '';
+  const [bracketDownloading, setBracketDownloading] = useState(false);
 
   const selectedTournament = useMemo(
     () => tournaments.find((item) => item.id === selectedTournamentId) ?? null,
@@ -146,6 +175,43 @@ export default function AdminExportsPage() {
       window.clearInterval(timer);
     };
   }, [token, selectedTournamentId]);
+
+  useEffect(() => {
+    if (!token || !selectedTournamentId) return;
+    let cancelled = false;
+    apiFetch<BracketEvent[]>(`/events?tournamentId=${selectedTournamentId}`, { token })
+      .then((data) => {
+        if (cancelled) return;
+        setBracketEventState({
+          tournamentId: selectedTournamentId,
+          events: data.filter((item) => !item.mixHostId && item.format !== 'ROUND_ROBIN'),
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setBracketEventState({ tournamentId: selectedTournamentId, events: [] });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token, selectedTournamentId]);
+
+  // 后端按秩序册同一份对阵数据画好 SVG，这里转成 2 倍清晰度的 PNG 下载。
+  async function downloadBracketImage() {
+    if (!token || !selectedBracketEventId) return;
+    setBracketDownloading(true);
+    try {
+      const image = await apiFetch<{ filename: string; svg: string; width: number; height: number }>(
+        `/exports/events/${selectedBracketEventId}/bracket-image`,
+        { token },
+      );
+      downloadBlob(await svgToPngBlob(image.svg, image.width, image.height), image.filename);
+      message.success('对阵图已下载');
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '对阵图下载失败');
+    } finally {
+      setBracketDownloading(false);
+    }
+  }
 
   async function download(kind: string) {
     if (!token || !selectedTournamentId) return;
@@ -244,6 +310,37 @@ export default function AdminExportsPage() {
             </Space>
           </Card>
         ))}
+        {access.can('ORDERBOOK') ? (
+          <Card>
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              <PictureOutlined style={{ fontSize: 28, color: '#2563eb' }} />
+              <div>
+                <Typography.Title level={4} style={{ margin: 0 }}>对阵图（PNG）</Typography.Title>
+                <Typography.Text type="secondary">
+                  选择项目，下载淘汰赛对阵图图片，与秩序册「流程表」第二阶段一致；小组赛结束前为预排骨架。
+                </Typography.Text>
+              </div>
+              <Select
+                style={{ width: '100%' }}
+                value={selectedBracketEventId || undefined}
+                placeholder={bracketEvents.length ? '选择项目' : '该赛事暂无可下载对阵图的项目'}
+                disabled={!bracketEvents.length}
+                options={bracketEvents.map((item) => ({ value: item.id, label: bracketEventLabel(item) }))}
+                onChange={setBracketEventId}
+              />
+              <Button
+                type="primary"
+                icon={<DownloadOutlined />}
+                block
+                disabled={!selectedBracketEventId}
+                loading={bracketDownloading}
+                onClick={downloadBracketImage}
+              >
+                下载对阵图
+              </Button>
+            </Space>
+          </Card>
+        ) : null}
       </div>
 
       <Card title="赛事列表">
