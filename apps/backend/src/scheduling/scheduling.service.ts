@@ -11,7 +11,14 @@ import { PrismaService } from '../prisma/prisma.service';
 import { TeamCompetitionsService } from '../team-competitions/team-competitions.service';
 import { hostDisplayLabel } from '../common/event-mix';
 import { isByeMatch } from '../common/knockout-placement';
-import { AutoScheduleDto, ClearScheduleDto, CreateVenueDto, KNOCKOUT_ROUND_CODES, UpdateMatchScheduleDto, UpdateVenueDto, SaveGroupVenuesDto } from './dto/scheduling.dto';
+import {
+  knockoutPlaceholderNames,
+  knockoutPlaceholderSlots,
+  knockoutPlaceholdersOnly,
+  knockoutSlotKey,
+  skeletonFromGroupMatches,
+} from '../common/knockout-skeleton';
+import { AutoScheduleDto, ClearScheduleDto, CreateVenueDto, KNOCKOUT_ROUND_CODES, KnockoutPlaceholdersDto, UpdateMatchScheduleDto, UpdateVenueDto, SaveGroupVenuesDto } from './dto/scheduling.dto';
 import { ScoringGateway } from '../scoring/scoring.gateway';
 import {
   SECOND_STAGE_FORMAL_ROUND_NO_BASE,
@@ -68,6 +75,8 @@ type ScheduleMatch = {
   id: string;
   /** 轮空场：淘汰赛首轮一方没有对手、直接晋级，已结束，不用排场地和时间。 */
   isBye: boolean;
+  /** 预排的淘汰赛空位（双方还没定）：双方占位名，如「A组第1名」「待定」。 */
+  placeholderNames: [string, string] | null;
   groupId: string | null;
   groupName: string | null;
   scheduleLocked: boolean;
@@ -120,6 +129,8 @@ type BusyInterval = {
   end: number;
   /** 运动员占用来自哪场团体对阵：同一对阵的各子项连着打，不算两场之间的休息。 */
   teamMatchId?: string | null;
+  /** 来自哪个项目（单项 id；团体赛统一记 TEAM），兼项间隔只算不同项目之间。 */
+  eventKey?: string | null;
 };
 
 type DailyBreakInterval = {
@@ -429,6 +440,9 @@ export class SchedulingService {
       throw new BadRequestException('第二阶段开始时间不能早于首日开始时间');
     }
     const playerRestMs = (dto.playerRestMinutes ?? 0) * 60 * 1000;
+    // 兼项：同一人不同项目的两场之间至少隔 N 场比赛的时间（单场预估时长 + 场间间隔）。
+    const crossEventRestMs = (dto.crossEventGapMatches ?? 0) * (matchMinutes + breakMinutes) * 60 * 1000;
+    const eventKeyOf = (match: { eventId: string | null; teamMatchId?: string | null }) => match.eventId ?? (match.teamMatchId ? 'TEAM' : null);
     // 排程范围：多选单项 > 单个单项 > 全部（含团体赛）。
     const scopeEventIds = dto.eventIds?.length ? dto.eventIds : dto.eventId ? [dto.eventId] : null;
     const inScope = (match: { eventId: string | null }) => !scopeEventIds || (match.eventId !== null && scopeEventIds.includes(match.eventId));
@@ -538,6 +552,7 @@ export class SchedulingService {
           start: anchor.scheduledAt!.getTime(),
           end: endAt,
           teamMatchId: anchor.teamMatchId,
+          eventKey: eventKeyOf(anchor),
         });
       }
     }
@@ -672,6 +687,8 @@ export class SchedulingService {
             playDays,
             playerRestMs,
             match.teamMatchId,
+            crossEventRestMs,
+            eventKeyOf(match),
           ),
         }))
         .filter(
@@ -731,6 +748,7 @@ export class SchedulingService {
           start: scheduledAt.getTime(),
           end: matchEndAt,
           teamMatchId: match.teamMatchId,
+          eventKey: eventKeyOf(match),
         });
       }
     }
@@ -791,6 +809,86 @@ export class SchedulingService {
     await this.audit(dto.tournamentId, 'AUTO', allScheduled.filter(m => adjustableIds.has(m.id)).map(m => this.placement(m)),
       projected.filter(m => adjustableIds.has(m.id)).map(m => this.placement(m)), actorId);
     return this.getSchedule(dto.tournamentId, dto.eventId);
+  }
+
+  private placeholderEventLabel(event: { type: string; group?: { name: string } | null }) {
+    return `${event.group?.name ? `${event.group.name} ` : ''}${EVENT_TYPE_LABELS[event.type] ?? event.type}`;
+  }
+
+  private async placeholderEvents(dto: KnockoutPlaceholdersDto) {
+    return this.prisma.event.findMany({
+      where: { tournamentId: dto.tournamentId, mixHostId: null, ...(dto.eventIds?.length ? { id: { in: dto.eventIds } } : {}) },
+      include: {
+        group: { select: { name: true } },
+        matches: { select: { id: true, round: true, roundNo: true, matchNo: true, side1Id: true, side2Id: true, status: true, startedAt: true } },
+      },
+      orderBy: [{ id: 'asc' }],
+    });
+  }
+
+  /**
+   * 预排淘汰赛空位：「小组循环+淘汰（标准2023）」出线超过 8 人、淘汰赛还没生成的单项，按出线后同一排法
+   * （buildKnockoutSkeleton）先建出各轮非轮空的场次（双方为空、未开始），之后像普通场次一样排时间场地。
+   * 小组赛打完后 scoring.fillGroupKnockoutIfReady 按（roundNo、matchNo、round）把出线选手填进这些场次，
+   * 时间场地不变；轮空场那时再建。
+   */
+  async createKnockoutPlaceholders(dto: KnockoutPlaceholdersDto, actorId?: string) {
+    return this.withScheduleTransaction(dto.tournamentId, async service => {
+      const tournament = await service.ensureTournament(dto.tournamentId);
+      const events = await service.placeholderEvents(dto);
+      const created: Array<{ eventId: string; label: string; count: number; byes: number; drawSize: number }> = [];
+      const skipped: Array<{ eventId: string; label: string; reason: string }> = [];
+      for (const event of events) {
+        const label = service.placeholderEventLabel(event);
+        const skip = (reason: string) => skipped.push({ eventId: event.id, label, reason });
+        if (event.format !== Format.GROUP_PLUS_KNOCKOUT_STD) {
+          if (dto.eventIds?.length) skip('只有「小组循环+淘汰（标准2023）」赛制可以预排淘汰赛空位');
+          continue;
+        }
+        const groupMatches = event.matches.filter((m) => m.roundNo === 0);
+        if (!groupMatches.length) { skip('还没抽签'); continue; }
+        if (event.matches.some((m) => m.roundNo >= 1 && m.roundNo < SECOND_STAGE_FORMAL_ROUND_NO_BASE)) { skip('已有淘汰赛场次（已预排过或已生成）'); continue; }
+        const { skeleton, qualifierTotal } = skeletonFromGroupMatches(groupMatches, event.qualifiersPerGroup ?? 2);
+        if (!skeleton || qualifierTotal <= 8) {
+          skip(`出线 ${qualifierTotal} 人，不超过 8 人：第二阶段在抽签编排页确定 A-H 签位，不能预排`);
+          continue;
+        }
+        const slots = knockoutPlaceholderSlots(skeleton);
+        const minutes = event.defaultMatchMinutes ?? tournament.defaultMatchMinutes ?? 45;
+        await service.prisma.match.createMany({
+          data: slots.map((slot) => ({ eventId: event.id, round: slot.round, roundNo: slot.roundNo, matchNo: slot.matchNo, status: MatchStatus.PENDING, durationMinutes: minutes })),
+        });
+        created.push({ eventId: event.id, label, count: slots.length, byes: skeleton.matches.length - slots.length, drawSize: skeleton.bracketSize });
+      }
+      if (created.length) await service.audit(dto.tournamentId, 'KNOCKOUT_PLACEHOLDERS', [], created, actorId);
+      return { created, skipped };
+    });
+  }
+
+  /** 删除淘汰赛空位：只删双方都还空着、没开打的淘汰赛场次（预排的空位或清空成绩后留下的骨架）。 */
+  async removeKnockoutPlaceholders(dto: KnockoutPlaceholdersDto, actorId?: string) {
+    return this.withScheduleTransaction(dto.tournamentId, async service => {
+      await service.ensureTournament(dto.tournamentId);
+      const events = await service.placeholderEvents(dto);
+      const removed: Array<{ eventId: string; label: string; count: number }> = [];
+      const skipped: Array<{ eventId: string; label: string; reason: string }> = [];
+      for (const event of events) {
+        const knockout = event.matches.filter((m) => m.roundNo >= 1 && m.roundNo < SECOND_STAGE_FORMAL_ROUND_NO_BASE);
+        if (!knockout.length) continue;
+        const label = service.placeholderEventLabel(event);
+        if (event.format !== Format.GROUP_PLUS_KNOCKOUT_STD || !knockoutPlaceholdersOnly(knockout) || knockout.some((m) => m.startedAt)) {
+          if (dto.eventIds?.length) skipped.push({ eventId: event.id, label, reason: '淘汰赛已经有选手或已开打，不是空位，不能删除' });
+          continue;
+        }
+        const result = await service.prisma.match.deleteMany({
+          where: { id: { in: knockout.map((m) => m.id) }, side1Id: null, side2Id: null, status: MatchStatus.PENDING, startedAt: null },
+        });
+        if (result.count !== knockout.length) throw new ConflictException('比赛状态已变化，请刷新后重试');
+        removed.push({ eventId: event.id, label, count: result.count });
+      }
+      if (removed.length) await service.audit(dto.tournamentId, 'KNOCKOUT_PLACEHOLDERS_REMOVE', [], removed, actorId);
+      return { removed, skipped };
+    });
   }
 
   /**
@@ -1008,6 +1106,20 @@ export class SchedulingService {
         .map((match) => [this.matchKey(match.eventId!, match.roundNo, match.matchNo), match]),
     );
 
+    // 预排的淘汰赛空位：按出线前骨架给双方占位名（A组第1名 / 待定），每个项目算一次。
+    const placeholderNamesByEvent = new Map<string, Map<string, [string, string]> | null>();
+    const placeholderNamesFor = (match: (typeof matches)[number]) => {
+      if (!match.eventId || match.event?.format !== Format.GROUP_PLUS_KNOCKOUT_STD || match.roundNo < 1 || match.roundNo >= SECOND_STAGE_FORMAL_ROUND_NO_BASE) return null;
+      if (!placeholderNamesByEvent.has(match.eventId)) {
+        const own = matches.filter((item) => item.eventId === match.eventId);
+        const skeleton = knockoutPlaceholdersOnly(own)
+          ? skeletonFromGroupMatches(own.filter((item) => item.roundNo === 0), match.event.qualifiersPerGroup ?? 2).skeleton
+          : null;
+        placeholderNamesByEvent.set(match.eventId, skeleton ? knockoutPlaceholderNames(skeleton) : null);
+      }
+      return placeholderNamesByEvent.get(match.eventId)?.get(knockoutSlotKey(match)) ?? null;
+    };
+
     // 场次按场地连续编号：matches 已按 scheduledAt 升序，故同一场地内依次为第1场、第2场……
     const venueSequence = new Map<string, number>();
     return matches.map<ScheduleMatch>((match) => {
@@ -1076,6 +1188,7 @@ export class SchedulingService {
         dependenciesReady,
         dependencyMatchIds,
         isBye: Boolean(match.eventId) && isByeMatch(match),
+        placeholderNames: placeholderNamesFor(match),
         scheduleStatus,
       };
     });
@@ -1192,6 +1305,9 @@ export class SchedulingService {
     // 同一运动员两场之间至少休息（毫秒）；同一团体对阵的各子项之间不算。
     playerRestMs = 0,
     teamMatchId: string | null = null,
+    // 兼项：同一人不同项目的两场之间至少隔开的时间（毫秒），只算不同项目之间。
+    crossEventRestMs = 0,
+    eventKey: string | null = null,
   ): number | null {
     let start = this.normalizeToDailyWindow(earliest, matchMinutes, dailyWindow, allowedDays);
     const latestEnd = this.endOfDay(tournamentEndDate).getTime();
@@ -1214,7 +1330,9 @@ export class SchedulingService {
       const playerConflict = playerIds
         .flatMap((playerId) => playerBusy.get(playerId) ?? [])
         .map((interval) => {
-          const rest = interval.teamMatchId && interval.teamMatchId === teamMatchId ? 0 : playerRestMs;
+          const sameEncounter = Boolean(interval.teamMatchId && interval.teamMatchId === teamMatchId);
+          const crossEvent = Boolean(interval.eventKey && eventKey && interval.eventKey !== eventKey);
+          const rest = sameEncounter ? 0 : Math.max(playerRestMs, crossEvent ? crossEventRestMs : 0);
           return { start: interval.start - rest, end: interval.end + rest };
         })
         .sort((a, b) => a.start - b.start)

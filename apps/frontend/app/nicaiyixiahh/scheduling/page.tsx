@@ -122,6 +122,8 @@ interface ConflictItem {
 interface ScheduleMatch {
   /** 轮空场：首轮一方没有对手、直接晋级，不用排场地和时间。 */
   isBye?: boolean;
+  /** 预排的淘汰赛空位：双方占位名（A组第1名 / 待定）。 */
+  placeholderNames?: [string, string] | null;
   groupId: string | null;
   groupName: string | null;
   scheduleLocked: boolean;
@@ -201,8 +203,9 @@ type ManualPreview = {
 // 对阵文字：团体赛写两队；轮空场没有对手的一边写「轮空」，其余未定的写「待定」。
 function matchupText(match: ScheduleMatch) {
   if (match.teamMatchId) return `${match.team1Name ?? '待定'} VS ${match.team2Name ?? '待定'}`;
-  const side = (value?: { name: string } | null) => value?.name ?? (match.isBye ? '轮空' : '待定');
-  return `${side(match.side1)} VS ${side(match.side2)}`;
+  const side = (value: { name: string } | null | undefined, index: 0 | 1) =>
+    value?.name ?? (match.isBye ? '轮空' : match.placeholderNames?.[index] ?? '待定');
+  return `${side(match.side1, 0)} VS ${side(match.side2, 1)}`;
 }
 
 function hasSecondStageFormat(format?: string | null) {
@@ -380,7 +383,7 @@ export default function AdminSchedulingPage() {
     matchMinutes: number; breakMinutes: number; venueIds?: string[]; eventTypeOrder?: string[];
     scheduleStage?: ScheduleStage; overrideMatchMinutes?: boolean;
     eventIds?: string[]; rounds?: string[]; secondStageMode?: 'follow' | 'separate'; secondStageStartAt?: Dayjs;
-    onlyUnscheduled?: boolean; playerRestMinutes?: number;
+    onlyUnscheduled?: boolean; playerRestMinutes?: number; crossEventGapMatches?: number;
   }) {
     if (!token || !selectedTournamentId) return;
     setScheduleBusy(true);
@@ -398,6 +401,7 @@ export default function AdminSchedulingPage() {
         eventTypeOrder: values.eventTypeOrder, prioritizeSecondStage: true, scheduleStage: stage,
         secondStageStartAt: secondStart?.toISOString(), secondStageStartAtLocal: secondStart?.format('YYYY-MM-DD HH:mm'),
         onlyUnscheduled: values.onlyUnscheduled ?? false, playerRestMinutes: values.playerRestMinutes ?? 0,
+        crossEventGapMatches: values.crossEventGapMatches ?? 0,
         overrideMatchMinutes: values.overrideMatchMinutes ?? false,
       };
       const result = await apiFetch<{ preview: AutoPreview }>('/scheduling/auto', { method: 'POST', token, body: JSON.stringify({ ...payload, preview: true }) });
@@ -485,6 +489,59 @@ export default function AdminSchedulingPage() {
     }
   }
 
+  // 预排 / 删除淘汰赛空位：页面上选了单项就只处理它，否则处理全部符合条件的单项。
+  function knockoutPlaceholders(action: 'create' | 'remove') {
+    if (!token || !selectedTournamentId) return;
+    const scope = selectedEventId
+      ? `「${eventOptions.find((option) => option.value === selectedEventId)?.label ?? '所选单项'}」`
+      : '全部符合条件的单项';
+    Modal.confirm({
+      title: action === 'create' ? '预排淘汰赛空位' : '删除淘汰赛空位',
+      content: action === 'create'
+        ? `为${scope}先建出淘汰赛各轮的场次（双方待定，轮空场不建），之后可以用自动排程（仅第二阶段，可选轮次）排时间和场地。小组赛打完后出线选手自动填进这些场次，时间场地不变。只适用于「小组循环+淘汰（标准2023）」且出线超过 8 人的单项。`
+        : `删除${scope}还没有选手、没开打的淘汰赛空位（连同已排的时间场地）。小组赛打完后淘汰赛仍会自动生成。`,
+      okText: action === 'create' ? '预排' : '删除',
+      cancelText: '取消',
+      okButtonProps: action === 'remove' ? { danger: true } : undefined,
+      onOk: async () => {
+        try {
+          type Result = {
+            created?: Array<{ label: string; count: number; byes: number; drawSize: number }>;
+            removed?: Array<{ label: string; count: number }>;
+            skipped: Array<{ label: string; reason: string }>;
+          };
+          const result = await apiFetch<Result>(
+            action === 'create' ? '/scheduling/knockout-placeholders' : '/scheduling/knockout-placeholders/remove',
+            { method: 'POST', token, body: JSON.stringify({ tournamentId: selectedTournamentId, eventIds: selectedEventId ? [selectedEventId] : undefined }) },
+          );
+          await loadSchedule();
+          const done = action === 'create'
+            ? (result.created ?? []).map((item) => `${item.label}：${item.drawSize} 签，预排 ${item.count} 场（${item.byes} 场轮空不建）`)
+            : (result.removed ?? []).map((item) => `${item.label}：删除 ${item.count} 场`);
+          Modal.info({
+            title: action === 'create' ? '淘汰赛空位预排结果' : '淘汰赛空位删除结果',
+            okText: '知道了',
+            content: (
+              <div>
+                {done.length ? done.map((line) => <div key={line}>{line}</div>) : <div>没有可处理的单项。</div>}
+                {result.skipped.length > 0 && (
+                  <div style={{ marginTop: 8, color: '#8c8c8c' }}>
+                    {result.skipped.map((item) => <div key={item.label}>{item.label}：{item.reason}</div>)}
+                  </div>
+                )}
+                {action === 'create' && done.length > 0 && (
+                  <div style={{ marginTop: 8 }}>下一步：点「自动排程」，排程范围选「仅第二阶段」，按需选轮次和开始时间。</div>
+                )}
+              </div>
+            ),
+          });
+        } catch (error) {
+          message.error(error instanceof Error ? error.message : '操作失败');
+        }
+      },
+    });
+  }
+
   function openAutoSchedule() {
     const startAt = defaultAutoStart(selectedTournament);
     autoForm.setFieldsValue({
@@ -495,6 +552,7 @@ export default function AdminSchedulingPage() {
       secondStageStartAt: startAt.add(1, 'day'),
       onlyUnscheduled: true,
       playerRestMinutes: 0,
+      crossEventGapMatches: 2,
       dailyEndTime: dailyTimeValue(selectedTournament?.dailyEndTime),
       hasBreakPeriods: false,
       breakPeriods: [{ startTime: dailyTimeValue('12:00'), durationMinutes: 60 }],
@@ -579,6 +637,9 @@ export default function AdminSchedulingPage() {
     if (row.matchId) {
       const match = schedule.matches.find(m => m.id === row.matchId);
       return `${match ? `${match.groupName ?? ''} ${match.eventTypeLabel} ${match.round} 第${match.matchNo}场` : '比赛'}：${configuredVenues.find(v => v.id === row.venueId)?.name ?? '未分配场地'} · ${formatTime(row.scheduledAt as string | null)} · ${row.durationMinutes}分钟${row.scheduleLocked ? ' · 人工固定' : ''}${row.scheduleOverride ? ' · 临时借场' : ''}${row.dateOverride ? ' · 临时改期' : ''}`;
+    }
+    if (typeof row.label === 'string' && typeof row.count === 'number') {
+      return `${row.label}：${row.count} 场${typeof row.byes === 'number' ? `（${String(row.drawSize)} 签，${row.byes} 场轮空不建）` : ''}`;
     }
     if (typeof row.count === 'number') return `已清空 ${row.count} 场未开始比赛，${row.includeLocked ? '包括人工固定安排' : '保留人工固定安排'}`;
     return '—';
@@ -682,6 +743,20 @@ export default function AdminSchedulingPage() {
               取消场地排程
             </Button>
           </Popconfirm>
+          <Dropdown
+            disabled={!selectedTournamentId}
+            menu={{
+              items: [
+                { key: 'create', label: '预排淘汰赛空位' },
+                { key: 'remove', label: '删除淘汰赛空位', danger: true },
+              ],
+              onClick: ({ key }) => knockoutPlaceholders(key as 'create' | 'remove'),
+            }}
+          >
+            <Button disabled={!selectedTournamentId}>
+              淘汰赛空位 <DownOutlined />
+            </Button>
+          </Dropdown>
           <Button type="primary" onClick={openAutoSchedule} disabled={!activeVenues.length}>
             自动排程
           </Button>
@@ -869,6 +944,7 @@ export default function AdminSchedulingPage() {
             secondStageMode: 'follow',
             onlyUnscheduled: true,
             playerRestMinutes: 0,
+            crossEventGapMatches: 2,
           }}
         >
           <Form.Item name="eventIds" label="排程单项" extra="不选为全部单项（含团体赛）；选了单项就只排这些单项，团体赛不动。">
@@ -1034,6 +1110,13 @@ export default function AdminSchedulingPage() {
           >
             <InputNumber min={0} max={600} addonAfter="分钟" style={{ width: '100%' }} />
           </Form.Item>
+          <Form.Item
+            name="crossEventGapMatches"
+            label="兼项运动员不同项目的两场之间至少隔"
+            extra="同一人报了不同项目时，两场之间至少空出这么多场比赛的时间（按单场预估时长＋场间间隔折算，如 2 场 × 20 分钟 = 40 分钟）；0 为不限。只在自动排程时生效。"
+          >
+            <InputNumber min={0} max={10} addonAfter="场" style={{ width: '100%' }} />
+          </Form.Item>
           <Form.Item name="overrideMatchMinutes" valuePropName="checked"><Checkbox>统一覆盖未固定比赛的预估时长（否则保留各场时长）</Checkbox></Form.Item>
           <Form.Item name="matchMinutes" label="单场预估时长（分钟）" rules={[{ required: true }]}>
             <InputNumber min={1} style={{ width: '100%' }} />
@@ -1129,7 +1212,7 @@ export default function AdminSchedulingPage() {
       <Modal title="最近 50 条排程调整记录" open={logs !== null} onCancel={() => setLogs(null)} footer={null} width={850}>
         <Table rowKey="id" dataSource={logs ?? []} pagination={{ pageSize: 10 }} columns={[
           { title: '时间', render: (_, r) => formatTime(r.createdAt) },
-          { title: '操作', render: (_, r) => ({ AUTO: '自动排程', MANUAL: '人工调整', CLEAR: '清空排程', GROUP_VENUES: '组别场地配置' }[r.action] ?? r.action) },
+          { title: '操作', render: (_, r) => ({ AUTO: '自动排程', MANUAL: '人工调整', CLEAR: '清空排程', GROUP_VENUES: '组别场地配置', KNOCKOUT_PLACEHOLDERS: '预排淘汰赛空位', KNOCKOUT_PLACEHOLDERS_REMOVE: '删除淘汰赛空位' }[r.action] ?? r.action) },
           { title: '操作人', dataIndex: 'actorName' },
         ]} expandable={{ expandedRowRender: r => <div style={{ maxHeight: 320, overflow: 'auto' }}><Typography.Text strong>调整前</Typography.Text><pre>{logDescription(r.before)}</pre><Typography.Text strong>调整后</Typography.Text><pre>{logDescription(r.after)}</pre></div> }} />
       </Modal>

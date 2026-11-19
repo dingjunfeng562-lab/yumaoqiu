@@ -454,6 +454,23 @@ describe('auto schedule by stage, player rest and keeping placed matches', () =>
     expect(byId.get('real')).toBe(false);
   });
 
+  it('兼项：同一人不同项目的两场至少隔 N 场比赛的时间，同一项目内不受限', async () => {
+    // 单场 30 分钟 + 间隔 10 分钟；隔 2 场 = 80 分钟。p1 报了 eA（r1）和 eB（r3），两片场。
+    const cross = [
+      eventMatch('a', 'eA', 'SINGLE_ELIMINATION', 1, 1, { side1Id: 'r1', side2Id: 'r2' }),
+      eventMatch('b', 'eB', 'SINGLE_ELIMINATION', 1, 1, { side1Id: 'r3', side2Id: 'r4' }),
+    ];
+    const gap = (r: { at: (id: string) => string | null }, x: string, y: string) => Math.abs(Date.parse(r.at(y)!) - Date.parse(r.at(x)!)) / 60000;
+    expect(gap(await preview(cross, {}, 2), 'a', 'b')).toBe(30);
+    expect(gap(await preview(cross, { crossEventGapMatches: 2 }, 2), 'a', 'b')).toBe(30 + 80);
+    // 同一项目里 p1 连着打两场（r1 对 r2、r1 对 r4），兼项间隔不管。
+    const same = [
+      eventMatch('a1', 'eA', 'SINGLE_ELIMINATION', 1, 1, { side1Id: 'r1', side2Id: 'r2' }),
+      eventMatch('a2', 'eA', 'SINGLE_ELIMINATION', 1, 2, { side1Id: 'r1', side2Id: 'r4' }),
+    ];
+    expect(gap(await preview(same, { crossEventGapMatches: 2 }, 2), 'a1', 'a2')).toBe(30);
+  });
+
   it('轮次：只排选中的淘汰赛轮次，其余留待下次', async () => {
     const SE = 'SINGLE_ELIMINATION';
     const result = await preview([
@@ -492,5 +509,70 @@ describe('auto schedule by stage, player rest and keeping placed matches', () =>
     const result = await preview([eventMatch('a', 'eA', 'SINGLE_ELIMINATION', 1, 1), eventMatch('b', 'eB', 'SINGLE_ELIMINATION', 1, 1)], { eventIds: ['eB'] });
     expect(result.matches.map(m => m.id)).toEqual(['b']);
     expect(result.at('b')).toBe('2026-10-22T00:00:00.000Z');
+  });
+});
+
+describe('预排 / 删除淘汰赛空位', () => {
+  // 5 组每组 3 人、每组出线 2 人 → 10 人进 16 签：非轮空 10 场（首轮 2、1/4 决赛 4、半决赛 2、决赛、季军赛）。
+  const groupMatches = ['A', 'B', 'C', 'D', 'E'].flatMap((group, g) => [[1, 2], [1, 3], [2, 3]].map(([a, b], k) => ({
+    id: `g${g}${k}`, round: group, roundNo: 0, matchNo: g * 3 + k + 1, side1Id: `${group}${a}`, side2Id: `${group}${b}`, status: 'PENDING', startedAt: null,
+  })));
+  type Row = { id: string; round: string; roundNo: number; matchNo: number; side1Id: string | null; side2Id: string | null; status: string; startedAt: Date | null };
+  function setup(events: Array<{ id: string; format: string; qualifiersPerGroup?: number; matches: Row[] }>) {
+    const prisma = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      tournament: { findUnique: jest.fn().mockResolvedValue({ id: 't', defaultMatchMinutes: 20 }) },
+      event: { findMany: jest.fn().mockResolvedValue(events.map((e) => ({ type: 'MENS_SINGLES', group: { name: '甲组' }, defaultMatchMinutes: null, qualifiersPerGroup: 2, ...e }))) },
+      match: { createMany: jest.fn().mockResolvedValue({ count: 0 }), deleteMany: jest.fn().mockImplementation(({ where }) => ({ count: where.id.in.length })) },
+      scheduleOperationLog: { create: jest.fn().mockResolvedValue({}) },
+      $transaction: jest.fn(),
+    };
+    prisma.$transaction.mockImplementation(callback => callback(prisma));
+    const service = new SchedulingService(prisma as unknown as PrismaService, { emitBracketUpdate: jest.fn() } as never);
+    return { service, tx: prisma };
+  }
+  const STD = 'GROUP_PLUS_KNOCKOUT_STD';
+
+  it('标准2023 出线超过 8 人：按出线后同一排法建非轮空的场次，双方为空、未开始', async () => {
+    const { service, tx } = setup([{ id: 'e1', format: STD, matches: groupMatches }]);
+    const result = await service.createKnockoutPlaceholders({ tournamentId: 't' });
+    expect(result.created).toEqual([{ eventId: 'e1', label: '甲组 男子单打', count: 10, byes: 6, drawSize: 16 }]);
+    const rows = tx.match.createMany.mock.calls[0][0].data as Array<Record<string, unknown>>;
+    expect(rows).toHaveLength(10);
+    expect(rows.every((row) => row.status === 'PENDING' && row.eventId === 'e1' && row.durationMinutes === 20 && !('side1Id' in row))).toBe(true);
+    expect(rows.map((row) => row.round).sort()).toEqual(['BRONZE', 'F', 'QF', 'QF', 'QF', 'QF', 'R1', 'R1', 'SF', 'SF']);
+    expect(tx.scheduleOperationLog.create).toHaveBeenCalled();
+  });
+
+  it('已有淘汰赛、出线不超过 8 人、还没抽签、别的赛制：跳过并说明原因', async () => {
+    const blank: Row = { id: 'k1', round: 'R1', roundNo: 1, matchNo: 1, side1Id: null, side2Id: null, status: 'PENDING', startedAt: null };
+    const { service, tx } = setup([
+      { id: 'has', format: STD, matches: [...groupMatches, blank] },
+      { id: 'few', format: STD, matches: groupMatches.slice(0, 6) },
+      { id: 'none', format: STD, matches: [] },
+      { id: 'rr', format: 'ROUND_ROBIN', matches: [] },
+    ]);
+    const result = await service.createKnockoutPlaceholders({ tournamentId: 't', eventIds: ['has', 'few', 'none', 'rr'] });
+    expect(result.created).toEqual([]);
+    expect(Object.fromEntries(result.skipped.map((item) => [item.eventId, item.reason]))).toEqual({
+      has: '已有淘汰赛场次（已预排过或已生成）',
+      few: '出线 4 人，不超过 8 人：第二阶段在抽签编排页确定 A-H 签位，不能预排',
+      none: '还没抽签',
+      rr: '只有「小组循环+淘汰（标准2023）」赛制可以预排淘汰赛空位',
+    });
+    expect(tx.match.createMany).not.toHaveBeenCalled();
+  });
+
+  it('删除空位：只删双方都空、没开打的；已经有选手的淘汰赛不删', async () => {
+    const blank = (id: string, matchNo: number): Row => ({ id, round: 'QF', roundNo: 2, matchNo, side1Id: null, side2Id: null, status: 'PENDING', startedAt: null });
+    const { service, tx } = setup([
+      { id: 'e1', format: STD, matches: [...groupMatches, blank('k1', 1), blank('k2', 2)] },
+      { id: 'e2', format: STD, matches: [...groupMatches, blank('k3', 1), { ...blank('k4', 2), side1Id: 'A1' }] },
+    ]);
+    const result = await service.removeKnockoutPlaceholders({ tournamentId: 't', eventIds: ['e1', 'e2'] });
+    expect(result.removed).toEqual([{ eventId: 'e1', label: '甲组 男子单打', count: 2 }]);
+    expect(result.skipped.map((item) => item.eventId)).toEqual(['e2']);
+    expect(tx.match.deleteMany).toHaveBeenCalledTimes(1);
+    expect(tx.match.deleteMany.mock.calls[0][0].where.id.in).toEqual(['k1', 'k2']);
   });
 });

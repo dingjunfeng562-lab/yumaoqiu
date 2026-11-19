@@ -14,6 +14,7 @@ import { hostDisplayLabel, mergeMixRegistrations, mixEventIds } from '../common/
 import {
   buildKnockoutSkeleton,
   groupSizesFromGroupMatches,
+  knockoutPlaceholdersOnly,
 } from '../common/knockout-skeleton';
 import {
   knockoutPlacements,
@@ -967,8 +968,13 @@ export class PublicService {
     const registrationMap = new Map<string, any>(
       event.registrations.map((item: any) => [item.id, item]),
     );
+    // 预排的淘汰赛空位 / 清空成绩后留下的空骨架（淘汰赛场次双方都空）：对阵图仍按出线前骨架画「X组第N名」，
+    // 这些空场次不进对阵图（赛程里照常列出）。
+    const placeholderOnly =
+      event.format === Format.GROUP_PLUS_KNOCKOUT_STD && knockoutPlaceholdersOnly(event.matches);
     const bracketMatches = event.matches
       .filter((match: any) => !this.isSecondStageFormalMatch(match))
+      .filter((match: any) => !(placeholderOnly && match.roundNo >= 1))
       .sort((a: any, b: any) => this.publicBracketMatchCompare(a, b));
     const firstRound = bracketMatches
       .filter((match: any) => match.roundNo === 1)
@@ -1524,7 +1530,8 @@ export class PublicService {
     registrationMap: Map<string, any>,
   ): RankedStandingRow[] {
     const knockoutMatches = (event.matches as any[]).filter((m) => m.roundNo >= 1);
-    if (!knockoutMatches.length) {
+    // 淘汰赛还没有选手（预排的空位或清空成绩后的空骨架）时仍按小组赛排名。
+    if (!knockoutMatches.length || knockoutPlaceholdersOnly(knockoutMatches)) {
       return this.groupStageStandings(event, registrationMap);
     }
 

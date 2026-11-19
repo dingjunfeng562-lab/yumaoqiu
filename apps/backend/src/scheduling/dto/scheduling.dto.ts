@@ -175,6 +175,15 @@ export class AutoScheduleDto {
   })
   rounds?: string[];
 
+  // 兼项运动员（同一人报了不同项目）不同项目的两场之间至少隔几场比赛的时间，
+  // 按本次单场预估时长 + 场间间隔折算；0 或不传为不限。
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(10)
+  crossEventGapMatches?: number;
+
   // 同一运动员两场比赛之间至少休息几分钟；0 或不传为只要不同时上场即可。
   @IsOptional()
   @Type(() => Number)
@@ -182,6 +191,18 @@ export class AutoScheduleDto {
   @Min(0)
   @Max(600)
   playerRestMinutes?: number;
+}
+
+// 预排 / 删除淘汰赛空位：不传 eventIds 为全赛事符合条件的单项。
+export class KnockoutPlaceholdersDto {
+  @IsString()
+  tournamentId: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(500)
+  @IsString({ each: true })
+  eventIds?: string[];
 }
 
 export class ClearScheduleDto {

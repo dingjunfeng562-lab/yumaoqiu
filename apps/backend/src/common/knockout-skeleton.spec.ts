@@ -2,7 +2,12 @@ import {
   buildKnockoutSkeleton,
   canonicalSeedOrder,
   groupSizesFromGroupMatches,
+  knockoutPlaceholderNames,
+  knockoutPlaceholderSlots,
+  knockoutPlaceholdersOnly,
+  knockoutSlotKey,
   placeGroupQualifiers,
+  skeletonFromGroupMatches,
   type GroupQualifier,
 } from './knockout-skeleton';
 
@@ -257,5 +262,45 @@ describe('groupSizesFromGroupMatches', () => {
       ['A', 3],
       ['B', 2],
     ]);
+  });
+});
+
+describe('预排淘汰赛空位', () => {
+  // 5 组每组 3 人的小组赛场次（roundNo 0，round = 组别），每组出线 2 人 → 10 人进 16 签、6 个轮空。
+  const groupMatches = ['A', 'B', 'C', 'D', 'E'].flatMap((group) => [[1, 2], [1, 3], [2, 3]].map(([a, b], k) => ({
+    roundNo: 0, round: group, matchNo: k + 1, side1Id: `${group}${a}`, side2Id: `${group}${b}`, status: 'PENDING',
+  })));
+
+  it('出线人数和骨架按小组赛场次算；空位不建轮空场，含后面各轮和季军赛', () => {
+    const { skeleton, qualifierTotal } = skeletonFromGroupMatches(groupMatches, 2);
+    expect(qualifierTotal).toBe(10);
+    expect(skeleton?.bracketSize).toBe(16);
+    const slots = knockoutPlaceholderSlots(skeleton!);
+    // 首轮 8 场里 6 场轮空 → 2 场；1/4 决赛 4、半决赛 2、决赛 1、季军赛 1。
+    expect(slots).toHaveLength(10);
+    expect(slots.filter((slot) => slot.round === 'R1')).toHaveLength(2);
+    expect(slots.filter((slot) => slot.round === 'BRONZE')).toHaveLength(1);
+  });
+
+  it('占位名：首轮写「X组第N名」，轮空晋级的一方也写出来，其余「待定」', () => {
+    const { skeleton } = skeletonFromGroupMatches(groupMatches, 2);
+    const names = knockoutPlaceholderNames(skeleton!);
+    const r1 = [...names.entries()].filter(([key]) => key.startsWith('1:'));
+    expect(r1).toHaveLength(2);
+    expect(r1.every(([, pair]) => pair.every((name) => /^[A-E]组第[12]名$/.test(name)))).toBe(true);
+    // 1/4 决赛里一方是轮空晋级的小组第 1 名。
+    const qf = [...names.entries()].filter(([key]) => key.endsWith(':QF')).map(([, pair]) => pair);
+    expect(qf.some((pair) => /组第1名$/.test(pair[0]) || /组第1名$/.test(pair[1]))).toBe(true);
+    expect(names.get(knockoutSlotKey({ roundNo: 4, matchNo: 1, round: 'F' }))).toEqual(['待定', '待定']);
+  });
+
+  it('只有双方都空、未开始的淘汰赛场次才算空位；小组赛不算', () => {
+    const blank = { roundNo: 1, round: 'R1', side1Id: null, side2Id: null, status: 'PENDING' };
+    expect(knockoutPlaceholdersOnly([...groupMatches, blank])).toBe(true);
+    expect(knockoutPlaceholdersOnly(groupMatches)).toBe(false);
+    expect(knockoutPlaceholdersOnly([...groupMatches, blank, { ...blank, side1Id: 'A1' }])).toBe(false);
+    expect(knockoutPlaceholdersOnly([...groupMatches, { ...blank, status: 'COMPLETED' }])).toBe(false);
+    // 交叉排位赛（P 开头）不算淘汰赛空位。
+    expect(knockoutPlaceholdersOnly([...groupMatches, { ...blank, round: 'P5' }])).toBe(false);
   });
 });

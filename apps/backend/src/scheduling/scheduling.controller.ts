@@ -7,6 +7,7 @@ import {
   AutoScheduleDto,
   ClearScheduleDto,
   CreateVenueDto,
+  KnockoutPlaceholdersDto,
   UpdateMatchScheduleDto,
   UpdateVenueDto,
   SaveGroupVenuesDto,
@@ -72,6 +73,18 @@ export class SchedulingController {
   @Post('scheduling/clear')
   clearSchedule(@Body() dto: ClearScheduleDto, @Req() req: { user: { id: string } }) {
     return this.schedulingService.clearSchedule(dto, req.user.id);
+  }
+
+  /** 预排淘汰赛空位：小组赛打完前先建出淘汰赛各轮非轮空的场次（双方待定），可以先排时间场地。 */
+  @Post('scheduling/knockout-placeholders')
+  createKnockoutPlaceholders(@Body() dto: KnockoutPlaceholdersDto, @Req() req: { user: { id: string } }) {
+    return this.schedulingService.createKnockoutPlaceholders(dto, req.user.id);
+  }
+
+  /** 删除淘汰赛空位：只删双方都还空着、没开打的淘汰赛场次。 */
+  @Post('scheduling/knockout-placeholders/remove')
+  removeKnockoutPlaceholders(@Body() dto: KnockoutPlaceholdersDto, @Req() req: { user: { id: string } }) {
+    return this.schedulingService.removeKnockoutPlaceholders(dto, req.user.id);
   }
 
   @Patch('matches/:id/schedule')

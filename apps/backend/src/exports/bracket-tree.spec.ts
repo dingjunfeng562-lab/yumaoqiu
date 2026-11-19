@@ -1,5 +1,5 @@
 import * as ExcelJS from 'exceljs';
-import { buildKnockoutSkeleton } from '../common/knockout-skeleton';
+import { buildKnockoutSkeleton, knockoutPlaceholderSlots } from '../common/knockout-skeleton';
 import { bracketTreeSection, renderBracketSvg, renderStagesSvg, sheetSection } from './bracket-svg';
 import { buildOrderbookWorkbook, eventBracketTreeForImage, eventImageParts, type EventImagePart } from './orderbook-workbook';
 import type { ExportEvent, ExportMatch, ExportRegistration, ExportTournament } from './exports.service';
@@ -341,5 +341,43 @@ describe('对阵图（PNG）按阶段导出', () => {
     expect(section.body).toContain('>第一行<');
     expect(section.body).toContain('>第二行<');
     expect(section.body.match(/<path /g)).toHaveLength(4);
+  });
+});
+
+describe('预排的淘汰赛空位', () => {
+  // 12 组每组 3 人的小组赛 + 预排的空位场次（非轮空 24 场：首轮 8、1/8 决赛 8、1/4 决赛 4、半决赛 2、决赛、季军赛），
+  // 空位已排时间场地、双方为空。
+  function withPlaceholders() {
+    const group = groupStage();
+    const skeleton = buildKnockoutSkeleton(GROUPS, 2, new Map(GROUPS.map((g) => [g, 3])))!;
+    const placeholders = knockoutPlaceholderSlots(skeleton).map((slot, i) => match({
+      id: `ph${i}`, round: slot.round, roundNo: slot.roundNo, matchNo: slot.matchNo,
+      scheduledAt: new Date(day.getTime() + 8 * 3600000 + i * 1200000), venueId: 'v1', venue: { name: '1号场', sortOrder: 1 },
+    }));
+    return stdEvent({ registrations: group.registrations, matches: [...group.matches, ...placeholders] });
+  }
+
+  it('对阵图：签位名照出线前骨架写「X组第N名」，场次号、时间、场地取已排的空位', () => {
+    const result = eventBracketTreeForImage(withPlaceholders());
+    if (!('tree' in result)) throw new Error(result.reason);
+    expect(result.tree.preview).toBe(true);
+    expect(result.tree.drawSize).toBe(32);
+    const firstRound = result.tree.rounds[0].matches;
+    expect(firstRound.flatMap((m) => m.sides).some((side) => /^[A-L]组第[12]名$/.test(side.name))).toBe(true);
+    // 非轮空的首轮空位排了时间（16:00 起），轮空场没有场次信息。
+    const withInfo = firstRound.filter((m) => m.info);
+    expect(withInfo).toHaveLength(8);
+    expect(withInfo.every((m) => /^男单\d+ {2}11-28 \d\d:\d\d {2}1号场$/.test(m.info))).toBe(true);
+  });
+
+  it('秩序册：空位场次的对阵写「X组第N名」，不是「待定 VS 待定」', async () => {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(await buildOrderbookWorkbook(tournament([withPlaceholders()])) as never);
+    const texts: string[] = [];
+    workbook.worksheets.forEach((ws) => ws.eachRow((row) => row.eachCell((cell) => { if (cell.master.address === cell.address && cell.text) texts.push(cell.text); })));
+    expect(texts.some((text) => /[A-L]组第[12]名 VS [A-L]组第[12]名/.test(text))).toBe(true);
+    const flow = await flowTexts(tournament([withPlaceholders()]));
+    expect(flow).toContain('男子单打第二阶段：');
+    expect(flow).toContain('A组第1名');
   });
 });

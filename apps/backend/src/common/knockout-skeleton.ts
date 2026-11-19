@@ -265,3 +265,64 @@ function buildSkeletonMatches(slotEntrants: Array<{ id: string } | null>): Skele
   }
   return matches;
 }
+
+// ---- 预排淘汰赛空位 ----
+// 小组赛打完前，先按上面同一排法把淘汰赛各轮非轮空的场次建出来（双方为空、未开始），排好时间和场地；
+// 小组赛打完后 scoring.fillGroupKnockoutIfReady 按（roundNo、matchNo、round）把出线选手填进这些场次，
+// 时间场地不变，轮空场那时再建。清空成绩后保留的空骨架也是这种状态。
+
+type KnockoutRowLike = {
+  roundNo?: number | null;
+  round?: unknown;
+  side1Id: string | null;
+  side2Id: string | null;
+  status?: string | null;
+};
+
+/** 淘汰赛场次（roundNo 1–99，不含 P 开头的交叉排位赛）。 */
+function isKnockoutRow(match: KnockoutRowLike) {
+  const roundNo = match.roundNo ?? 0;
+  return roundNo >= 1 && roundNo < 100 && !(typeof match.round === 'string' && match.round.startsWith('P'));
+}
+
+/** 已有淘汰赛场次，但全是空位（双方都没填、未开始）：预排的空位，或清空成绩后保留的骨架。 */
+export function knockoutPlaceholdersOnly(matches: readonly KnockoutRowLike[]) {
+  const knockout = matches.filter(isKnockoutRow);
+  return knockout.length > 0 && knockout.every((m) => !m.side1Id && !m.side2Id && (m.status ?? 'PENDING') === 'PENDING');
+}
+
+/** 空位场次的键：同一项目内 roundNo + matchNo + round 唯一，生成真实签表时也按它对上。 */
+export function knockoutSlotKey(match: { roundNo?: number | null; matchNo?: number | null; round?: unknown }) {
+  return `${match.roundNo ?? 0}:${match.matchNo ?? 0}:${String(match.round ?? '')}`;
+}
+
+/** 按小组赛场次算骨架：组别代码、各组人数、出线数。出线总数（签数前的实际人数）一并给出。 */
+export function skeletonFromGroupMatches(
+  matches: ReadonlyArray<{ roundNo?: number | null; round?: unknown; side1Id: string | null; side2Id: string | null }>,
+  qualifiersPerGroup: number,
+  groupSizes?: ReadonlyMap<string, number>,
+) {
+  const sizes = groupSizes ?? groupSizesFromGroupMatches(matches as Parameters<typeof groupSizesFromGroupMatches>[0]);
+  const q = Math.max(1, qualifiersPerGroup || 2);
+  const qualifierTotal = [...sizes.values()].reduce((sum, size) => sum + Math.min(q, size), 0);
+  return { skeleton: buildKnockoutSkeleton([...sizes.keys()], q, sizes), qualifierTotal };
+}
+
+/** 要预排的空位：骨架里除轮空以外的各场（含后面各轮和季军赛）。 */
+export function knockoutPlaceholderSlots(skeleton: KnockoutSkeleton) {
+  return skeleton.matches
+    .filter((m) => m.status === 'PENDING')
+    .map((m) => ({ round: m.round, roundNo: m.roundNo, matchNo: m.matchNo }));
+}
+
+/** 空位各场的占位名：首轮及有轮空晋级的场次写「A组第1名」，其余写「待定」。键见 knockoutSlotKey。 */
+export function knockoutPlaceholderNames(skeleton: KnockoutSkeleton) {
+  const nameById = new Map(skeleton.participants.map((p) => [p.id, p.name]));
+  const names = new Map<string, [string, string]>();
+  for (const m of skeleton.matches) {
+    if (m.status !== 'PENDING') continue;
+    const name = (id: string | null) => (id ? nameById.get(id) ?? '待定' : '待定');
+    names.set(knockoutSlotKey(m), [name(m.side1Id), name(m.side2Id)]);
+  }
+  return names;
+}

@@ -46,6 +46,7 @@ import { SecondStageProgressService } from '../common/second-stage-progress.serv
 import {
   buildKnockoutSkeleton,
   groupSizesFromGroupMatches,
+  knockoutPlaceholdersOnly,
 } from '../common/knockout-skeleton';
 
 type RegistrationWithPlayers = Registration & {
@@ -1156,8 +1157,13 @@ export class DrawsService {
       side2: match.side2Id ? registrationMap.get(match.side2Id) ?? null : null,
     });
 
+    // 预排的淘汰赛空位 / 清空成绩后留下的空骨架（双方都空）不当作已生成的淘汰赛：
+    // 仍显示出线前骨架「X组第N名」（时间场地在场地排程页看）。
+    const knockoutPlaceholders =
+      event.format === Format.GROUP_PLUS_KNOCKOUT_STD && knockoutPlaceholdersOnly(sortedMatches);
     const rounds = sortedMatches
       .filter((match) => match.roundNo > 0 && !isSecondStageFormalRoundNo(match.roundNo))
+      .filter(() => !knockoutPlaceholders)
       .reduce<Array<{ roundNo: number; round: string; matches: ReturnType<typeof hydrateMatch>[] }>>(
         (acc, match) => {
           let round = acc.find((item) => item.roundNo === match.roundNo);

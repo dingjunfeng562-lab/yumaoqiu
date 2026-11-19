@@ -3,6 +3,10 @@ import {
   buildKnockoutSkeleton,
   compareGroupCode,
   groupSizesFromGroupMatches,
+  knockoutPlaceholderNames,
+  knockoutPlaceholdersOnly,
+  knockoutSlotKey,
+  skeletonFromGroupMatches,
   type SkeletonMatch,
 } from '../common/knockout-skeleton';
 import { isByeMatch, knockoutPlacements } from '../common/knockout-placement';
@@ -1183,7 +1187,9 @@ function eventBracketTree(
   codeMap: Map<string, string>,
 ): BracketTree | null {
   const knockout = knockoutTreeMatches(event);
-  if (knockout.length) {
+  // 预排的淘汰赛空位（双方都空）：签位名照出线前骨架画，场次号 / 时间 / 场地取已排的空位场次。
+  const placeholders = event.format === GROUP_KNOCKOUT_STD && knockout.length > 0 && knockoutPlaceholdersOnly(knockout);
+  if (knockout.length && !placeholders) {
     const main = knockout.filter((m) => m.round !== 'BRONZE');
     const roundNos = [...new Set(main.map((m) => m.roundNo ?? 0))].sort((a, b) => a - b);
     const rounds = roundNos.map((roundNo) => {
@@ -1208,6 +1214,7 @@ function eventBracketTree(
   const skeleton = buildKnockoutSkeleton([...sizes.keys()], event.qualifiersPerGroup ?? 2, sizes);
   if (!skeleton) return null;
   const nameById = new Map(skeleton.participants.map((p) => [p.id, p.name]));
+  const rowByKey = new Map(knockout.map((m) => [knockoutSlotKey(m), m]));
   const toTree = (m: SkeletonMatch): BracketTreeMatch => {
     const bye = isByeMatch(m);
     const side = (id: string | null): BracketTreeSide => ({
@@ -1217,7 +1224,8 @@ function eventBracketTree(
       winner: false,
       bye: bye && !id,
     });
-    return { info: '', sides: [side(m.side1Id), side(m.side2Id)] };
+    const row = rowByKey.get(knockoutSlotKey(m));
+    return { info: row ? treeMatchFromExport(row, regMap, codeMap).info : '', sides: [side(m.side1Id), side(m.side2Id)] };
   };
   const main = skeleton.matches.filter((m) => m.round !== 'BRONZE');
   const roundNos = [...new Set(main.map((m) => m.roundNo))].sort((a, b) => a - b);
@@ -1575,6 +1583,25 @@ function renderPlayoffPlacementMatches(
 // 这里保留相同的阅读顺序，但所有内容均从抽签后物化的 registrations、matches、secondStage 生成，
 // 这样重新抽签或调整排程后再次导出即可得到最新秩序册。
 
+// 预排的淘汰赛空位（淘汰赛场次双方都空）的占位名；不是空位时为 null。每个项目对象算一次。
+const placeholderNameCache = new WeakMap<ExportEvent, Map<string, [string, string]> | null>();
+function placeholderNamesOf(event: ExportEvent) {
+  if (placeholderNameCache.has(event)) return placeholderNameCache.get(event) ?? null;
+  let names: Map<string, [string, string]> | null = null;
+  if (event.format === GROUP_KNOCKOUT_STD && knockoutPlaceholdersOnly(event.matches)) {
+    // 按阶段导出第二阶段时 matches 里没有小组赛场次，各组人数由 groupSizes 带进来。
+    const sizes = event.groupSizes ? new Map(Object.entries(event.groupSizes)) : undefined;
+    const { skeleton } = skeletonFromGroupMatches(
+      event.matches.filter((m) => (m.roundNo ?? 0) === 0),
+      event.qualifiersPerGroup ?? 2,
+      sizes,
+    );
+    names = skeleton ? knockoutPlaceholderNames(skeleton) : null;
+  }
+  placeholderNameCache.set(event, names);
+  return names;
+}
+
 function displayMatchSide(
   event: ExportEvent,
   match: ExportMatch,
@@ -1594,6 +1621,9 @@ function displayMatchSide(
   }
   // 轮空场（已结束、只有一方）空的一方写「轮空」，不写「待定」。
   if (!id && isByeMatch(match)) return '轮空';
+  // 预排的淘汰赛空位：写出线前骨架的占位名（A组第1名），后面各轮仍是「待定」。
+  const placeholder = placeholderNamesOf(event)?.get(knockoutSlotKey(match));
+  if (placeholder) return placeholder[side - 1];
   const planning = secondStagePlanningMatch(event, match);
   const source = side === 1 ? planning?.side1Source : planning?.side2Source;
   const snapshot = side === 1 ? planning?.side1NameSnapshot : planning?.side2NameSnapshot;
