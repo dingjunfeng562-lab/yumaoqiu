@@ -11,7 +11,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { TeamCompetitionsService } from '../team-competitions/team-competitions.service';
 import { hostDisplayLabel } from '../common/event-mix';
 import { isByeMatch } from '../common/knockout-placement';
-import { AutoScheduleDto, ClearScheduleDto, CreateVenueDto, UpdateMatchScheduleDto, UpdateVenueDto, SaveGroupVenuesDto } from './dto/scheduling.dto';
+import { AutoScheduleDto, ClearScheduleDto, CreateVenueDto, KNOCKOUT_ROUND_CODES, UpdateMatchScheduleDto, UpdateVenueDto, SaveGroupVenuesDto } from './dto/scheduling.dto';
 import { ScoringGateway } from '../scoring/scoring.gateway';
 import {
   SECOND_STAGE_FORMAL_ROUND_NO_BASE,
@@ -459,8 +459,13 @@ export class SchedulingService {
     const courtLimits = scopeEventIds ? [] : await this.teamCourtLimits(dto.tournamentId);
     const limitsByCompetition = new Map(courtLimits.map(limit => [limit.competitionId, limit.maxCourts]));
     const stageOf = (match: (typeof scopeMatches)[number]) => this.matchStage(match);
-    const targetMatches = scopeMatches.filter((match) => scheduleStage === 'all' || stageOf(match) === scheduleStage);
+    // 只排选中的淘汰赛轮次（各项目同名轮次一起排）；小组赛、排位赛等没有轮次代码的场次不排。
+    const rounds = dto.rounds?.length ? new Set(dto.rounds) : null;
+    const targetMatches = scopeMatches.filter((match) =>
+      (scheduleStage === 'all' || stageOf(match) === scheduleStage)
+      && (!rounds || (this.knockoutRoundCode(match) !== null && rounds.has(this.knockoutRoundCode(match)!))));
     if (!targetMatches.length) {
+      if (rounds) throw new BadRequestException('当前范围没有所选轮次的场次（淘汰赛要等小组赛打完才生成）');
       throw new BadRequestException(
         scheduleStage === 'second'
           ? '当前范围暂无第二阶段可排程场次'
@@ -577,7 +582,7 @@ export class SchedulingService {
             : 0;
         const aRank = eventTypeRank.get(a.event?.type ?? '') ?? Number.MAX_SAFE_INTEGER;
         const bRank = eventTypeRank.get(b.event?.type ?? '') ?? Number.MAX_SAFE_INTEGER;
-        return stagePriority || aRank - bRank || playDayCount(a) - playDayCount(b) || a.roundNo - b.roundNo || eligibleVenues(a).length - eligibleVenues(b).length
+        return stagePriority || aRank - bRank || playDayCount(a) - playDayCount(b) || this.roundOrder(a) - this.roundOrder(b) || eligibleVenues(a).length - eligibleVenues(b).length
           || (a.teamMatchId ?? '').localeCompare(b.teamMatchId ?? '') || a.matchNo - b.matchNo;
       });
 
@@ -1244,6 +1249,21 @@ export class SchedulingService {
           : 0,
       ),
     );
+  }
+
+  /** 单项淘汰赛（含单淘汰）场次的轮次代码（R4…R1、QF、SF、BRONZE、F）；小组赛、排位赛、团体赛为 null。 */
+  private knockoutRoundCode(match: { eventId: string | null; roundNo: number; round: string }) {
+    if (!match.eventId || match.roundNo < 1 || match.roundNo >= SECOND_STAGE_FORMAL_ROUND_NO_BASE) return null;
+    return KNOCKOUT_ROUND_CODES.includes(match.round) ? match.round : null;
+  }
+
+  /**
+   * 排程先后：淘汰赛按轮次大小统一排（各项目先 1/8、再 1/4、半决赛，季军赛、决赛最后），
+   * 不按 roundNo（签数不同的项目同一 roundNo 是不同轮次）；其他场次照旧按 roundNo。
+   */
+  private roundOrder(match: { eventId: string | null; roundNo: number; round: string }) {
+    const code = this.knockoutRoundCode(match);
+    return code ? 1000 + KNOCKOUT_ROUND_CODES.indexOf(code) : match.roundNo;
   }
 
   /**

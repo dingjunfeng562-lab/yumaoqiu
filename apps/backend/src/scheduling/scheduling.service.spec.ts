@@ -454,6 +454,34 @@ describe('auto schedule by stage, player rest and keeping placed matches', () =>
     expect(byId.get('real')).toBe(false);
   });
 
+  it('轮次：只排选中的淘汰赛轮次，其余留待下次', async () => {
+    const SE = 'SINGLE_ELIMINATION';
+    const result = await preview([
+      eventMatch('q1', 'eA', SE, 1, 1, { round: 'QF' }), eventMatch('q2', 'eA', SE, 1, 2, { round: 'QF' }),
+      eventMatch('s1', 'eA', SE, 2, 1, { round: 'SF' }), eventMatch('f', 'eA', SE, 3, 1, { round: 'F' }),
+    ], { rounds: ['QF'] }, 2);
+    expect(result.scheduledCount).toBe(2);
+    expect(result.at('q1')).toBe('2026-10-22T00:00:00.000Z');
+    expect(result.at('s1')).toBeNull();
+    expect(result.at('f')).toBeNull();
+  });
+
+  it('轮次：小组赛 F 组不是决赛；没有所选轮次时提示', async () => {
+    const { service } = setup([eventMatch('gF', 'eA', 'GROUP_PLUS_KNOCKOUT_STD', 0, 1, { round: 'F' })]);
+    await expect(service.autoSchedule({ tournamentId: 't', startAt: '2026-10-22T00:00:00.000Z', rounds: ['F'], preview: true }))
+      .rejects.toThrow('当前范围没有所选轮次的场次');
+  });
+
+  it('多个项目一起排淘汰赛时按轮次大小统一排：先 1/8 决赛再 1/4 决赛（不按 roundNo）', async () => {
+    // eA 8 签的首轮是 1/4 决赛，eB 16 签的首轮是 1/8 决赛，roundNo 都是 1。
+    const result = await preview([
+      eventMatch('aQF', 'eA', 'SINGLE_ELIMINATION', 1, 1, { round: 'QF' }),
+      eventMatch('bR1', 'eB', 'SINGLE_ELIMINATION', 1, 1, { round: 'R1' }),
+    ], {});
+    expect(result.at('bR1')).toBe('2026-10-22T00:00:00.000Z');
+    expect(result.at('aQF')).toBe('2026-10-22T00:40:00.000Z');
+  });
+
   it('多选单项：只排选中的单项', async () => {
     const result = await preview([eventMatch('a', 'eA', 'SINGLE_ELIMINATION', 1, 1), eventMatch('b', 'eB', 'SINGLE_ELIMINATION', 1, 1)], { eventIds: ['eB'] });
     expect(result.matches.map(m => m.id)).toEqual(['b']);

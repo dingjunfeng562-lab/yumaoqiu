@@ -44,6 +44,18 @@ const SECOND_STAGE_FORMATS = [
 
 type ScheduleStage = 'all' | 'first' | 'second';
 
+// 自动排程可选的淘汰赛轮次（各项目同名轮次一起排），由大到小，季军赛在决赛前。
+const KNOCKOUT_ROUND_OPTIONS = [
+  { value: 'R4', label: '1/64 决赛' },
+  { value: 'R3', label: '1/32 决赛' },
+  { value: 'R2', label: '1/16 决赛' },
+  { value: 'R1', label: '1/8 决赛' },
+  { value: 'QF', label: '1/4 决赛' },
+  { value: 'SF', label: '半决赛' },
+  { value: 'BRONZE', label: '季军赛' },
+  { value: 'F', label: '决赛' },
+];
+
 const EVENT_TYPE_LABELS: Record<string, string> = {
   MENS_SINGLES: '男子单打',
   WOMENS_SINGLES: '女子单打',
@@ -367,7 +379,7 @@ export default function AdminSchedulingPage() {
     breakPeriods?: Array<{ startTime: Dayjs; durationMinutes: number }>;
     matchMinutes: number; breakMinutes: number; venueIds?: string[]; eventTypeOrder?: string[];
     scheduleStage?: ScheduleStage; overrideMatchMinutes?: boolean;
-    eventIds?: string[]; secondStageMode?: 'follow' | 'separate'; secondStageStartAt?: Dayjs;
+    eventIds?: string[]; rounds?: string[]; secondStageMode?: 'follow' | 'separate'; secondStageStartAt?: Dayjs;
     onlyUnscheduled?: boolean; playerRestMinutes?: number;
   }) {
     if (!token || !selectedTournamentId) return;
@@ -378,6 +390,7 @@ export default function AdminSchedulingPage() {
       const secondStart = stage === 'all' && values.secondStageMode === 'separate' ? values.secondStageStartAt : undefined;
       const payload = {
         tournamentId: selectedTournamentId, eventIds: values.eventIds?.length ? values.eventIds : undefined,
+        rounds: values.rounds?.length ? values.rounds : undefined,
         startAt: values.startAt.toISOString(), startAtLocal: values.startAt.format('YYYY-MM-DD HH:mm'),
         dailyStartTime: values.startAt.format('HH:mm'), dailyEndTime: values.dailyEndTime.format('HH:mm'),
         breakPeriods: values.hasBreakPeriods ? (values.breakPeriods ?? []).map(p => ({ startTime: p.startTime.format('HH:mm'), durationMinutes: p.durationMinutes })) : [],
@@ -476,6 +489,7 @@ export default function AdminSchedulingPage() {
     const startAt = defaultAutoStart(selectedTournament);
     autoForm.setFieldsValue({
       eventIds: selectedEventId ? [selectedEventId] : [],
+      rounds: [],
       startAt,
       secondStageMode: 'follow',
       secondStageStartAt: startAt.add(1, 'day'),
@@ -873,6 +887,13 @@ export default function AdminSchedulingPage() {
                 { value: 'second', label: '仅第二阶段（淘汰赛等）', disabled: !autoHasSecondStage },
               ]}
             />
+          </Form.Item>
+          <Form.Item
+            name="rounds"
+            label="轮次"
+            extra="不选为全部。选了轮次就只排这几轮淘汰赛（含单淘汰），各项目同名的轮次一起排，小组赛等其他场次不排；没选的轮次留到下次再排。"
+          >
+            <Select mode="multiple" allowClear placeholder="全部轮次" options={KNOCKOUT_ROUND_OPTIONS} />
           </Form.Item>
           <Form.Item
             name="startAt"
