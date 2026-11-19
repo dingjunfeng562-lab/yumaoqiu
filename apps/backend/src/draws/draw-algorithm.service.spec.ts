@@ -132,3 +132,21 @@ describe('DrawAlgorithmService.buildGroups', () => {
     expect(groupMatches(plan.sizes)).toBe(60);
   });
 });
+
+describe('小组编号：A、B、C 或 1、2、3（Event.groupNaming）', () => {
+  it('默认字母：A…Z 之后接 AA；数字编号 1…100，每组人数与字母编号一样', () => {
+    const sizes = Array.from({ length: 28 }, () => 2);
+    const letters = svc.buildGroups(entrants(56), [], sizes);
+    const numbers = svc.buildGroups(entrants(56), [], sizes, 'NUMBER');
+    expect(letters.map((g) => g.groupCode).slice(0, 3)).toEqual(['A', 'B', 'C']);
+    expect(letters[26].groupCode).toBe('AA');
+    expect(numbers.map((g) => g.groupCode)).toEqual(Array.from({ length: 28 }, (_, i) => String(i + 1)));
+    expect(numbers.map((g) => g.members.length)).toEqual(letters.map((g) => g.members.length));
+    expect(svc.buildGroups(entrants(200), [], Array.from({ length: 100 }, () => 2), 'NUMBER')[99].groupCode).toBe('100');
+  });
+
+  it('单循环只有一个组：字母为 A，数字为 1', () => {
+    expect(svc.buildSingleRoundRobin(entrants(5), [])[0].groupCode).toBe('A');
+    expect(svc.buildSingleRoundRobin(entrants(5), [], 'NUMBER')[0].groupCode).toBe('1');
+  });
+});

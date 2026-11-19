@@ -23,6 +23,7 @@ import type {
   ExportTournament,
   ExportVenue,
 } from './exports.service';
+import { isNumericGroupCode } from '../common/group-code';
 
 // 秩序册导出（高保真 .xlsx）：日程表 + 秩序表 + 各项目「流程表」。
 // 流程表 = 第一阶段（小组循环成绩网格）+ 第二阶段（淘汰赛对阵树）。按用户口径：
@@ -784,6 +785,10 @@ function pairLabel(match: ExportMatch, posMap: Map<string, { group: string; pos:
   const a = match.side1Id ? posMap.get(match.side1Id) : null;
   const b = match.side2Id ? posMap.get(match.side2Id) : null;
   if (!a || !b) return '';
+  // 字母编号照旧「A1-A3」；数字编号直接拼成「11-13」分不清组号和位置，写成「1组 1-3」。
+  if (isNumericGroupCode(a.group) || isNumericGroupCode(b.group)) {
+    return a.group === b.group ? `${a.group}组 ${a.pos}-${b.pos}` : `${a.group}组${a.pos}-${b.group}组${b.pos}`;
+  }
   return `${a.group}${a.pos}-${b.group}${b.pos}`;
 }
 

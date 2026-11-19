@@ -163,6 +163,14 @@ enum DrawOperationType {
   SWAP
   FREEZE
   REDRAW
+  // 抽签编排页切换小组编号方式（A、B… ↔ 1、2…），已有小组直接改名。
+  GROUP_NAMING
+}
+
+// 抽签小组编号：LETTER = A、B…Z、AA…；NUMBER = 1、2、3…。
+enum GroupNaming {
+  LETTER
+  NUMBER
 }
 
 enum DrawSlotSourceType {
@@ -831,6 +839,8 @@ model Event {
   groupSize          Int?
   groupCount         Int?
   qualifiersPerGroup Int?
+  // 抽签小组编号：A、B、C（默认）或 1、2、3。抽签编排页设置；已抽签时切换会把现有小组直接改名。
+  groupNaming        GroupNaming        @default(LETTER)
   drawLocked         Boolean            @default(false)
   // 单项场地规则，优先于所属组别；INHERIT 时沿用组别「组别场地分配」。
   venueRule          VenueRuleMode      @default(INHERIT)

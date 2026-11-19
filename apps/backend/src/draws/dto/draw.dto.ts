@@ -8,10 +8,41 @@ import {
   IsIn,
   IsOptional,
   IsString,
+  Max,
   Min,
   ValidateNested,
 } from 'class-validator';
-import { SecondStageRankingMode } from '@prisma/client';
+import { GroupNaming, SecondStageRankingMode } from '@prisma/client';
+import { GROUP_COUNT_MAX } from '../draw-algorithm.service';
+
+/**
+ * 抽签编排页直接修改当前单项的分组设置。每组人数与手动小组数量互斥：
+ * 传了小组数量就按手动组数，否则按每组人数（null = 默认 4 人）。
+ */
+export class UpdateDrawGroupSettingsDto {
+  @IsOptional()
+  @IsInt()
+  @Min(2)
+  @Max(8)
+  groupSize?: number | null;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(GROUP_COUNT_MAX)
+  groupCount?: number | null;
+
+  @IsInt()
+  @Min(1)
+  @Max(8)
+  qualifiersPerGroup: number;
+}
+
+/** 抽签编排页切换小组编号方式：A、B、C（LETTER）或 1、2、3（NUMBER）。 */
+export class UpdateDrawGroupNamingDto {
+  @IsIn(['LETTER', 'NUMBER'])
+  groupNaming: GroupNaming;
+}
 
 export class CreateRegistrationDto {
   @IsString()

@@ -23,8 +23,10 @@ import {
   SecondStageRankingMode,
   SecondStageStatus,
   EventType,
+  GroupNaming,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { groupCodeFor, groupCodeSortValue } from '../common/group-code';
 import { unpaidEventEntrants, unpaidMessage } from '../payments/payment-rules';
 import { assertNotMixMember, hostDisplayLabel, mixEventIds } from '../common/event-mix';
 import { DrawAlgorithmService, GroupPlan } from './draw-algorithm.service';
@@ -35,8 +37,15 @@ import {
   GenerateDrawDto,
   GetDrawLogsQueryDto,
   SeedItemDto,
+  UpdateDrawGroupSettingsDto,
   UpdateRegistrationDto,
 } from './dto/draw.dto';
+import { resolveGroupConfig, usesGroupConfig } from '../events/group-config';
+import {
+  drawnGroupSettingsSnapshot,
+  groupPlanDrift,
+  readDrawnGroupSettings,
+} from './group-plan-drift';
 import {
   SECOND_STAGE_FORMAL_ROUND_NO_BASE,
   isSecondStageFormalRoundNo,
@@ -320,6 +329,27 @@ export class DrawsService {
     });
   }
 
+  /**
+   * 抽签编排页保存分组设置：与单项管理页同一套校验（resolveGroupConfig），
+   * 只更新单项上的设置，不动现有签表——重新抽签后才按新设置分组。
+   */
+  async updateGroupSettings(eventId: string, dto: UpdateDrawGroupSettingsDto) {
+    const event = await this.ensureDrawEvent(eventId);
+    if (!usesGroupConfig(event.format)) {
+      throw new BadRequestException('当前赛制没有分组设置，只有「小组循环+淘汰」可以设置每组人数或小组数量');
+    }
+    const config = resolveGroupConfig(
+      event.format,
+      dto.groupSize ?? null,
+      dto.groupCount ?? null,
+      dto.qualifiersPerGroup,
+    );
+    return this.prisma.event.update({
+      where: { id: eventId },
+      data: { ...config, qualifiersPerGroup: dto.qualifiersPerGroup },
+    });
+  }
+
   async generateDraw(
     eventId: string,
     dto: GenerateDrawDto,
@@ -477,10 +507,11 @@ export class DrawsService {
           seedNo: seed.seedNo,
         }));
 
+        // 小组编号按单项设置：A、B、C 或 1、2、3。
         const groups =
           format === DrawFormat.round_robin
-            ? this.drawAlgorithmService.buildSingleRoundRobin(entrants, seedInputs)
-            : this.drawAlgorithmService.buildGroups(entrants, seedInputs, groupPlan?.sizes ?? []);
+            ? this.drawAlgorithmService.buildSingleRoundRobin(entrants, seedInputs, event.groupNaming)
+            : this.drawAlgorithmService.buildGroups(entrants, seedInputs, groupPlan?.sizes ?? [], event.groupNaming);
 
         await tx.drawBracket.update({
           where: { id: draw.id },
@@ -535,6 +566,8 @@ export class DrawsService {
           drawId: draw.id,
           version: draw.version,
           format,
+          // 抽签当时的分组设置：之后改了设置却没重抽时，抽签编排页据此提示「签表与设置不一致」。
+          groupSettings: drawnGroupSettingsSnapshot(event),
         } as Prisma.InputJsonValue,
       });
 
@@ -634,6 +667,63 @@ export class DrawsService {
         where: { id: drawId },
         include: { slots: { orderBy: { position: 'asc' } } },
       });
+    });
+  }
+
+  /**
+   * 抽签编排页切换小组编号方式（A、B… ↔ 1、2…）。没抽签时只保存设置，下次抽签按它生成；
+   * 已抽签时把当前签表的小组直接改名：分组表、选手所在组、小组赛场次三处一起换，
+   * 签表、对阵、比分、排程都不变。混编主项目连同并入单项的选手一起改。
+   */
+  async updateGroupNaming(
+    eventId: string,
+    naming: GroupNaming,
+    operatorId: string,
+    operatorName: string | null,
+  ) {
+    if (!operatorId) throw new BadRequestException('缺少操作人信息');
+    const event = await this.ensureDrawEvent(eventId);
+    if (this.drawFormatForEvent(event.format) === DrawFormat.single_elim) {
+      throw new BadRequestException('淘汰赛抽签没有小组，不需要设置小组编号');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.event.update({ where: { id: eventId }, data: { groupNaming: naming } });
+      const draw = await tx.drawBracket.findFirst({
+        where: { eventItemId: eventId, isCurrent: true },
+        include: { groups: { orderBy: [{ sortOrder: 'asc' }, { groupCode: 'asc' }] } },
+      });
+      // 按小组顺序重新编号：第 1 组 = A / 1，第 2 组 = B / 2……
+      const renames = (draw?.groups ?? [])
+        .map((group, index) => ({ id: group.id, from: group.groupCode, to: groupCodeFor(index, naming) }))
+        .filter((item) => item.from !== item.to);
+      if (!draw || !renames.length) return { event: updated, renamedGroups: 0 };
+
+      const scope = await this.entrantScope(eventId, tx);
+      // 分两步：先改成临时编号再改成最终编号。新旧编号有重叠时（如 B→A、A→B）一步改会撞名、把两组选手并到一起。
+      const steps = [
+        renames.map((item, index) => ({ ...item, to: `#${index}` })),
+        renames.map((item, index) => ({ ...item, from: `#${index}` })),
+      ];
+      for (const step of steps) {
+        for (const item of step) {
+          await tx.drawGroup.update({ where: { id: item.id }, data: { groupCode: item.to } });
+          await tx.registration.updateMany({ where: { eventId: scope, groupName: item.from }, data: { groupName: item.to } });
+          await tx.match.updateMany({ where: { eventId, roundNo: 0, round: item.from }, data: { round: item.to } });
+        }
+      }
+
+      await this.drawLogService.create(tx, {
+        eventItemId: eventId,
+        drawBracketId: draw.id,
+        operationType: DrawOperationType.GROUP_NAMING,
+        operatorId,
+        operatorNameSnapshot: operatorName,
+        beforeData: { groupNaming: event.groupNaming, groups: renames.map((item) => item.from) } as Prisma.InputJsonValue,
+        afterData: { groupNaming: naming, groups: renames.map((item) => item.to) } as Prisma.InputJsonValue,
+        remark: naming === GroupNaming.NUMBER ? '小组编号改为 1、2、3' : '小组编号改为 A、B、C',
+      });
+      return { event: updated, renamedGroups: renames.length };
     });
   }
 
@@ -1254,6 +1344,26 @@ export class DrawsService {
         ? { qualifiers: standardQualifiers }
         : null;
 
+    // 当前签表与「按现在的分组设置重新抽签」不一致时给出对比，抽签编排页据此显示黄色警告。
+    const executeLog = currentDraw
+      ? await this.prisma.drawOperationLog.findFirst({
+          where: { drawBracketId: currentDraw.id, operationType: DrawOperationType.EXECUTE },
+          orderBy: { createdAt: 'desc' },
+          select: { afterData: true },
+        })
+      : null;
+    const groupPlanDriftView = currentDraw
+      ? groupPlanDrift({
+          plan: groupPlan,
+          currentSizes: groups.map((group) => group.registrations.length),
+          event,
+          drawnWith: readDrawnGroupSettings(executeLog?.afterData),
+          playedMatches: matches.filter(
+            (match) => match.status === MatchStatus.COMPLETED || match.status === MatchStatus.LIVE,
+          ).length,
+        })
+      : null;
+
     return {
       event,
       currentDraw,
@@ -1261,6 +1371,7 @@ export class DrawsService {
       rounds,
       groups,
       groupPlan,
+      groupPlanDrift: groupPlanDriftView,
       knockoutSkeleton,
       secondStage: autoKnockout
         ? null
@@ -2098,10 +2209,9 @@ export class DrawsService {
       || a.localeCompare(b, 'zh-CN', { numeric: true });
   }
 
+  /** 字母编号 A=1…Z=26、AA=27；数字编号按数值（2组 在 10组 前）。 */
   private groupNameSortValue(value: string) {
-    const letters = /^[A-Z]+/.exec(value.trim().toUpperCase())?.[0];
-    if (!letters) return Number.MAX_SAFE_INTEGER;
-    return [...letters].reduce((sum, char) => sum * 26 + char.charCodeAt(0) - 64, 0);
+    return groupCodeSortValue(value);
   }
 
   /**

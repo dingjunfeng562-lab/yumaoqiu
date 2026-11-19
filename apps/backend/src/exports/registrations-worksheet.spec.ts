@@ -101,4 +101,13 @@ describe('报名表导出：身份证号、邮箱列', () => {
     expect(rows[0].slice(BASE_HEADER_LENGTH)).toEqual(['邮箱1']);
     expect(rows[1].slice(BASE_HEADER_LENGTH)).toEqual(['x@example.com']);
   });
+
+  it('分组列：数字编号写「1组」并按 1、2、10 排（数据库按字符串会排成 1、10、2）；字母照旧写 A，B 在 AA 前', () => {
+    const regs = (codes: Array<string | null>) => codes.map((code, i) => registration({ id: `r${i}`, eventId: 'e', groupName: code, player1: { name: `选手${code ?? '无'}`, gender: 'MALE', affiliation: '一中', contact: '1' } }));
+    const groupCol = (rows: unknown[][]) => rows[0].indexOf('分组');
+    let rows = sheet([event('e', { identityNumber: 'hidden', email: 'hidden' }, regs(['1', '10', '11', '2', null]))]);
+    expect(rows.slice(1).map((row) => row[groupCol(rows)])).toEqual(['', '1组', '2组', '10组', '11组']);
+    rows = sheet([event('e', { identityNumber: 'hidden', email: 'hidden' }, regs(['A', 'AA', 'B']))]);
+    expect(rows.slice(1).map((row) => row[groupCol(rows)])).toEqual(['A', 'B', 'AA']);
+  });
 });

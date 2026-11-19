@@ -1,15 +1,15 @@
 import { legacyGroupId } from '../registration-groups/registration-groups.service';
 import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
-import { EntrantType, Format, Prisma, RegistrationStatus } from '@prisma/client';
+import { EntrantType, Prisma, RegistrationStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthActor, tournamentScope } from '../auth/admin-scope';
+import { resolveGroupConfig } from './group-config';
 import { eventDisplayLabel } from '../common/entrant';
 import { hostDisplayLabel, mixCategory } from '../common/event-mix';
 import { eventEntryCounts } from '../common/registration-capacity';
 import { ChangeActor, deleteOrphanPlayers, lockEvents } from '../common/registration-changes';
 import { registrationDisplayName } from '../payments/payment-rules';
 import { collectEventDeleteImpact } from './event-delete';
-import { GROUP_COUNT_MAX } from '../draws/draw-algorithm.service';
 import {
   CreateEventDto,
   STAGE_SCORING_KEYS,
@@ -40,7 +40,7 @@ export class EventsService {
     if (existing) throw new ConflictException('该赛事该组别已存在相同类型的单项');
 
     const { stageScoringRules, ...rest } = dto;
-    const groupConfig = this.groupConfigFor(
+    const groupConfig = resolveGroupConfig(
       dto.format,
       dto.groupSize,
       dto.groupCount,
@@ -260,7 +260,7 @@ export class EventsService {
       dto.groupSize !== undefined ||
       dto.groupCount !== undefined ||
       dto.qualifiersPerGroup !== undefined
-        ? this.groupConfigFor(
+        ? resolveGroupConfig(
             nextFormat,
             dto.groupSize !== undefined ? dto.groupSize : current.groupSize,
             dto.groupCount !== undefined ? dto.groupCount : current.groupCount,
@@ -282,37 +282,6 @@ export class EventsService {
       include: { tournament: true },
     });
     return updated;
-  }
-
-  /**
-   * 分组的两个字段互斥：手动「小组数量」优先，否则用「每组人数」（留空按默认 4 人）。
-   * 只有「小组循环+淘汰」两种赛制使用分组配置，其他赛制一律清空，避免切赛制后残留旧配置。
-   */
-  private groupConfigFor(
-    format: Format,
-    groupSize?: number | null,
-    groupCount?: number | null,
-    qualifiersPerGroup?: number | null,
-  ): { groupSize: number | null; groupCount: number | null } {
-    const usesGroups =
-      format === Format.GROUP_PLUS_KNOCKOUT || format === Format.GROUP_PLUS_KNOCKOUT_STD;
-    if (!usesGroups) return { groupSize: null, groupCount: null };
-    if (groupCount != null) {
-      if (groupCount < 1 || groupCount > GROUP_COUNT_MAX) {
-        throw new BadRequestException(`小组数量需在 1–${GROUP_COUNT_MAX} 之间`);
-      }
-      return { groupSize: null, groupCount };
-    }
-    if (groupSize != null) {
-      if (groupSize < 2 || groupSize > 8) {
-        throw new BadRequestException('每组人数需在 2–8 之间');
-      }
-      if (qualifiersPerGroup != null && qualifiersPerGroup > groupSize) {
-        throw new BadRequestException('每组出线数不能大于每组人数');
-      }
-      return { groupSize, groupCount: null };
-    }
-    return { groupSize: null, groupCount: null };
   }
 
   /** 删除单项前的影响预览，单项管理的删除确认框用。 */

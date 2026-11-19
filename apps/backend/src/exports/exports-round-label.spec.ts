@@ -27,3 +27,11 @@ describe('exportRoundLabel 导出轮次列', () => {
     expect(exportRoundLabel({ round: 'F', roundNo: 4, roundText: '1-2名决赛' } as never)).toBe('1-2名决赛');
   });
 });
+
+describe('exportRoundLabel 数字小组编号', () => {
+  it('小组赛 round = 1 写成「1组」（单写 1 会被看成第 1 轮），字母照旧只写 A', () => {
+    expect(exportRoundLabel(match('1', 0))).toBe('1组');
+    expect(exportRoundLabel(match('12', 0))).toBe('12组');
+    expect(exportRoundLabel(match('A', 0))).toBe('A');
+  });
+});

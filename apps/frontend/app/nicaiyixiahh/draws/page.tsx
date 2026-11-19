@@ -13,6 +13,7 @@ import {
   InputNumber,
   Modal,
   Popconfirm,
+  Radio,
   Row,
   Select,
   Space,
@@ -102,6 +103,8 @@ interface EventItem {
   groupSize?: number | null;
   groupCount?: number | null;
   qualifiersPerGroup?: number | null;
+  /** 小组编号：A、B、C（LETTER，默认）或 1、2、3（NUMBER）。 */
+  groupNaming?: GroupNaming;
   drawLocked: boolean;
   drawPublished: boolean;
   drawGeneratedAt?: string | null;
@@ -174,6 +177,15 @@ interface GroupPlanView {
   errors: string[];
 }
 
+// 当前签表与「按现在的分组设置重新抽签」不一致时后端给出的对比（一致或不宜提示时为 null）。
+interface GroupPlanDriftView {
+  currentGroupCount: number;
+  currentSizes: number[];
+  planGroupCount: number;
+  planSizes: number[];
+  settingsChangedAfterDraw: boolean;
+}
+
 interface BracketData {
   event: EventItem;
   currentDraw?: DrawBracket | null;
@@ -181,6 +193,7 @@ interface BracketData {
   rounds: RoundItem[];
   groups: GroupItem[];
   groupPlan?: GroupPlanView | null;
+  groupPlanDrift?: GroupPlanDriftView | null;
   knockoutSkeleton?: KnockoutBracketData['knockoutSkeleton'];
   secondStage?: SecondStageData | null;
   // 标准2023 出线超过 8 人：小组赛结束后自动生成淘汰赛，不走 A-H 第二阶段（此时 secondStage 为 null）。
@@ -223,6 +236,220 @@ function groupPlanSummary(plan: GroupPlanView) {
   return `${mode} · 每组出线 ${plan.qualifiersPerGroup} 人 → 按当前报名的 ${plan.entrantCount} 人将分 ${plan.groupCount} 组（${plan.sizes.join('+')}），出线 ${plan.qualifiersTotal} 人；${stage2Label[plan.secondStage]}。`;
 }
 
+// 可以设置「每组人数 / 手动小组数量」的赛制（与后端 usesGroupConfig 一致）。
+const GROUP_SETTING_FORMATS = new Set(['GROUP_PLUS_KNOCKOUT', 'GROUP_PLUS_KNOCKOUT_STD']);
+// 抽签时会分小组、可以选小组编号的赛制（后端 drawFormatForEvent 不是单淘汰的几种）。
+const GROUP_NAMING_FORMATS = new Set(['GROUP_PLUS_KNOCKOUT', 'GROUP_PLUS_KNOCKOUT_STD', 'ROUND_ROBIN', 'GROUP_PLUS_PLAYOFF']);
+
+type GroupNaming = 'LETTER' | 'NUMBER';
+const GROUP_NAMING_TEXT: Record<GroupNaming, string> = { LETTER: 'A、B、C', NUMBER: '1、2、3' };
+
+/**
+ * 小组编号：A、B、C 或 1、2、3，点一下就保存。没抽签时下次抽签按它生成；
+ * 已抽签时先确认，再把现有小组直接改名（A组→1组…），签表、对阵、比分、排程都不变。
+ */
+function GroupNamingSetting({
+  event,
+  hasDraw,
+  token,
+  onSaved,
+}: {
+  event: EventItem;
+  hasDraw: boolean;
+  token?: string;
+  onSaved: (naming: GroupNaming) => Promise<void> | void;
+}) {
+  const current: GroupNaming = event.groupNaming ?? 'LETTER';
+  const [pending, setPending] = useState<GroupNaming | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const save = async (naming: GroupNaming) => {
+    setSaving(true);
+    try {
+      const result = await apiFetch<{ renamedGroups: number }>(`/events/${event.id}/draw/group-naming`, {
+        method: 'PATCH',
+        token,
+        body: JSON.stringify({ groupNaming: naming }),
+      });
+      message.success(
+        result.renamedGroups
+          ? `小组编号已改为 ${GROUP_NAMING_TEXT[naming]}，现有 ${result.renamedGroups} 个小组已改名`
+          : `小组编号已设为 ${GROUP_NAMING_TEXT[naming]}`,
+      );
+      setPending(null);
+      await onSaved(naming);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '保存小组编号失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <>
+      <Space wrap align="center" style={{ marginTop: 12 }}>
+        <Typography.Text>小组编号</Typography.Text>
+        <Radio.Group
+          optionType="button"
+          buttonStyle="solid"
+          value={current}
+          disabled={saving}
+          options={[
+            { value: 'LETTER', label: 'A B C' },
+            { value: 'NUMBER', label: '1 2 3' },
+          ]}
+          onChange={(e) => {
+            const next = e.target.value as GroupNaming;
+            if (next === current) return;
+            if (hasDraw) setPending(next);
+            else void save(next);
+          }}
+        />
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {hasDraw ? '切换后现有小组直接改名，签表、对阵和比分不变' : '抽签时按这里的编号生成小组'}
+        </Typography.Text>
+      </Space>
+      <Modal
+        open={pending !== null}
+        title="切换小组编号"
+        okText="确定改名"
+        cancelText="取消"
+        confirmLoading={saving}
+        onOk={() => (pending ? save(pending) : undefined)}
+        onCancel={() => setPending(null)}
+      >
+        <p>当前签表的小组会直接改名为 {pending === 'NUMBER' ? '1组、2组、3组…' : 'A组、B组、C组…'}。</p>
+        <p>
+          签表、对阵、比分和场地排程都不变；{event.drawPublished ? '对阵已发布，前台会马上显示新编号；' : ''}
+          已经导出或打印的秩序册需要重新导出。
+        </p>
+      </Modal>
+    </>
+  );
+}
+
+type GroupSettingsValues = {
+  groupMode: 'auto' | 'manual';
+  groupSize?: number | null;
+  groupCount?: number | null;
+  qualifiersPerGroup: number;
+};
+
+/**
+ * 抽签编排页直接修改「当前选中单项」的分组设置，免得到单项管理页改错赛事。
+ * 只保存设置、不动现有签表；保存后刷新分组预览，重新抽签才按新设置分组。
+ */
+function GroupSettingsPanel({
+  event,
+  token,
+  onSaved,
+  showGroupConfig,
+  hasDraw,
+  onNamingSaved,
+}: {
+  event: EventItem;
+  token?: string;
+  onSaved: (updated: EventItem) => Promise<void> | void;
+  /** 「小组循环+淘汰」才有每组人数 / 小组数量 / 每组出线；单循环、两组交叉排位只有小组编号。 */
+  showGroupConfig: boolean;
+  hasDraw: boolean;
+  onNamingSaved: (naming: GroupNaming) => Promise<void> | void;
+}) {
+  const [form] = Form.useForm<GroupSettingsValues>();
+  const [saving, setSaving] = useState(false);
+  const groupMode = Form.useWatch('groupMode', form) ?? 'auto';
+  // 只在切换单项或保存后的值变化时回填表单，避免页面刷新打断正在输入的内容。
+  const savedKey = `${event.id}:${event.groupSize ?? ''}:${event.groupCount ?? ''}:${event.qualifiersPerGroup ?? ''}:${showGroupConfig}`;
+
+  useEffect(() => {
+    // 单循环、两组交叉排位没有分组人数表单（只有小组编号），不回填，免得 antd 报「useForm 没连到 Form」。
+    if (!showGroupConfig) return;
+    form.setFieldsValue({
+      groupMode: event.groupCount ? 'manual' : 'auto',
+      groupSize: event.groupSize ?? null,
+      groupCount: event.groupCount ?? null,
+      qualifiersPerGroup: event.qualifiersPerGroup ?? 2,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [savedKey]);
+
+  const save = async () => {
+    const values = await form.validateFields();
+    setSaving(true);
+    try {
+      const updated = await apiFetch<EventItem>(`/events/${event.id}/draw/group-settings`, {
+        method: 'PATCH',
+        token,
+        body: JSON.stringify({
+          groupSize: values.groupMode === 'manual' ? null : values.groupSize ?? null,
+          groupCount: values.groupMode === 'manual' ? values.groupCount ?? null : null,
+          qualifiersPerGroup: values.qualifiersPerGroup,
+        }),
+      });
+      message.success(
+        event.drawGeneratedAt ? '分组设置已保存，点「重新抽签」后按新设置分组' : '分组设置已保存',
+      );
+      await onSaved(updated);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '保存分组设置失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section style={{ marginBottom: 16, border: '1px solid #f0f0f0', borderRadius: 8, padding: 16, background: '#fff' }}>
+      <Typography.Text strong>分组设置</Typography.Text>
+      <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+        只对当前选中的单项生效{showGroupConfig ? '；分组人数保存后不会改动已有签表，重新抽签才按新设置分组' : ''}。
+      </Typography.Text>
+      <div>
+        <GroupNamingSetting event={event} hasDraw={hasDraw} token={token} onSaved={onNamingSaved} />
+      </div>
+      {showGroupConfig && (
+        <Form form={form} layout="inline" style={{ marginTop: 12, rowGap: 12 }}>
+          <Form.Item name="groupMode" label="分组方式">
+            <Radio.Group
+              optionType="button"
+              buttonStyle="solid"
+              options={[
+                { value: 'auto', label: '按每组人数' },
+                { value: 'manual', label: '手动指定组数' },
+              ]}
+            />
+          </Form.Item>
+          {groupMode === 'manual' ? (
+            <Form.Item
+              key="groupCount"
+              name="groupCount"
+              label="小组数量"
+              rules={[{ required: true, message: '请输入小组数量' }]}
+            >
+              <InputNumber min={1} max={100} style={{ width: 110 }} />
+            </Form.Item>
+          ) : (
+            <Form.Item key="groupSize" name="groupSize" label="每组人数">
+              <InputNumber min={2} max={8} placeholder="默认 4" style={{ width: 110 }} />
+            </Form.Item>
+          )}
+          <Form.Item
+            name="qualifiersPerGroup"
+            label="每组出线"
+            rules={[{ required: true, message: '请输入每组出线数' }]}
+          >
+            <InputNumber min={1} max={8} style={{ width: 90 }} />
+          </Form.Item>
+          <Form.Item>
+            <Button type="primary" onClick={save} loading={saving}>
+              保存设置
+            </Button>
+          </Form.Item>
+        </Form>
+      )}
+    </section>
+  );
+}
+
 function seedMark(seed?: number | null) {
   if (!seed) return '';
   return CIRCLED_SEEDS[seed - 1] ?? `(${seed})`;
@@ -246,7 +473,10 @@ function affiliation(registration?: Registration | null) {
     : registration.player1.affiliation;
 }
 
+// 字母编号 A=1…Z=26、AA=27；数字编号按数值（2组 在 10组 前）。与后端 groupCodeSortValue 一致。
 function groupNameSortValue(value: string) {
+  const digits = /^\d+/.exec(value.trim())?.[0];
+  if (digits) return Number(digits);
   const letters = /^[A-Z]+/.exec(value.trim().toUpperCase())?.[0];
   if (!letters) return Number.MAX_SAFE_INTEGER;
   return [...letters].reduce((sum, char) => sum * 26 + char.charCodeAt(0) - 64, 0);
@@ -993,7 +1223,7 @@ export default function DrawsPage() {
 
   const playerOptions = players.map((player) => ({
     value: player.id,
-    label: `${player.name} · ${player.gender === 'MALE' ? '男' : '女'} · ${player.affiliation}`,
+    label: `${player.name} · ${player.gender === 'MALE' ? '男' : player.gender === 'FEMALE' ? '女' : '未填写'} · ${player.affiliation}`,
   }));
 
   const registrationColumns = [
@@ -1215,6 +1445,50 @@ export default function DrawsPage() {
           style={{ marginBottom: 16 }}
           message={`混编：${selectedEvent.mixLabel}`}
           description="并入项目的选手和这个主项目一起抽签、比赛、排名，按主项目的赛制和计分规则。"
+        />
+      )}
+
+      {bracket?.groupPlanDrift && bracket.event.id === selectedEventId && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="当前签表和分组设置不一致，重新抽签后才会按新设置分组"
+          description={`当前签表 ${bracket.groupPlanDrift.currentGroupCount} 组（${bracket.groupPlanDrift.currentSizes.join('+')}），按${
+            bracket.groupPlanDrift.settingsChangedAfterDraw ? '修改后的' : '现在的'
+          }分组设置应为 ${bracket.groupPlanDrift.planGroupCount} 组（${bracket.groupPlanDrift.planSizes.join('+')}）。${
+            bracket.event.drawPublished
+              ? `对阵已发布，重新抽签会清空已有比赛结果并取消发布${isSuperAdmin ? '' : '，需要先提交重抽申请'}。`
+              : '确认无误后点右上角「重新抽签」。'
+          }`}
+        />
+      )}
+
+      {isSuperAdmin && bracket && bracket.event.id === selectedEventId && GROUP_NAMING_FORMATS.has(bracket.event.format) && (
+        <GroupSettingsPanel
+          event={bracket.event}
+          token={token}
+          showGroupConfig={GROUP_SETTING_FORMATS.has(bracket.event.format)}
+          hasDraw={Boolean(bracket.currentDraw)}
+          onNamingSaved={async (naming) => {
+            setEvents((prev) => prev.map((item) => (item.id === bracket.event.id ? { ...item, groupNaming: naming } : item)));
+            await refreshDraw();
+          }}
+          onSaved={async (updated) => {
+            setEvents((prev) =>
+              prev.map((item) =>
+                item.id === updated.id
+                  ? {
+                      ...item,
+                      groupSize: updated.groupSize,
+                      groupCount: updated.groupCount,
+                      qualifiersPerGroup: updated.qualifiersPerGroup,
+                    }
+                  : item,
+              ),
+            );
+            await refreshDraw();
+          }}
         />
       )}
 

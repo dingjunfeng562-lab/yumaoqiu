@@ -23,6 +23,7 @@ import {
 import { VersionedCache } from '../common/versioned-cache';
 import { CoalescingRunner } from '../common/coalescing-runner';
 import { teamCompetitionLabel } from '../common/team-competition-label';
+import { groupCodeSortValue } from '../common/group-code';
 
 const gzipAsync = promisify(gzip);
 
@@ -1322,7 +1323,7 @@ export class PublicService {
       R4: '1/64 决赛',
       BRONZE: '季军赛',
     };
-    // 小组赛场次：round = 组别代码（A…Z 之后接 AA、AB…）。决赛的 round 也是 F，不能只看字母。
+    // 小组赛场次：round = 组别代码（A…Z 之后接 AA、AB…，或数字编号 1、2…）。决赛的 round 也是 F，不能只看字母。
     if (roundNo === 0) return this.publicGroupLabel(round);
     // 交叉排位赛：round = `P{高位名次}`，例如 P1 = 1-2 名决赛、P3 = 3-4 名决赛。
     const playoff = /^P(\d+)$/.exec(round);
@@ -1330,7 +1331,7 @@ export class PublicService {
       const hi = Number(playoff[1]);
       return `${hi}-${hi + 1} 名决赛`;
     }
-    if (roundNo == null && /^[A-Z]{1,2}$/.test(round) && !labels[round]) return this.publicGroupLabel(round);
+    if (roundNo == null && /^([A-Z]{1,2}|\d{1,3})$/.test(round) && !labels[round]) return this.publicGroupLabel(round);
     return labels[round] ?? round;
   }
 
@@ -1354,10 +1355,9 @@ export class PublicService {
       || a.localeCompare(b, 'zh-CN', { numeric: true });
   }
 
+  /** 字母编号 A=1…Z=26、AA=27；数字编号按数值（2组 在 10组 前）。 */
   private publicGroupNameSortValue(value: string) {
-    const letters = /^[A-Z]+/.exec(value.trim().toUpperCase())?.[0];
-    if (!letters) return Number.MAX_SAFE_INTEGER;
-    return [...letters].reduce((sum, char) => sum * 26 + char.charCodeAt(0) - 64, 0);
+    return groupCodeSortValue(value);
   }
 
   private publicGroupLabel(groupName: string) {

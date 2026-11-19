@@ -34,6 +34,7 @@ export type BuiltDrawGroup = {
 };
 
 import { Injectable } from '@nestjs/common';
+import { groupCodeFor, type GroupNamingMode } from '../common/group-code';
 
 /** 每组人数可配置范围，默认 4 人（与历史「每组 4 人」的数据一致）。 */
 export const GROUP_SIZE_DEFAULT = 4;
@@ -160,11 +161,12 @@ export class DrawAlgorithmService {
     entrants: DrawEntrantInput[],
     seedSettings: DrawSeedSettingInput[],
     sizes: number[],
+    naming: GroupNamingMode = 'LETTER',
   ) {
     const resolvedGroupCount = sizes.length;
     const targetSizes = sizes;
     const groups: BuiltDrawGroup[] = Array.from({ length: resolvedGroupCount }, (_, index) => ({
-      groupCode: this.groupCodeLabel(index),
+      groupCode: groupCodeFor(index, naming),
       sortOrder: index,
       members: [],
     }));
@@ -295,24 +297,15 @@ export class DrawAlgorithmService {
     return Array.from({ length: groups }, (_, index) => base + (index < remainder ? 1 : 0));
   }
 
-  /** 0 → A，25 → Z，26 → AA，51 → AZ，52 → BA…（按 26 进制字母输出，99 → CV）。 */
-  private groupCodeLabel(index: number): string {
-    let value = Math.max(0, Math.floor(index));
-    let label = '';
-    do {
-      label = String.fromCharCode(65 + (value % 26)) + label;
-      value = Math.floor(value / 26) - 1;
-    } while (value >= 0);
-    return label;
-  }
 
   /**
-   * 单循环排名赛：所有选手编入一个组（组别代码 A），组内两两对战，
+   * 单循环排名赛：所有选手编入一个组（组别代码 A，数字编号时为 1），组内两两对战，
    * 直接按战绩排出全部名次。种子在前、其余随机，决定组内默认呈现顺序。
    */
   buildSingleRoundRobin(
     entrants: DrawEntrantInput[],
     seedSettings: DrawSeedSettingInput[],
+    naming: GroupNamingMode = 'LETTER',
   ): BuiltDrawGroup[] {
     const entrantMap = new Map(entrants.map((item) => [item.id, item]));
     const seedMap = new Map(seedSettings.map((item) => [item.entrantId, item.seedNo]));
@@ -326,7 +319,7 @@ export class DrawAlgorithmService {
 
     return [
       {
-        groupCode: 'A',
+        groupCode: groupCodeFor(0, naming),
         sortOrder: 0,
         members: [...seededOrdered, ...rest].map((entrant) => ({
           entrantId: entrant.id,

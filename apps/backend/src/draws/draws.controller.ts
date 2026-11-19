@@ -32,6 +32,8 @@ import {
   SwapDrawSlotsDto,
   UnfreezeDrawDto,
   UnpublishDrawDto,
+  UpdateDrawGroupNamingDto,
+  UpdateDrawGroupSettingsDto,
   UpdateRegistrationDto,
   UpdateSeedsDto,
 } from './dto/draw.dto';
@@ -90,6 +92,30 @@ export class DrawsController {
   @Get('events/:eventId/draw')
   getDrawDetail(@Param('eventId') eventId: string) {
     return this.drawsService.getDrawDetail(eventId);
+  }
+
+  // 抽签编排页直接改分组设置（与单项管理页同一套校验），只改设置、不动现有签表，重新抽签后生效。
+  @Patch('events/:eventId/draw/group-settings')
+  updateGroupSettings(
+    @Param('eventId') eventId: string,
+    @Body() dto: UpdateDrawGroupSettingsDto,
+  ) {
+    return this.drawsService.updateGroupSettings(eventId, dto);
+  }
+
+  // 抽签编排页切换小组编号方式（A、B、C / 1、2、3）；已抽签时现有小组直接改名，签表不变。
+  @Patch('events/:eventId/draw/group-naming')
+  updateGroupNaming(
+    @Param('eventId') eventId: string,
+    @Body() dto: UpdateDrawGroupNamingDto,
+    @Req() req: AuthRequest,
+  ) {
+    return this.drawsService.updateGroupNaming(
+      eventId,
+      dto.groupNaming,
+      req.user?.id ?? '',
+      req.user?.username ?? req.user?.id ?? null,
+    );
   }
 
   @Post('events/:eventId/draw')

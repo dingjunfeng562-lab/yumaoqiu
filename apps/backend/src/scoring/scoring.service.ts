@@ -37,6 +37,7 @@ import type {
   ScoreSheetSigning,
   ScoreSheetSnapshot,
 } from './score-sheet.types';
+import { groupCodeSortValue } from '../common/group-code';
 
 type AuthUser = AuthActor;
 
@@ -2973,10 +2974,9 @@ export class ScoringService {
       || a.localeCompare(b, 'zh-CN', { numeric: true });
   }
 
+  /** 字母编号 A=1…Z=26、AA=27；数字编号按数值（2组 在 10组 前）。 */
   private groupNameSortValue(value: string) {
-    const letters = /^[A-Z]+/.exec(value.trim().toUpperCase())?.[0];
-    if (!letters) return Number.MAX_SAFE_INTEGER;
-    return [...letters].reduce((sum, char) => sum * 26 + char.charCodeAt(0) - 64, 0);
+    return groupCodeSortValue(value);
   }
 
   /** 由签位顺序生成整张单淘汰签表草稿(含轮空直接晋级、季军赛占位)。 */

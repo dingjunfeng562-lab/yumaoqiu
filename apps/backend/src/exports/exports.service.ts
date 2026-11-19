@@ -4,6 +4,7 @@ import { Format, MatchStatus, Prisma, RegistrationStatus } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service';
 import { groupFields, type GroupFields } from '../common/age-eligibility';
 import { identityForExport } from '../common/registration-eligibility';
+import { groupCodeSortValue, isNumericGroupCode } from '../common/group-code';
 import { SECOND_STAGE_FORMAL_ROUND_NO_BASE } from '../common/second-stage-bracket';
 import * as ExcelJS from 'exceljs';
 import { applyFinalRankings, teamStandings } from '../common/final-rankings';
@@ -353,6 +354,8 @@ export function exportRoundLabel(match: ExportMatch): string {
     return round || '淘汰赛';
   }
   if (roundNo === 0 && !round) return '小组循环';
+  // 数字编号单写「1」会被看成第 1 轮，写成「1组」；字母编号照旧只写 A。
+  if (roundNo === 0 && isNumericGroupCode(round)) return `${round}组`;
   return round;
 }
 
@@ -1269,7 +1272,7 @@ export class ExportsService {
 
     for (const event of tournament.events) {
       const fields = fieldsByEvent.get(event) ?? this.exportGroupFields(event);
-      for (const registration of event.registrations) {
+      for (const registration of this.byGroupCode(event.registrations)) {
         const school =
           registration.competitionRegistration?.school ??
           registration.player1.affiliation ??
@@ -1292,7 +1295,7 @@ export class ExportsService {
           registration.player2?.contact ?? '',
           registration.isSeed ? '是' : '否',
           registration.seedRank ?? '',
-          registration.groupName ?? '',
+          this.groupCell(registration.groupName),
           this.formatDateTime(registration.createdAt),
           registration.competitionRegistration?.age ?? '',
           registration.competitionRegistration?.shirtSize ?? '',
@@ -1488,6 +1491,21 @@ export class ExportsService {
     const players = this.registrationName(registration);
     const team = registration.teamName?.trim();
     return team ? `${team}（${players}）` : players;
+  }
+
+  /**
+   * 报名表按小组顺序列：数据库按字符串排，数字编号会排成 1、10、11…2，字母超过 26 组时 AA 会排到 B 前面。
+   * 没分组的排最前（与原来数据库排序一致），同组内保持原顺序（种子在前、先报名在前）。
+   */
+  private byGroupCode(registrations: ExportRegistration[]) {
+    const key = (value: string | null) => (value?.trim() ? groupCodeSortValue(value) : -1);
+    return [...registrations].sort((a, b) => key(a.groupName) - key(b.groupName));
+  }
+
+  /** 报名表「分组」列：字母编号照旧写 A；数字编号写「1组」，免得被看成序号。 */
+  private groupCell(groupName: string | null) {
+    if (!groupName) return '';
+    return isNumericGroupCode(groupName) ? `${groupName.trim()}组` : groupName;
   }
 
   /** 与报名时 groupFields(group.fieldRules, 学生组, 没有组别) 一致；配置损坏时按默认值。 */
