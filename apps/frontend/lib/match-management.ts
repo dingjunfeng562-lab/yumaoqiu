@@ -376,3 +376,113 @@ export function describeLogChanges(row: MatchLogRow, formatTime: (iso: string) =
     .sort((a, b) => order.indexOf(a) - order.indexOf(b))
     .map((field) => `${LOG_FIELD_LABELS[field] ?? field}：${logValue(field, row.before?.[field], formatTime)} → ${logValue(field, row.after?.[field], formatTime)}`);
 }
+
+// ---------------- 全部场次 ----------------
+
+/** 「全部场次」里的一场：和赛事 overview 同一格式，另带赛事和项目名。 */
+export type MMAllMatch = MMMatch & {
+  tournamentId: string | null;
+  tournamentName: string;
+  /** 「甲组 · 男子单打」「团体 · 教工团体 · 男子单打」。 */
+  projectLabel: string;
+};
+
+export type AllDatePreset = 'ALL' | 'TODAY' | 'TOMORROW' | 'CUSTOM';
+
+export type AllMatchesQuery = {
+  tab: StatusTab;
+  keyword: string;
+  /** 只看这些赛事；空 = 全部。 */
+  tournaments: string[];
+  datePreset: AllDatePreset;
+  /** 选日期时的起止日（YYYY-MM-DD，本地时间，两头都算）。 */
+  customRange: [string, string] | null;
+  /** 只看未结束、未归档的赛事。 */
+  activeOnly: boolean;
+  page: number;
+  pageSize: number;
+};
+
+export const ALL_PAGE_SIZES = [20, 50, 100, 200];
+
+export const DEFAULT_ALL_QUERY: AllMatchesQuery = {
+  tab: 'ALL',
+  keyword: '',
+  tournaments: [],
+  datePreset: 'ALL',
+  customRange: null,
+  activeOnly: true,
+  page: 1,
+  pageSize: 50,
+};
+
+export type AllMatchesResponse = {
+  items: MMAllMatch[];
+  total: number;
+  page: number;
+  pageSize: number;
+  counts: Record<StatusTab, number>;
+};
+
+/** 赛事还没结束、没归档（「只看未结束的赛事」用）。 */
+export function isActiveTournament(tournament: Pick<MMTournament, 'status' | 'isArchived'>) {
+  return !tournament.isArchived && tournament.status !== 'FINISHED';
+}
+
+export function hasAllMatchesFilters(query: AllMatchesQuery) {
+  return Boolean(query.keyword.trim() || query.tournaments.length || query.datePreset !== 'ALL');
+}
+
+function localDateKey(time: number) {
+  const date = new Date(time);
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/** 本地时间某天（YYYY-MM-DD）往后 addDays 天的 0 点。 */
+function localDayStart(key: string, addDays = 0) {
+  const [year, month, day] = key.split('-').map(Number);
+  return new Date(year, month - 1, day + addDays);
+}
+
+/**
+ * 日期条件 → 计划时间的起止时刻（ISO，含起不含止）；全部日期返回 null。
+ * 按浏览器本地时间算「今天」（后端容器是 UTC，不能让后端算）。
+ */
+export function allMatchesDateRange(query: Pick<AllMatchesQuery, 'datePreset' | 'customRange'>, now: number): { from: string; to: string } | null {
+  const today = localDateKey(now);
+  let start: Date;
+  let end: Date;
+  if (query.datePreset === 'TODAY') {
+    start = localDayStart(today);
+    end = localDayStart(today, 1);
+  } else if (query.datePreset === 'TOMORROW') {
+    start = localDayStart(today, 1);
+    end = localDayStart(today, 2);
+  } else if (query.datePreset === 'CUSTOM' && query.customRange) {
+    const [first, last] = [...query.customRange].sort();
+    start = localDayStart(first);
+    end = localDayStart(last, 1);
+  } else {
+    return null;
+  }
+  return { from: start.toISOString(), to: end.toISOString() };
+}
+
+/** GET /match-management/matches 的查询串。 */
+export function allMatchesSearchParams(query: AllMatchesQuery, now: number): string {
+  const params = new URLSearchParams();
+  if (query.tab !== 'ALL') params.set('tab', query.tab);
+  const keyword = query.keyword.trim().slice(0, 50);
+  if (keyword) params.set('q', keyword);
+  if (query.tournaments.length) params.set('tournaments', query.tournaments.join(','));
+  const range = allMatchesDateRange(query, now);
+  if (range) {
+    params.set('from', range.from);
+    params.set('to', range.to);
+  }
+  if (!query.activeOnly) params.set('activeOnly', '0');
+  params.set('page', String(query.page));
+  params.set('pageSize', String(query.pageSize));
+  return params.toString();
+}

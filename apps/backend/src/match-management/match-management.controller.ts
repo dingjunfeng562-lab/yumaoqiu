@@ -15,7 +15,12 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { CorrectMatchScoreDto } from '../scoring/dto/scoring.dto';
-import { UpdateManagedMatchDto, ReleaseRefereeDto } from './dto/match-management.dto';
+import {
+  ListAllMatchesQueryDto,
+  UpdateManagedMatchDto,
+  ReleaseRefereeDto,
+} from './dto/match-management.dto';
+import { AllMatchesService } from './all-matches.service';
 import { MatchDirectoryService } from './match-directory.service';
 import { MatchManagementService } from './match-management.service';
 import { MatchOperationLogService } from './match-operation-log.service';
@@ -36,6 +41,7 @@ export class MatchManagementController {
     private readonly matchManagementService: MatchManagementService,
     private readonly directory: MatchDirectoryService,
     private readonly operationLog: MatchOperationLogService,
+    private readonly allMatches: AllMatchesService,
   ) {}
 
   /** 选赛事用：管理员只有自己的赛事，超级管理员全部（带创建账号）。 */
@@ -48,6 +54,15 @@ export class MatchManagementController {
   @Get('search')
   searchMatches(@Query('q') q: string, @Req() req: ActorRequest) {
     return this.directory.searchMatches(req.user, q ?? '');
+  }
+
+  /** 全部场次：不用先选赛事，列出能管的所有赛事的场次（分页，带各状态数量）。 */
+  @Get('matches')
+  listAllMatches(
+    @Query() query: ListAllMatchesQueryDto,
+    @Req() req: ActorRequest,
+  ) {
+    return this.allMatches.list(req.user, query);
   }
 
   @Get('tournaments/:tournamentId/overview')

@@ -5,8 +5,13 @@ import assert from 'node:assert/strict';
 // 比赛日按浏览器本地时间算；测试固定成北京时间，在 UTC 的机器上跑结果也一样。
 process.env.TZ = 'Asia/Shanghai';
 import {
+  DEFAULT_ALL_QUERY,
   EMPTY_FILTERS,
   NONE,
+  allMatchesDateRange,
+  allMatchesSearchParams,
+  hasAllMatchesFilters,
+  isActiveTournament,
   buildCourtBoard,
   describeLogChanges,
   filterMatches,
@@ -158,5 +163,54 @@ describe('操作记录', () => {
     }, (iso) => iso.slice(11, 16));
     assert.deepEqual(lines, ['时间：01:00 → 02:00', '场地：1号场 → 2号场', '裁判：未分配 → 裁判一']);
     assert.deepEqual(describeLogChanges({ id: 'y', action: 'COMPLETE', operatorName: null, createdAt: '', before: { status: 'LIVE' }, after: { status: 'COMPLETED' } }, String), ['状态：进行中 → 已结束']);
+  });
+});
+
+describe('全部场次', () => {
+  // NOW = 北京时间 2026-11-20 10:00
+  it('日期：今天 / 明天 / 选日期按本地时间算起止（含起不含止）', () => {
+    assert.equal(allMatchesDateRange({ datePreset: 'ALL', customRange: null }, NOW), null);
+    assert.deepEqual(allMatchesDateRange({ datePreset: 'TODAY', customRange: null }, NOW), {
+      from: '2026-11-19T16:00:00.000Z', to: '2026-11-20T16:00:00.000Z',
+    });
+    assert.deepEqual(allMatchesDateRange({ datePreset: 'TOMORROW', customRange: null }, NOW), {
+      from: '2026-11-20T16:00:00.000Z', to: '2026-11-21T16:00:00.000Z',
+    });
+    // 跨月、倒着选也行
+    assert.deepEqual(allMatchesDateRange({ datePreset: 'CUSTOM', customRange: ['2026-12-01', '2026-11-28'] }, NOW), {
+      from: '2026-11-27T16:00:00.000Z', to: '2026-12-01T16:00:00.000Z',
+    });
+    assert.equal(allMatchesDateRange({ datePreset: 'CUSTOM', customRange: null }, NOW), null);
+  });
+
+  it('查询串：默认只带页码；其它条件按需带上', () => {
+    assert.equal(allMatchesSearchParams(DEFAULT_ALL_QUERY, NOW), 'page=1&pageSize=50');
+    const params = new URLSearchParams(allMatchesSearchParams({
+      ...DEFAULT_ALL_QUERY,
+      tab: 'ATTENTION',
+      keyword: '  张三 ',
+      tournaments: ['t1', 't2'],
+      datePreset: 'TODAY',
+      activeOnly: false,
+      page: 3,
+      pageSize: 100,
+    }, NOW));
+    assert.equal(params.get('tab'), 'ATTENTION');
+    assert.equal(params.get('q'), '张三');
+    assert.equal(params.get('tournaments'), 't1,t2');
+    assert.equal(params.get('from'), '2026-11-19T16:00:00.000Z');
+    assert.equal(params.get('to'), '2026-11-20T16:00:00.000Z');
+    assert.equal(params.get('activeOnly'), '0');
+    assert.equal(params.get('page'), '3');
+    assert.equal(params.get('pageSize'), '100');
+  });
+
+  it('未结束的赛事、有没有筛选', () => {
+    assert.equal(isActiveTournament({ status: 'ONGOING', isArchived: false }), true);
+    assert.equal(isActiveTournament({ status: 'FINISHED', isArchived: false }), false);
+    assert.equal(isActiveTournament({ status: 'REGISTRATION_OPEN', isArchived: true }), false);
+    assert.equal(hasAllMatchesFilters(DEFAULT_ALL_QUERY), false);
+    assert.equal(hasAllMatchesFilters({ ...DEFAULT_ALL_QUERY, tab: 'LIVE', activeOnly: false }), false);
+    assert.equal(hasAllMatchesFilters({ ...DEFAULT_ALL_QUERY, datePreset: 'TODAY' }), true);
   });
 });

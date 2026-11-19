@@ -421,6 +421,29 @@ export class MatchManagementService {
     };
   }
 
+  /**
+   * 「全部场次」用：按 id 取场次，转成和 overview 一样的格式，按传入的顺序返回。
+   * 不含场次号（场次号要按整个赛事算，由调用方补上）。
+   */
+  async matchViewsByIds(
+    ids: string[],
+  ): Promise<Array<Omit<MatchView, 'code'>>> {
+    if (!ids.length) return [];
+    const matches = await this.prisma.match.findMany({
+      where: { id: { in: ids } },
+      include: matchInclude,
+    });
+    const sideViews = await this.scoring.resolveSideViews(
+      matches.flatMap((match) => [match.side1Id, match.side2Id]),
+    );
+    const views = new Map(
+      matches.map((match) => [match.id, this.toMatchView(match, sideViews)]),
+    );
+    return ids
+      .map((id) => views.get(id))
+      .filter((view): view is Omit<MatchView, 'code'> => Boolean(view));
+  }
+
   async updateMatch(matchId: string, dto: UpdateManagedMatchDto, actor?: Actor) {
     const target = await this.requireMatchRef(matchId);
     // 管理员只能指派自己名下的裁判（前端只列了这些，这里再拦一次）。

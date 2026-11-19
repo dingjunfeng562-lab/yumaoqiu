@@ -18,6 +18,7 @@ import {
   Modal,
   Popconfirm,
   Result,
+  Segmented,
   Select,
   Space,
   Spin,
@@ -38,6 +39,7 @@ import {
 import { apiFetch } from '@/lib/api';
 import { useCurrentAccess } from '@/lib/use-current-role';
 import {
+  DEFAULT_ALL_QUERY,
   EMPTY_FILTERS,
   NONE,
   buildCourtBoard,
@@ -47,7 +49,9 @@ import {
   matchDateKey,
   pickInitialTournament,
   statusTabCounts,
+  type AllMatchesQuery,
   type MatchFilters,
+  type MMAllMatch,
   type MMTournament,
 } from '@/lib/match-management';
 import { TournamentDirectory, TournamentPicker, TournamentStatusTag } from '@/components/admin/match-management/TournamentChooser';
@@ -56,6 +60,7 @@ import { CourtBoard } from '@/components/admin/match-management/CourtBoard';
 import { MatchList } from '@/components/admin/match-management/MatchList';
 import { MatchLogs } from '@/components/admin/match-management/MatchLogs';
 import { GlobalMatchSearch } from '@/components/admin/match-management/GlobalMatchSearch';
+import { AllMatchesView } from '@/components/admin/match-management/AllMatchesView';
 import { AttentionTags, SideName, StatusTag, scoreText } from '@/components/admin/match-management/display';
 
 const { Text, Title } = Typography;
@@ -65,6 +70,12 @@ const STORAGE_TOURNAMENT = 'match-management:tournament';
 const STORAGE_VIEW = 'match-management:view';
 
 type MatchStatusKey = 'PENDING' | 'LIVE' | 'COMPLETED' | 'CANCELLED';
+
+/** 全部场次（打开页面默认）/ 按赛事。 */
+type PageMode = 'all' | 'tournament';
+
+/** 解除裁判时确认框要用的字段（全部场次的列表项也有这些）。 */
+type ReleaseTarget = Pick<MatchView, 'id' | 'status' | 'referee' | 'scoreText' | 'forfeitedSide' | 'hasBothSides'>;
 
 interface SideView {
   id: string;
@@ -305,6 +316,13 @@ export default function MatchManagementPage() {
   const [tournaments, setTournaments] = useState<MMTournament[]>([]);
   const [tournamentsLoading, setTournamentsLoading] = useState(true);
   const [selectedTournamentId, setSelectedTournamentId] = useState<string | null>(null);
+  // 打开页面默认「全部场次」；按赛事的选择照样记着，切过去就是上次选的赛事。
+  const [mode, setMode] = useState<PageMode>('all');
+  const [allQuery, setAllQuery] = useState<AllMatchesQuery>(DEFAULT_ALL_QUERY);
+  const [allReload, setAllReload] = useState(0);
+  // 全部场次里点了「管理」：按需加载那一场所在赛事的数据，用同一个处理面板。
+  const [allOverview, setAllOverview] = useState<Overview | null>(null);
+  const [allEditingId, setAllEditingId] = useState<string | null>(null);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [loading, setLoading] = useState(false);
   const [filters, setFilters] = useState<MatchFilters>(EMPTY_FILTERS);
@@ -368,23 +386,23 @@ export default function MatchManagementPage() {
   }, [token, canUse]);
 
   useEffect(() => {
-    if (!token || !selectedTournamentId) return;
+    if (!token || !selectedTournamentId || mode !== 'tournament') return;
     const timer = window.setTimeout(() => {
       void loadOverview(selectedTournamentId);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [token, selectedTournamentId, loadOverview]);
+  }, [token, selectedTournamentId, loadOverview, mode]);
 
   useEffect(() => {
-    if (!selectedTournamentId) return;
+    if (!selectedTournamentId || mode !== 'tournament') return;
     const onFocus = () => void loadOverview();
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
-  }, [loadOverview, selectedTournamentId]);
+  }, [loadOverview, selectedTournamentId, mode]);
 
   // 实时联动：裁判端记分、其他后台改分或晋级后，自动刷新当前赛事的对局状态。
   useEffect(() => {
-    if (!token || !selectedTournamentId) return;
+    if (!token || !selectedTournamentId || mode !== 'tournament') return;
     const socket: Socket = io(`${SOCKET_BASE}/scores`, {
       transports: ['polling', 'websocket'],
       withCredentials: true,
@@ -410,7 +428,7 @@ export default function MatchManagementPage() {
       if (reloadTimer.current) window.clearTimeout(reloadTimer.current);
       reloadTimer.current = null;
     };
-  }, [token, selectedTournamentId, loadOverview]);
+  }, [token, selectedTournamentId, loadOverview, mode]);
 
   const selectedTournament = useMemo(
     () => tournaments.find((item) => item.id === selectedTournamentId) ?? null,
@@ -478,8 +496,9 @@ export default function MatchManagementPage() {
    * 解除单场比赛的裁判接手：只把这一场改回「未分配」，裁判端立刻失去记分权限。
    * 进行中的比赛先过一道红色二次确认，后端也要求 force 才放行。
    */
-  const releaseReferee = useCallback(async (matchId: string) => {
-    const match = matches.find((item) => item.id === matchId);
+  const releaseReferee = useCallback(async (matchId: string, known?: ReleaseTarget) => {
+    const match: ReleaseTarget | undefined = known
+      ?? (mode === 'all' ? allOverview?.matches : matches)?.find((item) => item.id === matchId);
     if (!token || !match) return false;
     const live = match.status === 'LIVE';
     const refereeName = match.referee?.username ?? '该裁判';
@@ -505,7 +524,8 @@ export default function MatchManagementPage() {
         body: JSON.stringify({ force: live }),
       });
       message.success('已解除裁判接手，本场回到未分配');
-      await loadOverview();
+      if (mode === 'all') setAllReload((value) => value + 1);
+      else await loadOverview();
       return true;
     } catch (error) {
       message.error(errorText(error, '解除裁判失败'));
@@ -513,15 +533,76 @@ export default function MatchManagementPage() {
     } finally {
       setReleasingId(null);
     }
-  }, [token, matches, loadOverview]);
+  }, [token, matches, allOverview, mode, loadOverview]);
 
-  /** 跨赛事搜索点了一场：切到那个赛事（数据加载完抽屉自动打开这一场）。 */
+  const changeMode = useCallback((next: PageMode) => {
+    setMode(next);
+    setEditingId(null);
+    setAllEditingId(null);
+  }, []);
+
+  /** 进入某个赛事（按赛事）；带 matchId 时数据加载完自动打开这一场。 */
+  const enterTournament = useCallback((tournamentId: string, matchId?: string | null) => {
+    setMode('tournament');
+    setAllEditingId(null);
+    if (tournamentId !== selectedTournamentId) selectTournament(tournamentId);
+    setFilters(EMPTY_FILTERS);
+    setEditingId(matchId ?? null);
+  }, [selectedTournamentId, selectTournament]);
+
+  /** 全部场次里打开一场：取那个赛事的数据（场地、裁判、计分规则），在当前页打开处理面板。 */
+  const openAllMatch = useCallback(async (tournamentId: string | null, matchId: string) => {
+    if (!token || !tournamentId) return;
+    const hide = message.loading('正在打开…', 0);
+    try {
+      const data = await apiFetch<Overview>(`/match-management/tournaments/${tournamentId}/overview`, { token, cache: 'no-store' });
+      if (!data.matches.some((match) => match.id === matchId)) {
+        message.warning('这一场已经不在了，列表已刷新');
+        setAllReload((value) => value + 1);
+        return;
+      }
+      setAllOverview(data);
+      setAllEditingId(matchId);
+      setNow(Date.now());
+    } catch (error) {
+      message.error(errorText(error, '加载对局数据失败'));
+    } finally {
+      hide();
+    }
+  }, [token]);
+
+  const allEditing = useMemo(
+    () => (allEditingId ? allOverview?.matches.find((match) => match.id === allEditingId) ?? null : null),
+    [allOverview, allEditingId],
+  );
+
+  // 处理面板开着时那个赛事有比分变化：把面板里的数据也刷新（和「按赛事」一样实时）。
+  const refreshAllDrawer = useCallback(async (tournamentId: string) => {
+    if (!token || !allEditingId || allOverview?.tournament.id !== tournamentId) return;
+    try {
+      const data = await apiFetch<Overview>(`/match-management/tournaments/${tournamentId}/overview`, { token, cache: 'no-store' });
+      setAllOverview((current) => (current?.tournament.id === tournamentId ? data : current));
+    } catch {
+      // 刷新失败就保留旧数据，保存时后端会再校验
+    }
+  }, [token, allEditingId, allOverview]);
+
+  const handleAllSaved = useCallback(async () => {
+    setAllEditingId(null);
+    setAllReload((value) => value + 1);
+  }, []);
+
+  /** 跨赛事搜索点了一场：全部场次里直接打开；按赛事时切到那个赛事（数据加载完抽屉自动打开这一场）。 */
   const openFromSearch = useCallback(({ tournamentId, matchId }: { tournamentId: string; matchId: string }) => {
     setSearchOpen(false);
+    if (mode === 'all') {
+      void openAllMatch(tournamentId, matchId);
+      return;
+    }
     if (tournamentId !== selectedTournamentId) selectTournament(tournamentId);
     setFilters(EMPTY_FILTERS);
     setEditingId(matchId);
-  }, [selectedTournamentId, selectTournament]);
+  }, [mode, openAllMatch, selectedTournamentId, selectTournament]);
 
   if (!access.ready) {
     return (
@@ -552,50 +633,87 @@ export default function MatchManagementPage() {
         </div>
         <Space wrap>
           <Button icon={<SearchOutlined />} onClick={() => setSearchOpen(true)}>跨赛事搜选手</Button>
-          <Button href={selectedTournamentId ? `/competitions/${selectedTournamentId}/brackets` : undefined} target="_blank" disabled={!selectedTournamentId}>
-            公开签表
-          </Button>
-          <Button href={selectedTournamentId ? `/live-screen/${selectedTournamentId}` : undefined} target="_blank" disabled={!selectedTournamentId}>
-            现场大屏
-          </Button>
-          <Button icon={<ReloadOutlined />} onClick={() => void loadOverview()} loading={loading} disabled={!selectedTournamentId}>
-            刷新
-          </Button>
+          {mode === 'tournament' ? (
+            <>
+              <Button href={selectedTournamentId ? `/competitions/${selectedTournamentId}/brackets` : undefined} target="_blank" disabled={!selectedTournamentId}>
+                公开签表
+              </Button>
+              <Button href={selectedTournamentId ? `/live-screen/${selectedTournamentId}` : undefined} target="_blank" disabled={!selectedTournamentId}>
+                现场大屏
+              </Button>
+              <Button icon={<ReloadOutlined />} onClick={() => void loadOverview()} loading={loading} disabled={!selectedTournamentId}>
+                刷新
+              </Button>
+            </>
+          ) : (
+            <Button icon={<ReloadOutlined />} onClick={() => setAllReload((value) => value + 1)}>刷新</Button>
+          )}
         </Space>
       </div>
 
       <Card style={{ marginTop: 16 }} styles={{ body: { padding: '12px 16px' } }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
-          <Text strong>赛事</Text>
-          <TournamentPicker
-            tournaments={tournaments}
-            value={selectedTournamentId}
-            loading={tournamentsLoading}
-            showOwner={isRoot}
-            now={now}
-            onChange={selectTournament}
+          <Segmented
+            value={mode}
+            onChange={(value) => changeMode(value as PageMode)}
+            options={[
+              { value: 'all', label: '全部场次', icon: <UnorderedListOutlined /> },
+              { value: 'tournament', label: '按赛事', icon: <TrophyOutlined /> },
+            ]}
           />
-          {selectedTournament ? <TournamentStatusTag tournament={selectedTournament} /> : null}
-          {selectedTournamentId ? (
-            <Button type="link" icon={<UnorderedListOutlined />} onClick={() => selectTournament(null)} style={{ paddingInline: 0 }}>
-              全部赛事
-            </Button>
-          ) : null}
-          {overview ? (
-            <Space wrap size={14} style={{ marginLeft: 'auto' }}>
-              <Text type="secondary"><TrophyOutlined /> 单项 {overview.events.length}</Text>
-              <Text type="secondary"><TeamOutlined /> 团体 {overview.teamCompetitions.length}</Text>
-              <Text type="secondary">
-                {dayjs(overview.tournament.startDate).format('YYYY-MM-DD')} ~ {dayjs(overview.tournament.endDate).format('MM-DD')}
-              </Text>
-              {overview.tournament.location ? <Text type="secondary">{overview.tournament.location}</Text> : null}
-              {isRoot && selectedTournament?.owner ? <Text type="secondary">创建账号 {selectedTournament.owner}</Text> : null}
-            </Space>
-          ) : null}
+          {mode === 'all' ? (
+            <Text type="secondary">
+              {isRoot ? '所有赛事' : '你创建的赛事'}的场次放在一起看；点「管理」直接处理，点赛事名进入该赛事。
+            </Text>
+          ) : (
+            <>
+              <Text strong>赛事</Text>
+              <TournamentPicker
+                tournaments={tournaments}
+                value={selectedTournamentId}
+                loading={tournamentsLoading}
+                showOwner={isRoot}
+                now={now}
+                onChange={selectTournament}
+              />
+              {selectedTournament ? <TournamentStatusTag tournament={selectedTournament} /> : null}
+              {selectedTournamentId ? (
+                <Button type="link" icon={<UnorderedListOutlined />} onClick={() => selectTournament(null)} style={{ paddingInline: 0 }}>
+                  赛事列表
+                </Button>
+              ) : null}
+              {overview ? (
+                <Space wrap size={14} style={{ marginLeft: 'auto' }}>
+                  <Text type="secondary"><TrophyOutlined /> 单项 {overview.events.length}</Text>
+                  <Text type="secondary"><TeamOutlined /> 团体 {overview.teamCompetitions.length}</Text>
+                  <Text type="secondary">
+                    {dayjs(overview.tournament.startDate).format('YYYY-MM-DD')} ~ {dayjs(overview.tournament.endDate).format('MM-DD')}
+                  </Text>
+                  {overview.tournament.location ? <Text type="secondary">{overview.tournament.location}</Text> : null}
+                  {isRoot && selectedTournament?.owner ? <Text type="secondary">创建账号 {selectedTournament.owner}</Text> : null}
+                </Space>
+              ) : null}
+            </>
+          )}
         </div>
       </Card>
 
-      {!selectedTournamentId ? (
+      {mode === 'all' ? (
+        <AllMatchesView
+          token={token}
+          query={allQuery}
+          onQueryChange={setAllQuery}
+          tournaments={tournaments}
+          showOwner={isRoot}
+          now={now}
+          reloadSignal={allReload}
+          onOpen={(match: MMAllMatch) => void openAllMatch(match.tournamentId, match.id)}
+          onRelease={(match: MMAllMatch) => void releaseReferee(match.id, match)}
+          releasingId={releasingId}
+          onEnterTournament={(tournamentId) => enterTournament(tournamentId)}
+          onRemoteChange={(tournamentId) => void refreshAllDrawer(tournamentId)}
+        />
+      ) : !selectedTournamentId ? (
         <TournamentDirectory
           tournaments={tournaments}
           loading={tournamentsLoading}
@@ -663,6 +781,19 @@ export default function MatchManagementPage() {
         onSaved={handleSaved}
         onRelease={releaseReferee}
         releasingId={releasingId}
+      />
+
+      <MatchManageDrawer
+        key={`all:${allEditing?.id ?? 'closed'}`}
+        match={allEditing}
+        overview={allOverview}
+        token={token}
+        now={now}
+        onClose={() => setAllEditingId(null)}
+        onSaved={handleAllSaved}
+        onRelease={releaseReferee}
+        releasingId={releasingId}
+        onEnterTournament={allOverview && allEditing ? () => enterTournament(allOverview.tournament.id, allEditing.id) : undefined}
       />
 
       <GlobalMatchSearch open={searchOpen} token={token} onClose={() => setSearchOpen(false)} onPick={openFromSearch} />
@@ -851,6 +982,7 @@ function MatchManageDrawer({
   onSaved,
   onRelease,
   releasingId,
+  onEnterTournament,
 }: {
   match: MatchView | null;
   overview: Overview | null;
@@ -860,6 +992,8 @@ function MatchManageDrawer({
   onSaved: () => Promise<void> | void;
   onRelease: (matchId: string) => Promise<boolean>;
   releasingId: string | null;
+  /** 从「全部场次」打开时：标题区显示赛事名，并可以进入该赛事。 */
+  onEnterTournament?: () => void;
 }) {
   const [form] = Form.useForm();
   const [games, setGames] = useState<GameView[]>(() => {
@@ -1207,6 +1341,14 @@ function MatchManageDrawer({
       {match && overview ? (
         <div>
           <div style={{ borderRadius: 10, border: '1px solid #e2e8f0', background: '#f8fafc', padding: '12px 14px' }}>
+            {onEnterTournament ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                <Text strong style={{ fontSize: 13, minWidth: 0 }}>{overview.tournament.name}</Text>
+                <Button type="link" size="small" onClick={onEnterTournament} style={{ paddingInline: 0, marginLeft: 'auto' }}>
+                  进入该赛事
+                </Button>
+              </div>
+            ) : null}
             <Text type="secondary" style={{ fontSize: 12 }}>
               {projectLabel(match, overview)} · {match.stageLabel} · {match.scheduledAt ? dayjs(match.scheduledAt).format('MM-DD HH:mm') : '待排时间'} · {match.venue?.name ?? '待排场地'}
             </Text>

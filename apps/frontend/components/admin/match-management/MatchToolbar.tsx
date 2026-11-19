@@ -48,37 +48,7 @@ export function MatchToolbar({
 
   return (
     <div style={{ marginTop: 16, background: '#fff', border: '1px solid #f0f0f0', borderRadius: 8, padding: '12px 16px' }}>
-      <div role="tablist" aria-label="按状态筛选" style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-        {STATUS_TABS.filter((tab) => tab.key !== 'CANCELLED' || counts.CANCELLED > 0).map((tab) => {
-          const active = filters.tab === tab.key;
-          const warn = tab.key === 'ATTENTION' && counts.ATTENTION > 0;
-          return (
-            <button
-              key={tab.key}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              onClick={() => set({ tab: tab.key })}
-              style={{
-                cursor: 'pointer',
-                display: 'inline-flex',
-                alignItems: 'baseline',
-                gap: 6,
-                padding: '6px 14px',
-                borderRadius: 999,
-                border: `1px solid ${active ? (warn ? '#dc2626' : '#1677ff') : warn ? '#fecaca' : '#e2e8f0'}`,
-                background: active ? (warn ? '#dc2626' : '#1677ff') : warn ? '#fef2f2' : '#fff',
-                color: active ? '#fff' : warn ? '#b91c1c' : '#334155',
-                fontWeight: 700,
-                fontSize: 13,
-              }}
-            >
-              {tab.key === 'ATTENTION' ? `⚠ ${tab.label}` : tab.label}
-              <span style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 800 }}>{counts[tab.key]}</span>
-            </button>
-          );
-        })}
-      </div>
+      <StatusTabs counts={counts} value={filters.tab} onChange={(tab) => set({ tab })} />
 
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginTop: 12 }}>
         <Input
@@ -124,6 +94,53 @@ export function MatchToolbar({
           ) : null}
         </Space>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * 状态标签（带数量，点了就筛选）。「按赛事」和「全部场次」共用；已取消为 0 时不显示。
+ */
+export function StatusTabs({
+  counts,
+  value,
+  onChange,
+}: {
+  counts: Record<StatusTab, number>;
+  value: StatusTab;
+  onChange: (tab: StatusTab) => void;
+}) {
+  return (
+    <div role="tablist" aria-label="按状态筛选" style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+      {STATUS_TABS.filter((tab) => tab.key !== 'CANCELLED' || counts.CANCELLED > 0).map((tab) => {
+        const active = value === tab.key;
+        const warn = tab.key === 'ATTENTION' && counts.ATTENTION > 0;
+        return (
+          <button
+            key={tab.key}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => onChange(tab.key)}
+            style={{
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'baseline',
+              gap: 6,
+              padding: '6px 14px',
+              borderRadius: 999,
+              border: `1px solid ${active ? (warn ? '#dc2626' : '#1677ff') : warn ? '#fecaca' : '#e2e8f0'}`,
+              background: active ? (warn ? '#dc2626' : '#1677ff') : warn ? '#fef2f2' : '#fff',
+              color: active ? '#fff' : warn ? '#b91c1c' : '#334155',
+              fontWeight: 700,
+              fontSize: 13,
+            }}
+          >
+            {tab.key === 'ATTENTION' ? `⚠ ${tab.label}` : tab.label}
+            <span style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 800 }}>{counts[tab.key]}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }
