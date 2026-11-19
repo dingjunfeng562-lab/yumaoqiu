@@ -99,6 +99,8 @@ export class RolesGuard implements CanActivate {
       if (controller === 'PlayersController') await player(params.id);
       if (controller === 'EventsController') await event(params.id);
       if (controller === 'ScoringController') await match(params.id);
+      // 裁判员对局管理：按场次 id 改时间/比分/结束/重开/解除裁判、看操作记录，场次必须属于自己的赛事。
+      if (controller === 'MatchManagementController') await match(params.id);
       if (controller === 'SchedulingController') await (['updateMatchSchedule', 'previewMatchSchedule'].includes(action) ? match : venue)(params.id);
       if (controller === 'TeamCompetitionsController') {
         const item = await this.prisma.teamCompetition.findUnique({ where: { id: params.id }, select: { tournamentId: true } });

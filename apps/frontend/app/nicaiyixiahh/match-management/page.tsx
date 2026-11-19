@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useSession } from 'next-auth/react';
 import dayjs, { type Dayjs } from 'dayjs';
 import { io, type Socket } from 'socket.io-client';
@@ -9,55 +9,62 @@ import {
   Button,
   Card,
   Checkbox,
+  Collapse,
   DatePicker,
-  Divider,
   Drawer,
   Empty,
   Form,
-  Input,
   InputNumber,
   Modal,
   Popconfirm,
   Result,
-  Segmented,
   Select,
   Space,
   Spin,
-  Table as AntdTable,
+  Tabs,
   Tag,
   Typography,
   message,
 } from 'antd';
-import type { TableColumnsType } from 'antd';
 import {
-  CheckCircleFilled,
   CheckCircleOutlined,
-  ClockCircleOutlined,
-  EditOutlined,
   ReloadOutlined,
   SearchOutlined,
   StopOutlined,
   TeamOutlined,
   TrophyOutlined,
+  UnorderedListOutlined,
 } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { useCurrentAccess } from '@/lib/use-current-role';
+import {
+  EMPTY_FILTERS,
+  NONE,
+  buildCourtBoard,
+  compareMatches,
+  filterMatches,
+  matchAttention,
+  matchDateKey,
+  pickInitialTournament,
+  statusTabCounts,
+  type MatchFilters,
+  type MMTournament,
+} from '@/lib/match-management';
+import { TournamentDirectory, TournamentPicker, TournamentStatusTag } from '@/components/admin/match-management/TournamentChooser';
+import { MatchToolbar, type ViewMode } from '@/components/admin/match-management/MatchToolbar';
+import { CourtBoard } from '@/components/admin/match-management/CourtBoard';
+import { MatchList } from '@/components/admin/match-management/MatchList';
+import { MatchLogs } from '@/components/admin/match-management/MatchLogs';
+import { GlobalMatchSearch } from '@/components/admin/match-management/GlobalMatchSearch';
+import { AttentionTags, SideName, StatusTag, scoreText } from '@/components/admin/match-management/display';
 
 const { Text, Title } = Typography;
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 const SOCKET_BASE = API_BASE.replace(/\/api\/?$/, '');
+const STORAGE_TOURNAMENT = 'match-management:tournament';
+const STORAGE_VIEW = 'match-management:view';
 
 type MatchStatusKey = 'PENDING' | 'LIVE' | 'COMPLETED' | 'CANCELLED';
-
-interface TournamentOption {
-  id: string;
-  name: string;
-  edition?: number;
-  status?: string;
-  startDate?: string;
-  endDate?: string;
-  isArchived?: boolean;
-}
 
 interface SideView {
   id: string;
@@ -76,6 +83,8 @@ interface GameView {
 
 interface MatchView {
   id: string;
+  /** 场次号，和秩序册一致（男单12、团体3）；没排时间场地的没有。 */
+  code?: string | null;
   eventId: string | null;
   teamMatchId: string | null;
   teamCompetitionId: string | null;
@@ -180,6 +189,7 @@ interface Overview {
   teamCompetitions: TeamCompetitionSummary[];
   matches: MatchView[];
   venues: Array<{ id: string; name: string; isActive: boolean; sortOrder: number }>;
+  /** 可以指派的裁判：管理员只看到自己名下的，超级管理员看全部。 */
   referees: Array<{ id: string; username: string; refereedMatchesCount: number }>;
   summary: {
     total: number;
@@ -191,42 +201,16 @@ interface Overview {
   };
 }
 
-const STATUS_META: Record<MatchStatusKey, { label: string; color: string }> = {
-  PENDING: { label: '未开始', color: 'default' },
-  LIVE: { label: '进行中', color: 'green' },
-  COMPLETED: { label: '已结束', color: 'blue' },
-  CANCELLED: { label: '已取消', color: 'default' },
+const STATUS_LABELS: Record<MatchStatusKey, string> = {
+  PENDING: '未开始',
+  LIVE: '进行中',
+  COMPLETED: '已结束',
+  CANCELLED: '已取消',
 };
-
-const TOURNAMENT_STATUS_LABELS: Record<string, string> = {
-  REGISTRATION_NOT_STARTED: '报名未开始',
-  REGISTRATION_OPEN: '报名中',
-  REGISTRATION_CLOSED: '报名截止',
-  ONGOING: '进行中',
-  FINISHED: '已结束',
-};
-
-function statusMeta(status: MatchStatusKey) {
-  return STATUS_META[status] ?? STATUS_META.PENDING;
-}
-
-function formatDateTime(value?: string | null) {
-  return value ? dayjs(value).format('MM-DD HH:mm') : '待排时间';
-}
-
-function formatFullDateTime(value?: string | null) {
-  return value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '待排时间';
-}
 
 function sideName(side?: SideView | null) {
   if (!side) return '待定';
   return side.teamName?.trim() || side.name || '待定';
-}
-
-function sidePlayers(side?: SideView | null) {
-  if (!side || side.teamName) return '';
-  const names = side.players?.map((player) => player.name).filter(Boolean).join(' / ') ?? '';
-  return names && names !== side.name ? names : '';
 }
 
 function matchVersus(match: MatchView) {
@@ -234,13 +218,6 @@ function matchVersus(match: MatchView) {
     return `${match.team1Name ?? '待定'} VS ${match.team2Name ?? '待定'}`;
   }
   return `${sideName(match.side1)} VS ${sideName(match.side2)}`;
-}
-
-function scoreDisplay(match: MatchView) {
-  if (match.scoreText) return match.scoreText;
-  if (match.forfeitedSide !== null) return 'WO';
-  if (!match.hasBothSides && match.status === 'COMPLETED') return '轮空';
-  return '未记分';
 }
 
 function maxGamesFor(match: MatchView, overview: Overview | null) {
@@ -260,7 +237,7 @@ function maxGamesFor(match: MatchView, overview: Overview | null) {
 function projectLabel(match: MatchView, overview: Overview | null) {
   if (match.teamMatchId) {
     const competition = overview?.teamCompetitions.find((item) => item.id === match.teamCompetitionId);
-    return `团体赛 · ${competition?.name ?? '—'}${match.itemTypeLabel ? ` · ${match.itemTypeLabel}` : ''}`;
+    return `团体 · ${competition?.name ?? '—'}${match.itemTypeLabel ? ` · ${match.itemTypeLabel}` : ''}`;
   }
   const event = overview?.events.find((item) => item.id === match.eventId);
   return event?.typeLabel ?? match.eventTypeLabel;
@@ -272,6 +249,23 @@ function errorText(error: unknown, fallback: string) {
 
 function isFormValidationError(error: unknown) {
   return Boolean(error && typeof error === 'object' && 'errorFields' in error);
+}
+
+function readStorage(key: string) {
+  try {
+    return typeof window === 'undefined' ? null : window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeStorage(key: string, value: string | null) {
+  try {
+    if (value === null) window.localStorage.removeItem(key);
+    else window.localStorage.setItem(key, value);
+  } catch {
+    // 隐私模式等存不了就算了
+  }
 }
 
 type StageGroup = {
@@ -294,7 +288,7 @@ function groupByStage(matches: MatchView[]): StageGroup[] {
     groups.set(match.stageKey, current);
   }
   return [...groups.values()]
-    .sort((a, b) => a.order - b.order || a.label.localeCompare(b.label, 'zh-CN'))
+    .sort((a, b) => a.order - b.order || a.label.localeCompare(b.label, 'zh-CN', { numeric: true }))
     .map((group) => ({
       ...group,
       matches: [...group.matches].sort((a, b) => a.matchNo - b.matchNo),
@@ -305,20 +299,32 @@ export default function MatchManagementPage() {
   const access = useCurrentAccess();
   const { data: session } = useSession();
   const token = session?.user?.accessToken as string | undefined;
+  const canUse = access.can('MATCH_MANAGEMENT');
+  const isRoot = access.role === 'ROOT';
 
-  const [tournaments, setTournaments] = useState<TournamentOption[]>([]);
+  const [tournaments, setTournaments] = useState<MMTournament[]>([]);
   const [tournamentsLoading, setTournamentsLoading] = useState(true);
-  const [selectedTournamentId, setSelectedTournamentId] = useState('');
+  const [selectedTournamentId, setSelectedTournamentId] = useState<string | null>(null);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [loading, setLoading] = useState(false);
-  const [projectFilter, setProjectFilter] = useState('ALL');
-  const [statusFilter, setStatusFilter] = useState('ALL');
-  const [keyword, setKeyword] = useState('');
-  const [viewMode, setViewMode] = useState<'bracket' | 'list'>('bracket');
-  const [editing, setEditing] = useState<MatchView | null>(null);
+  const [filters, setFilters] = useState<MatchFilters>(EMPTY_FILTERS);
+  // 视图只在拿到对局数据后才渲染，直接从本地存储取不会造成 SSR 不一致。
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    const saved = readStorage(STORAGE_VIEW);
+    return saved === 'court' || saved === 'bracket' || saved === 'list' ? saved : 'list';
+  });
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [releasingId, setReleasingId] = useState<string | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
   const reloadTimer = useRef<number | null>(null);
   const requestIdRef = useRef(0);
+
+  // 「超时未开始」要跟着时间走：每 30 秒刷新一次当前时间。
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const loadOverview = useCallback(async (tournamentId = selectedTournamentId) => {
     if (!token || !tournamentId) return;
@@ -332,6 +338,7 @@ export default function MatchManagementPage() {
       );
       if (requestId !== requestIdRef.current) return;
       setOverview(data);
+      setNow(Date.now());
     } catch (error) {
       if (requestId === requestIdRef.current) {
         message.error(errorText(error, '加载对局数据失败'));
@@ -341,12 +348,15 @@ export default function MatchManagementPage() {
     }
   }, [token, selectedTournamentId]);
 
+  // 赛事列表：管理员只有自己的赛事，超级管理员全部。进来时自动选上次选的，或唯一一个进行中的。
   useEffect(() => {
-    if (!token) return;
+    if (!token || !canUse) return;
     let cancelled = false;
-    apiFetch<TournamentOption[]>('/tournaments', { token, cache: 'no-store' })
+    apiFetch<MMTournament[]>('/match-management/tournaments', { token, cache: 'no-store' })
       .then((data) => {
-        if (!cancelled) setTournaments(data);
+        if (cancelled) return;
+        setTournaments(data);
+        setSelectedTournamentId((current) => current ?? pickInitialTournament(data, readStorage(STORAGE_TOURNAMENT), Date.now()));
       })
       .catch((error) => message.error(errorText(error, '加载赛事失败')))
       .finally(() => {
@@ -355,7 +365,7 @@ export default function MatchManagementPage() {
     return () => {
       cancelled = true;
     };
-  }, [token]);
+  }, [token, canUse]);
 
   useEffect(() => {
     if (!token || !selectedTournamentId) return;
@@ -403,73 +413,64 @@ export default function MatchManagementPage() {
   }, [token, selectedTournamentId, loadOverview]);
 
   const selectedTournament = useMemo(
-    () => tournaments.find((item) => item.id === selectedTournamentId),
+    () => tournaments.find((item) => item.id === selectedTournamentId) ?? null,
     [selectedTournamentId, tournaments],
   );
 
-  const projectOptions = useMemo(() => {
-    if (!overview) return [{ value: 'ALL', label: '全部项目' }];
-    return [
-      { value: 'ALL', label: '全部项目' },
-      ...overview.events.map((event) => ({
-        value: `E:${event.id}`,
-        label: `单项 · ${event.typeLabel}`,
-      })),
-      ...overview.teamCompetitions.map((competition) => ({
-        value: `T:${competition.id}`,
-        label: `团体 · ${competition.name}`,
-      })),
-    ];
-  }, [overview]);
-
-  const visibleMatches = useMemo(() => {
-    if (!overview) return [];
-    const search = keyword.trim().toLowerCase();
-    return overview.matches
-      .filter((match) => {
-        if (projectFilter.startsWith('E:') && match.eventId !== projectFilter.slice(2)) return false;
-        if (projectFilter.startsWith('T:') && match.teamCompetitionId !== projectFilter.slice(2)) return false;
-        if (statusFilter !== 'ALL' && match.status !== statusFilter) return false;
-        if (search) {
-          const haystack = [
-            sideName(match.side1),
-            sideName(match.side2),
-            sidePlayers(match.side1),
-            sidePlayers(match.side2),
-            match.team1Name,
-            match.team2Name,
-            match.referee?.username,
-            match.venue?.name,
-            match.stageLabel,
-            match.itemTypeLabel,
-            match.eventTypeLabel,
-          ]
-            .filter(Boolean)
-            .join(' ')
-            .toLowerCase();
-          if (!haystack.includes(search)) return false;
-        }
-        return true;
-      })
-      .sort((a, b) => {
-        const aTime = a.scheduledAt ? new Date(a.scheduledAt).getTime() : Number.MAX_SAFE_INTEGER;
-        const bTime = b.scheduledAt ? new Date(b.scheduledAt).getTime() : Number.MAX_SAFE_INTEGER;
-        return aTime - bTime || a.stageOrder - b.stageOrder || a.matchNo - b.matchNo;
-      });
-  }, [overview, projectFilter, statusFilter, keyword]);
-
-  const handleTournamentChange = useCallback((value: string) => {
+  const selectTournament = useCallback((value: string | null) => {
     requestIdRef.current += 1;
     setSelectedTournamentId(value);
+    writeStorage(STORAGE_TOURNAMENT, value);
     setOverview(null);
-    setEditing(null);
-    setProjectFilter('ALL');
-    setStatusFilter('ALL');
-    setKeyword('');
+    setEditingId(null);
+    setFilters(EMPTY_FILTERS);
   }, []);
 
+  const changeViewMode = useCallback((mode: ViewMode) => {
+    setViewMode(mode);
+    writeStorage(STORAGE_VIEW, mode);
+  }, []);
+
+  const matches = useMemo(() => overview?.matches ?? [], [overview]);
+  const counts = useMemo(() => statusTabCounts(matches, now), [matches, now]);
+  const visibleMatches = useMemo(
+    () => filterMatches(matches, filters, now).sort(compareMatches) as MatchView[],
+    [matches, filters, now],
+  );
+  const board = useMemo(() => buildCourtBoard(visibleMatches, overview?.venues ?? []), [visibleMatches, overview]);
+  const editing = useMemo(() => matches.find((match) => match.id === editingId) ?? null, [matches, editingId]);
+  const projectOf = useCallback((match: { id: string }) => {
+    const full = matches.find((item) => item.id === match.id);
+    return full ? projectLabel(full, overview) : '';
+  }, [matches, overview]);
+
+  const projectOptions = useMemo(() => [
+    ...(overview?.events ?? []).map((event) => ({ value: `E:${event.id}`, label: event.typeLabel })),
+    ...(overview?.teamCompetitions ?? []).map((competition) => ({ value: `T:${competition.id}`, label: `团体 · ${competition.name}` })),
+  ], [overview]);
+  const venueOptions = useMemo(() => [
+    ...(overview?.venues ?? []).map((venue) => ({ value: venue.id, label: `${venue.name}${venue.isActive ? '' : '（停用）'}` })),
+    { value: NONE, label: '待排场地' },
+  ], [overview]);
+  const refereeOptions = useMemo(() => {
+    const byId = new Map<string, string>();
+    for (const referee of overview?.referees ?? []) byId.set(referee.id, referee.username);
+    for (const match of matches) if (match.referee) byId.set(match.referee.id, match.referee.username);
+    return [
+      ...[...byId.entries()].sort((a, b) => a[1].localeCompare(b[1], 'zh-CN')).map(([value, label]) => ({ value, label })),
+      { value: NONE, label: '未分配' },
+    ];
+  }, [overview, matches]);
+  const dateOptions = useMemo(() => {
+    const days = [...new Set(matches.map((match) => matchDateKey(match)).filter((day): day is string => Boolean(day)))].sort();
+    return [
+      ...days.map((day) => ({ value: day, label: dayjs(day).format('MM-DD ddd') })),
+      { value: NONE, label: '待排时间' },
+    ];
+  }, [matches]);
+
   const handleSaved = useCallback(async () => {
-    setEditing(null);
+    setEditingId(null);
     await loadOverview();
   }, [loadOverview]);
 
@@ -477,15 +478,16 @@ export default function MatchManagementPage() {
    * 解除单场比赛的裁判接手：只把这一场改回「未分配」，裁判端立刻失去记分权限。
    * 进行中的比赛先过一道红色二次确认，后端也要求 force 才放行。
    */
-  const releaseReferee = useCallback(async (match: MatchView) => {
-    if (!token) return false;
+  const releaseReferee = useCallback(async (matchId: string) => {
+    const match = matches.find((item) => item.id === matchId);
+    if (!token || !match) return false;
     const live = match.status === 'LIVE';
     const refereeName = match.referee?.username ?? '该裁判';
     const confirmed = await new Promise<boolean>((resolve) => {
       Modal.confirm({
         title: live ? '比赛正在进行，确认解除裁判？' : '解除裁判接手？',
         content: live
-          ? `${refereeName} 正在记分（${scoreDisplay(match)}）。解除后该裁判会立即失去本场记分权限并被移出记分页，已录入的比分保留，本场回到「未分配」。`
+          ? `${refereeName} 正在记分（${scoreText(match)}）。解除后该裁判会立即失去本场记分权限并被移出记分页，已录入的比分保留，本场回到「未分配」。`
           : `解除后 ${refereeName} 不再执裁本场，比赛回到「未分配」，其他裁判可以重新接手。`,
         okText: live ? '确认解除' : '解除',
         okButtonProps: live ? { danger: true } : undefined,
@@ -511,7 +513,15 @@ export default function MatchManagementPage() {
     } finally {
       setReleasingId(null);
     }
-  }, [token, loadOverview]);
+  }, [token, matches, loadOverview]);
+
+  /** 跨赛事搜索点了一场：切到那个赛事（数据加载完抽屉自动打开这一场）。 */
+  const openFromSearch = useCallback(({ tournamentId, matchId }: { tournamentId: string; matchId: string }) => {
+    setSearchOpen(false);
+    if (tournamentId !== selectedTournamentId) selectTournament(tournamentId);
+    setFilters(EMPTY_FILTERS);
+    setEditingId(matchId);
+  }, [selectedTournamentId, selectTournament]);
 
   if (!access.ready) {
     return (
@@ -521,110 +531,78 @@ export default function MatchManagementPage() {
     );
   }
 
-  if (access.role !== 'ROOT') {
+  if (!canUse) {
     return (
       <Result
         status="403"
         title="无权访问"
-        subTitle="裁判员对局管理仅超级管理员可用，其他角色不显示该入口。"
+        subTitle="你的账号没有「裁判员对局管理」权限，请联系超级管理员在用户管理里开通。"
       />
     );
   }
 
   return (
     <div>
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'flex-start',
-          gap: 12,
-          flexWrap: 'wrap',
-        }}
-      >
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
         <div>
           <Title level={3} style={{ margin: 0 }}>裁判员对局管理</Title>
           <Text type="secondary">
-            先选择赛事，再按项目查看完整对阵表、比赛时间、比分和结束状态；所有修改仅超级管理员可执行，并会实时联动公开赛程、现场大屏与裁判端。
+            {isRoot ? '查看和处理所有赛事的对局' : '查看和处理你创建的赛事的对局'}：时间、场地、裁判、比分、结束与重开，改动实时同步到公开赛程、现场大屏和裁判端。
           </Text>
         </div>
         <Space wrap>
-          <Tag color="red">超级管理员专属</Tag>
-          <Button
-            href={selectedTournamentId ? `/competitions/${selectedTournamentId}/brackets` : undefined}
-            target="_blank"
-            disabled={!selectedTournamentId}
-          >
+          <Button icon={<SearchOutlined />} onClick={() => setSearchOpen(true)}>跨赛事搜选手</Button>
+          <Button href={selectedTournamentId ? `/competitions/${selectedTournamentId}/brackets` : undefined} target="_blank" disabled={!selectedTournamentId}>
             公开签表
           </Button>
-          <Button
-            href={selectedTournamentId ? `/live-screen/${selectedTournamentId}` : undefined}
-            target="_blank"
-            disabled={!selectedTournamentId}
-          >
+          <Button href={selectedTournamentId ? `/live-screen/${selectedTournamentId}` : undefined} target="_blank" disabled={!selectedTournamentId}>
             现场大屏
           </Button>
-          <Button
-            icon={<ReloadOutlined />}
-            onClick={() => void loadOverview()}
-            loading={loading}
-            disabled={!selectedTournamentId}
-          >
+          <Button icon={<ReloadOutlined />} onClick={() => void loadOverview()} loading={loading} disabled={!selectedTournamentId}>
             刷新
           </Button>
         </Space>
       </div>
 
-      <Card style={{ marginTop: 16 }}>
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
-          <Space wrap align="center">
-            <Text strong>选择赛事</Text>
-            <Select
-              style={{ width: 'min(420px, 72vw)' }}
-              placeholder="请选择赛事"
-              value={selectedTournamentId || undefined}
-              options={tournaments.map((item) => ({
-                value: item.id,
-                label: item.name,
-              }))}
-              onChange={handleTournamentChange}
-              loading={tournamentsLoading}
-              showSearch
-              optionFilterProp="label"
-            />
-            {selectedTournament?.isArchived ? <Tag>已归档</Tag> : null}
-            {overview ? (
-              <Tag color="blue">
-                {TOURNAMENT_STATUS_LABELS[overview.tournament.status] ?? overview.tournament.status}
-              </Tag>
-            ) : null}
-          </Space>
+      <Card style={{ marginTop: 16 }} styles={{ body: { padding: '12px 16px' } }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
+          <Text strong>赛事</Text>
+          <TournamentPicker
+            tournaments={tournaments}
+            value={selectedTournamentId}
+            loading={tournamentsLoading}
+            showOwner={isRoot}
+            now={now}
+            onChange={selectTournament}
+          />
+          {selectedTournament ? <TournamentStatusTag tournament={selectedTournament} /> : null}
+          {selectedTournamentId ? (
+            <Button type="link" icon={<UnorderedListOutlined />} onClick={() => selectTournament(null)} style={{ paddingInline: 0 }}>
+              全部赛事
+            </Button>
+          ) : null}
           {overview ? (
-            <Space wrap size={16} style={{ marginLeft: 'auto' }}>
+            <Space wrap size={14} style={{ marginLeft: 'auto' }}>
+              <Text type="secondary"><TrophyOutlined /> 单项 {overview.events.length}</Text>
+              <Text type="secondary"><TeamOutlined /> 团体 {overview.teamCompetitions.length}</Text>
               <Text type="secondary">
-                <TrophyOutlined /> 单项 {overview.events.length} 个
+                {dayjs(overview.tournament.startDate).format('YYYY-MM-DD')} ~ {dayjs(overview.tournament.endDate).format('MM-DD')}
               </Text>
-              <Text type="secondary">
-                <TeamOutlined /> 团体赛 {overview.teamCompetitions.length} 个
-              </Text>
-              <Text type="secondary">
-                {dayjs(overview.tournament.startDate).format('YYYY-MM-DD')} ~ {dayjs(overview.tournament.endDate).format('YYYY-MM-DD')}
-              </Text>
-              {overview.tournament.location ? (
-                <Text type="secondary">{overview.tournament.location}</Text>
-              ) : null}
+              {overview.tournament.location ? <Text type="secondary">{overview.tournament.location}</Text> : null}
+              {isRoot && selectedTournament?.owner ? <Text type="secondary">创建账号 {selectedTournament.owner}</Text> : null}
             </Space>
           ) : null}
         </div>
       </Card>
 
       {!selectedTournamentId ? (
-        <Card style={{ marginTop: 16 }}>
-          <Empty
-            image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description="请先选择赛事，随后查看该赛事的对阵表、时间、比分与结束状态"
-          />
-        </Card>
+        <TournamentDirectory
+          tournaments={tournaments}
+          loading={tournamentsLoading}
+          showOwner={isRoot}
+          now={now}
+          onPick={selectTournament}
+        />
       ) : loading && !overview ? (
         <div style={{ padding: 64, textAlign: 'center' }}>
           <Spin size="large" />
@@ -635,90 +613,42 @@ export default function MatchManagementPage() {
         </Card>
       ) : (
         <>
-          <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-            <MetricCard title="总场次" value={overview.summary.total} />
-            <MetricCard title="已结束" value={overview.summary.completed} accent="#2563eb" />
-            <MetricCard title="进行中" value={overview.summary.live} accent="#dc2626" />
-            <MetricCard title="未开始" value={overview.summary.pending} accent="#d97706" />
-            <MetricCard title="待排时间" value={overview.summary.unscheduled} accent="#7c3aed" />
-            <MetricCard title="当前筛选" value={visibleMatches.length} accent="#0f766e" />
-          </div>
+          <MatchToolbar
+            counts={counts}
+            filters={filters}
+            onChange={setFilters}
+            projectOptions={projectOptions}
+            venueOptions={venueOptions}
+            refereeOptions={refereeOptions}
+            dateOptions={dateOptions}
+            viewMode={viewMode}
+            onViewModeChange={changeViewMode}
+            shown={visibleMatches.length}
+          />
 
-          <Card style={{ marginTop: 16 }}>
-            <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-              <Space wrap>
-                <Select
-                  style={{ width: 220 }}
-                  value={projectFilter}
-                  options={projectOptions}
-                  onChange={setProjectFilter}
-                />
-                <Select
-                  style={{ width: 140 }}
-                  value={statusFilter}
-                  options={[
-                    { value: 'ALL', label: '全部状态' },
-                    { value: 'PENDING', label: '未开始' },
-                    { value: 'LIVE', label: '进行中' },
-                    { value: 'COMPLETED', label: '已结束' },
-                    { value: 'CANCELLED', label: '已取消' },
-                  ]}
-                  onChange={setStatusFilter}
-                />
-                <Input
-                  allowClear
-                  prefix={<SearchOutlined />}
-                  placeholder="搜索选手 / 队伍 / 裁判 / 场地"
-                  style={{ width: 260 }}
-                  value={keyword}
-                  onChange={(event) => setKeyword(event.target.value)}
-                />
-              </Space>
-              <Space wrap>
-                <Text type="secondary">
-                  显示 {visibleMatches.length} / {overview.matches.length} 场
-                </Text>
-                <Segmented
-                  value={viewMode}
-                  onChange={(value) => setViewMode(value as 'bracket' | 'list')}
-                  options={[
-                    { value: 'bracket', label: '对阵表' },
-                    { value: 'list', label: '列表' },
-                  ]}
-                />
-              </Space>
-            </div>
-          </Card>
-
-          {!overview.matches.length ? (
+          {!matches.length ? (
             <Card style={{ marginTop: 16 }}>
-              <Empty
-                image={Empty.PRESENTED_IMAGE_SIMPLE}
-                description="该赛事暂无对局，请先完成抽签编排或团体对阵生成"
-              />
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="该赛事暂无对局，请先完成抽签编排或团体对阵生成" />
             </Card>
           ) : !visibleMatches.length ? (
             <Card style={{ marginTop: 16 }}>
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有符合筛选条件的对局" />
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有符合筛选条件的场次">
+                <Button onClick={() => setFilters(EMPTY_FILTERS)}>清空筛选</Button>
+              </Empty>
             </Card>
-          ) : viewMode === 'bracket' ? (
-            <div style={{ marginTop: 16 }}>
-              <BracketSections
-                overview={overview}
-                matches={visibleMatches}
-                onEdit={setEditing}
-              />
-            </div>
+          ) : viewMode === 'court' ? (
+            <CourtBoard board={board} now={now} projectOf={projectOf} onOpen={setEditingId} />
+          ) : viewMode === 'list' ? (
+            <MatchList
+              matches={visibleMatches}
+              now={now}
+              projectOf={projectOf}
+              onOpen={setEditingId}
+              onRelease={(id) => void releaseReferee(id)}
+              releasingId={releasingId}
+            />
           ) : (
-            <Card style={{ marginTop: 16 }}>
-              <MatchTable
-                overview={overview}
-                matches={visibleMatches}
-                onEdit={setEditing}
-                onRelease={releaseReferee}
-                releasingId={releasingId}
-              />
-            </Card>
+            <BracketSections overview={overview} matches={visibleMatches} now={now} onEdit={setEditingId} />
           )}
         </>
       )}
@@ -728,120 +658,92 @@ export default function MatchManagementPage() {
         match={editing}
         overview={overview}
         token={token}
-        onClose={() => setEditing(null)}
+        now={now}
+        onClose={() => setEditingId(null)}
         onSaved={handleSaved}
         onRelease={releaseReferee}
         releasingId={releasingId}
       />
+
+      <GlobalMatchSearch open={searchOpen} token={token} onClose={() => setSearchOpen(false)} onPick={openFromSearch} />
     </div>
   );
 }
 
-function MetricCard({ title, value, accent }: { title: string; value: number; accent?: string }) {
-  return (
-    <Card size="small" styles={{ body: { padding: '12px 14px' } }}>
-      <div style={{ fontSize: 12, color: '#64748b', fontWeight: 600 }}>{title}</div>
-      <div style={{ marginTop: 4, fontSize: 26, lineHeight: 1.15, fontWeight: 800, color: accent ?? '#0f172a' }}>
-        {value}
-      </div>
-    </Card>
-  );
-}
-
+/**
+ * 对阵表视图：每个单项 / 团体赛一个可折叠面板；面板里每个阶段（小组、轮次）一张卡，自动换行排，不再横向拖。
+ * 默认展开前两个。
+ */
 function BracketSections({
   overview,
   matches,
+  now,
   onEdit,
 }: {
   overview: Overview;
   matches: MatchView[];
-  onEdit: (match: MatchView) => void;
+  now: number;
+  onEdit: (matchId: string) => void;
 }) {
-  const sections: React.ReactNode[] = [];
-
+  const items: Array<{ key: string; label: ReactNode; children: ReactNode }> = [];
   for (const event of overview.events) {
     const eventMatches = matches.filter((match) => match.eventId === event.id);
     if (!eventMatches.length) continue;
-    sections.push(
-      <Card
-        key={`event-${event.id}`}
-        size="small"
-        style={{ marginBottom: 16 }}
-        title={
-          <Space wrap size={8}>
-            <Tag color="blue" style={{ marginInlineEnd: 0 }}>{event.typeLabel}</Tag>
-            <Text>{event.formatLabel}</Text>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              {event.matchCount} 场 · 已结束 {event.completedCount}
-            </Text>
-          </Space>
-        }
-      >
-        <StageBoard matches={eventMatches} onEdit={onEdit} />
-      </Card>,
-    );
+    items.push({
+      key: `event-${event.id}`,
+      label: (
+        <Space wrap size={8}>
+          <Tag color="blue" style={{ marginInlineEnd: 0 }}>{event.typeLabel}</Tag>
+          <Text>{event.formatLabel}</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            显示 {eventMatches.length} 场 · 全部 {event.matchCount} 场 · 已结束 {event.completedCount}
+          </Text>
+        </Space>
+      ),
+      children: <StageBoard matches={eventMatches} now={now} onEdit={onEdit} />,
+    });
   }
-
   for (const competition of overview.teamCompetitions) {
-    const competitionMatches = matches.filter(
-      (match) => match.teamCompetitionId === competition.id,
-    );
+    const competitionMatches = matches.filter((match) => match.teamCompetitionId === competition.id);
     if (!competitionMatches.length) continue;
-    sections.push(
-      <TeamBoard
-        key={`team-${competition.id}`}
-        competition={competition}
-        matches={competitionMatches}
-        onEdit={onEdit}
-      />,
-    );
+    items.push({
+      key: `team-${competition.id}`,
+      label: (
+        <Space wrap size={8}>
+          <Tag color="purple" style={{ marginInlineEnd: 0 }}>团体赛</Tag>
+          <Text>{competition.name}</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {competition.formatLabel} · {competition.matchCount} 个子项 · 已结束 {competition.completedCount}
+          </Text>
+        </Space>
+      ),
+      children: <TeamBoard competition={competition} matches={competitionMatches} now={now} onEdit={onEdit} />,
+    });
   }
-
-  return <>{sections}</>;
+  return (
+    <Collapse
+      style={{ marginTop: 16, background: '#fff' }}
+      defaultActiveKey={items.slice(0, 2).map((item) => item.key)}
+      items={items}
+    />
+  );
 }
 
-function StageBoard({
-  matches,
-  onEdit,
-}: {
-  matches: MatchView[];
-  onEdit: (match: MatchView) => void;
-}) {
+function StageBoard({ matches, now, onEdit }: { matches: MatchView[]; now: number; onEdit: (matchId: string) => void }) {
   const stages = useMemo(() => groupByStage(matches), [matches]);
   return (
-    <div
-      style={{
-        display: 'grid',
-        gridAutoFlow: 'column',
-        gridAutoColumns: 'minmax(278px, 1fr)',
-        gap: 12,
-        overflowX: 'auto',
-        paddingBottom: 4,
-      }}
-    >
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
       {stages.map((stage) => {
         const completed = stage.matches.filter((match) => match.status === 'COMPLETED').length;
         return (
-          <div key={stage.key} style={{ minWidth: 0 }}>
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: 8,
-                marginBottom: 8,
-                padding: '6px 10px',
-                borderRadius: 8,
-                background: '#f1f5fd',
-                border: '1px solid #dbe7fb',
-              }}
-            >
+          <div key={stage.key} style={{ border: '1px solid #dbe7fb', borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '6px 10px', background: '#f1f5fd' }}>
               <Text strong style={{ color: '#03205c' }}>{stage.label}</Text>
               <Text type="secondary" style={{ fontSize: 12 }}>{completed}/{stage.matches.length}</Text>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {stage.matches.map((match) => (
-                <MatchCard key={match.id} match={match} onEdit={onEdit} />
+            <div>
+              {stage.matches.map((match, index) => (
+                <MatchRow key={match.id} match={match} now={now} first={index === 0} onEdit={onEdit} />
               ))}
             </div>
           </div>
@@ -851,82 +753,58 @@ function StageBoard({
   );
 }
 
-function MatchCard({ match, onEdit }: { match: MatchView; onEdit: (match: MatchView) => void }) {
-  const meta = statusMeta(match.status);
+/** 对阵表里的一场：一行时间场地状态，两行双方和每局比分。点了打开管理。 */
+function MatchRow({ match, now, first, onEdit }: { match: MatchView; now: number; first: boolean; onEdit: (matchId: string) => void }) {
   const live = match.status === 'LIVE';
-  const secondLine = sidePlayers(match.side1);
-  const thirdLine = sidePlayers(match.side2);
-
+  const games = match.games.length ? match.games : null;
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={() => onEdit(match)}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault();
-          onEdit(match);
-        }
-      }}
-      style={{
-        cursor: 'pointer',
-        borderRadius: 10,
-        border: `1px solid ${live ? '#fca5a5' : '#e2e8f0'}`,
-        background: live ? '#fff7f6' : '#fff',
-        padding: '10px 12px',
-        boxShadow: '0 1px 2px rgba(15, 42, 90, .05)',
-        transition: 'box-shadow .15s ease, transform .15s ease',
-      }}
+    <button
+      type="button"
+      onClick={() => onEdit(match.id)}
       title="点击管理本场"
+      style={{
+        display: 'block',
+        width: '100%',
+        textAlign: 'left',
+        border: 'none',
+        borderTop: first ? 'none' : '1px solid #f1f5f9',
+        background: live ? '#fff7f6' : '#fff',
+        padding: '7px 10px',
+        cursor: 'pointer',
+      }}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-        <Text strong style={{ fontSize: 12, color: '#475569' }}>第 {match.matchNo} 场</Text>
-        <Tag color={meta.color} style={{ marginInlineEnd: 0 }}>{meta.label}</Tag>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', fontSize: 11, color: '#64748b' }}>
+        <span style={{ fontWeight: 700, color: '#475569' }}>第 {match.matchNo} 场</span>
+        {match.code ? <span style={{ color: '#0f4c9c', fontWeight: 700 }}>{match.code}</span> : null}
+        <span>{match.scheduledAt ? dayjs(match.scheduledAt).format('MM-DD HH:mm') : '待排时间'}</span>
+        <span>{match.venue?.name ?? '待排场地'}</span>
+        <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 4 }}>
+          <AttentionTags match={match} now={now} />
+          <StatusTag status={match.status} />
+        </span>
       </div>
-
-      <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
-        <SideLine name={sideName(match.side1)} sub={secondLine} winner={match.winnerSide === 1} />
-        <SideLine name={sideName(match.side2)} sub={thirdLine} winner={match.winnerSide === 2} />
-      </div>
-
-      <div style={{ marginTop: 8, display: 'flex', alignItems: 'baseline', gap: 8 }}>
-        <Text strong style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 16 }}>
-          {scoreDisplay(match)}
-        </Text>
-        {match.forfeitedSide !== null ? <Tag color="red">弃权/退赛</Tag> : null}
-      </div>
-
-      <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: '3px 10px' }}>
-        <Text type="secondary" style={{ fontSize: 11 }}>
-          <ClockCircleOutlined /> {formatDateTime(match.scheduledAt)}
-        </Text>
-        <Text type="secondary" style={{ fontSize: 11 }}>场地 {match.venue?.name ?? '待定'}</Text>
-        <Text type="secondary" style={{ fontSize: 11 }}>裁判 {match.referee?.username ?? '未分配'}</Text>
-      </div>
-    </div>
-  );
-}
-
-function SideLine({ name, sub, winner }: { name: string; sub?: string; winner: boolean }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-      <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-        <span style={{ fontWeight: winner ? 800 : 600, color: winner ? '#03205c' : '#334155' }}>{name}</span>
-        {sub ? <span style={{ marginLeft: 6, fontSize: 11, color: '#94a3b8' }}>{sub}</span> : null}
-      </span>
-      {winner ? <CheckCircleFilled style={{ color: '#f59e0b', flexShrink: 0 }} /> : null}
-    </div>
+      {([1, 2] as const).map((side) => (
+        <div key={side} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, alignItems: 'center', fontSize: 13 }}>
+          <SideName match={match} side={side} />
+          <span style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 700, color: '#334155' }}>
+            {games ? games.map((game) => (side === 1 ? game.side1Score : game.side2Score)).join(' ') : ''}
+          </span>
+        </div>
+      ))}
+    </button>
   );
 }
 
 function TeamBoard({
   competition,
   matches,
+  now,
   onEdit,
 }: {
   competition: TeamCompetitionSummary;
   matches: MatchView[];
-  onEdit: (match: MatchView) => void;
+  now: number;
+  onEdit: (matchId: string) => void;
 }) {
   const encounters = competition.teamMatches
     .map((encounter) => ({
@@ -936,234 +814,39 @@ function TeamBoard({
     .filter((encounter) => encounter.children.length > 0);
 
   return (
-    <Card
-      size="small"
-      style={{ marginBottom: 16 }}
-      title={
-        <Space wrap size={8}>
-          <Tag color="purple" style={{ marginInlineEnd: 0 }}>团体赛</Tag>
-          <Text>{competition.name}</Text>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            {competition.formatLabel} · {competition.matchCount} 个子项 · 已结束 {competition.completedCount}
-          </Text>
-        </Space>
-      }
-    >
-      <div className="grid gap-3 xl:grid-cols-2">
-        {encounters.map((encounter) => {
-          const meta = statusMeta(encounter.status);
-          return (
-            <div
-              key={encounter.id}
-              style={{
-                border: '1px solid #e2e8f0',
-                borderRadius: 10,
-                overflow: 'hidden',
-                background: '#fff',
-              }}
-            >
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: 8,
-                  padding: '9px 12px',
-                  background: '#f8fafc',
-                  borderBottom: '1px solid #eef2f7',
-                  flexWrap: 'wrap',
-                }}
-              >
-                <Space wrap size={6}>
-                  <Text strong>{encounter.team1?.name ?? '待定'}</Text>
-                  <Text strong style={{ color: '#0f4c9c' }}>
-                    {encounter.team1Wins} : {encounter.team2Wins}
-                  </Text>
-                  <Text strong>{encounter.team2?.name ?? '待定'}</Text>
-                </Space>
-                <Space wrap size={6}>
-                  <Tag color={meta.color} style={{ marginInlineEnd: 0 }}>{meta.label}</Tag>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    {encounter.groupName ? `${encounter.groupName} · ` : ''}
-                    {encounter.round || `第 ${encounter.roundNo} 轮`} 第 {encounter.matchNo} 场
-                  </Text>
-                </Space>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column' }}>
-                {encounter.children.map((match, index) => {
-                  const childMeta = statusMeta(match.status);
-                  return (
-                    <button
-                      key={match.id}
-                      type="button"
-                      onClick={() => onEdit(match)}
-                      style={{
-                        textAlign: 'left',
-                        border: 'none',
-                        borderTop: index === 0 ? 'none' : '1px solid #f1f5f9',
-                        background: 'transparent',
-                        padding: '9px 12px',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                        <Text strong style={{ fontSize: 12 }}>
-                          {match.itemTypeLabel ?? '子项'} · 第 {match.matchNo} 项
-                        </Text>
-                        <Tag color={childMeta.color} style={{ marginInlineEnd: 0 }}>{childMeta.label}</Tag>
-                      </div>
-                      <div style={{ marginTop: 4, display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                        <Text style={{ fontSize: 13 }}>
-                          {sideName(match.side1)} <Text type="secondary">vs</Text> {sideName(match.side2)}
-                        </Text>
-                        <Text strong style={{ fontFamily: 'ui-monospace, monospace' }}>
-                          {scoreDisplay(match)}
-                        </Text>
-                      </div>
-                      <div style={{ marginTop: 3, display: 'flex', flexWrap: 'wrap', gap: '2px 10px' }}>
-                        <Text type="secondary" style={{ fontSize: 11 }}>
-                          {formatDateTime(match.scheduledAt)}
-                        </Text>
-                        <Text type="secondary" style={{ fontSize: 11 }}>
-                          场地 {match.venue?.name ?? '待定'}
-                        </Text>
-                        <Text type="secondary" style={{ fontSize: 11 }}>
-                          裁判 {match.referee?.username ?? '未分配'}
-                        </Text>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </Card>
-  );
-}
-
-function MatchTable({
-  overview,
-  matches,
-  onEdit,
-  onRelease,
-  releasingId,
-}: {
-  overview: Overview;
-  matches: MatchView[];
-  onEdit: (match: MatchView) => void;
-  onRelease: (match: MatchView) => Promise<boolean>;
-  releasingId: string | null;
-}) {
-  const columns: TableColumnsType<MatchView> = [
-    {
-      title: '时间',
-      width: 120,
-      render: (_, match) => <Text style={{ fontSize: 12 }}>{formatFullDateTime(match.scheduledAt)}</Text>,
-    },
-    {
-      title: '项目',
-      width: 230,
-      render: (_, match) => <Text style={{ fontSize: 12 }}>{projectLabel(match, overview)}</Text>,
-    },
-    {
-      title: '阶段',
-      width: 110,
-      render: (_, match) => <Text style={{ fontSize: 12 }}>{match.stageLabel}</Text>,
-    },
-    {
-      title: '场次',
-      width: 76,
-      render: (_, match) => `第 ${match.matchNo} 场`,
-    },
-    {
-      title: '对阵',
-      width: 260,
-      render: (_, match) => (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <Text style={{ fontSize: 12 }}>{matchVersus(match)}</Text>
-          {match.teamMatchId ? (
-            <Text type="secondary" style={{ fontSize: 11 }}>
-              {sideName(match.side1)} vs {sideName(match.side2)}
-            </Text>
-          ) : null}
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 12 }}>
+      {encounters.map((encounter) => (
+        <div key={encounter.id} style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '8px 10px', background: '#f8fafc', borderBottom: '1px solid #eef2f7', flexWrap: 'wrap' }}>
+            <Space wrap size={6}>
+              <Text strong>{encounter.team1?.name ?? '待定'}</Text>
+              <Text strong style={{ color: '#0f4c9c' }}>{encounter.team1Wins} : {encounter.team2Wins}</Text>
+              <Text strong>{encounter.team2?.name ?? '待定'}</Text>
+            </Space>
+            <Space wrap size={6}>
+              <StatusTag status={encounter.status} />
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {encounter.groupName ? `${encounter.groupName} · ` : ''}
+                {encounter.round || `第 ${encounter.roundNo} 轮`} 第 {encounter.matchNo} 场
+              </Text>
+            </Space>
+          </div>
+          {encounter.children.map((match, index) => (
+            <MatchRow key={match.id} match={match} now={now} first={index === 0} onEdit={onEdit} />
+          ))}
         </div>
-      ),
-    },
-    {
-      title: '比分',
-      width: 130,
-      render: (_, match) => (
-        <Text strong style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12 }}>
-          {scoreDisplay(match)}
-        </Text>
-      ),
-    },
-    {
-      title: '状态',
-      width: 88,
-      render: (_, match) => {
-        const meta = statusMeta(match.status);
-        return <Tag color={meta.color}>{meta.label}</Tag>;
-      },
-    },
-    {
-      title: '场地',
-      width: 90,
-      render: (_, match) => match.venue?.name ?? '—',
-    },
-    {
-      title: '裁判',
-      width: 132,
-      render: (_, match) => (match.referee ? (
-        <Space size={2} wrap>
-          <Text style={{ fontSize: 12 }}>{match.referee.username}</Text>
-          {match.status !== 'COMPLETED' && match.status !== 'CANCELLED' ? (
-            <Button
-              type="link"
-              size="small"
-              danger
-              style={{ paddingInline: 0, height: 'auto' }}
-              loading={releasingId === match.id}
-              onClick={() => void onRelease(match)}
-            >
-              解除
-            </Button>
-          ) : null}
-        </Space>
-      ) : (
-        <Text type="secondary" style={{ fontSize: 12 }}>未分配</Text>
-      )),
-    },
-    {
-      title: '操作',
-      width: 86,
-      fixed: 'right',
-      render: (_, match) => (
-        <Button size="small" icon={<EditOutlined />} onClick={() => onEdit(match)}>
-          管理
-        </Button>
-      ),
-    },
-  ];
-
-  return (
-    <AntdTable
-      rowKey="id"
-      dataSource={matches}
-      columns={columns}
-      size="small"
-      scroll={{ x: 1500 }}
-      pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 场` }}
-    />
+      ))}
+    </div>
   );
 }
+
+type DrawerTab = 'info' | 'score' | 'status' | 'logs';
 
 function MatchManageDrawer({
   match,
   overview,
   token,
+  now,
   onClose,
   onSaved,
   onRelease,
@@ -1172,9 +855,10 @@ function MatchManageDrawer({
   match: MatchView | null;
   overview: Overview | null;
   token?: string;
+  now: number;
   onClose: () => void;
   onSaved: () => Promise<void> | void;
-  onRelease: (match: MatchView) => Promise<boolean>;
+  onRelease: (matchId: string) => Promise<boolean>;
   releasingId: string | null;
 }) {
   const [form] = Form.useForm();
@@ -1185,6 +869,10 @@ function MatchManageDrawer({
       const gameNo = index + 1;
       return existing.get(gameNo) ?? { gameNo, side1Score: 0, side2Score: 0, winnerSide: null };
     });
+  });
+  const [tab, setTab] = useState<DrawerTab>(() => {
+    if (match && matchAttention(match, Date.now()).includes('UNFINISHED')) return 'status';
+    return match && match.status !== 'PENDING' ? 'score' : 'info';
   });
   const [savingBasic, setSavingBasic] = useState(false);
   const [savingScore, setSavingScore] = useState(false);
@@ -1253,7 +941,7 @@ function MatchManageDrawer({
   /** 解除本场裁判接手，成功后关闭抽屉（列表会随 overview 刷新回到「未分配」）。 */
   async function handleRelease() {
     if (!match) return;
-    const done = await onRelease(match);
+    const done = await onRelease(match.id);
     if (done) onClose();
   }
 
@@ -1305,7 +993,7 @@ function MatchManageDrawer({
     }
   }
 
-  const meta = match ? statusMeta(match.status) : STATUS_META.PENDING;
+  const statusLabel = match ? STATUS_LABELS[match.status] ?? match.status : '';
   const canComplete = Boolean(
     match
     && match.status !== 'COMPLETED'
@@ -1322,253 +1010,231 @@ function MatchManageDrawer({
     && !match.isSecondStage
     && match.teamMatchStatus !== 'COMPLETED',
   );
+  // 管理员只能指派自己名下的裁判；当前裁判不在列表里（比如超级管理员指派的）时也要能显示名字。
+  const refereeOptions = useMemo(() => {
+    const options = (overview?.referees ?? []).map((referee) => ({
+      value: referee.id,
+      label: `${referee.username}（已裁 ${referee.refereedMatchesCount} 场）`,
+    }));
+    if (match?.referee && !options.some((option) => option.value === match.referee?.id)) {
+      options.push({ value: match.referee.id, label: `${match.referee.username}（当前）` });
+    }
+    return options;
+  }, [overview, match]);
+
+  const infoTab = match && overview ? (
+    <Form form={form} layout="vertical" requiredMark={false} initialValues={initialValues}>
+      <Form.Item name="scheduledAt" label="比赛时间">
+        <DatePicker showTime={{ format: 'HH:mm' }} format="YYYY-MM-DD HH:mm" style={{ width: '100%' }} allowClear placeholder="待排时间" />
+      </Form.Item>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Form.Item name="venueId" label="比赛场地">
+          <Select
+            allowClear
+            placeholder="待排场地"
+            options={(overview.venues ?? []).map((venue) => ({
+              value: venue.id,
+              label: `${venue.name}${venue.isActive ? '' : '（停用）'}`,
+              disabled: !venue.isActive,
+            }))}
+          />
+        </Form.Item>
+        <Form.Item name="durationMinutes" label="预估时长（分钟）" rules={[{ required: true, message: '请输入预估时长' }]}>
+          <InputNumber min={1} max={600} precision={0} style={{ width: '100%' }} />
+        </Form.Item>
+      </div>
+      <Form.Item name="refereeId" label="执裁裁判" extra={refereeOptions.length ? undefined : '你名下还没有裁判账号，可以在「用户管理」里添加。'}>
+        <Select allowClear showSearch optionFilterProp="label" placeholder="未分配" options={refereeOptions} />
+      </Form.Item>
+      {match.referee ? (
+        <div style={{ marginTop: -10, marginBottom: 12 }}>
+          {match.status === 'COMPLETED' ? (
+            <Text type="secondary" style={{ fontSize: 12 }}>已结束的比赛如需解除执裁，请先在「结束 · 重开」里重开本场。</Text>
+          ) : match.status === 'CANCELLED' ? (
+            <Text type="secondary" style={{ fontSize: 12 }}>已取消的比赛无需解除执裁。</Text>
+          ) : (
+            <Space size={8} wrap>
+              <Button size="small" danger loading={releasingId === match.id} onClick={() => void handleRelease()}>
+                解除裁判接手
+              </Button>
+              <Text type="secondary" style={{ fontSize: 12 }}>解除后本场回到「未分配」，该裁判立即失去记分权限。</Text>
+            </Space>
+          )}
+        </div>
+      ) : null}
+      <Form.Item name="scheduleLocked" valuePropName="checked" style={{ marginBottom: 4 }}>
+        <Checkbox>保留本次人工排程（自动排程时不挪动这一场）</Checkbox>
+      </Form.Item>
+      <Form.Item name="allowOutsideGroup" valuePropName="checked">
+        <Checkbox>允许本场临时超出组别规则（范围外场地或日期）</Checkbox>
+      </Form.Item>
+      {match.teamMatchId ? (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          title="团体赛子项联动"
+          description="修改时间或场地后，本场团体对阵的未开始子项会按顺序整场顺延，并同步到裁判端。"
+        />
+      ) : null}
+      <Text type="secondary" style={{ display: 'block', marginBottom: 12, fontSize: 12 }}>
+        时间与场地修改会立即生效，系统不会自动重排其他场次；如需整体冲突检测，请到「场地排程」处理。
+      </Text>
+      <Button type="primary" onClick={() => void saveBasic()} loading={savingBasic}>
+        保存时间 / 场地 / 裁判
+      </Button>
+    </Form>
+  ) : null;
+
+  const scoreTab = match ? (
+    <div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '64px 1fr 18px 1fr', gap: 8, fontSize: 12, color: '#64748b' }}>
+          <span />
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sideName(match.side1)}</span>
+          <span />
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sideName(match.side2)}</span>
+        </div>
+        {games.map((game) => (
+          <div key={game.gameNo} style={{ display: 'grid', gridTemplateColumns: '64px 1fr 18px 1fr', alignItems: 'center', gap: 8 }}>
+            <Text>第 {game.gameNo} 局</Text>
+            <InputNumber
+              min={0}
+              max={999}
+              precision={0}
+              value={game.side1Score}
+              onChange={(value) => setGames((current) => current.map((item) => (
+                item.gameNo === game.gameNo ? { ...item, side1Score: Math.max(0, Math.trunc(value ?? 0)) } : item
+              )))}
+              style={{ width: '100%' }}
+            />
+            <span style={{ textAlign: 'center', fontWeight: 800, color: '#94a3b8' }}>:</span>
+            <InputNumber
+              min={0}
+              max={999}
+              precision={0}
+              value={game.side2Score}
+              onChange={(value) => setGames((current) => current.map((item) => (
+                item.gameNo === game.gameNo ? { ...item, side2Score: Math.max(0, Math.trunc(value ?? 0)) } : item
+              )))}
+              style={{ width: '100%' }}
+            />
+          </div>
+        ))}
+      </div>
+      <Text type="secondary" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
+        保存后会按本场计分规则重新判定每局与整场胜负；未进行的后续局请保持 0:0。
+        {match.status === 'COMPLETED' ? ' 已结束场次可直接改分改判，胜方变化时下一轮签位会自动换成新胜方（保留原定时间场地）；下一轮已产生比分时不能改判。本场如有签字的电子比分单，改分后会标为作废（记录保留）。' : ''}
+      </Text>
+      <Button
+        style={{ marginTop: 12 }}
+        type="primary"
+        onClick={() => void saveScore()}
+        loading={savingScore}
+        disabled={!match.hasBothSides || match.forfeitedSide !== null || match.status === 'CANCELLED'}
+      >
+        保存比分
+      </Button>
+      {!match.hasBothSides ? (
+        <Text type="secondary" style={{ display: 'block', marginTop: 6, fontSize: 12 }}>
+          对阵双方尚未确定（轮空或等待晋级），暂不能录入比分。
+        </Text>
+      ) : null}
+    </div>
+  ) : null;
+
+  const statusTab = match ? (
+    <Space orientation="vertical" size={10} style={{ width: '100%' }}>
+      <Alert
+        type={match.forfeitedSide !== null ? 'warning' : 'info'}
+        showIcon
+        title={`当前状态：${statusLabel}`}
+        description={
+          match.forfeitedSide !== null
+            ? `本场由弃权/退赛判定：${match.forfeitReason ?? '未填写原因'}。此类赛果不能在此重开。`
+            : match.status === 'COMPLETED'
+              ? '本场已结束。可直接在「比分」里修改比分（胜方随比分改判），无需重开。'
+              : match.status === 'CANCELLED'
+                ? '本场已取消，不能在此修改赛果。'
+                : match.status === 'LIVE'
+                  ? '比赛进行中。已决出胜方时可直接结束；否则请先在「比分」里补录比分。'
+                  : '比赛尚未开始。录入能判定胜负的比分后，系统会自动结束并推进晋级。'
+        }
+      />
+      {canComplete ? (
+        <Popconfirm
+          title="结束本场？"
+          description="将按当前比分确认胜方并推进晋级；如后续场次已开赛，请先处理后续场次。"
+          okText="确认结束"
+          cancelText="取消"
+          onConfirm={() => void completeMatch()}
+        >
+          <Button type="primary" icon={<CheckCircleOutlined />} loading={statusBusy}>结束本场并推进晋级</Button>
+        </Popconfirm>
+      ) : null}
+      {canReopen ? (
+        <Popconfirm
+          title="重开本场？"
+          description="会清除本场胜方并撤销已推进到下一轮的签位；若后续轮次或团体后续子项已开赛，将被拒绝。本场如有胜方和裁判签字的电子比分单，会标为作废（记录保留）。"
+          okText="确认重开"
+          okButtonProps={{ danger: true }}
+          cancelText="取消"
+          onConfirm={() => void reopenMatch()}
+        >
+          <Button danger icon={<StopOutlined />} loading={statusBusy}>重开本场（改分后重新结束）</Button>
+        </Popconfirm>
+      ) : null}
+      {match.isSecondStage && match.status === 'COMPLETED' ? (
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          第二阶段场次的赛果需在第二阶段编排中调整，这里仅支持修改时间、场地、裁判与比分。
+        </Text>
+      ) : null}
+      <Text type="secondary" style={{ fontSize: 12 }}>
+        结束 / 重开会实时推送到公开对阵表、现场大屏与裁判端；其他裁判正在记分时请先确认现场状态。
+      </Text>
+    </Space>
+  ) : null;
 
   return (
     <Drawer
-      title={
-        match
-          ? match.teamMatchId
-            ? `管理对局 · ${match.itemTypeLabel ?? '团体子项'}`
-            : `管理对局 · 第 ${match.matchNo} 场`
-          : '管理对局'
-      }
+      title={match ? (match.teamMatchId ? `管理对局 · ${match.itemTypeLabel ?? '团体子项'}` : `管理对局 · 第 ${match.matchNo} 场`) : '管理对局'}
       open={Boolean(match)}
       onClose={onClose}
       size="min(640px, 100vw)"
       destroyOnHidden
-      extra={<Tag color="red">超级管理员</Tag>}
+      extra={match?.code ? <Tag color="blue">{match.code}</Tag> : null}
     >
       {match && overview ? (
         <div>
-          <div
-            style={{
-              borderRadius: 10,
-              border: '1px solid #e2e8f0',
-              background: '#f8fafc',
-              padding: '12px 14px',
-            }}
-          >
+          <div style={{ borderRadius: 10, border: '1px solid #e2e8f0', background: '#f8fafc', padding: '12px 14px' }}>
             <Text type="secondary" style={{ fontSize: 12 }}>
-              {projectLabel(match, overview)} · {match.stageLabel}
+              {projectLabel(match, overview)} · {match.stageLabel} · {match.scheduledAt ? dayjs(match.scheduledAt).format('MM-DD HH:mm') : '待排时间'} · {match.venue?.name ?? '待排场地'}
             </Text>
-            <div style={{ marginTop: 6, fontSize: 18, fontWeight: 800, color: '#03205c' }}>
-              {matchVersus(match)}
-            </div>
+            <div style={{ marginTop: 6, fontSize: 18, fontWeight: 800, color: '#03205c' }}>{matchVersus(match)}</div>
             {match.teamMatchId ? (
               <Text type="secondary" style={{ display: 'block', marginTop: 2, fontSize: 12 }}>
                 {sideName(match.side1)} vs {sideName(match.side2)}
               </Text>
             ) : null}
             <Space wrap size={8} style={{ marginTop: 8 }}>
-              <Tag color={meta.color} style={{ marginInlineEnd: 0 }}>{meta.label}</Tag>
-              <Text strong style={{ fontFamily: 'ui-monospace, monospace' }}>
-                {scoreDisplay(match)}
-              </Text>
+              <StatusTag status={match.status} />
+              <AttentionTags match={match} now={now} />
+              <Text strong style={{ fontFamily: 'ui-monospace, monospace' }}>{scoreText(match)}</Text>
               {match.winnerSide ? <Text type="secondary">胜方：{sideName(match.winnerSide === 1 ? match.side1 : match.side2)}</Text> : null}
+              <Text type="secondary">裁判：{match.referee?.username ?? '未分配'}</Text>
             </Space>
           </div>
-
-          <Divider titlePlacement="left" style={{ margin: '18px 0 12px' }}>时间 / 场地 / 裁判</Divider>
-          <Form form={form} layout="vertical" requiredMark={false} initialValues={initialValues}>
-            <Form.Item name="scheduleLocked" valuePropName="checked"><Checkbox>保留本次人工排程</Checkbox></Form.Item>
-            <Form.Item name="allowOutsideGroup" valuePropName="checked"><Checkbox>允许本场临时超出组别规则（范围外场地或日期）</Checkbox></Form.Item>
-            <Form.Item name="scheduledAt" label="比赛时间">
-              <DatePicker
-                showTime={{ format: 'HH:mm' }}
-                format="YYYY-MM-DD HH:mm"
-                style={{ width: '100%' }}
-                allowClear
-                placeholder="待排时间"
-              />
-            </Form.Item>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Form.Item name="venueId" label="比赛场地">
-                <Select
-                  allowClear
-                  placeholder="待排场地"
-                  options={(overview.venues ?? []).map((venue) => ({
-                    value: venue.id,
-                    label: `${venue.name}${venue.isActive ? '' : '（停用）'}`,
-                    disabled: !venue.isActive,
-                  }))}
-                />
-              </Form.Item>
-              <Form.Item
-                name="durationMinutes"
-                label="预估时长（分钟）"
-                rules={[{ required: true, message: '请输入预估时长' }]}
-              >
-                <InputNumber min={1} max={600} precision={0} style={{ width: '100%' }} />
-              </Form.Item>
-            </div>
-            <Form.Item name="refereeId" label="执裁裁判">
-              <Select
-                allowClear
-                showSearch
-                optionFilterProp="label"
-                placeholder="未分配"
-                options={overview.referees.map((referee) => ({
-                  value: referee.id,
-                  label: `${referee.username}（已裁 ${referee.refereedMatchesCount} 场）`,
-                }))}
-              />
-            </Form.Item>
-            {match.referee ? (
-              <div style={{ marginTop: -10, marginBottom: 12 }}>
-                {match.status === 'COMPLETED' ? (
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    已结束的比赛如需解除执裁，请先「重开本场」。
-                  </Text>
-                ) : match.status === 'CANCELLED' ? (
-                  <Text type="secondary" style={{ fontSize: 12 }}>已取消的比赛无需解除执裁。</Text>
-                ) : (
-                  <Space size={8} wrap>
-                    <Button
-                      size="small"
-                      danger
-                      loading={releasingId === match.id}
-                      onClick={() => void handleRelease()}
-                    >
-                      解除裁判接手
-                    </Button>
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      解除后本场回到「未分配」，该裁判立即失去记分权限。
-                    </Text>
-                  </Space>
-                )}
-              </div>
-            ) : null}
-            {match.teamMatchId ? (
-              <Alert
-                type="warning"
-                showIcon
-                style={{ marginBottom: 12 }}
-                message="团体赛子项联动"
-                description="修改时间或场地后，本场团体对阵的未开始子项会按顺序整场顺延，并同步到裁判端。"
-              />
-            ) : null}
-            <Text type="secondary" style={{ display: 'block', marginBottom: 12, fontSize: 12 }}>
-              时间与场地修改会立即生效，系统不会自动重排其他场次；如需整体冲突检测，请到“场地排程”处理。
-            </Text>
-            <Button type="primary" onClick={() => void saveBasic()} loading={savingBasic}>
-              保存时间 / 场地 / 裁判
-            </Button>
-          </Form>
-
-          <Divider titlePlacement="left" style={{ margin: '22px 0 12px' }}>比分</Divider>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {games.map((game) => (
-              <div
-                key={game.gameNo}
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: '64px 1fr 18px 1fr',
-                  alignItems: 'center',
-                  gap: 8,
-                }}
-              >
-                <Text>第 {game.gameNo} 局</Text>
-                <InputNumber
-                  min={0}
-                  max={999}
-                  precision={0}
-                  value={game.side1Score}
-                  onChange={(value) => setGames((current) => current.map((item) => (
-                    item.gameNo === game.gameNo
-                      ? { ...item, side1Score: Math.max(0, Math.trunc(value ?? 0)) }
-                      : item
-                  )))}
-                  style={{ width: '100%' }}
-                />
-                <span style={{ textAlign: 'center', fontWeight: 800, color: '#94a3b8' }}>:</span>
-                <InputNumber
-                  min={0}
-                  max={999}
-                  precision={0}
-                  value={game.side2Score}
-                  onChange={(value) => setGames((current) => current.map((item) => (
-                    item.gameNo === game.gameNo
-                      ? { ...item, side2Score: Math.max(0, Math.trunc(value ?? 0)) }
-                      : item
-                  )))}
-                  style={{ width: '100%' }}
-                />
-              </div>
-            ))}
-          </div>
-          <Text type="secondary" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
-            保存后会按本场计分规则重新判定每局与整场胜负；未进行的后续局请保持 0:0。
-            {match.status === 'COMPLETED' ? ' 已结束场次可直接改分改判，胜方变化时下一轮签位会自动换成新胜方（保留原定时间场地）；下一轮已产生比分时不能改判。本场如有签字的电子比分单，改分后会标为作废（记录保留）。' : ''}
-          </Text>
-          <Button
-            style={{ marginTop: 12 }}
-            type="primary"
-            ghost
-            onClick={() => void saveScore()}
-            loading={savingScore}
-            disabled={!match.hasBothSides || match.forfeitedSide !== null || match.status === 'CANCELLED'}
-          >
-            保存比分
-          </Button>
-          {!match.hasBothSides ? (
-            <Text type="secondary" style={{ display: 'block', marginTop: 6, fontSize: 12 }}>
-              对阵双方尚未确定（轮空或等待晋级），暂不能录入比分。
-            </Text>
-          ) : null}
-
-          <Divider titlePlacement="left" style={{ margin: '22px 0 12px' }}>结束状态</Divider>
-          <Space direction="vertical" size={10} style={{ width: '100%' }}>
-            <Alert
-              type={match.forfeitedSide !== null ? 'warning' : 'info'}
-              showIcon
-              message={`当前状态：${meta.label}`}
-              description={
-                match.forfeitedSide !== null
-                  ? `本场由弃权/退赛判定：${match.forfeitReason ?? '未填写原因'}。此类赛果不能在此重开。`
-                  : match.status === 'COMPLETED'
-                    ? '本场已结束。可直接修改比分（胜方随比分改判），无需重开。'
-                    : match.status === 'CANCELLED'
-                      ? '本场已取消，不能在此修改赛果。'
-                      : match.status === 'LIVE'
-                        ? '比赛进行中。已决出胜方时可直接结束；否则请先补录比分。'
-                        : '比赛尚未开始。录入能判定胜负的比分后，系统会自动结束并推进晋级。'
-              }
-            />
-            {canComplete ? (
-              <Popconfirm
-                title="结束本场？"
-                description="将按当前比分确认胜方并推进晋级；如后续场次已开赛，请先处理后续场次。"
-                okText="确认结束"
-                cancelText="取消"
-                onConfirm={() => void completeMatch()}
-              >
-                <Button type="primary" icon={<CheckCircleOutlined />} loading={statusBusy}>
-                  结束本场并推进晋级
-                </Button>
-              </Popconfirm>
-            ) : null}
-            {canReopen ? (
-              <Popconfirm
-                title="重开本场？"
-                description="会清除本场胜方并撤销已推进到下一轮的签位；若后续轮次或团体后续子项已开赛，将被拒绝。本场如有胜方和裁判签字的电子比分单，会标为作废（记录保留）。"
-                okText="确认重开"
-                cancelText="取消"
-                onConfirm={() => void reopenMatch()}
-              >
-                <Button danger icon={<StopOutlined />} loading={statusBusy}>
-                  重开本场（改分后重新结束）
-                </Button>
-              </Popconfirm>
-            ) : null}
-            {match.isSecondStage && match.status === 'COMPLETED' ? (
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                第二阶段场次的赛果需在第二阶段编排中调整，这里仅支持修改时间、场地、裁判与比分。
-              </Text>
-            ) : null}
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              结束 / 重开会实时推送到公开对阵表、现场大屏与裁判端；其他裁判正在记分时请先确认现场状态。
-            </Text>
-          </Space>
+          <Tabs
+            style={{ marginTop: 8 }}
+            activeKey={tab}
+            onChange={(key) => setTab(key as DrawerTab)}
+            items={[
+              { key: 'info', label: '时间 · 场地 · 裁判', children: infoTab },
+              { key: 'score', label: '比分', children: scoreTab },
+              { key: 'status', label: '结束 · 重开', children: statusTab },
+              { key: 'logs', label: '操作记录', children: <MatchLogs matchId={match.id} token={token} refreshKey={0} /> },
+            ]}
+          />
         </div>
       ) : null}
     </Drawer>

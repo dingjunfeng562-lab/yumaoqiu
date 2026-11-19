@@ -1,5 +1,5 @@
 export const DEFAULT_PERMISSIONS: Record<string, string[]> = {
-  ADMIN: ['TOURNAMENTS', 'PLAYERS', 'PAYMENTS', 'ORDERBOOK', 'DATA_EXPORT', 'EVENTS', 'TEAMS', 'DRAWS', 'SCHEDULING', 'SCORING', 'PHOTOS', 'USERS', 'DASHBOARD', 'REGISTRATION', 'REFEREE', 'PHOTO_UPLOAD'],
+  ADMIN: ['TOURNAMENTS', 'PLAYERS', 'PAYMENTS', 'ORDERBOOK', 'DATA_EXPORT', 'EVENTS', 'TEAMS', 'DRAWS', 'SCHEDULING', 'SCORING', 'MATCH_MANAGEMENT', 'PHOTOS', 'USERS', 'DASHBOARD', 'REGISTRATION', 'REFEREE', 'PHOTO_UPLOAD'],
   PLAYER: ['REGISTRATION'], REFEREE: ['REFEREE'], PHOTOGRAPHER: ['PHOTO_UPLOAD'],
 };
 export function hasFeature(role: string | undefined, permissions: string[] | undefined, key: string) {
@@ -8,9 +8,8 @@ export function hasFeature(role: string | undefined, permissions: string[] | und
 }
 export function canAccessAdminPage(role: string | undefined, pathname: string, permissions?: string[]) {
   if (role === 'ROOT') return true;
-  // 直播管理、裁判员对局管理仅超级管理员可见，没有可分配的功能权限键。
+  // 直播管理仅超级管理员可见，没有可分配的功能权限键。
   if (pathname === '/nicaiyixiahh/broadcasts') return false;
-  if (pathname.startsWith('/nicaiyixiahh/match-management')) return false;
   // 全服维护开关仅超级管理员可见。
   if (pathname === '/nicaiyixiahh/maintenance') return false;
   if (/^\/nicaiyixiahh\/team-competitions\/[^/]+$/.test(pathname)) {
@@ -22,7 +21,9 @@ export function canAccessAdminPage(role: string | undefined, pathname: string, p
     '/nicaiyixiahh/players': ['PLAYERS'], '/nicaiyixiahh/payments': ['PAYMENTS'], '/nicaiyixiahh/users': ['USERS'], '/nicaiyixiahh/invite-codes': ['INVITES'], '/nicaiyixiahh/photo-activities': ['PHOTOS'],
     '/nicaiyixiahh/exports': ['ORDERBOOK', 'DATA_EXPORT'], '/nicaiyixiahh/competitions': ['TOURNAMENTS', 'TOURNAMENT_ADMIN', 'PLAYERS', 'PHOTOS'],
     '/nicaiyixiahh/events': ['EVENTS'], '/nicaiyixiahh/team-competitions': ['TEAMS'], '/nicaiyixiahh/draws': ['DRAWS'],
-    '/nicaiyixiahh/scheduling': ['SCHEDULING'], '/nicaiyixiahh/scoring': ['SCORING'], '/nicaiyixiahh/approvals': ['TOURNAMENT_ADMIN'],
+    '/nicaiyixiahh/scheduling': ['SCHEDULING'], '/nicaiyixiahh/scoring': ['SCORING'],
+    // 裁判员对局管理：管理员默认有「对局管理」权限，只能管自己的赛事。
+    '/nicaiyixiahh/match-management': ['MATCH_MANAGEMENT'], '/nicaiyixiahh/approvals': ['TOURNAMENT_ADMIN'],
     '/nicaiyixiahh/announcements': ['ANNOUNCEMENTS'], '/nicaiyixiahh/ai-config': ['AI_CONFIG'],
     '/nicaiyixiahh/image-moderation': ['IMAGE_MODERATION'], '/nicaiyixiahh/email': ['EMAIL'],
   };

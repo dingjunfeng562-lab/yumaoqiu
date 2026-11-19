@@ -12,6 +12,7 @@ export const PERMISSION_OPTIONS = [
   { key: 'DRAWS', label: '抽签编排与重抽审批', group: '赛事' },
   { key: 'SCHEDULING', label: '场地排程', group: '赛事' },
   { key: 'SCORING', label: '裁判分配与比赛记分管理', group: '赛事' },
+  { key: 'MATCH_MANAGEMENT', label: '裁判员对局管理（改时间、场地、裁判、比分，结束与重开）', group: '赛事' },
   { key: 'PHOTOS', label: '赛事图片、水印和图片二维码', group: '赛事' },
   { key: 'USERS', label: '管理下属账号', group: '账号' },
   { key: 'INVITES', label: '发放和管理邀请码', group: '账号' },
@@ -33,7 +34,7 @@ export const DEFAULT_PERMISSIONS: Record<Role, PermissionKey[]> = {
   // 公告、AI 配置、图片审核、邮件设置）给超级管理员；邀请码始终由角色固定授予。
   ADMIN: [
     'TOURNAMENTS', 'PLAYERS', 'PAYMENTS', 'ORDERBOOK', 'DATA_EXPORT', 'EVENTS', 'TEAMS',
-    'DRAWS', 'SCHEDULING', 'SCORING', 'PHOTOS', 'USERS', 'DASHBOARD',
+    'DRAWS', 'SCHEDULING', 'SCORING', 'MATCH_MANAGEMENT', 'PHOTOS', 'USERS', 'DASHBOARD',
     'REGISTRATION', 'REFEREE', 'PHOTO_UPLOAD',
   ],
   PLAYER: ['REGISTRATION'],
@@ -107,8 +108,8 @@ export function requiredPermissions(controller: string, action: string, kind?: s
     case 'UsageMetricsController': return [];
     // 直播管理（直播间、OBS 记分牌令牌、播放地址）仅限超级管理员。
     case 'BroadcastsController': return [];
-    // 裁判员对局管理（赛事级对阵、时间、比分、结束状态与修改）仅限超级管理员。
-    case 'MatchManagementController': return [];
+    // 裁判员对局管理（赛事级对阵、时间、比分、结束状态与修改）：管理员默认有，只能管自己的赛事。
+    case 'MatchManagementController': return ['MATCH_MANAGEMENT'];
     // 全服维护开关与维护页内容仅限超级管理员。
     case 'AdminMaintenanceController': return [];
     // 赛事统计跟着「仪表盘」权限；学校名称归并是全局数据，仅限超级管理员。

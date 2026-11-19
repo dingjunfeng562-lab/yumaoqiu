@@ -1321,6 +1321,7 @@ model Match {
   checkIns              MatchCheckIn[]
   checkInLogs           MatchCheckInLog[]
   scoreSheets           MatchScoreSheet[]
+  operationLogs         MatchOperationLog[]
   createdAt             DateTime             @default(now())
   updatedAt             DateTime             @updatedAt
 
@@ -1329,6 +1330,24 @@ model Match {
   @@index([refereeId])
   @@index([venueId, scheduledAt])
   @@index([scheduledAt])
+}
+
+/// 裁判员对局管理的操作记录：谁、什么时候、改了哪一场、改前改后。场次被删除（重新抽签等）时一起删除。
+model MatchOperationLog {
+  id           String   @id @default(cuid())
+  matchId      String
+  match        Match    @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  tournamentId String
+  /// UPDATE_INFO 改时间/场地/时长/裁判 · CORRECT_SCORE 改比分 · COMPLETE 结束 · REOPEN 重开 · RELEASE_REFEREE 解除裁判
+  action       String   @db.VarChar(32)
+  operatorId   String?
+  operatorName String?  @db.VarChar(64)
+  beforeData   Json?
+  afterData    Json?
+  createdAt    DateTime @default(now())
+
+  @@index([matchId, createdAt])
+  @@index([tournamentId, createdAt])
 }
 
 model MatchCheckIn {

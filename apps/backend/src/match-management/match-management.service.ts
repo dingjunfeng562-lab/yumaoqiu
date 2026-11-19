@@ -1,17 +1,21 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { MatchStatus, Prisma, Role } from '@prisma/client';
+import type { AuthActor } from '../auth/admin-scope';
 import { isSecondStageFormalRoundNo } from '../common/second-stage-bracket';
 import { PrismaService } from '../prisma/prisma.service';
 import { SchedulingService } from '../scheduling/scheduling.service';
 import { ScoringGateway } from '../scoring/scoring.gateway';
 import { MatchSideView, ScoringService } from '../scoring/scoring.service';
 import { UpdateManagedMatchDto } from './dto/match-management.dto';
+import { computeMatchCodes } from './match-codes';
+import { MatchOperationLogService, type MatchOperationAction, type MatchOperator } from './match-operation-log.service';
 
 const EVENT_TYPE_LABELS: Record<string, string> = {
   MENS_SINGLES: '男子单打',
@@ -46,6 +50,9 @@ const TEAM_FORMAT_LABELS: Record<string, string> = {
   GROUP_PLUS_KNOCKOUT: '小组循环 + 淘汰赛',
 };
 
+/** 对局管理的操作人：管理员（只能管自己的赛事）或超级管理员。 */
+type Actor = (AuthActor & { username?: string | null }) | undefined;
+
 type VenueView = {
   id: string;
   name: string;
@@ -62,6 +69,8 @@ export type MatchGameView = {
 
 export type MatchView = {
   id: string;
+  /** 场次号，和秩序册一致（男单12、团体3）；没排时间场地的为 null。 */
+  code: string | null;
   eventId: string | null;
   teamMatchId: string | null;
   teamCompetitionId: string | null;
@@ -157,9 +166,10 @@ export class MatchManagementService {
     private readonly scoring: ScoringService,
     private readonly scheduling: SchedulingService,
     private readonly gateway: ScoringGateway,
+    private readonly operationLog: MatchOperationLogService,
   ) {}
 
-  async getOverview(tournamentId: string) {
+  async getOverview(tournamentId: string, actor?: Actor) {
     const tournament = await this.prisma.tournament.findUnique({
       where: { id: tournamentId },
       select: {
@@ -186,6 +196,7 @@ export class MatchManagementService {
             id: true,
             type: true,
             format: true,
+            mixHostId: true,
             scoringRule: true,
             scoringMode: true,
             customGamesToWin: true,
@@ -242,8 +253,13 @@ export class MatchManagementService {
           select: { id: true, name: true, isActive: true, sortOrder: true },
           orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
         }),
+        // 可以指派的裁判：管理员只能用自己名下的裁判（和「裁判分配」页一样），超级管理员全部。
         this.prisma.user.findMany({
-          where: { role: Role.REFEREE, status: 'ACTIVE' },
+          where: {
+            role: Role.REFEREE,
+            status: 'ACTIVE',
+            ...(actor && actor.role !== Role.ROOT ? { managerId: actor.id } : {}),
+          },
           select: {
             id: true,
             username: true,
@@ -270,9 +286,18 @@ export class MatchManagementService {
     const sideViews = await this.scoring.resolveSideViews(
       matches.flatMap((match) => [match.side1Id, match.side2Id]),
     );
-    const matchViews = matches.map((match) =>
-      this.toMatchView(match, sideViews),
-    );
+    // 场次号：和秩序册、对阵图同一套编号，现场叫号、裁判报场次都靠它。
+    const competitionOfMatch = new Map(matches.map((match) => [match.id, match.teamMatch?.teamCompetitionId ?? null]));
+    const codes = computeMatchCodes({
+      events,
+      teamCompetitionIds: teamCompetitions.map((competition) => competition.id),
+      teamCompetitionOf: (match) => competitionOfMatch.get(match.id) ?? null,
+      matches,
+    });
+    const matchViews = matches.map((match) => ({
+      ...this.toMatchView(match, sideViews),
+      code: codes.get(match.id) ?? null,
+    }));
 
     const matchIdsByTeamMatch = new Map<string, string[]>();
     for (const match of matchViews) {
@@ -396,8 +421,11 @@ export class MatchManagementService {
     };
   }
 
-  async updateMatch(matchId: string, dto: UpdateManagedMatchDto, actorId?: string) {
+  async updateMatch(matchId: string, dto: UpdateManagedMatchDto, actor?: Actor) {
     const target = await this.requireMatchRef(matchId);
+    // 管理员只能指派自己名下的裁判（前端只列了这些，这里再拦一次）。
+    if (dto.refereeId) await this.assertAssignableReferee(dto.refereeId, actor);
+    const before = await this.operationLog.snapshot(matchId);
     const hasScheduleChange =
       dto.scheduledAt !== undefined ||
       dto.venueId !== undefined ||
@@ -414,7 +442,7 @@ export class MatchManagementService {
         ...(dto.durationMinutes !== undefined
           ? { durationMinutes: dto.durationMinutes }
           : {}),
-      }, actorId);
+      }, actor?.id);
     }
 
     if (dto.refereeId !== undefined) {
@@ -422,10 +450,11 @@ export class MatchManagementService {
         await this.scoring.assignReferee(matchId, dto.refereeId);
       } else {
         // 清空裁判走和「解除接手」同一条校验，避免两条入口规则不一致。
-        await this.clearReferee(matchId, {}, actorId);
+        await this.clearReferee(matchId, {}, actor?.id);
       }
     }
 
+    await this.recordChange(target, 'UPDATE_INFO', actor, before);
     this.emitUpdate(target);
     return { ok: true };
   }
@@ -440,12 +469,16 @@ export class MatchManagementService {
   async releaseReferee(
     matchId: string,
     options: { force?: boolean } = {},
-    actorId?: string,
+    actor?: Actor,
   ) {
     const target = await this.requireMatchRef(matchId);
-    const result = await this.clearReferee(matchId, options, actorId);
-    // 本来就没裁判时不广播，避免无意义刷新。
-    if (result.released) this.emitUpdate(target);
+    const before = await this.operationLog.snapshot(matchId);
+    const result = await this.clearReferee(matchId, options, actor?.id);
+    // 本来就没裁判时不广播、不记录，避免无意义刷新。
+    if (result.released) {
+      await this.recordChange(target, 'RELEASE_REFEREE', actor, before);
+      this.emitUpdate(target);
+    }
     return result;
   }
 
@@ -483,26 +516,56 @@ export class MatchManagementService {
   async correctScore(
     matchId: string,
     games: Array<{ side1Score: number; side2Score: number }>,
+    actor?: Actor,
   ) {
     const target = await this.requireMatchRef(matchId);
-    // 超级管理员入口：已结束比赛可直接改分改判，无需先重开。
+    const before = await this.operationLog.snapshot(matchId);
+    // 对局管理入口：已结束比赛可直接改分改判，无需先重开。
     const state = await this.scoring.correctMatchScore(matchId, games, { allowWinnerChange: true });
+    await this.recordChange(target, 'CORRECT_SCORE', actor, before);
     this.emitUpdate(target);
     return state;
   }
 
-  async completeMatch(matchId: string) {
+  async completeMatch(matchId: string, actor?: Actor) {
     const target = await this.requireMatchRef(matchId);
+    const before = await this.operationLog.snapshot(matchId);
     const state = await this.scoring.completeMatchForAdmin(matchId);
+    await this.recordChange(target, 'COMPLETE', actor, before);
     this.emitUpdate(target);
     return state;
   }
 
-  async reopenMatch(matchId: string) {
+  async reopenMatch(matchId: string, actor?: Actor) {
     const target = await this.requireMatchRef(matchId);
+    const before = await this.operationLog.snapshot(matchId);
     const state = await this.scoring.reopenMatchForAdmin(matchId);
+    await this.recordChange(target, 'REOPEN', actor, before);
     this.emitUpdate(target);
     return state;
+  }
+
+  /** 管理员只能指派自己名下（managerId = 自己）的启用中裁判账号；超级管理员不限。 */
+  private async assertAssignableReferee(refereeId: string, actor?: Actor) {
+    if (!actor || actor.role === Role.ROOT) return;
+    const referee = await this.prisma.user.findUnique({
+      where: { id: refereeId },
+      select: { role: true, managerId: true },
+    });
+    if (!referee || referee.role !== Role.REFEREE || referee.managerId !== actor.id) {
+      throw new ForbiddenException('只能指派你名下的裁判账号');
+    }
+  }
+
+  private async recordChange(
+    target: { id: string; tournamentId: string },
+    action: MatchOperationAction,
+    actor: Actor,
+    before: Awaited<ReturnType<MatchOperationLogService['snapshot']>>,
+  ) {
+    const after = await this.operationLog.snapshot(target.id);
+    const operator: MatchOperator = actor ? { id: actor.id, username: actor.username ?? null } : null;
+    await this.operationLog.record({ matchId: target.id, tournamentId: target.tournamentId, action, operator, before, after });
   }
 
   private emitUpdate(target: {
@@ -541,7 +604,7 @@ export class MatchManagementService {
   private toMatchView(
     match: MatchWithRelations,
     sideViews: Map<string, MatchSideView>,
-  ): MatchView {
+  ): Omit<MatchView, 'code'> {
     const eventType =
       match.event?.type ??
       match.teamCompetitionItem?.eventType ??
