@@ -11,7 +11,6 @@ import { signOut, useSession } from 'next-auth/react';
 const navItems = [
   { label: '首页', href: '/' },
   { label: '赛事列表', href: '/competitions' },
-  { label: '直播大屏幕', href: '/live-screen' },
   { label: '成绩排行', href: '/ranking' },
   { label: '报名查询', href: '/registration-query' },
   { label: '通知公告', href: '/notice' },
@@ -95,18 +94,7 @@ export function Header({ activeHref }: { activeHref?: string }) {
         </nav>
 
         <div className="flex shrink-0 items-center gap-2 sm:gap-2.5">
-          <Link
-            href="/live-screen"
-            onClick={closeMenu}
-            style={{ color: '#fff' }}
-            className={`tappable inline-flex h-10 min-h-[44px] items-center rounded-lg px-3 text-xs font-black !text-white shadow-[0_6px_18px_rgba(245,158,11,0.25)] transition duration-300 lg:hidden ${
-              isActiveNavItem('/live-screen', currentPath)
-                ? 'border border-white/45 bg-white/18'
-                : 'border border-white/35 bg-white/10 hover:bg-white/16'
-            }`}
-          >
-            直播
-          </Link>
+          {/* 直播大屏幕统一在赛事主页里进入（功能宫格「直播大屏」），首页不再放入口。 */}
           {status === 'authenticated' ? (
             <>
               {/* Mobile already has a "我的"/"后台" entry in the bottom nav,

@@ -121,12 +121,14 @@ export class CheckInService {
         orderBy: [{ scheduledAt: 'asc' }, { roundNo: 'asc' }, { matchNo: 'asc' }, { id: 'asc' }],
       }),
     ]);
-    const registrations = await this.registrations(this.prisma, matches, tournamentId);
+    // 空位（单项比赛双方都还没定、未开始：预排的淘汰赛空位、等前一轮结果的淘汰赛）签不了到，不显示。
+    const visible = matches.filter((match) => !(match.eventId && !match.side1Id && !match.side2Id && match.status === 'PENDING'));
+    const registrations = await this.registrations(this.prisma, visible, tournamentId);
     return {
       tournament: { id: tournament.id, name: tournament.name, startDate: tournament.startDate, endDate: tournament.endDate,
         publicAvailable: tournament.isPublished && !tournament.isArchived && tournament.approvalStatus === 'APPROVED' },
       venues,
-      matches: matches.map((match) => {
+      matches: visible.map((match) => {
         const side1 = participant(match, 1, registrations);
         const side2 = participant(match, 2, registrations);
         return {

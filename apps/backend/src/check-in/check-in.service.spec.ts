@@ -125,6 +125,15 @@ describe('per-match check-in', () => {
     expect(next.matches[0].side2.checkedAt).toBeTruthy();
   });
 
+  it('hides empty slots (both sides undecided, not started) on staff and public boards', async () => {
+    const { service, db, match } = setup();
+    const empty = { ...match, id: 'm2', side1Id: null, side2Id: null, round: 'QF', roundNo: 2, checkIns: [] };
+    const bye = { ...match, id: 'm3', side2Id: null, status: 'COMPLETED', winnerSide: 1, checkIns: [] };
+    db.match.findMany.mockResolvedValue([match, empty, bye]);
+    expect((await service.board('t1', actor)).matches.map((m: { id: string }) => m.id)).toEqual(['m1', 'm3']);
+    expect((await service.publicBoard('t1')).matches.map((m: { id: string }) => m.id)).toEqual(['m1', 'm3']);
+  });
+
   it('enforces owner scope even when called directly', async () => {
     const { service, db } = setup();
     db.tournament.findFirst.mockResolvedValue(null);

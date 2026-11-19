@@ -264,12 +264,12 @@ function SideName({
   );
 }
 
-function EmptyState({ brackets }: { brackets: KnockoutBracketData[] }) {
+function EmptyState({ brackets, locked }: { brackets: KnockoutBracketData[]; locked?: boolean }) {
   return (
     <div className="grid min-h-[260px] place-items-center rounded-xl border border-dashed border-white/16 bg-white/[0.05] p-6 text-center sm:min-h-[360px] sm:p-8">
       <div>
         <h2 className="text-xl font-black text-white sm:text-2xl">
-          {brackets.length ? '请选择要直播的比赛' : '暂无可直播的对阵'}
+          {brackets.length ? '请选择要直播的比赛' : locked ? '本赛事暂无已发布的对阵' : '暂无可直播的对阵'}
         </h2>
         <p className="mx-auto mt-2 max-w-sm text-xs font-semibold leading-relaxed text-white/52 sm:text-sm">
           后台发布对阵后，这里会显示全部场次安排，并跟随裁判记分实时刷新。
@@ -330,9 +330,12 @@ function SecondStageWall({ data }: { data: SecondStageData }) {
 export function LiveScreenClient({
   initialBrackets,
   initialTournamentId,
+  lockedTournament,
 }: {
   initialBrackets: KnockoutBracketData[];
   initialTournamentId?: string | null;
+  /** 从赛事里进入：只显示这个赛事，不能切换到其他赛事。 */
+  lockedTournament?: { id: string; name: string } | null;
 }) {
   const initialSelectedTournamentId =
     initialTournamentId && initialBrackets.some((bracket) => bracket.tournamentId === initialTournamentId)
@@ -355,8 +358,9 @@ export function LiveScreenClient({
     onRefetchError: () => setSocketState('offline'),
   });
 
-  // 一级：赛事（按 tournamentId 去重，保留后端顺序）。
+  // 一级：赛事（按 tournamentId 去重，保留后端顺序）。从赛事里进入时只有这一个赛事。
   const tournaments = useMemo(() => {
+    if (lockedTournament) return [lockedTournament];
     const seen = new Map<string, { id: string; name: string }>();
     for (const bracket of brackets) {
       const tid = bracket.tournamentId;
@@ -364,7 +368,7 @@ export function LiveScreenClient({
       seen.set(tid, { id: tid, name: bracket.tournamentName ?? bracket.title });
     }
     return [...seen.values()];
-  }, [brackets]);
+  }, [brackets, lockedTournament]);
 
   // 用「有效值」兜底渲染：所选失效（数据刷新/越界）时自动回退首项，无需副作用纠偏。
   const effectiveTournamentId =
@@ -444,7 +448,9 @@ export function LiveScreenClient({
 
   const bracketHref = selected
     ? `/bracket/${encodeURIComponent(selected.id)}`
-    : '/bracket';
+    : lockedTournament
+      ? `/competitions/${encodeURIComponent(lockedTournament.id)}/brackets`
+      : '/bracket';
   const updatedText = updatedAt.toLocaleTimeString('zh-CN', {
     hour: '2-digit',
     minute: '2-digit',
@@ -474,7 +480,7 @@ export function LiveScreenClient({
               </p>
               <h1 className="mt-1 text-3xl font-black leading-tight sm:text-4xl lg:text-5xl">直播大屏幕</h1>
               <p className="mt-1.5 text-[11px] font-semibold leading-snug text-white/45 sm:mt-2 sm:text-sm sm:text-white/52">
-                选择比赛后展示全部场次安排，比分随裁判记分实时同步。
+                {lockedTournament ? '选择组别后' : '选择比赛后'}展示全部场次安排，比分随裁判记分实时同步。
               </p>
             </div>
             <nav className="flex w-full items-center gap-2 sm:w-auto">
@@ -486,10 +492,10 @@ export function LiveScreenClient({
                 对阵表
               </Link>
               <Link
-                href="/"
+                href={lockedTournament ? `/competitions/${encodeURIComponent(lockedTournament.id)}` : '/'}
                 className="tappable inline-flex h-10 flex-1 items-center justify-center rounded-lg bg-amber-300 px-3 text-xs font-black text-slate-950 transition hover:bg-amber-200 sm:flex-none sm:px-4 sm:text-sm"
               >
-                返回首页
+                {lockedTournament ? '赛事主页' : '返回首页'}
               </Link>
             </nav>
           </div>
@@ -498,7 +504,12 @@ export function LiveScreenClient({
         <section className="rounded-xl border border-white/10 bg-white/[0.06] p-3 sm:p-4">
           <div className="grid gap-2.5 sm:grid-cols-2 sm:gap-3">
             <label className="min-w-0">
-              <span className="mb-1.5 block text-[11px] font-black text-white/50">选择比赛</span>
+              <span className="mb-1.5 block text-[11px] font-black text-white/50">{lockedTournament ? '比赛' : '选择比赛'}</span>
+              {lockedTournament ? (
+                <p className="flex h-11 w-full items-center truncate rounded-lg border border-white/14 bg-slate-950/72 px-3 text-sm font-black text-white sm:h-12 sm:px-4">
+                  {lockedTournament.name}
+                </p>
+              ) : (
               <select
                 value={effectiveTournamentId}
                 onChange={(event) => handleTournamentChange(event.target.value)}
@@ -514,6 +525,7 @@ export function LiveScreenClient({
                   <option value="">暂无比赛</option>
                 )}
               </select>
+              )}
             </label>
             <label className="min-w-0">
               <span className="mb-1.5 block text-[11px] font-black text-white/50">选择组别</span>
@@ -607,7 +619,7 @@ export function LiveScreenClient({
             {selected.secondStage ? <SecondStageWall data={selected.secondStage} /> : null}
           </>
         ) : (
-          <EmptyState brackets={brackets} />
+          <EmptyState brackets={brackets} locked={Boolean(lockedTournament)} />
         )}
       </div>
     </main>

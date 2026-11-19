@@ -65,7 +65,7 @@ export default async function CompetitionBracketsPage({ params }: { params: Prom
               比分直播
             </Link>
             <Link
-              href="/live-screen"
+              href={`/live-screen?tournamentId=${encodeURIComponent(competition.id)}`}
               className="inline-flex h-10 items-center justify-center rounded-lg bg-blue-600 px-4 text-sm font-black text-white transition hover:bg-blue-700"
             >
               直播大屏

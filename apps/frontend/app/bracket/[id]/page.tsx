@@ -35,12 +35,14 @@ export default async function BracketDetailPage({ params }: { params: Promise<{ 
                 赛事详情
               </Link>
             ) : null}
-            <Link
-              href="/live-screen"
-              className="inline-flex h-10 items-center justify-center rounded-lg bg-blue-600 px-4 text-sm font-black text-white transition hover:bg-blue-700"
-            >
-              直播大屏幕
-            </Link>
+            {bracket.tournamentId ? (
+              <Link
+                href={`/live-screen?tournamentId=${encodeURIComponent(bracket.tournamentId)}`}
+                className="inline-flex h-10 items-center justify-center rounded-lg bg-blue-600 px-4 text-sm font-black text-white transition hover:bg-blue-700"
+              >
+                直播大屏幕
+              </Link>
+            ) : null}
           </div>
         </div>
 

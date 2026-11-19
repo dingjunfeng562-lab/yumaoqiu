@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import type { ReactNode } from 'react';
 
-// 赛事主页的功能宫格：只放本站已有的功能 + 比分直播。
+// 赛事主页的功能宫格：只放本站已有的功能 + 比分直播 + 直播大屏（只看本赛事）。
 
 function Icon({ children }: { children: ReactNode }) {
   return (
@@ -86,6 +86,19 @@ export function CompetitionFeatureGrid({ competitionId, ongoing }: { competition
       ),
     },
     {
+      key: 'screen',
+      label: '直播大屏',
+      href: `/live-screen?tournamentId=${encodeURIComponent(competitionId)}`,
+      color: 'bg-blue-600 shadow-blue-600/30',
+      icon: (
+        <Icon>
+          <rect x="2.5" y="4" width="19" height="13" rx="2" />
+          <path d="M8 21h8M12 17v4" />
+          <path d="M10.5 8.5v5l4-2.5z" />
+        </Icon>
+      ),
+    },
+    {
       key: 'query',
       label: '报名查询',
       href: '/registration-query',
@@ -113,7 +126,7 @@ export function CompetitionFeatureGrid({ competitionId, ongoing }: { competition
 
   return (
     <nav aria-label="赛事功能" className="rounded-xl border border-blue-100 bg-white px-2 py-4 shadow-sm sm:px-4 sm:py-5">
-      <ul className="grid grid-cols-4 gap-x-1 gap-y-4 sm:grid-cols-6 sm:gap-3">
+      <ul className="grid grid-cols-4 gap-x-1 gap-y-4 sm:grid-cols-7 sm:gap-3">
         {features.map((feature) => (
           <li key={feature.key}>
             <Link
