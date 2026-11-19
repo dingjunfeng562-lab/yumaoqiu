@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query, Res, UseGuards } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Param, Query, Res, UseGuards } from '@nestjs/common';
 import { Response } from 'express';
 import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -43,10 +43,14 @@ export class ExportsController {
     this.sendFile(res, file);
   }
 
-  /** 数据导出页「对阵图（PNG）」：返回 { filename, svg, width, height }，浏览器转成 PNG 下载。 */
+  /**
+   * 数据导出页「对阵图（PNG）」：返回 { filename, svg, width, height }，浏览器转成 PNG 下载。
+   * stage：first 第一阶段 / second 第二阶段 / all 全部阶段（默认）。
+   */
   @Get('events/:eventId/bracket-image')
-  eventBracketImage(@Param('eventId') eventId: string) {
-    return this.exportsService.exportEventBracketImage(eventId);
+  eventBracketImage(@Param('eventId') eventId: string, @Query('stage') stage?: string) {
+    if (stage && !['first', 'second', 'all'].includes(stage)) throw new BadRequestException('阶段参数应为 first、second 或 all');
+    return this.exportsService.exportEventBracketImage(eventId, (stage ?? 'all') as 'first' | 'second' | 'all');
   }
 
   private sendFile(

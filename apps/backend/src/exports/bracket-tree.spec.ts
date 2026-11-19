@@ -1,7 +1,7 @@
 import * as ExcelJS from 'exceljs';
 import { buildKnockoutSkeleton } from '../common/knockout-skeleton';
-import { renderBracketSvg } from './bracket-svg';
-import { buildOrderbookWorkbook, eventBracketTreeForImage } from './orderbook-workbook';
+import { bracketTreeSection, renderBracketSvg, renderStagesSvg, sheetSection } from './bracket-svg';
+import { buildOrderbookWorkbook, eventBracketTreeForImage, eventImageParts, type EventImagePart } from './orderbook-workbook';
 import type { ExportEvent, ExportMatch, ExportRegistration, ExportTournament } from './exports.service';
 
 const day = new Date('2026-11-28T00:00:00Z');
@@ -195,5 +195,151 @@ describe('第二阶段淘汰对阵树', () => {
     for (const textValue of ['李四', '甲大学', '轮空', '冠军', '半决赛', '决赛', '21  21', '15  19', '男单1  11-28 15:30  1号场']) {
       expect(svg).toContain(`>${textValue}<`);
     }
+  });
+});
+
+describe('流程表标题与场次号', () => {
+  // 单淘汰 4 人：半决赛 2 场 + 决赛 + 季军赛。
+  function singleElimination(format: string): ExportEvent {
+    const registrations = ['甲', '乙', '丙', '丁'].map((name, i) => reg(`s${i + 1}`, name));
+    const matches = [
+      match({ id: 'sf1', round: 'SF', roundNo: 1, matchNo: 1, side1Id: 's1', side2Id: 's2' }),
+      match({ id: 'sf2', round: 'SF', roundNo: 1, matchNo: 2, side1Id: 's3', side2Id: 's4' }),
+      match({ id: 'f', round: 'F', roundNo: 2, matchNo: 1 }),
+      match({ id: 'b', round: 'BRONZE', roundNo: 2, matchNo: 2 }),
+    ];
+    return stdEvent({ format, registrations, matches });
+  }
+
+  it('单淘汰只有一个阶段：对阵树标题写「单淘汰」，不写「第二阶段」', async () => {
+    const texts = await flowTexts(tournament([singleElimination('SINGLE_ELIMINATION')]));
+    expect(texts).toContain('男子单打单淘汰：');
+    expect(texts.some((text) => text.includes('第二阶段'))).toBe(false);
+  });
+
+  it('淘汰+分组排名：淘汰赛是第一阶段，排位赛是第二阶段', async () => {
+    const texts = await flowTexts(tournament([singleElimination('SINGLE_ELIMINATION_PLUS_GROUP_RANKING')]));
+    expect(texts).toContain('男子单打第一阶段：');
+    expect(texts).toContain('男子单打第二阶段：');
+    expect(texts.indexOf('男子单打第一阶段：')).toBeLessThan(texts.indexOf('男子单打第二阶段：'));
+    expect(texts).toContain('半决赛');
+  });
+
+  it('单循环画循环成绩网格，没有「第二阶段」', async () => {
+    const registrations = ['甲', '乙', '丙'].map((name, i) => reg(`r${i + 1}`, name));
+    const matches = [[0, 1], [0, 2], [1, 2]].map(([a, b], k) => match({ id: `rr${k}`, round: 'A', roundNo: 0, matchNo: k + 1, side1Id: `r${a + 1}`, side2Id: `r${b + 1}` }));
+    const texts = await flowTexts(tournament([stdEvent({ format: 'ROUND_ROBIN', registrations, matches })]));
+    expect(texts).toContain('男子单打单循环：');
+    expect(texts).toContain('A组');
+    expect(texts.some((text) => text.includes('第二阶段'))).toBe(false);
+  });
+
+  it('按阶段导出时用整个项目的场次号（matchCodes），和整本秩序册一致', async () => {
+    const event = singleElimination('GROUP_PLUS_KNOCKOUT_STD');
+    const scheduled = event.matches.map((m, i) => ({ ...m, venueId: 'v1', venue: { name: '1号场', sortOrder: 0 }, scheduledAt: new Date(day.getTime() + i * 3600000) }));
+    const codes = Object.fromEntries(scheduled.map((m, i) => [m.id, `男单${16 + i}`]));
+    const texts = await flowTexts(tournament([{ ...event, matches: scheduled, matchCodes: codes }]), 'second');
+    expect(texts.some((text) => text.startsWith('男单16 '))).toBe(true);
+    expect(texts.some((text) => text.startsWith('男单1 '))).toBe(false);
+  });
+});
+
+describe('对阵图（PNG）按阶段导出', () => {
+  const meta = { title: '测试 · 男子单打', subtitle: '生成于 2026-11-28 08:00' };
+  const draw = (parts: EventImagePart[]) => renderStagesSvg(meta, parts.map((part) => ({
+    ...(parts.length > 1 ? { heading: part.label } : {}),
+    ...(part.tree ? bracketTreeSection(part.tree) : sheetSection(part.sheet!)),
+  }))).svg;
+  const ok = (result: ReturnType<typeof eventImageParts>) => {
+    if ('reason' in result) throw new Error(result.reason);
+    return result;
+  };
+
+  it('小组+淘汰：第一阶段画小组赛成绩表，第二阶段画淘汰树，全部阶段两段上下都画', () => {
+    const group = groupStage();
+    const event = stdEvent({ registrations: group.registrations, matches: group.matches });
+
+    const first = ok(eventImageParts(event, 'first'));
+    expect(first.label).toBe('第一阶段（小组赛）');
+    expect(first.parts).toHaveLength(1);
+    expect(first.parts[0].sheet).toBeDefined();
+    const firstSvg = draw(first.parts);
+    for (const value of ['A组', 'L组', '选手1', '选手36', '胜次', '名次']) expect(firstSvg).toContain(`>${value}<`);
+
+    const second = ok(eventImageParts(event, 'second'));
+    expect(second.label).toBe('第二阶段（淘汰赛）');
+    expect(second.tree?.preview).toBe(true);
+
+    const all = ok(eventImageParts(event, 'all'));
+    expect(all.label).toBe('全部阶段');
+    expect(all.parts.map((part) => part.label)).toEqual(['第一阶段（小组赛）', '第二阶段（淘汰赛）']);
+    const allSvg = draw(all.parts);
+    expect(allSvg).toContain('>第一阶段（小组赛）<');
+    expect(allSvg).toContain('>第二阶段（淘汰赛）<');
+    expect(allSvg.indexOf('>第一阶段（小组赛）<')).toBeLessThan(allSvg.indexOf('>第二阶段（淘汰赛）<'));
+    expect(allSvg).toContain('>A组第1名<');
+  });
+
+  it('第二阶段是 A-H 前8名晋级赛时画晋级赛', () => {
+    const group = groupStage();
+    const slot = (code: string, i: number) => ({ slot: code, sortOrder: i, entrantId: `p${i * 3 + 1}`, entrantNameSnapshot: null });
+    const secondStage = {
+      status: 'CONFIRMED', mode: 'TOP_8', rankingMode: 'TOP_8',
+      slots: 'ABCDEFGH'.split('').map(slot),
+      matches: [{ matchNo: 1, roundName: '1/4决赛', area: '1-8', slotInfo: 'A-H', side1Source: 'A', side2Source: 'H', side1Id: 'p1', side2Id: 'p22',
+        side1NameSnapshot: null, side2NameSnapshot: null, score: null, status: 'PENDING', winnerSide: null, winnerId: null, winnerNameSnapshot: null }],
+      rankings: [],
+    };
+    const result = ok(eventImageParts(stdEvent({ registrations: group.registrations, matches: group.matches, secondStage }), 'second'));
+    expect(result.label).toBe('第二阶段（前8名晋级赛）');
+    expect(result.parts[0].sheet).toBeDefined();
+    expect(draw(result.parts)).toContain('>选手1<');
+  });
+
+  it('单循环、单淘汰只有一个阶段，不管选哪个阶段都一样', () => {
+    const registrations = ['甲', '乙', '丙'].map((name, i) => reg(`r${i + 1}`, name));
+    const matches = [[0, 1], [0, 2], [1, 2]].map(([a, b], k) => match({ id: `rr${k}`, round: 'A', roundNo: 0, matchNo: k + 1, side1Id: `r${a + 1}`, side2Id: `r${b + 1}` }));
+    const rr = ok(eventImageParts(stdEvent({ format: 'ROUND_ROBIN', registrations, matches }), 'second'));
+    expect(rr.label).toBe('单循环');
+    expect(draw(rr.parts)).toContain('>丙<');
+
+    const knockout = generatedKnockout();
+    const se = ok(eventImageParts(stdEvent({ format: 'SINGLE_ELIMINATION', ...knockout }), 'first'));
+    expect(se.label).toBe('单淘汰');
+    expect(se.parts[0].tree).toBeDefined();
+  });
+
+  it('小组+交叉排位：交叉排位赛还没生成时第二阶段给出原因，全部阶段只画小组赛', () => {
+    const group = groupStage();
+    const event = stdEvent({ format: 'GROUP_PLUS_PLAYOFF', registrations: group.registrations, matches: group.matches });
+    expect(eventImageParts(event, 'second')).toEqual({ reason: '第二阶段还没有对阵（小组赛结束后生成）' });
+    const all = ok(eventImageParts(event, 'all'));
+    expect(all.parts.map((part) => part.label)).toEqual(['第一阶段（小组赛）']);
+  });
+
+  it('淘汰+分组排名：第一阶段是淘汰对阵树，排位赛没确定前第二阶段给出原因', () => {
+    const knockout = generatedKnockout();
+    const event = stdEvent({ format: 'SINGLE_ELIMINATION_PLUS_GROUP_RANKING', ...knockout });
+    const first = ok(eventImageParts(event, 'first'));
+    expect(first.label).toBe('第一阶段（淘汰赛）');
+    expect(first.parts[0].tree?.drawSize).toBe(32);
+    expect('reason' in eventImageParts(event, 'second')).toBe(true);
+  });
+
+  it('表格段：合并单元格、底色、边框、换行和特殊字符都画出来', () => {
+    const ws = new ExcelJS.Workbook().addWorksheet('t');
+    ws.mergeCells(1, 1, 1, 3);
+    ws.getCell(1, 1).value = 'A组 <测试>';
+    ws.getCell(1, 1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2563EB' } };
+    ws.getCell(2, 1).value = '第一行\n第二行';
+    ws.getCell(2, 1).alignment = { wrapText: true };
+    ws.getCell(2, 1).border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+    const section = sheetSection(ws);
+    expect(section.width).toBeGreaterThan(0);
+    expect(section.body).toContain('fill="#2563EB"');
+    expect(section.body).toContain('>A组 &#60;测试&#62;<');
+    expect(section.body).toContain('>第一行<');
+    expect(section.body).toContain('>第二行<');
+    expect(section.body.match(/<path /g)).toHaveLength(4);
   });
 });

@@ -23,6 +23,8 @@ import type {
 // 秩序册导出（高保真 .xlsx）：日程表 + 秩序表 + 各项目「流程表」。
 // 流程表 = 第一阶段（小组循环成绩网格）+ 第二阶段（淘汰赛对阵树）。按用户口径：
 // 第二阶段始终输出；第一阶段仅当赛制为「小组循环+淘汰(标准2023)」(GROUP_PLUS_KNOCKOUT_STD) 时输出。
+// 只有一个阶段的赛制不写「第二阶段」：单淘汰标「单淘汰」，单循环（单项）只画循环成绩网格；
+// 淘汰+分组排名的淘汰赛是第一阶段，排位赛是第二阶段。
 
 const EVENT_TYPE_LABELS: Record<string, string> = {
   MENS_SINGLES: '男子单打',
@@ -71,7 +73,7 @@ const KNOCKOUT_ROUND_LABELS: Record<string, string> = {
   BRONZE: '季军赛',
 };
 
-// 仅此赛制带「第一阶段」小组循环流程表。
+// 带「第一阶段」小组循环流程表的赛制（另有单循环、团体单组循环画同样的循环网格）。
 const GROUP_KNOCKOUT_STD = 'GROUP_PLUS_KNOCKOUT_STD';
 
 const ACCENT = 'FF2563EB';
@@ -399,20 +401,29 @@ function venues(tournament: ExportTournament): ExportVenue[] {
 }
 
 // 每个项目内，已排程场次按时间→场地→场序编「场次号」（男双1、男双2…）。
+export function eventMatchCodes(event: Pick<ExportEvent, 'type' | 'matches' | 'codePrefix' | 'codeStart'>) {
+  const map = new Map<string, string>();
+  const abbr = event.codePrefix ?? EVENT_TYPE_ABBR[event.type] ?? '场';
+  const ordered = event.matches
+    .filter((m) => m.scheduledAt && m.venueId)
+    .sort(
+      (a, b) =>
+        scheduleSortValueForMatch(a) - scheduleSortValueForMatch(b) ||
+        (a.venue?.sortOrder ?? 0) - (b.venue?.sortOrder ?? 0) ||
+        (a.matchNo ?? 0) - (b.matchNo ?? 0) ||
+        a.id.localeCompare(b.id),
+    );
+  ordered.forEach((m, i) => map.set(m.id, `${abbr}${(event.codeStart ?? 0) + i + 1}`));
+  return map;
+}
+
+// 按阶段导出时 matches 只有本阶段场次，场次号由导出方按整个项目算好放在 matchCodes，
+// 这样和整本秩序册、对阵图（PNG）的场次号一致。
 function matchCodeMap(tournament: Pick<ExportTournament, 'events'>) {
   const map = new Map<string, string>();
   for (const event of tournament.events) {
-    const abbr = event.codePrefix ?? EVENT_TYPE_ABBR[event.type] ?? '场';
-    const ordered = event.matches
-      .filter((m) => m.scheduledAt && m.venueId)
-      .sort(
-        (a, b) =>
-          scheduleSortValueForMatch(a) - scheduleSortValueForMatch(b) ||
-          (a.venue?.sortOrder ?? 0) - (b.venue?.sortOrder ?? 0) ||
-          (a.matchNo ?? 0) - (b.matchNo ?? 0) ||
-          a.id.localeCompare(b.id),
-      );
-    ordered.forEach((m, i) => map.set(m.id, `${abbr}${(event.codeStart ?? 0) + i + 1}`));
+    const codes = event.matchCodes ? Object.entries(event.matchCodes) : eventMatchCodes(event);
+    for (const [id, code] of codes) map.set(id, code);
   }
   return map;
 }
@@ -793,23 +804,33 @@ function buildFlowSheet(
     const event: ExportEvent = { ...item, matches: dedupeFixtures(item.matches) };
     const label = eventLabel(event);
     const teamRoundRobin = event.teamCompetition?.format === 'ROUND_ROBIN';
-    // 第一阶段：仅「小组循环+淘汰(标准2023)」输出小组循环成绩网格。按阶段导出时，
-    // 第二阶段不画第一阶段；第一阶段不画第二阶段（全量导出 stage 为空时两段都画）。
-    if (stage !== 'second' && (event.format === GROUP_KNOCKOUT_STD || teamRoundRobin)) {
-      row = sectionTitle(ws, row, teamRoundRobin ? `${label}单组循环：` : `${label}第一阶段：`);
+    // 只有一个阶段的赛制不写「第二阶段」：单淘汰的对阵树标「单淘汰」，单项单循环画循环成绩网格。
+    const singleElimination = event.format === 'SINGLE_ELIMINATION';
+    const roundRobin = event.format === 'ROUND_ROBIN' && !event.teamCompetition;
+    // 淘汰+分组排名：第一阶段是淘汰赛，第二阶段是排位赛（A-H 签位）。
+    const eliminationThenRanking = event.format === 'SINGLE_ELIMINATION_PLUS_GROUP_RANKING';
+    // 第一阶段：「小组循环+淘汰(标准2023)」和单循环输出循环成绩网格，淘汰+分组排名输出淘汰对阵树。
+    // 按阶段导出时，第二阶段不画第一阶段；第一阶段不画第二阶段（全量导出 stage 为空时两段都画）。
+    if (stage !== 'second' && (event.format === GROUP_KNOCKOUT_STD || teamRoundRobin || roundRobin)) {
+      row = sectionTitle(ws, row, teamRoundRobin ? `${label}单组循环：` : roundRobin ? `${label}单循环：` : `${label}第一阶段：`);
       row = renderGroupGrids(ws, row, event, regMap, codeMap);
+      row += 1;
+    } else if (stage !== 'second' && eliminationThenRanking) {
+      const tree = eventBracketTree(event, regMap, codeMap);
+      row = tree ? renderBracketTree(ws, row, tree, `${label}第一阶段`) : sectionTitle(ws, row, `${label}第一阶段：`);
       row += 1;
     }
     // 第二阶段：优先用后台手动指定的「前8/前6晋级赛」对阵图；否则画淘汰赛对阵树（已生成的
     // 淘汰赛场次，或标准2023 出线前按「X组第N名」预排的骨架）。都没有时仅留标题占位，与参考件一致。
-    if (stage !== 'first') {
+    if (stage !== 'first' && !roundRobin) {
       const placement = Boolean(event.secondStage && event.secondStage.matches.length);
       const playoff = event.matches.some((m) => isPlayoff(m));
-      const tree = teamRoundRobin || placement || playoff ? null : eventBracketTree(event, regMap, codeMap);
+      const tree = teamRoundRobin || placement || playoff || eliminationThenRanking ? null : eventBracketTree(event, regMap, codeMap);
+      const title = singleElimination ? `${label}单淘汰` : `${label}第二阶段`;
       if (tree) {
-        row = renderBracketTree(ws, row, tree, `${label}第二阶段`);
+        row = renderBracketTree(ws, row, tree, title);
       } else {
-        row = sectionTitle(ws, row, `${label}第二阶段：`);
+        row = sectionTitle(ws, row, `${title}：`);
         if (teamRoundRobin) {
           // 保留秩序册模板的第二阶段占位；单组循环打完即结束，不生成淘汰场次。
           ws.getCell(row, 1).value = '单组循环全部结束后确定各队名次，见“名次汇总”。';
@@ -1220,6 +1241,90 @@ export function eventBracketTreeForImage(event: ExportEvent): { tree: BracketTre
   const regMap = new Map(event.registrations.map((registration) => [registration.id, registration]));
   const tree = eventBracketTree(event, regMap, matchCodeMap({ events: [event] }));
   return tree ? { tree } : { reason: '该项目还没有淘汰赛对阵（抽签后再下载）' };
+}
+
+/** 对阵图（PNG）按阶段导出：first 第一阶段、second 第二阶段、all 全部阶段（单阶段赛制三者相同）。 */
+export type EventImageStage = 'first' | 'second' | 'all';
+/** 图里的一段：淘汰对阵树，或画好表格的临时工作表（小组赛成绩表、A-H 晋级赛、交叉排位赛）。 */
+export type EventImagePart = { label: string; tree?: BracketTree; sheet?: ExcelJS.Worksheet };
+
+const GROUP_STAGE_IMAGE_FORMATS = [GROUP_KNOCKOUT_STD, 'GROUP_PLUS_KNOCKOUT', 'GROUP_PLUS_PLAYOFF'];
+
+// 在一张临时工作表上画表格（列宽、样式与秩序册流程表相同），画不出内容时返回 null。
+function scratchSheet(draw: (ws: ExcelJS.Worksheet) => number) {
+  const ws = new ExcelJS.Workbook().addWorksheet('对阵图');
+  ws.properties.defaultColWidth = 8;
+  return draw(ws) > 1 ? ws : null;
+}
+
+/**
+ * 对阵图（PNG）：一个项目指定阶段要画的内容，与秩序册流程表同一份数据。
+ * - 小组+淘汰 / 小组+交叉排位：第一阶段 = 小组赛成绩表；第二阶段 = 淘汰对阵树（出线前为预排骨架）、
+ *   A-H 前8/前6名晋级赛或交叉排位赛。
+ * - 淘汰+分组排名：第一阶段 = 淘汰对阵树，第二阶段 = 排位赛（A-H）。
+ * - 单淘汰、单循环只有一个阶段，不分 first / second。
+ * 画不出来时返回原因。
+ */
+export function eventImageParts(
+  event: ExportEvent,
+  stage: EventImageStage,
+): { label: string; parts: EventImagePart[]; tree: BracketTree | null } | { reason: string } {
+  const deduped: ExportEvent = { ...event, matches: dedupeFixtures(event.matches) };
+  const regMap = new Map(deduped.registrations.map((registration) => [registration.id, registration]));
+  const codeMap = matchCodeMap({ events: [deduped] });
+  const groupsPart = (label: string): EventImagePart | null => {
+    if (!groupPositions(deduped).size) return null;
+    const sheet = scratchSheet((ws) => renderGroupGrids(ws, 1, deduped, regMap, codeMap));
+    return sheet ? { label, sheet } : null;
+  };
+  const treePart = (label: string): EventImagePart | null => {
+    const tree = eventBracketTree(deduped, regMap, codeMap);
+    return tree ? { label, tree } : null;
+  };
+  const placementPart = (label: string): EventImagePart | null => {
+    const secondStage = deduped.secondStage;
+    if (!secondStage?.matches.length) return null;
+    const sheet = scratchSheet((ws) => renderSecondStagePlacement(ws, 1, deduped, secondStage, regMap));
+    return sheet ? { label, sheet } : null;
+  };
+  const playoffPart = (label: string): EventImagePart | null => {
+    if (!deduped.matches.some((m) => isPlayoff(m))) return null;
+    const sheet = scratchSheet((ws) => renderPlayoffPlacementMatches(ws, 1, deduped, regMap));
+    return sheet ? { label, sheet } : null;
+  };
+  const single = (part: EventImagePart | null, reason: string) =>
+    part ? { label: part.label, parts: [part], tree: part.tree ?? null } : { reason };
+
+  if (event.format === 'SINGLE_ELIMINATION') return single(treePart('单淘汰'), '该项目还没有淘汰赛对阵（抽签后再下载）');
+  if (event.format === 'ROUND_ROBIN') return single(groupsPart('单循环'), '该项目还没有循环赛场次（抽签后再下载）');
+
+  let first: EventImagePart | null;
+  let second: EventImagePart | null;
+  let firstReason: string;
+  let secondReason: string;
+  if (event.format === 'SINGLE_ELIMINATION_PLUS_GROUP_RANKING') {
+    // 淘汰对阵树只取第一阶段场次（roundNo 1–99），排位赛不进树。
+    first = treePart('第一阶段（淘汰赛）');
+    second = placementPart('第二阶段（排位赛）');
+    firstReason = '该项目还没有淘汰赛对阵（抽签后再下载）';
+    secondReason = '第二阶段排位赛还没有对阵（淘汰赛结束后在抽签编排页确定）';
+  } else if (GROUP_STAGE_IMAGE_FORMATS.includes(event.format ?? '')) {
+    first = groupsPart('第一阶段（小组赛）');
+    const top6 = deduped.secondStage?.rankingMode === 'TOP_6';
+    second = placementPart(`第二阶段（前${top6 ? 6 : 8}名晋级赛）`)
+      ?? playoffPart('第二阶段（交叉排位赛）')
+      ?? (event.format === 'GROUP_PLUS_PLAYOFF' ? null : treePart('第二阶段（淘汰赛）'));
+    firstReason = '该项目还没有小组赛场次（抽签后再下载）';
+    secondReason = '第二阶段还没有对阵（小组赛结束后生成）';
+  } else {
+    return { reason: '该项目的赛制暂不支持导出对阵图' };
+  }
+
+  if (stage === 'first') return single(first, firstReason);
+  if (stage === 'second') return single(second, secondReason);
+  const parts = [first, second].filter((part): part is EventImagePart => Boolean(part));
+  if (!parts.length) return { reason: firstReason };
+  return { label: '全部阶段', parts, tree: parts.find((part) => part.tree)?.tree ?? null };
 }
 
 // ---- 秩序册流程表里的对阵树（单元格画框、边框画连线）----

@@ -108,6 +108,8 @@ interface ConflictItem {
 }
 
 interface ScheduleMatch {
+  /** 轮空场：首轮一方没有对手、直接晋级，不用排场地和时间。 */
+  isBye?: boolean;
   groupId: string | null;
   groupName: string | null;
   scheduleLocked: boolean;
@@ -184,8 +186,11 @@ type ManualPreview = {
   venues: Array<{ id: string; name: string; inGroup: boolean; available: boolean; reason: string | null }>;
 };
 
-function sideName(side?: { name: string } | null) {
-  return side?.name ?? '待定';
+// 对阵文字：团体赛写两队；轮空场没有对手的一边写「轮空」，其余未定的写「待定」。
+function matchupText(match: ScheduleMatch) {
+  if (match.teamMatchId) return `${match.team1Name ?? '待定'} VS ${match.team2Name ?? '待定'}`;
+  const side = (value?: { name: string } | null) => value?.name ?? (match.isBye ? '轮空' : '待定');
+  return `${side(match.side1)} VS ${side(match.side2)}`;
 }
 
 function hasSecondStageFormat(format?: string | null) {
@@ -765,14 +770,13 @@ export default function AdminSchedulingPage() {
               title: '对阵',
               width: 190,
               ellipsis: true,
-              render: (_, row: ScheduleMatch) => row.teamMatchId
-                ? `${row.team1Name ?? '待定'} VS ${row.team2Name ?? '待定'}`
-                : `${sideName(row.side1)} VS ${sideName(row.side2)}`,
+              render: (_, row: ScheduleMatch) => matchupText(row),
             },
             {
               title: '状态',
               width: 66,
               render: (_, row: ScheduleMatch) => {
+                if (row.isBye) return <Tag>轮空</Tag>;
                 const meta = STATUS_LABELS[row.scheduleStatus] ?? STATUS_LABELS[row.status] ?? STATUS_LABELS.PENDING;
                 return <Tag color={meta.color}>{meta.label}</Tag>;
               },
@@ -1095,8 +1099,8 @@ export default function AdminSchedulingPage() {
           })}</div>} style={{ marginBlock: 12 }} />}
           <Table rowKey="id" size="small" dataSource={autoPreview.matches} pagination={{ pageSize: 8 }} columns={[
             { title: '组别', dataIndex: 'groupName' }, { title: '项目', dataIndex: 'eventTypeLabel' },
-            { title: '对阵', render: (_, m) => m.teamMatchId ? `${m.team1Name ?? '待定'} VS ${m.team2Name ?? '待定'}` : `${sideName(m.side1)} VS ${sideName(m.side2)}` },
-            { title: '场地', render: (_, m) => m.venueId ? configuredVenues.find(v => v.id === m.venueId)?.name : '待排程' },
+            { title: '对阵', render: (_, m) => matchupText(m) },
+            { title: '场地', render: (_, m) => m.venueId ? configuredVenues.find(v => v.id === m.venueId)?.name : m.isBye ? '轮空，无需安排' : '待排程' },
             { title: '时间', render: (_, m) => formatTime(m.scheduledAt) }, { title: '固定', render: (_, m) => m.scheduleLocked ? '人工固定' : '—' },
           ]} />
         </>}

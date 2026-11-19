@@ -443,6 +443,17 @@ describe('auto schedule by stage, player rest and keeping placed matches', () =>
     expect(gap(await preview(matches, { playerRestMinutes: 20 }, 2))).toBe(50);
   });
 
+  it('轮空场（已结束、只有一方）标记 isBye，赛程页写「轮空」', async () => {
+    const { service } = setup([
+      eventMatch('bye', 'eA', 'SINGLE_ELIMINATION', 1, 1, { status: 'COMPLETED', winnerSide: 1, side1Id: 'r1' }),
+      eventMatch('real', 'eA', 'SINGLE_ELIMINATION', 1, 2, { side1Id: 'r2', side2Id: 'r4' }),
+    ]);
+    const schedule = await service.getSchedule('t');
+    const byId = new Map(schedule.matches.map(m => [m.id, m.isBye]));
+    expect(byId.get('bye')).toBe(true);
+    expect(byId.get('real')).toBe(false);
+  });
+
   it('多选单项：只排选中的单项', async () => {
     const result = await preview([eventMatch('a', 'eA', 'SINGLE_ELIMINATION', 1, 1), eventMatch('b', 'eB', 'SINGLE_ELIMINATION', 1, 1)], { eventIds: ['eB'] });
     expect(result.matches.map(m => m.id)).toEqual(['b']);

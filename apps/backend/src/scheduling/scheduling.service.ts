@@ -10,6 +10,7 @@ import { Format, MatchStatus, Prisma, TeamCompetitionFormat, VenueRuleMode } fro
 import { PrismaService } from '../prisma/prisma.service';
 import { TeamCompetitionsService } from '../team-competitions/team-competitions.service';
 import { hostDisplayLabel } from '../common/event-mix';
+import { isByeMatch } from '../common/knockout-placement';
 import { AutoScheduleDto, ClearScheduleDto, CreateVenueDto, UpdateMatchScheduleDto, UpdateVenueDto, SaveGroupVenuesDto } from './dto/scheduling.dto';
 import { ScoringGateway } from '../scoring/scoring.gateway';
 import {
@@ -65,6 +66,8 @@ type RegistrationView = {
 
 type ScheduleMatch = {
   id: string;
+  /** 轮空场：淘汰赛首轮一方没有对手、直接晋级，已结束，不用排场地和时间。 */
+  isBye: boolean;
   groupId: string | null;
   groupName: string | null;
   scheduleLocked: boolean;
@@ -1064,6 +1067,7 @@ export class SchedulingService {
         finishedAt: match.finishedAt,
         dependenciesReady,
         dependencyMatchIds,
+        isBye: Boolean(match.eventId) && isByeMatch(match),
         scheduleStatus,
       };
     });

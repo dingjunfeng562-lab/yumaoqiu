@@ -7,10 +7,10 @@ import * as ExcelJS from 'exceljs';
 import { applyFinalRankings, teamStandings } from '../common/final-rankings';
 import { isByeMatch, knockoutPlacements } from '../common/knockout-placement';
 import { groupSizesFromGroupMatches } from '../common/knockout-skeleton';
-import { buildOrderbookWorkbook, eventBracketTreeForImage, teamCompetitionEvents } from './orderbook-workbook';
-import { formatBracketGeneratedAt, renderBracketSvg } from './bracket-svg';
+import { buildOrderbookWorkbook, eventImageParts, eventMatchCodes, teamCompetitionEvents, type EventImageStage } from './orderbook-workbook';
+import { bracketTreeSection, formatBracketGeneratedAt, renderStagesSvg, sheetSection } from './bracket-svg';
 import { applyEventMixes, hasEventMix } from './export-mix';
-import { hostDisplayLabel, mixOriginLabel } from '../common/event-mix';
+import { hostDisplayLabel, MIX_CATEGORY_LABELS, mixCategory, mixOriginLabel } from '../common/event-mix';
 import { teamCompetitionLabel } from '../common/team-competition-label';
 
 const XLS_CONTENT_TYPE = 'application/vnd.ms-excel';
@@ -210,6 +210,8 @@ type ExportEvent = {
   label?: string;
   codePrefix?: string;
   codeStart?: number;
+  /** 场次 id → 场次号。按阶段导出时按整个项目预先算好（matches 只有本阶段场次）。 */
+  matchCodes?: Record<string, string>;
   teamCompetition?: ExportTeamCompetition;
 };
 
@@ -369,7 +371,7 @@ export class ExportsService {
       : applyEventMixes(found);
 
     // 生成器版本也进指纹：改了出片逻辑（如淘汰赛名次折算）后，旧缓存文件会在下次下载/巡检时自动重建。
-    const fingerprint = createHash('sha256').update(kind === 'orderbook' ? 'team-orderbook-v10-bracket-tree' : 'team-standings-v7-r4-label').update(kind).update(JSON.stringify(tournament)).digest('hex');
+    const fingerprint = createHash('sha256').update(kind === 'orderbook' ? 'team-orderbook-v11-stage-titles' : 'team-standings-v7-r4-label').update(kind).update(JSON.stringify(tournament)).digest('hex');
     return { kind, tournament, fingerprint };
   }
 
@@ -402,14 +404,14 @@ export class ExportsService {
    * stage 仅决定流程表只画第一阶段或第二阶段，日程表/秩序表按该阶段场次（含未排程的，流程表会完整呈现）。
    */
   async exportEventStageOrder(eventId: string, stage: 'first' | 'second') {
-    const { event, eventRegistrations, mixed } = await this.loadEventExport(eventId);
+    const { event, eventRegistrations, mixed, codePrefix, allMatches } = await this.loadEventExport(eventId);
 
     // 只取目标阶段的场次喂给日程表/秩序表；流程表会按 stage 完整呈现该阶段结构（含未排程的）。
     const stageMatches = this.orderStageMatches(
-      (event.matches as unknown as ExportMatch[]).filter((match) =>
-        this.isStageMatch(event.format, match.roundNo ?? 0, stage),
-      ),
-    ).map((match) => this.withMatchScheduledAtLocal(match));
+      allMatches.filter((match) => this.isStageMatch(event.format, match.roundNo ?? 0, stage)),
+    );
+    // 场次号按整个项目编（小组赛也参与编号），和整本秩序册、对阵图（PNG）一致。
+    const matchCodes = Object.fromEntries(eventMatchCodes({ type: event.type, codePrefix, matches: allMatches }));
 
     const tournament: ExportTournament = {
       name: event.tournament.name,
@@ -423,6 +425,8 @@ export class ExportsService {
           qualifiersPerGroup: event.qualifiersPerGroup,
           registrations: eventRegistrations as unknown as ExportRegistration[],
           ...(mixed ? { label: hostDisplayLabel(event), groupLabel: null } : {}),
+          ...(codePrefix ? { codePrefix } : {}),
+          matchCodes,
           matches: stageMatches,
           secondStage: event.secondStage as unknown as ExportSecondStage | null,
           // 第二阶段只带淘汰场次；出线前的对阵骨架要按各组人数画，单独带上。
@@ -443,34 +447,41 @@ export class ExportsService {
   }
 
   /**
-   * 后台「数据导出 → 对阵图（PNG）」：单项淘汰对阵树的 SVG（与秩序册流程表第二阶段同一份数据），
-   * 浏览器转成 PNG 下载。出线前（标准2023）按「X组第N名」预排骨架。
+   * 后台「数据导出 → 对阵图（PNG）」：按阶段把单项的秩序册流程表内容画成 SVG，浏览器转成 PNG 下载。
+   * 第一阶段 = 小组赛成绩表（淘汰+分组排名为淘汰对阵树），第二阶段 = 淘汰对阵树 / A-H 晋级赛 / 交叉排位赛，
+   * 全部阶段 = 两段上下排在一张图里；单淘汰、单循环只有一个阶段。出线前（标准2023）淘汰赛按「X组第N名」预排。
    */
-  async exportEventBracketImage(eventId: string) {
-    const { event, eventRegistrations, mixed } = await this.loadEventExport(eventId);
+  async exportEventBracketImage(eventId: string, stage: EventImageStage = 'all') {
+    const { event, eventRegistrations, mixed, codePrefix, allMatches } = await this.loadEventExport(eventId);
     const exportEvent: ExportEvent = {
       type: event.type,
       format: event.format,
       qualifiersPerGroup: event.qualifiersPerGroup,
       registrations: eventRegistrations as unknown as ExportRegistration[],
+      ...(codePrefix ? { codePrefix } : {}),
       // 全部场次：场次号与整本秩序册一致（小组赛也参与编号），骨架按小组赛场次统计各组人数。
-      matches: (event.matches as unknown as ExportMatch[]).map((match) => this.withMatchScheduledAtLocal(match)),
+      matches: allMatches,
       secondStage: event.secondStage as unknown as ExportSecondStage | null,
     };
-    const result = eventBracketTreeForImage(exportEvent);
+    const result = eventImageParts(exportEvent, stage);
     if ('reason' in result) throw new BadRequestException(result.reason);
-    const { tree } = result;
 
     const typeLabel = EVENT_TYPE_LABELS[event.type] ?? event.type;
     const eventLabel = mixed ? hostDisplayLabel(event) : [event.groupLabel, typeLabel].filter(Boolean).join(' · ');
+    const { tree } = result;
     const subtitle = [
-      `${tree.drawSize} 签`,
-      tree.preview ? '小组赛结束前预排，签位按小组名次占位，出线后自动填入' : '',
+      tree ? `淘汰赛 ${tree.drawSize} 签` : '',
+      tree?.preview ? '小组赛结束前预排，签位按小组名次占位，出线后自动填入' : '',
       `生成于 ${formatBracketGeneratedAt(new Date())}`,
     ].filter(Boolean).join(' · ');
-    const image = renderBracketSvg(tree, { title: `${event.tournament.name} · ${eventLabel} 对阵图`, subtitle });
+    const many = result.parts.length > 1;
+    const sections = result.parts.map((part) => ({
+      ...(many ? { heading: part.label } : {}),
+      ...(part.tree ? bracketTreeSection(part.tree) : sheetSection(part.sheet!)),
+    }));
+    const image = renderStagesSvg({ title: `${event.tournament.name} · ${eventLabel} · ${result.label}`, subtitle }, sections);
     return {
-      filename: this.exportFilename(`${event.tournament.name}-${eventLabel.replace(/ · /g, '')}`, '对阵图', 'png'),
+      filename: this.exportFilename(`${event.tournament.name}-${eventLabel.replace(/ · /g, '')}`, result.label.replace(/[（）]/g, ''), 'png'),
       ...image,
     };
   }
@@ -592,7 +603,12 @@ export class ExportsService {
     const eventRegistrations = registrations.map((registration) => (mixed
       ? { ...registration, mixOrigin: mixOriginLabel(ownerOf.get(registration.eventId) ?? event) }
       : registration));
-    return { event, eventRegistrations, mixed };
+    // 不同项目混编（男单 + 女单）时场次号前缀用「单打 / 双打」，同整本秩序册（export-mix.ts）。
+    const codePrefix = event.mixMembers.some((member) => member.type !== event.type)
+      ? MIX_CATEGORY_LABELS[mixCategory(event.type)]
+      : undefined;
+    const allMatches = (event.matches as unknown as ExportMatch[]).map((match) => this.withMatchScheduledAtLocal(match));
+    return { event, eventRegistrations, mixed, codePrefix, allMatches };
   }
 
   /**

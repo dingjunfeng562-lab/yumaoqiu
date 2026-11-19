@@ -40,7 +40,7 @@ const exportKinds = [
   { key: 'orderbook', title: '秩序册', description: '按参考模板生成秩序表、分组表、小组赛、日程表、名次汇总、淘汰赛和流程表。' },
 ];
 
-// 对阵图（PNG）：可选的单项。并入混编的单项没有自己的场次；循环赛没有淘汰对阵。
+// 对阵图（PNG）：可选的单项。并入混编的单项没有自己的场次，不单独列出。
 type BracketEvent = {
   id: string;
   type: string;
@@ -61,6 +61,25 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
 
 function bracketEventLabel(event: BracketEvent) {
   return event.mixLabel ?? `${event.group?.name ?? event.groupLabel ?? ''} ${EVENT_TYPE_LABELS[event.type] ?? event.type}`.trim();
+}
+
+// 对阵图可选的阶段：单淘汰、单循环只有一个阶段；两阶段赛制可分开导出或合成一张。
+type BracketStage = 'first' | 'second' | 'all';
+function bracketStageOptions(format?: string): Array<{ value: BracketStage; label: string }> {
+  if (format === 'SINGLE_ELIMINATION') return [{ value: 'all', label: '单淘汰' }];
+  if (format === 'ROUND_ROBIN') return [{ value: 'all', label: '单循环' }];
+  if (format === 'SINGLE_ELIMINATION_PLUS_GROUP_RANKING') {
+    return [
+      { value: 'first', label: '第一阶段（淘汰赛）' },
+      { value: 'second', label: '第二阶段（排位赛）' },
+      { value: 'all', label: '全部阶段（一张图）' },
+    ];
+  }
+  return [
+    { value: 'first', label: '第一阶段（小组赛）' },
+    { value: 'second', label: format === 'GROUP_PLUS_PLAYOFF' ? '第二阶段（交叉排位赛）' : '第二阶段（淘汰赛 / 晋级赛）' },
+    { value: 'all', label: '全部阶段（一张图）' },
+  ];
 }
 
 type StoredExportFile = {
@@ -107,6 +126,10 @@ export default function AdminExportsPage() {
   const bracketEvents = bracketEventState.tournamentId === selectedTournamentId ? bracketEventState.events : [];
   const [bracketEventId, setBracketEventId] = useState('');
   const selectedBracketEventId = bracketEvents.some((item) => item.id === bracketEventId) ? bracketEventId : '';
+  const stageOptions = bracketStageOptions(bracketEvents.find((item) => item.id === selectedBracketEventId)?.format);
+  const [bracketStage, setBracketStage] = useState<BracketStage>('first');
+  // 换了项目、原来选的阶段不在新项目的选项里时，取第一项。
+  const selectedBracketStage = stageOptions.some((option) => option.value === bracketStage) ? bracketStage : stageOptions[0].value;
   const [bracketDownloading, setBracketDownloading] = useState(false);
 
   const selectedTournament = useMemo(
@@ -184,7 +207,7 @@ export default function AdminExportsPage() {
         if (cancelled) return;
         setBracketEventState({
           tournamentId: selectedTournamentId,
-          events: data.filter((item) => !item.mixHostId && item.format !== 'ROUND_ROBIN'),
+          events: data.filter((item) => !item.mixHostId),
         });
       })
       .catch(() => {
@@ -201,7 +224,7 @@ export default function AdminExportsPage() {
     setBracketDownloading(true);
     try {
       const image = await apiFetch<{ filename: string; svg: string; width: number; height: number }>(
-        `/exports/events/${selectedBracketEventId}/bracket-image`,
+        `/exports/events/${selectedBracketEventId}/bracket-image?stage=${selectedBracketStage}`,
         { token },
       );
       downloadBlob(await svgToPngBlob(image.svg, image.width, image.height), image.filename);
@@ -317,7 +340,7 @@ export default function AdminExportsPage() {
               <div>
                 <Typography.Title level={4} style={{ margin: 0 }}>对阵图（PNG）</Typography.Title>
                 <Typography.Text type="secondary">
-                  选择项目，下载淘汰赛对阵图图片，与秩序册「流程表」第二阶段一致；小组赛结束前为预排骨架。
+                  选择项目和阶段下载图片，内容与秩序册「流程表」一致：第一阶段为小组赛成绩表，第二阶段为淘汰赛对阵图（或晋级赛、交叉排位赛）；小组赛结束前淘汰赛为预排骨架。
                 </Typography.Text>
               </div>
               <Select
@@ -327,6 +350,13 @@ export default function AdminExportsPage() {
                 disabled={!bracketEvents.length}
                 options={bracketEvents.map((item) => ({ value: item.id, label: bracketEventLabel(item) }))}
                 onChange={setBracketEventId}
+              />
+              <Select
+                style={{ width: '100%' }}
+                value={selectedBracketStage}
+                disabled={!selectedBracketEventId}
+                options={stageOptions}
+                onChange={setBracketStage}
               />
               <Button
                 type="primary"

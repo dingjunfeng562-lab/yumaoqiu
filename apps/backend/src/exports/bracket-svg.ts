@@ -1,9 +1,11 @@
 import type { BracketTree, BracketTreeMatch } from './orderbook-workbook';
 
 /**
- * 后台「数据导出 → 对阵图（PNG）」：把淘汰对阵树（与秩序册流程表第二阶段同一份数据）画成 SVG，
- * 浏览器再转成 PNG 下载。版式参照前台对阵图：每场一个圆角框，双方各一行（名字、单位、每局比分），
- * 框上方是场次号 / 时间 / 场地，轮与轮之间折线相连，决赛接冠军，季军赛在决赛下方。
+ * 后台「数据导出 → 对阵图（PNG）」：按阶段把秩序册流程表的内容画成 SVG，浏览器再转成 PNG 下载。
+ * - 淘汰赛：对阵树，版式参照前台对阵图：每场一个圆角框，双方各一行（名字、单位、每局比分），
+ *   框上方是场次号 / 时间 / 场地，轮与轮之间折线相连，决赛接冠军，季军赛在决赛下方。
+ * - 小组赛 / 单循环成绩表、A-H 晋级赛、交叉排位赛：照流程表工作表原样画（sheetSection）。
+ * - 全部阶段：多段上下排在一张图里（renderStagesSvg）。
  * 字体用电脑自带的中文字体（微软雅黑 / 苹方），不嵌字体文件。
  */
 
@@ -129,14 +131,15 @@ export function formatBracketGeneratedAt(date: Date) {
   return `${part('year')}-${part('month')}-${part('day')} ${part('hour')}:${part('minute')}`;
 }
 
-/** 对阵树 → SVG。整棵树画在一张图上（128 签也是一张长图），width/height 为像素尺寸。 */
-export function renderBracketSvg(tree: BracketTree, meta: { title: string; subtitle: string }) {
+/** 图里的一段（对阵树或表格），从 (0,0) 起画，width/height 为像素尺寸。 */
+export type SvgSection = { width: number; height: number; body: string };
+
+/** 对阵树：轮次标签 + 各轮场次框和连线，决赛接冠军，季军赛在决赛下方。 */
+export function bracketTreeSection(tree: BracketTree): SvgSection {
   const { rounds } = tree;
-  const titleY = PAD + 24;
-  const subtitleY = titleY + 28;
-  const chipY = subtitleY + 22;
+  const chipY = 0;
   const bodyTop = chipY + CHIP_H + 14;
-  const x = (k: number) => PAD + k * COL_W;
+  const x = (k: number) => k * COL_W;
 
   // 每场双方之间横线的高度：首轮等距，后面各轮取两场来源的正中。
   const mids: number[][] = [];
@@ -208,17 +211,188 @@ export function renderBracketSvg(tree: BracketTree, meta: { title: string; subti
     bottom = Math.max(bottom, mid + ROW_H);
   }
 
-  const contentWidth = PAD * 2 + Math.max(0, rounds.length * COL_W - GAP_W) + (champion ? GAP_W + CHAMP_W : 0);
+  const width = Math.ceil(Math.max(0, rounds.length * COL_W - GAP_W) + (champion ? GAP_W + CHAMP_W : 0));
+  return { width, height: Math.ceil(bottom), body: body.join('') };
+}
+
+// ---- 表格段：把秩序册流程表里画好的工作表（小组赛成绩表、A-H 晋级赛、交叉排位赛）原样画成 SVG ----
+// 合并单元格、边框、底色、字体和对齐都照工作表；列宽按 Excel 字符宽换算，行高按文字行数撑开。
+const SHEET_FONT_SCALE = 1.25; // 磅 → 像素（约）
+const SHEET_LINE = 1.3;
+
+function argbColor(color: { argb?: string } | undefined, fallback: string) {
+  const argb = color?.argb;
+  return argb && /^[0-9A-Fa-f]{8}$/.test(argb) ? `#${argb.slice(2)}` : fallback;
+}
+
+// 按宽度折行（中文按字、ASCII 约半字宽），先按工作表里的换行符分段。
+function wrapLines(content: string, size: number, max: number, wrap: boolean) {
+  const lines: string[] = [];
+  for (const part of content.split(/\r?\n/)) {
+    if (!wrap || textWidth(part, size) <= max) {
+      lines.push(part);
+      continue;
+    }
+    let line = '';
+    for (const ch of part) {
+      if (line && textWidth(line + ch, size) > max) {
+        lines.push(line);
+        line = '';
+      }
+      line += ch;
+    }
+    lines.push(line);
+  }
+  return lines;
+}
+
+type SheetCellLike = {
+  address: string;
+  isMerged: boolean;
+  master: { address: string };
+  text: string;
+  font?: Partial<{ size: number; bold: boolean; italic: boolean; color: { argb?: string } }>;
+  fill?: unknown;
+  border?: Partial<Record<'top' | 'left' | 'bottom' | 'right', { style?: string; color?: { argb?: string } } | undefined>>;
+  alignment?: Partial<{ horizontal: string; vertical: string; wrapText: boolean }>;
+};
+type SheetLike = {
+  rowCount: number;
+  properties: { defaultColWidth?: number };
+  getRow(row: number): { height?: number; cellCount: number };
+  getColumn(col: number): { width?: number };
+  getCell(row: number, col: number): SheetCellLike;
+};
+
+export function sheetSection(ws: SheetLike, fromRow = 1, toRow = ws.rowCount): SvgSection {
+  const last = Math.min(toRow, ws.rowCount);
+  let cols = 0;
+  for (let r = fromRow; r <= last; r += 1) cols = Math.max(cols, ws.getRow(r).cellCount);
+  const colW = Array.from({ length: cols }, (_, i) => Math.round((ws.getColumn(i + 1).width ?? ws.properties.defaultColWidth ?? 8.43) * 7 + 5));
+  const colX = [0];
+  colW.forEach((w) => colX.push(colX[colX.length - 1] + w));
+
+  // 合并区域：主格 → 右下角。
+  const extent = new Map<string, { bottom: number; right: number }>();
+  const cellAt = (r: number, c: number) => ws.getCell(r, c);
+  for (let r = fromRow; r <= last; r += 1) {
+    for (let c = 1; c <= cols; c += 1) {
+      const cell = cellAt(r, c);
+      if (!cell.isMerged) continue;
+      const box = extent.get(cell.master.address) ?? { bottom: r, right: c };
+      extent.set(cell.master.address, { bottom: Math.max(box.bottom, r), right: Math.max(box.right, c) });
+    }
+  }
+  const spanOf = (r: number, c: number, cell: SheetCellLike) => extent.get(cell.address) ?? { bottom: r, right: c };
+  const fontPx = (cell: SheetCellLike) => Math.round((cell.font?.size ?? 11) * SHEET_FONT_SCALE * 10) / 10;
+
+  // 行高：工作表设了就用（磅 → 像素），没设按本行单格文字的行数撑开，至少 22 像素。
+  const rowH: number[] = [];
+  for (let r = fromRow; r <= last; r += 1) {
+    const set = ws.getRow(r).height;
+    let h = set ? set * (4 / 3) : 22;
+    if (!set) {
+      for (let c = 1; c <= cols; c += 1) {
+        const cell = cellAt(r, c);
+        if (cell.isMerged && cell.master.address !== cell.address) continue;
+        const span = spanOf(r, c, cell);
+        if (span.bottom !== r || !cell.text) continue;
+        const size = fontPx(cell);
+        const lines = wrapLines(cell.text, size, colX[span.right] - colX[c - 1] - 8, Boolean(cell.alignment?.wrapText));
+        h = Math.max(h, lines.length * size * SHEET_LINE + 8);
+      }
+    }
+    rowH.push(Math.ceil(h));
+  }
+  const rowY = [0];
+  rowH.forEach((h) => rowY.push(rowY[rowY.length - 1] + h));
+  const top = (r: number) => rowY[r - fromRow];
+
+  const fills: string[] = [];
+  const lines: string[] = [];
+  const texts: string[] = [];
+  const edge = (x1: number, y1: number, x2: number, y2: number, b?: { style?: string; color?: { argb?: string } }) => {
+    if (!b?.style) return;
+    const w = b.style === 'medium' ? 2 : b.style === 'thick' || b.style === 'double' ? 3 : 1;
+    const dash = /dash|dot|hair/i.test(b.style) ? ' stroke-dasharray="2 2"' : '';
+    lines.push(`<path d="M${n(x1)} ${n(y1)}L${n(x2)} ${n(y2)}" stroke="${argbColor(b.color, '#64748B')}" stroke-width="${w}"${dash}/>`);
+  };
+
+  for (let r = fromRow; r <= last; r += 1) {
+    for (let c = 1; c <= cols; c += 1) {
+      const cell = cellAt(r, c);
+      if (cell.isMerged && cell.master.address !== cell.address) continue;
+      const span = spanOf(r, c, cell);
+      const x1 = colX[c - 1];
+      const x2 = colX[span.right];
+      const y1 = top(r);
+      const y2 = top(span.bottom + 1);
+      const fill = cell.fill as { type?: string; fgColor?: { argb?: string } } | undefined;
+      if (fill?.type === 'pattern' && fill.fgColor?.argb) {
+        fills.push(`<rect x="${n(x1)}" y="${n(y1)}" width="${n(x2 - x1)}" height="${n(y2 - y1)}" fill="${argbColor(fill.fgColor, '#FFFFFF')}"/>`);
+      }
+      // 边框：上、左取主格；右边、下边取合并区域最右一列、最下一行各格自己的边框。
+      edge(x1, y1, x2, y1, cell.border?.top);
+      edge(x1, y1, x1, y2, cell.border?.left);
+      for (let rr = r; rr <= span.bottom; rr += 1) edge(x2, top(rr), x2, top(rr + 1), cellAt(rr, span.right).border?.right);
+      for (let cc = c; cc <= span.right; cc += 1) edge(colX[cc - 1], y2, colX[cc], y2, cellAt(span.bottom, cc).border?.bottom);
+
+      if (!cell.text) continue;
+      const size = fontPx(cell);
+      const textLines = wrapLines(cell.text, size, x2 - x1 - 8, Boolean(cell.alignment?.wrapText));
+      const horizontal = cell.alignment?.horizontal;
+      const anchor = horizontal === 'center' || horizontal === 'centerContinuous' ? 'middle' : horizontal === 'right' ? 'end' : 'start';
+      const tx = anchor === 'middle' ? (x1 + x2) / 2 : anchor === 'end' ? x2 - 4 : x1 + 4;
+      const blockH = textLines.length * size * SHEET_LINE;
+      const firstBaseline = (y1 + y2) / 2 - blockH / 2 + size * 1.0;
+      const color = argbColor(cell.font?.color, COLOR.text);
+      textLines.forEach((line, i) => {
+        texts.push(text(tx, firstBaseline + i * size * SHEET_LINE, line, { size, fill: color, bold: Boolean(cell.font?.bold), anchor }));
+      });
+    }
+  }
+  return { width: colX[cols] ?? 0, height: rowY[rowY.length - 1] ?? 0, body: fills.join('') + lines.join('') + texts.join('') };
+}
+
+/**
+ * 整张图：大标题 + 副标题，下面依次画各段；有多段（全部阶段）时每段前加小标题。
+ * 返回 SVG 文本和像素尺寸。
+ */
+export function renderStagesSvg(
+  meta: { title: string; subtitle: string },
+  sections: Array<SvgSection & { heading?: string }>,
+) {
+  const titleY = PAD + 24;
+  const subtitleY = titleY + 28;
+  let y = subtitleY + 22;
+  const parts: string[] = [];
+  let contentWidth = 0;
+  sections.forEach((section, index) => {
+    if (index > 0) y += 40;
+    if (section.heading) {
+      parts.push(text(PAD, y + 20, section.heading, { size: 18, fill: COLOR.accent, bold: true }));
+      contentWidth = Math.max(contentWidth, textWidth(section.heading, 18));
+      y += 36;
+    }
+    parts.push(`<g transform="translate(${PAD} ${n(y)})">${section.body}</g>`);
+    contentWidth = Math.max(contentWidth, section.width);
+    y += section.height;
+  });
   const width = Math.ceil(
-    Math.max(contentWidth, PAD * 2 + textWidth(meta.title, 24), PAD * 2 + textWidth(meta.subtitle, 13)),
+    Math.max(PAD * 2 + contentWidth, PAD * 2 + textWidth(meta.title, 24), PAD * 2 + textWidth(meta.subtitle, 13)),
   );
-  const height = Math.ceil(bottom + PAD);
+  const height = Math.ceil(y + PAD);
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" font-family="${esc(FONT)}">` +
     `<rect width="${width}" height="${height}" fill="#FFFFFF"/>` +
     text(PAD, titleY, meta.title, { size: 24, fill: COLOR.text, bold: true }) +
     text(PAD, subtitleY, meta.subtitle, { size: 13, fill: COLOR.sub }) +
-    body.join('') +
+    parts.join('') +
     '</svg>';
   return { svg, width, height };
+}
+
+/** 对阵树 → 整张 SVG（只有这一段）。 */
+export function renderBracketSvg(tree: BracketTree, meta: { title: string; subtitle: string }) {
+  return renderStagesSvg(meta, [bracketTreeSection(tree)]);
 }
