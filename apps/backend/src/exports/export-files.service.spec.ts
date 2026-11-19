@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ExportFilesService } from './export-files.service';
@@ -124,5 +124,33 @@ describe('ExportFilesService', () => {
 
     expect(file.content.toString()).toBe('v1');
     expect(exportsService.buildTournamentExport).toHaveBeenCalledTimes(1);
+  });
+
+  it('报名表（含完整身份证号）不写入磁盘缓存，每次在内存里生成', async () => {
+    const first = await service.getFresh('t1', 'registrations', true);
+    version = 2;
+    const second = await service.getFresh('t1', 'registrations');
+
+    expect(first.content.toString()).toBe('v1');
+    expect(second.content.toString()).toBe('v2');
+    expect(exportsService.buildTournamentExport).toHaveBeenCalledTimes(2);
+    expect(await service.list('t1')).toEqual([]);
+  });
+
+  it('以前缓存过的报名表文件：下载或后台扫描时删掉，其它导出不受影响', async () => {
+    const dir = join(workDir, 'uploads', 'exports', 't1');
+    await service.getFresh('t1', 'schedule');
+    const [scheduleFile] = await storedFiles();
+    // 模拟上线前留下的报名表缓存。
+    await writeFile(join(dir, 'registrations-old.xls'), 'old');
+    const manifestPath = join(dir, 'manifest.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    manifest.registrations = { ...manifest.schedule, kind: 'registrations', storedName: 'registrations-old.xls', size: 3 };
+    await writeFile(manifestPath, JSON.stringify(manifest));
+
+    await service.refreshAll();
+
+    expect(await storedFiles()).toEqual([scheduleFile]);
+    expect((await service.list('t1')).map((item) => item.kind)).toEqual(['schedule']);
   });
 });

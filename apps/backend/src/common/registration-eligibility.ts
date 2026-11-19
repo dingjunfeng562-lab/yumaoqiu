@@ -1,20 +1,39 @@
 import { BadRequestException } from '@nestjs/common';
 import { Gender, Prisma } from '@prisma/client';
 import { AgeRule, ageForRule, checkAge, checkGender, checkReportedAge, Eligibility, GroupFields, parseIdentity } from './age-eligibility';
-import { identityFingerprint } from './identity-vault';
+import { decryptIdentityNumber, encryptIdentityNumber, identityFingerprint, isIdentityCipher } from './identity-vault';
 
-/** 库里只存这三项，不存身份证号原文，也不存可还原的密文。 */
-export type IdentityData = { fingerprint: string; birthDate: string; masked: string };
+/**
+ * 库里存的证件信息：哈希、出生日期、打码号码，以及完整号码的密文（2026-11-19 起，只供后台导出报名表解密）。
+ * 不存身份证号原文。2026-11-19 之前的报名没有 encrypted。
+ */
+export type IdentityData = { fingerprint: string; birthDate: string; masked: string; encrypted?: string };
 export type PersonInput = { identityNumber?: string; gender?: string | null; age?: number | string | null; shirtSize?: string | null };
 export const SHIRT_SIZE_MAX_LENGTH = 32;
 
-/** 读取库里已存的证件信息（只取哈希、出生日期、打码号码；旧数据里多出的字段一律丢弃）。 */
+/** 读取库里已存的证件信息（哈希、出生日期、打码号码、本版本的密文；旧数据里多出的字段一律丢弃）。 */
 export function storedIdentity(value: Prisma.JsonValue | null | undefined): IdentityData | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const { fingerprint, birthDate, masked } = value;
+  const { fingerprint, birthDate, masked, encrypted } = value;
   if (typeof fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(fingerprint)) return null;
   if (typeof birthDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(birthDate) || typeof masked !== 'string') return null;
-  return { fingerprint, birthDate, masked };
+  return isIdentityCipher(encrypted) ? { fingerprint, birthDate, masked, encrypted } : { fingerprint, birthDate, masked };
+}
+
+/**
+ * 后台导出报名表用：能解密就给完整身份证号，解不开（2026-11-19 之前的报名、密钥不对）就给打码号码。
+ * 只能用在导出里，接口响应仍然只给 identityView（打码号码 + 出生日期）。
+ */
+export function identityForExport(value: Prisma.JsonValue | null | undefined): { number: string; birthDate: string } | null {
+  const identity = storedIdentity(value);
+  if (!identity) return null;
+  let number: string | null = null;
+  try {
+    number = identity.encrypted ? decryptIdentityNumber(identity.encrypted, identity.fingerprint) : null;
+  } catch {
+    number = null;
+  }
+  return { number: number ?? identity.masked, birthDate: identity.birthDate };
 }
 
 /**
@@ -39,7 +58,8 @@ export function preparePerson(input: PersonInput, fields: GroupFields, ageRule: 
   if (number) {
     try {
       const parsed = parseIdentity(number);
-      identity = { fingerprint: identityFingerprint(parsed.normalized), birthDate: parsed.birthDate, masked: parsed.masked };
+      const fingerprint = identityFingerprint(parsed.normalized);
+      identity = { fingerprint, birthDate: parsed.birthDate, masked: parsed.masked, encrypted: encryptIdentityNumber(parsed.normalized, fingerprint) };
     } catch (error) {
       // 后台批量导入：号码无效就不保存，按没填处理。
       if (!lenient || !(error instanceof BadRequestException)) throw error;

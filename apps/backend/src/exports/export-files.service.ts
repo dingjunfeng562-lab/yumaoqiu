@@ -21,6 +21,8 @@ import { EXPORT_KINDS, ExportKind, ExportsService } from './exports.service';
 
 const SCAN_INTERVAL_MS = 30_000;
 const MANIFEST_FILE = 'manifest.json';
+// 报名表里有完整身份证号：不落盘缓存，每次下载在内存里生成（以前缓存过的文件会被删掉）。
+const UNCACHED_KINDS = new Set<ExportKind>(['registrations']);
 
 type StoredExport = {
   kind: ExportKind;
@@ -89,6 +91,17 @@ export class ExportFilesService implements OnModuleInit, OnModuleDestroy {
         tournamentId,
         kind,
       );
+      if (UNCACHED_KINDS.has(snapshot.kind)) {
+        await this.dropCached(tournamentId, snapshot.kind).catch((error) => {
+          this.logger.warn(
+            `删除旧的${snapshot.kind}导出缓存失败（赛事 ${tournamentId}）：${error instanceof Error ? error.message : String(error)}`,
+          );
+        });
+        return this.exportsService.buildTournamentExport(
+          snapshot.tournament,
+          snapshot.kind,
+        );
+      }
       try {
         const manifest = await this.readManifest(tournamentId);
         const current = manifest[snapshot.kind];
@@ -161,6 +174,10 @@ export class ExportFilesService implements OnModuleInit, OnModuleDestroy {
         ) as ExportKind[];
         for (const kind of kinds) {
           try {
+            if (UNCACHED_KINDS.has(kind)) {
+              await this.withLock(tournamentId, () => this.dropCached(tournamentId, kind));
+              continue;
+            }
             await this.withLock(tournamentId, async () => {
               const snapshot = await this.exportsService.tournamentSnapshot(
                 tournamentId,
@@ -235,6 +252,16 @@ export class ExportFilesService implements OnModuleInit, OnModuleDestroy {
         `赛事 ${tournamentId} 的${file.filename}已因数据变动重新生成`,
       );
     return item;
+  }
+
+  /** 从 manifest 去掉不该缓存的导出，并删掉对应文件。调用方需持有该赛事的锁。 */
+  private async dropCached(tournamentId: string, kind: ExportKind) {
+    const manifest = await this.readManifest(tournamentId);
+    if (!manifest[kind]) return;
+    const next: Manifest = { ...manifest };
+    delete next[kind];
+    await this.writeManifest(tournamentId, next);
+    await this.pruneStaleFiles(tournamentId, next);
   }
 
   /**

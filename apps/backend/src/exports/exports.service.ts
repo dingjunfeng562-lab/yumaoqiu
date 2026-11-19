@@ -1,7 +1,9 @@
 ﻿import { createHash } from 'node:crypto';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { Format, MatchStatus, RegistrationStatus } from '@prisma/client';
+import { Format, MatchStatus, Prisma, RegistrationStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { groupFields, type GroupFields } from '../common/age-eligibility';
+import { identityForExport } from '../common/registration-eligibility';
 import { SECOND_STAGE_FORMAL_ROUND_NO_BASE } from '../common/second-stage-bracket';
 import * as ExcelJS from 'exceljs';
 import { applyFinalRankings, teamStandings } from '../common/final-rankings';
@@ -103,16 +105,23 @@ type ExportRegistration = {
     affiliation: string;
     contact: string | null;
   } | null;
+  /** 报名表导出用：证件信息（含完整号码密文），导出时解密；其它导出不用。 */
+  identityData?: Prisma.JsonValue | null;
+  partnerIdentityData?: Prisma.JsonValue | null;
   competitionRegistration: {
     school: string | null;
-    // 只有报名表导出查询这两列，其它导出不需要。
+    // 只有报名表导出查询这几列，其它导出不需要。
     age?: number | null;
     shirtSize?: string | null;
+    identityData?: Prisma.JsonValue | null;
+    guestEmail?: string | null;
+    user?: { email: string } | null;
     eventItems: Array<{
       eventId: string;
       partnerStudentId: string | null;
       partnerAge?: number | null;
       partnerShirtSize?: string | null;
+      partnerIdentityData?: Prisma.JsonValue | null;
     }>;
   } | null;
 };
@@ -199,6 +208,8 @@ type ExportEvent = {
   type: string;
   entrantType?: string;
   groupLabel?: string | null;
+  /** 报名表导出用：所属组别的报名字段配置（决定加不加身份证号、邮箱列）。 */
+  group?: { fieldRules: Prisma.JsonValue | null } | null;
   format?: string;
   qualifiersPerGroup?: number | null;
   /** 各组人数（组别代码 → 人数）。按阶段导出第二阶段时 matches 里没有小组赛场次，出线前的对阵骨架按它画。 */
@@ -676,6 +687,8 @@ export class ExportsService {
               type: true,
               entrantType: true,
               groupLabel: true,
+              // 报名表：按组别的报名字段决定加不加身份证号、邮箱列。
+              group: { select: { fieldRules: true } },
               registrations: {
                 where: { status: RegistrationStatus.APPROVED },
                 orderBy: [{ groupName: 'asc' }, { isSeed: 'desc' }, { seedRank: 'asc' }, { createdAt: 'asc' }],
@@ -683,6 +696,9 @@ export class ExportsService {
                   id: true,
                   eventId: true,
                   entrantType: true,
+                  // 报名表：证件信息（含完整号码密文），导出时解密。
+                  identityData: true,
+                  partnerIdentityData: true,
                   studentId: true,
                   college: true,
                   majorGrade: true,
@@ -718,9 +734,12 @@ export class ExportsService {
                   competitionRegistration: {
                     select: {
                       school: true,
-                      // 报名表末尾追加的年龄、衣服尺寸列。
+                      // 报名表末尾追加的年龄、衣服尺寸、身份证号、邮箱列。
                       age: true,
                       shirtSize: true,
+                      identityData: true,
+                      guestEmail: true,
+                      user: { select: { email: true } },
                       eventItems: {
                         select: {
                           eventId: true,
@@ -729,6 +748,7 @@ export class ExportsService {
                           partnerMajorGrade: true,
                           partnerAge: true,
                           partnerShirtSize: true,
+                          partnerIdentityData: true,
                         },
                       },
                     },
@@ -1211,6 +1231,11 @@ export class ExportsService {
   }
 
   private registrationsWorksheet(tournament: ExportTournament): Worksheet {
+    // 身份证号、邮箱列按报名字段加：只要有一个组别收集（必填或选填）就加在最后；
+    // 每行按自己组别的设置，不收集的留空。
+    const fieldsByEvent = new Map(tournament.events.map((event) => [event, this.exportGroupFields(event)]));
+    const withIdentity = [...fieldsByEvent.values()].some((fields) => fields.identityNumber !== 'hidden');
+    const withEmail = [...fieldsByEvent.values()].some((fields) => fields.email !== 'hidden');
     const rows: CellValue[][] = [
       [
         '赛事',
@@ -1236,10 +1261,14 @@ export class ExportsService {
         '衣服尺寸1',
         '年龄2',
         '衣服尺寸2',
+        // 原来的 22 列不动，身份证号、邮箱再往后加。
+        ...(withIdentity ? ['身份证号1', '出生日期1', '身份证号2', '出生日期2'] : []),
+        ...(withEmail ? ['邮箱1'] : []),
       ],
     ];
 
     for (const event of tournament.events) {
+      const fields = fieldsByEvent.get(event) ?? this.exportGroupFields(event);
       for (const registration of event.registrations) {
         const school =
           registration.competitionRegistration?.school ??
@@ -1269,6 +1298,8 @@ export class ExportsService {
           registration.competitionRegistration?.shirtSize ?? '',
           registration.player2 ? this.partnerItem(registration)?.partnerAge ?? '' : '',
           registration.player2 ? this.partnerItem(registration)?.partnerShirtSize ?? '' : '',
+          ...(withIdentity ? this.identityCells(registration, fields) : []),
+          ...(withEmail ? [fields.email === 'hidden' ? '' : this.registrationEmail(registration)] : []),
         ]);
       }
     }
@@ -1457,6 +1488,35 @@ export class ExportsService {
     const players = this.registrationName(registration);
     const team = registration.teamName?.trim();
     return team ? `${team}（${players}）` : players;
+  }
+
+  /** 与报名时 groupFields(group.fieldRules, 学生组, 没有组别) 一致；配置损坏时按默认值。 */
+  private exportGroupFields(event: ExportEvent): GroupFields {
+    const school = event.entrantType === 'SCHOOL';
+    try {
+      return groupFields(event.group?.fieldRules, school, !event.group);
+    } catch {
+      return groupFields(null, school, !event.group);
+    }
+  }
+
+  /**
+   * 身份证号1、出生日期1、身份证号2、出生日期2。能解密就是完整号码；
+   * 2026-11-19 之前的报名库里只有打码号码，照样导出打码号码。
+   */
+  private identityCells(registration: ExportRegistration, fields: GroupFields): CellValue[] {
+    if (fields.identityNumber === 'hidden') return ['', '', '', ''];
+    const own = identityForExport(registration.identityData ?? registration.competitionRegistration?.identityData);
+    const partner = registration.player2
+      ? identityForExport(registration.partnerIdentityData ?? this.partnerItem(registration)?.partnerIdentityData)
+      : null;
+    return [own?.number ?? '', own?.birthDate ?? '', partner?.number ?? '', partner?.birthDate ?? ''];
+  }
+
+  /** 邮箱：登录报名用账号邮箱，游客报名用填写的邮箱（与后台选手列表一致）。 */
+  private registrationEmail(registration: ExportRegistration) {
+    const application = registration.competitionRegistration;
+    return application?.user?.email ?? application?.guestEmail ?? '';
   }
 
   private partnerItem(registration: ExportRegistration) {
