@@ -482,6 +482,12 @@ describe('auto schedule by stage, player rest and keeping placed matches', () =>
     expect(result.at('aQF')).toBe('2026-10-22T00:40:00.000Z');
   });
 
+  it('查询场次时最后按 id 排序，保证预览指纹稳定（多个项目 roundNo、matchNo 相同时）', async () => {
+    const { service, tx } = setup([eventMatch('a', 'eA', 'SINGLE_ELIMINATION', 1, 1), eventMatch('b', 'eB', 'SINGLE_ELIMINATION', 1, 1)]);
+    await service.autoSchedule({ tournamentId: 't', startAt: '2026-10-22T00:00:00.000Z', eventIds: ['eA', 'eB'], preview: true });
+    for (const [args] of tx.match.findMany.mock.calls) expect(args.orderBy).toContainEqual({ id: 'asc' });
+  });
+
   it('多选单项：只排选中的单项', async () => {
     const result = await preview([eventMatch('a', 'eA', 'SINGLE_ELIMINATION', 1, 1), eventMatch('b', 'eB', 'SINGLE_ELIMINATION', 1, 1)], { eventIds: ['eB'] });
     expect(result.matches.map(m => m.id)).toEqual(['b']);

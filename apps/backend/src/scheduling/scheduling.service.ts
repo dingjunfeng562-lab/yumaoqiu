@@ -312,7 +312,7 @@ export class SchedulingService {
   listVenues(tournamentId: string) {
     return this.prisma.venue.findMany({
       where: { tournamentId },
-      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
     });
   }
 
@@ -440,7 +440,7 @@ export class SchedulingService {
     };
     const venues = await this.prisma.venue.findMany({
       where: venueWhere,
-      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
     });
     if (!venues.length) throw new BadRequestException('请先维护至少一个可用场地');
     if (dto.venueIds?.length && venues.length !== new Set(dto.venueIds).size) {
@@ -453,7 +453,9 @@ export class SchedulingService {
         event: { include: { group: { include: { allowedVenues: true } }, allowedVenues: true } },
         teamMatch: { include: { teamCompetition: { include: { group: { include: { allowedVenues: true } } } } } },
       },
-      orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }],
+      // 最后按 id 排：多个项目的场次 roundNo、matchNo 会相同，不定死顺序时数据库每次返回的先后可能不同，
+      // 预览指纹就对不上，「应用排程」一直提示重新预览（线上 MariaDB 多选单项时出现过）。
+      orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }, { id: 'asc' }],
     });
     if (!scopeMatches.length) throw new BadRequestException('暂无可排程场次，请先完成抽签编排');
     const courtLimits = scopeEventIds ? [] : await this.teamCourtLimits(dto.tournamentId);
@@ -994,6 +996,7 @@ export class SchedulingService {
         { scheduledAt: 'asc' },
         { roundNo: 'asc' },
         { matchNo: 'asc' },
+        { id: 'asc' },
       ],
     });
     const registrationMap = await this.registrationMap(
