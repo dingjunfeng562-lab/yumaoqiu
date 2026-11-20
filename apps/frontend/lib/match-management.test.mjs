@@ -125,9 +125,25 @@ describe('场地视图', () => {
     assert.deepEqual(board.courts[0].pending.map((m) => m.id), ['c', 'b', 'd']); // 场地视图要看到这片场地全部场次
     assert.deepEqual(board.courts[0].next.map((m) => m.id), ['c', 'b']);
     assert.equal(board.courts[0].remaining, 3);
+    // 每片场地要把已结束的场次也放进来，卡片里才是这块场地的全部场次
+    assert.deepEqual(board.courts[0].finished, []);
+    assert.equal(board.courts[0].total, 4);
+    assert.deepEqual(board.courts[1].finished.map((m) => m.id), ['e']);
+    assert.equal(board.courts[1].total, 1);
+    assert.deepEqual(board.finishedWithoutVenue, []);
     assert.deepEqual(board.courts[1].live, []);
     assert.deepEqual(board.liveWithoutVenue.map((m) => m.id), ['f']);
     assert.deepEqual(board.unscheduled.map((m) => m.id), ['h', 'g']);
+  });
+
+  it('已结束但没有场地记录的历史场次单独归到 finishedWithoutVenue', () => {
+    const board = buildCourtBoard([
+      match({ id: 'x', status: 'COMPLETED', scheduledAt: at('09:00') }),
+      match({ id: 'y', status: 'CANCELLED', scheduledAt: at('10:00') }),
+      match({ id: 'z', venue: venue('1', 1), scheduledAt: at('11:00') }),
+    ], [venue('1', 1)]);
+    assert.deepEqual(board.finishedWithoutVenue.map((m) => m.id), ['x', 'y']);
+    assert.deepEqual(board.courts[0].pending.map((m) => m.id), ['z']);
   });
 });
 

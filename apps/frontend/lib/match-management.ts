@@ -222,12 +222,16 @@ export type CourtCard = {
   venue: MMVenue;
   /** 正在这片场地上打的（正常只有一场，多于一场要提醒）。 */
   live: MMMatch[];
-  /** 接下来要在这片场地打的（全部，按时间排）——场地视图要把后面的场次也列出来。 */
+  /** 接下来要在这片场地打的（全部，按时间排）。 */
   pending: MMMatch[];
+  /** 已经打完（含已取消）的场次，按时间排——场地视图要把这块场地的历史也列出来。 */
+  finished: MMMatch[];
   /** pending 的前 nextLimit 场，给只想要摘要的地方用。 */
   next: MMMatch[];
   /** 这片场地今天（按 now 所在日）还剩多少场没打。 */
   remaining: number;
+  /** 这片场地所有场次数（进行中 + 接下来 + 已结束）。 */
+  total: number;
 };
 
 export type CourtBoard = {
@@ -236,11 +240,14 @@ export type CourtBoard = {
   liveWithoutVenue: MMMatch[];
   /** 未开始、还没排场地或时间的（待排队列）。 */
   unscheduled: MMMatch[];
+  /** 已结束但没有场地记录的历史场次，单独列，保证一场不漏。 */
+  finishedWithoutVenue: MMMatch[];
 };
 
 /**
- * 场地视图：每片场地（启用的，按场地顺序）一张卡，显示正在打的和接下来要打的。
- * 只看传进来的场次（页面上的项目、搜索等筛选照样生效）。停用的场地上如果还有场次也照样列出。
+ * 场地视图：每片场地（启用的，按场地顺序）一张卡，列出这片场地上的**全部**场次：
+ * 正在打的、接下来要打的、已经打完的。只看传进来的场次（页面上的项目、搜索等筛选照样生效）。
+ * 停用的场地上如果还有场次也照样列出；没有场地记录的历史场次单独归到 finishedWithoutVenue。
  */
 export function buildCourtBoard(matches: MMMatch[], venues: MMVenue[], options: { nextLimit?: number } = {}): CourtBoard {
   const nextLimit = options.nextLimit ?? 2;
@@ -252,12 +259,25 @@ export function buildCourtBoard(matches: MMMatch[], venues: MMVenue[], options: 
     const onVenue = matches.filter((match) => match.venue?.id === venue.id);
     const live = onVenue.filter((match) => match.status === 'LIVE').sort(compareMatches);
     const pending = onVenue.filter((match) => match.status === 'PENDING' && match.scheduledAt).sort(compareMatches);
-    return { venue, live, pending, next: pending.slice(0, nextLimit), remaining: pending.length };
+    const finished = onVenue
+      .filter((match) => match.status === 'COMPLETED' || match.status === 'CANCELLED')
+      .sort(compareMatches);
+    return {
+      venue,
+      live,
+      pending,
+      finished,
+      next: pending.slice(0, nextLimit),
+      remaining: pending.length,
+      total: live.length + pending.length + finished.length,
+    };
   });
+  const ended = (match: MMMatch) => match.status === 'COMPLETED' || match.status === 'CANCELLED';
   return {
     courts,
     liveWithoutVenue: matches.filter((match) => match.status === 'LIVE' && !match.venue).sort(compareMatches),
     unscheduled: matches.filter((match) => match.status === 'PENDING' && (!match.scheduledAt || !match.venue)).sort(compareMatches),
+    finishedWithoutVenue: matches.filter((match) => ended(match) && !match.venue).sort(compareMatches),
   };
 }
 
