@@ -122,6 +122,7 @@ describe('场地视图', () => {
     ], venues);
     assert.deepEqual(board.courts.map((c) => c.venue.id), ['1', '2']); // 停用且没有场次的 3 号场不显示
     assert.deepEqual(board.courts[0].live.map((m) => m.id), ['a']);
+    assert.deepEqual(board.courts[0].pending.map((m) => m.id), ['c', 'b', 'd']); // 场地视图要看到这片场地全部场次
     assert.deepEqual(board.courts[0].next.map((m) => m.id), ['c', 'b']);
     assert.equal(board.courts[0].remaining, 3);
     assert.deepEqual(board.courts[1].live, []);

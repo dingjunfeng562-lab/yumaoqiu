@@ -9,7 +9,8 @@ import { AttentionTags, SideName, StatusTag, TeamLine, scoreText, timeText } fro
 const { Text } = Typography;
 
 /**
- * 场地视图（比赛当天的现场控制台）：每片场地一张卡，上面是正在打的（比分、裁判），下面是接下来两场。
+ * 场地视图（比赛当天的现场控制台）：每片场地一张卡，最上面是正在打的（比分、裁判），
+ * 下面按时间列出这片场地上**全部**还没打的场次（卡片内滚动），不再只显示接下来两场。
  * 进行中却没有场地的、还没排场地或时间的单独列在最后。点任意一场打开管理。
  */
 export function CourtBoard({
@@ -64,10 +65,17 @@ export function CourtBoard({
                 <LiveMatch key={match.id} match={match} now={now} projectOf={projectOf} onOpen={onOpen} />
               ))}
               <div style={{ padding: '6px 12px 10px', display: 'flex', flexDirection: 'column', gap: 6, flex: 1 }}>
-                <Text type="secondary" style={{ fontSize: 11 }}>接下来</Text>
-                {court.next.length ? court.next.map((match) => (
-                  <NextMatch key={match.id} match={match} now={now} projectOf={projectOf} onOpen={onOpen} />
-                )) : <Text type="secondary" style={{ fontSize: 12 }}>没有排在这片场地的场次</Text>}
+                <Text type="secondary" style={{ fontSize: 11 }}>
+                  接下来{court.pending.length ? `（${court.pending.length} 场）` : ''}
+                </Text>
+                {court.pending.length ? (
+                  // 这片场地当天所有场次都列出来，超出高度在卡片内滚动，避免把后面的场次藏起来。
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 420, overflowY: 'auto', paddingRight: 2 }}>
+                    {court.pending.map((match) => (
+                      <NextMatch key={match.id} match={match} now={now} projectOf={projectOf} onOpen={onOpen} />
+                    ))}
+                  </div>
+                ) : <Text type="secondary" style={{ fontSize: 12 }}>没有排在这片场地的场次</Text>}
               </div>
             </div>
           );
@@ -80,10 +88,13 @@ export function CourtBoard({
         </Section>
       ) : null}
       {board.unscheduled.length ? (
-        <Section title={`还没排场地或时间（${board.unscheduled.length}）`}>
-          {board.unscheduled.slice(0, 40).map((match) => <NextMatch key={match.id} match={match} now={now} projectOf={projectOf} onOpen={onOpen} />)}
-          {board.unscheduled.length > 40 ? <Text type="secondary" style={{ fontSize: 12 }}>还有 {board.unscheduled.length - 40} 场，切到「列表」查看全部</Text> : null}
-        </Section>
+        <div style={{ marginTop: 16, border: '1px solid #e2e8f0', borderRadius: 10, background: '#fff', padding: '10px 12px' }}>
+          <Text strong style={{ color: '#334155' }}>还没排场地或时间（{board.unscheduled.length}）</Text>
+          {/* 全部列出来（原来只显示前 40 场），超出高度在区块内滚动，不再把后面的场次藏起来。 */}
+          <div style={{ marginTop: 8, maxHeight: 640, overflowY: 'auto', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 8 }}>
+            {board.unscheduled.map((match) => <NextMatch key={match.id} match={match} now={now} projectOf={projectOf} onOpen={onOpen} />)}
+          </div>
+        </div>
       ) : null}
     </div>
   );

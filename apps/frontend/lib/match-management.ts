@@ -222,7 +222,9 @@ export type CourtCard = {
   venue: MMVenue;
   /** 正在这片场地上打的（正常只有一场，多于一场要提醒）。 */
   live: MMMatch[];
-  /** 接下来要在这片场地打的，按时间排，最多 nextLimit 场。 */
+  /** 接下来要在这片场地打的（全部，按时间排）——场地视图要把后面的场次也列出来。 */
+  pending: MMMatch[];
+  /** pending 的前 nextLimit 场，给只想要摘要的地方用。 */
   next: MMMatch[];
   /** 这片场地今天（按 now 所在日）还剩多少场没打。 */
   remaining: number;
@@ -250,7 +252,7 @@ export function buildCourtBoard(matches: MMMatch[], venues: MMVenue[], options: 
     const onVenue = matches.filter((match) => match.venue?.id === venue.id);
     const live = onVenue.filter((match) => match.status === 'LIVE').sort(compareMatches);
     const pending = onVenue.filter((match) => match.status === 'PENDING' && match.scheduledAt).sort(compareMatches);
-    return { venue, live, next: pending.slice(0, nextLimit), remaining: pending.length };
+    return { venue, live, pending, next: pending.slice(0, nextLimit), remaining: pending.length };
   });
   return {
     courts,
