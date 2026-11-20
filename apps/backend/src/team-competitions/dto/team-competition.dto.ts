@@ -533,3 +533,67 @@ export class RejectTeamDrawClearRequestDto {
   reason?: string;
 }
 
+/** 团体赛换签位的两类载体：单淘汰首轮位置 / 小组内队伍位置。 */
+export const TEAM_SWAP_SCOPES = ['TEAM_SLOT', 'TEAM_GROUP'] as const;
+export type TeamSwapScope = (typeof TEAM_SWAP_SCOPES)[number];
+
+/**
+ * 团体赛换签位入参。TEAM_SLOT 用场次+上下侧定位首轮位置，TEAM_GROUP 用队伍定位分组位置。
+ * expectFromId/expectToId 传前端看到的两个位置上的队伍 id，用于幂等与并发保护。
+ */
+export class SwapTeamDrawDto {
+  @IsOptional()
+  @IsIn([...TEAM_SWAP_SCOPES])
+  scope?: TeamSwapScope;
+
+  // ── TEAM_SLOT：单淘汰首轮位置
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  fromRoundNo?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  fromMatchNo?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(2)
+  fromSide?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  toRoundNo?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  toMatchNo?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(2)
+  toSide?: number;
+
+  // ── TEAM_GROUP：小组内的队伍位置
+  @IsOptional()
+  @IsString()
+  fromTeamId?: string;
+
+  @IsOptional()
+  @IsString()
+  toTeamId?: string;
+
+  // ── 幂等 / 并发
+  @IsOptional()
+  @IsString()
+  expectFromId?: string | null;
+
+  @IsOptional()
+  @IsString()
+  expectToId?: string | null;
+}

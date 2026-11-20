@@ -34,6 +34,7 @@ import {
   GenerateGroupDrawDto,
   AdjustGroupsDto,
   GenerateKnockoutFromGroupsDto,
+  SwapTeamDrawDto,
 } from './dto/team-competition.dto';
 import { TeamCompetitionsService } from './team-competitions.service';
 
@@ -231,6 +232,16 @@ export class TeamCompetitionsController {
   @Patch(':id/groups/adjust')
   adjustGroups(@Param('id') id: string, @Body() dto: AdjustGroupsDto) {
     return this.teamCompetitionsService.adjustGroups(id, dto);
+  }
+
+@Get(':id/draw/swap-options')
+  getSwapOptions(@Param('id') id: string) {
+    return this.teamCompetitionsService.getSwapOptions(id);
+  }
+
+  @Post(':id/draw/swap')
+  swapPositions(@Param('id') id: string, @Body() dto: SwapTeamDrawDto) {
+    return this.teamCompetitionsService.swapTeamPositions(id, dto);
   }
 
   @Post(':id/knockout')

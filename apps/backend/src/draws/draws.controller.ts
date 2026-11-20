@@ -147,14 +147,17 @@ export class DrawsController {
     @Body() dto: SwapDrawSlotsDto,
     @Req() req: AuthRequest,
   ) {
-    return this.drawsService.swapDrawSlots(
+    return this.drawsService.swapDrawPositions(
       eventId,
-      dto.drawId,
-      dto.positionA,
-      dto.positionB,
+      dto,
       req.user?.id ?? '',
       req.user?.username ?? req.user?.id ?? null,
     );
+  }
+
+  @Get('events/:eventId/draw/swap-options')
+  getSwapOptions(@Param('eventId') eventId: string) {
+    return this.drawsService.getSwapOptions(eventId);
   }
 
   @Post('events/:eventId/draw/freeze')

@@ -104,17 +104,102 @@ export class UpdateSeedsDto {
   seeds: SeedItemDto[];
 }
 
+/** 换签位的四类签位载体：单淘汰签位 / 小组位置 / 第二阶段 A-H / 自动淘汰赛首轮位置。 */
+export const DRAW_SWAP_SCOPES = ['SLOT', 'GROUP', 'SECOND_STAGE', 'KNOCKOUT_SIDE'] as const;
+export type DrawSwapScope = (typeof DRAW_SWAP_SCOPES)[number];
+
+/**
+ * 换签位统一入参。scope 缺省时按老的「单淘汰两个签位」处理（positionA/positionB），保持兼容。
+ * expectFromId/expectToId 由前端带上「它看到的两个签位上的人」，用于幂等与并发保护：
+ * 已是目标状态 → 幂等成功（不重复交换）；与预期不符 → 409 提示刷新。
+ */
 export class SwapDrawSlotsDto {
+  @IsOptional()
   @IsString()
-  drawId: string;
+  drawId?: string;
 
+  @IsOptional()
+  @IsIn([...DRAW_SWAP_SCOPES])
+  scope?: DrawSwapScope;
+
+  // ── SLOT：单淘汰签位（1..N）
+  @IsOptional()
   @IsInt()
   @Min(1)
-  positionA: number;
+  positionA?: number;
 
+  @IsOptional()
   @IsInt()
   @Min(1)
-  positionB: number;
+  positionB?: number;
+
+  // ── GROUP：小组位置（组代码 + 该组里的选手）
+  @IsOptional()
+  @IsString()
+  fromGroupCode?: string;
+
+  @IsOptional()
+  @IsString()
+  toGroupCode?: string;
+
+  @IsOptional()
+  @IsString()
+  fromEntrantId?: string;
+
+  @IsOptional()
+  @IsString()
+  toEntrantId?: string;
+
+  // ── SECOND_STAGE：A-H 签位
+  @IsOptional()
+  @IsIn(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'])
+  fromSlot?: string;
+
+  @IsOptional()
+  @IsIn(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'])
+  toSlot?: string;
+
+  // ── KNOCKOUT_SIDE：没有 draw_slot 的自动淘汰赛（标准2023 出线 >8），按首轮场次+上下侧交换
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  fromRoundNo?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  fromMatchNo?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(2)
+  fromSide?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  toRoundNo?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  toMatchNo?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(2)
+  toSide?: number;
+
+  // ── 幂等 / 并发（所有 scope 通用）
+  @IsOptional()
+  @IsString()
+  expectFromId?: string | null;
+
+  @IsOptional()
+  @IsString()
+  expectToId?: string | null;
 }
 
 export class FreezeDrawDto {

@@ -46,6 +46,7 @@ import {
   type KnockoutBracketData,
 } from '@/components/bracket/KnockoutBracket';
 import { SecondStageBracket, type SecondStageData } from '@/components/bracket/SecondStageBracket';
+import { DrawSwapModal } from '@/components/DrawSwapModal';
 import TeamCompetitionGroups from '@/components/TeamCompetitionGroups';
 import ClearResultsButton from '@/components/ClearResultsButton';
 import { UnpaidNotice } from '@/components/payments/UnpaidNotice';
@@ -693,9 +694,8 @@ export default function DrawsPage() {
   const [registrationForm] = Form.useForm();
   const [editingRegistration, setEditingRegistration] = useState<Registration | null>(null);
   const [seedForm] = Form.useForm();
-  const [swapOpen, setSwapOpen] = useState(false);
-  const [swapPosA, setSwapPosA] = useState<number | undefined>(undefined);
-  const [swapPosB, setSwapPosB] = useState<number | undefined>(undefined);
+  const [swapEventOpen, setSwapEventOpen] = useState(false);
+  const [swapTeamOpen, setSwapTeamOpen] = useState(false);
   const [redrawRequests, setRedrawRequests] = useState<RedrawRequestItem[]>([]);
   const [requestOpen, setRequestOpen] = useState(false);
   const [requestForm] = Form.useForm();
@@ -780,20 +780,6 @@ export default function DrawsPage() {
     const restCount = unplacedRegistrations.length - 4;
     return restCount > 0 ? `${preview} 等 ${unplacedRegistrations.length} 名/队` : preview;
   }, [unplacedRegistrations]);
-  const slotOptions = useMemo(() => {
-    if (!visibleBracket?.rounds.length) return [];
-    const round1 = visibleBracket.rounds[0];
-    return round1.matches.flatMap((match, i) => [
-      {
-        value: i * 2 + 1,
-        label: `#${i * 2 + 1}  ${match.side1 ? sideName(match.side1) : '轮空'}`,
-      },
-      {
-        value: i * 2 + 2,
-        label: `#${i * 2 + 2}  ${match.side2 ? sideName(match.side2) : '轮空'}`,
-      },
-    ]);
-  }, [visibleBracket]);
   const pendingRedrawRequest = useMemo(
     () =>
       redrawRequests.find(
@@ -801,42 +787,6 @@ export default function DrawsPage() {
       ) ?? null,
     [redrawRequests, selectedEventId],
   );
-
-  const canSwapSlots = Boolean(
-    bracket?.currentDraw &&
-      !selectedEvent?.drawPublished &&
-      isSingleElimination(selectedEvent) &&
-      slotOptions.length > 0 &&
-      bracket.currentDraw.status === 'DRAWN',
-  );
-
-  function openSwapDialog() {
-    if (!selectedEventId) {
-      message.warning('请先选择单项');
-      return;
-    }
-    if (!bracket?.currentDraw) {
-      message.warning('请先完成抽签，再调整签位');
-      return;
-    }
-    if (selectedEvent?.drawPublished) {
-      message.warning('对阵已发布，请先点击“取消发布”，再调整签位');
-      return;
-    }
-    if (!isSingleElimination(selectedEvent)) {
-      message.warning('当前仅支持单淘汰签表换签位');
-      return;
-    }
-    if (bracket.currentDraw.status !== 'DRAWN') {
-      message.warning('当前签表已冻结，暂时不能调整签位');
-      return;
-    }
-    if (!slotOptions.length) {
-      message.warning('当前没有可交换的签位');
-      return;
-    }
-    setSwapOpen(true);
-  }
 
   async function loadEvents(tournamentId: string) {
     if (!token || !tournamentId) return;
@@ -1057,8 +1007,6 @@ export default function DrawsPage() {
         drawGeneratedAt: new Date().toISOString(),
       });
       await refreshDraw();
-      setSwapPosA(undefined);
-      setSwapPosB(undefined);
       message.success(force ? '已重新抽签，可调整签位后发布' : '抽签完成，可调整签位后点击发布');
     } catch (error) {
       message.error(error instanceof Error ? error.message : '抽签失败');
@@ -1170,24 +1118,6 @@ export default function DrawsPage() {
       loadRedrawRequests(selectedEventId);
     } catch (error) {
       message.error(error instanceof Error ? error.message : '撤回失败');
-    }
-  }
-
-  async function handleSwap() {
-    if (!token || !selectedEventId || !bracket?.currentDraw || !swapPosA || !swapPosB) return;
-    try {
-      await apiFetch(`/events/${selectedEventId}/draw/swap`, {
-        method: 'POST',
-        token,
-        body: JSON.stringify({ drawId: bracket.currentDraw.id, positionA: swapPosA, positionB: swapPosB }),
-      });
-      setSwapPosA(undefined);
-      setSwapPosB(undefined);
-      setSwapOpen(false);
-      await refreshDraw();
-      message.success('签位已交换');
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '签位交换失败');
     }
   }
 
@@ -1312,7 +1242,7 @@ export default function DrawsPage() {
           <Button icon={<ReloadOutlined />} onClick={refreshDraw} disabled={!selectedEventId}>
             刷新
           </Button>
-          <Button icon={<SwapOutlined />} onClick={openSwapDialog} disabled={isMixMember}>
+          <Button icon={<SwapOutlined />} onClick={() => setSwapEventOpen(true)} disabled={!selectedEventId}>
             换签位
           </Button>
           <ClearResultsButton scope="event" id={selectedEventId} token={token} disabled={loading || !selectedEventId || !bracket?.currentDraw} onChanged={refreshDraw} />
@@ -1534,6 +1464,13 @@ export default function DrawsPage() {
                   ? '全部队伍在同一组，每两队交手一次。自动排程后，可在下方对阵表手工调整场地与时间，保留的空闲场地也可使用。'
                   : '抽签后可在此手动移动队伍分组；保存会重新生成小组对阵。对阵表可手工调整场地与时间。'}
               </Typography.Text>
+              <Button
+                icon={<SwapOutlined />}
+                disabled={!selectedTeamCompetitionId || !(selectedTeamCompetition?._count?.teamMatches ?? 0)}
+                onClick={() => setSwapTeamOpen(true)}
+              >
+                换签位
+              </Button>
             </Space>
             {selectedTeamCompetition && (
               <TeamCompetitionGroups
@@ -1777,44 +1714,28 @@ export default function DrawsPage() {
         </Row>
       </Spin>
 
-      <Modal
+      <DrawSwapModal
+        open={swapEventOpen}
+        token={token}
+        optionsUrl={selectedEventId ? `/events/${selectedEventId}/draw/swap-options` : null}
+        submitUrl={selectedEventId ? `/events/${selectedEventId}/draw/swap` : null}
         title="换签位"
-        open={swapOpen}
-        onOk={handleSwap}
-        onCancel={() => {
-          setSwapOpen(false);
-          setSwapPosA(undefined);
-          setSwapPosB(undefined);
-        }}
-        okText="确认交换"
-        cancelText="取消"
-        okButtonProps={{ disabled: !canSwapSlots || !swapPosA || !swapPosB }}
-      >
-        <Alert
-          type="warning"
-          showIcon
-          style={{ marginBottom: 16 }}
-          message="选择两个签位进行交换"
-          description="交换后会立即更新当前对阵；确认无误后再发布。"
-        />
-        <Space direction="vertical" size={12} style={{ width: '100%' }}>
-          <Select
-            value={swapPosA}
-            onChange={setSwapPosA}
-            placeholder="选择第一个签位"
-            style={{ width: '100%' }}
-            options={slotOptions.filter((option) => option.value !== swapPosB)}
-          />
-          <SwapOutlined style={{ alignSelf: 'center', color: '#d48806', fontSize: 20 }} />
-          <Select
-            value={swapPosB}
-            onChange={setSwapPosB}
-            placeholder="选择第二个签位"
-            style={{ width: '100%' }}
-            options={slotOptions.filter((option) => option.value !== swapPosA)}
-          />
-        </Space>
-      </Modal>
+        onClose={() => setSwapEventOpen(false)}
+        onDone={refreshDraw}
+      />
+
+      <DrawSwapModal
+        open={swapTeamOpen}
+        token={token}
+        optionsUrl={
+          selectedTeamCompetitionId ? `/team-competitions/${selectedTeamCompetitionId}/draw/swap-options` : null
+        }
+        submitUrl={selectedTeamCompetitionId ? `/team-competitions/${selectedTeamCompetitionId}/draw/swap` : null}
+        title="团体赛换签位"
+        description="团体赛只换队伍位置：小组赛换小组位置，单淘汰换首轮位置。场地、时间、裁判与子项名单都会保留。"
+        onClose={() => setSwapTeamOpen(false)}
+        onDone={refreshTeamCompetition}
+      />
 
       <Modal
         title="添加单项报名"

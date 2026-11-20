@@ -37,6 +37,7 @@ import {
   GenerateDrawDto,
   GetDrawLogsQueryDto,
   SeedItemDto,
+  SwapDrawSlotsDto,
   UpdateDrawGroupSettingsDto,
   UpdateRegistrationDto,
 } from './dto/draw.dto';
@@ -57,6 +58,11 @@ import {
   groupSizesFromGroupMatches,
   knockoutPlaceholdersOnly,
 } from '../common/knockout-skeleton';
+import {
+  buildEliminationDrafts,
+  buildGroupFixtureDrafts,
+  planMatchReconcile,
+} from './draw-swap-plan';
 
 type RegistrationWithPlayers = Registration & {
   player1: { id: string; name: string; gender: string | null; affiliation: string };
@@ -581,35 +587,68 @@ export class DrawsService {
     });
   }
 
-  async swapDrawSlots(
+  /**
+   * 换签位：统一入口。scope 决定「签位」落在哪种载体上：
+   * - SLOT：单淘汰的 draw_slot 签位（1..N）
+   * - GROUP：小组/循环赛的组内位置（跨组换人）
+   * - SECOND_STAGE：A–H 第二阶段签位
+   * - KNOCKOUT_SIDE：没有 draw_slot 的自动淘汰赛（标准2023 出线 >8 人）首轮位置
+   *
+   * 所有 scope 都走「原地更新」：场次 id、场地/时间、裁判、签到与比分关联全部保留；
+   * 带 expectFromId/expectToId 时按幂等处理，避免双击导致两次交换互相抵消。
+   */
+  async swapDrawPositions(
     eventId: string,
-    drawId: string,
-    positionA: number,
-    positionB: number,
+    dto: SwapDrawSlotsDto,
     operatorId: string,
     operatorName: string | null,
   ) {
     if (!operatorId) throw new BadRequestException('缺少操作人信息');
+    switch (dto.scope ?? 'SLOT') {
+      case 'SLOT':
+        return this.swapDrawSlots(eventId, dto, operatorId, operatorName);
+      case 'GROUP':
+        return this.swapGroupMembers(eventId, dto, operatorId, operatorName);
+      case 'SECOND_STAGE':
+        return this.swapSecondStageSlots(eventId, dto, operatorId, operatorName);
+      case 'KNOCKOUT_SIDE':
+        return this.swapKnockoutSides(eventId, dto, operatorId, operatorName);
+      default:
+        throw new BadRequestException('不支持的换签位类型');
+    }
+  }
+
+  /** 单淘汰签位交换：只换两个人（或人与轮空）的位置，签表原地重算，不删任何场次。 */
+  async swapDrawSlots(
+    eventId: string,
+    dto: SwapDrawSlotsDto,
+    operatorId: string,
+    operatorName: string | null,
+  ) {
+    const positionA = dto.positionA;
+    const positionB = dto.positionB;
+    if (!positionA || !positionB) throw new BadRequestException('请选择两个要交换的签位');
     if (positionA === positionB) throw new BadRequestException('不能交换同一个签位');
 
     return this.prisma.$transaction(async (tx) => {
-      const draw = await tx.drawBracket.findUnique({
-        where: { id: drawId },
-      });
-      if (!draw || draw.eventItemId !== eventId) throw new NotFoundException('签表不存在');
-      if (draw.status !== DrawStatus.DRAWN) {
-        throw new ConflictException('当前签表已冻结或已发布，不可调整');
-      }
+      await this.lockEventForDraw(tx, eventId);
+      const event = await this.ensureDrawEvent(eventId);
+      const draw = await this.currentDrawBracket(tx, eventId, dto.drawId);
       if (draw.format !== DrawFormat.single_elim) {
-        throw new BadRequestException('当前仅支持单淘汰签位交换');
+        throw new BadRequestException('当前项目第一阶段不是单淘汰签表，请使用小组换位');
       }
+      this.assertDrawEditable(draw, event);
+      await this.assertDrawMatchIdle(tx, eventId, {
+        roundNo: { gte: 1, lt: SECOND_STAGE_FORMAL_ROUND_NO_BASE },
+      });
 
-      const slotA = await tx.drawSlot.findFirstOrThrow({
-        where: { drawBracketId: drawId, position: positionA },
-      });
-      const slotB = await tx.drawSlot.findFirstOrThrow({
-        where: { drawBracketId: drawId, position: positionB },
-      });
+      const slotA = await tx.drawSlot.findFirst({ where: { drawBracketId: draw.id, position: positionA } });
+      const slotB = await tx.drawSlot.findFirst({ where: { drawBracketId: draw.id, position: positionB } });
+      if (!slotA || !slotB) throw new NotFoundException('签位不存在');
+
+      const action = this.swapAction(slotA.entrantId, slotB.entrantId, dto);
+      if (action === 'conflict') throw new ConflictException('签位已被其他人调整，请刷新后重试');
+      if (action === 'already') return { changed: false, scope: 'SLOT' as const, drawId: draw.id };
 
       await tx.drawSlot.update({
         where: { id: slotA.id },
@@ -619,11 +658,10 @@ export class DrawsService {
           seedNoSnapshot: slotB.seedNoSnapshot,
           isSeed: slotB.isSeed,
           isBye: slotB.isBye,
-          sourceType: DrawSlotSourceType.MANUAL_SWAP,
           groupRankCode: slotB.groupRankCode,
+          sourceType: DrawSlotSourceType.MANUAL_SWAP,
         },
       });
-
       await tx.drawSlot.update({
         where: { id: slotB.id },
         data: {
@@ -632,42 +670,711 @@ export class DrawsService {
           seedNoSnapshot: slotA.seedNoSnapshot,
           isSeed: slotA.isSeed,
           isBye: slotA.isBye,
-          sourceType: DrawSlotSourceType.MANUAL_SWAP,
           groupRankCode: slotA.groupRankCode,
+          sourceType: DrawSlotSourceType.MANUAL_SWAP,
         },
       });
 
-      const refreshedSlots = await tx.drawSlot.findMany({
-        where: { drawBracketId: drawId },
-        orderBy: { position: 'asc' },
-      });
-      await this.materializeSingleElimination(tx, eventId, refreshedSlots);
+      const slots = await tx.drawSlot.findMany({ where: { drawBracketId: draw.id }, orderBy: { position: 'asc' } });
+      await this.reconcileEliminationMatches(tx, eventId, slots, { bronze: true });
+      await tx.drawBracket.update({ where: { id: draw.id }, data: { updatedBy: operatorId } });
 
+      const updatedSlots = await tx.drawSlot.findMany({
+        where: { drawBracketId: draw.id, position: { in: [positionA, positionB] } },
+      });
       await this.drawLogService.create(tx, {
         eventItemId: eventId,
-        drawBracketId: drawId,
+        drawBracketId: draw.id,
         operationType: DrawOperationType.SWAP,
         operatorId,
         operatorNameSnapshot: operatorName,
         positionA,
         positionB,
         beforeData: {
+          scope: 'SLOT',
+          status: draw.status,
           slotA: this.drawSlotLogSnapshot(slotA),
           slotB: this.drawSlotLogSnapshot(slotB),
-          status: draw.status,
         } as Prisma.InputJsonValue,
         afterData: {
-          status: DrawStatus.DRAWN,
-          slotA: this.drawSlotLogSnapshot(refreshedSlots[positionA - 1]),
-          slotB: this.drawSlotLogSnapshot(refreshedSlots[positionB - 1]),
+          scope: 'SLOT',
+          status: draw.status,
+          slotA: this.drawSlotLogSnapshot(updatedSlots.find((slot) => slot.position === positionA) ?? slotA),
+          slotB: this.drawSlotLogSnapshot(updatedSlots.find((slot) => slot.position === positionB) ?? slotB),
         } as Prisma.InputJsonValue,
       });
 
-      return tx.drawBracket.findUniqueOrThrow({
-        where: { id: drawId },
-        include: { slots: { orderBy: { position: 'asc' } } },
-      });
+      return { changed: true, scope: 'SLOT' as const, drawId: draw.id };
     });
+  }
+
+  /**
+   * 小组换位：两名选手互换所在小组（同组内换位不影响对阵，直接返回未变更）。
+   * 只原地重排受影响两组的组内循环场次，排程/裁判/场次 id 都不动。
+   */
+  async swapGroupMembers(
+    eventId: string,
+    dto: SwapDrawSlotsDto,
+    operatorId: string,
+    operatorName: string | null,
+  ) {
+    const { fromGroupCode, toGroupCode, fromEntrantId, toEntrantId } = dto;
+    if (!fromGroupCode || !toGroupCode || !fromEntrantId || !toEntrantId) {
+      throw new BadRequestException('请选择两个要交换的小组位置');
+    }
+    if (fromGroupCode === toGroupCode && fromEntrantId === toEntrantId) {
+      throw new BadRequestException('不能交换同一个位置');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      await this.lockEventForDraw(tx, eventId);
+      const event = await this.ensureDrawEvent(eventId);
+      const draw = await this.currentDrawBracket(tx, eventId, dto.drawId);
+      if (draw.format === DrawFormat.single_elim) {
+        throw new BadRequestException('当前项目是单淘汰签表，请使用签位交换');
+      }
+      this.assertDrawEditable(draw, event);
+
+      const memberships = await tx.drawGroupMember.findMany({
+        where: {
+          entrantId: { in: [fromEntrantId, toEntrantId] },
+          drawGroup: { drawBracketId: draw.id },
+        },
+        include: { drawGroup: true },
+      });
+      const memberFrom = memberships.find((member) => member.entrantId === fromEntrantId);
+      const memberTo = memberships.find((member) => member.entrantId === toEntrantId);
+      if (!memberFrom || !memberTo) throw new NotFoundException('选手不在当前签表的小组里');
+
+      const currentFromGroup = memberFrom.drawGroup.groupCode;
+      const currentToGroup = memberTo.drawGroup.groupCode;
+      // 幂等：已经是目标状态（两人已在对方原来的小组）→ 直接返回，不再交换回去。
+      if (currentFromGroup === toGroupCode && currentToGroup === fromGroupCode) {
+        return { changed: false, scope: 'GROUP' as const, drawId: draw.id };
+      }
+      if (currentFromGroup !== fromGroupCode || currentToGroup !== toGroupCode) {
+        throw new ConflictException('小组分组已被其他人调整，请刷新后重试');
+      }
+      if (currentFromGroup === currentToGroup) {
+        return {
+          changed: false,
+          scope: 'GROUP' as const,
+          drawId: draw.id,
+          message: '同一小组内换位不改变组内循环对阵',
+        };
+      }
+
+      const groups = await tx.drawGroup.findMany({
+        where: { id: { in: [memberFrom.drawGroupId, memberTo.drawGroupId] } },
+      });
+      const groupFrom = groups.find((group) => group.id === memberFrom.drawGroupId);
+      const groupTo = groups.find((group) => group.id === memberTo.drawGroupId);
+      if (!groupFrom || !groupTo) throw new NotFoundException('小组不存在');
+
+      await this.assertDrawMatchIdle(tx, eventId, {
+        roundNo: 0,
+        round: { in: [groupFrom.groupCode, groupTo.groupCode] },
+      });
+
+      await tx.drawGroupMember.update({ where: { id: memberFrom.id }, data: { drawGroupId: groupTo.id } });
+      await tx.drawGroupMember.update({ where: { id: memberTo.id }, data: { drawGroupId: groupFrom.id } });
+      // 分组表来自 Registration.groupName，必须与 draw_group_member 同步，否则页面两边不一致。
+      await tx.registration.update({ where: { id: memberFrom.entrantId }, data: { groupName: groupTo.groupCode } });
+      await tx.registration.update({ where: { id: memberTo.entrantId }, data: { groupName: groupFrom.groupCode } });
+
+      const refreshedGroups = await tx.drawGroup.findMany({
+        where: { id: { in: [groupFrom.id, groupTo.id] } },
+        include: { members: true },
+      });
+      for (const group of refreshedGroups) {
+        const fixtureDrafts = buildGroupFixtureDrafts(group.members.map((member) => member.entrantId)).map(
+          (draft) => ({
+            round: group.groupCode,
+            roundNo: 0,
+            matchNo: draft.matchNo,
+            side1Id: draft.side1Id,
+            side2Id: draft.side2Id,
+            status: MatchStatus.PENDING,
+            winnerSide: null,
+          }),
+        );
+        const existing = await tx.match.findMany({
+          where: { eventId, roundNo: 0, round: group.groupCode },
+          select: { id: true, roundNo: true, matchNo: true },
+        });
+        const plan = planMatchReconcile(existing, fixtureDrafts);
+        for (const update of plan.updates) {
+          await tx.match.update({
+            where: { id: update.id },
+            data: {
+              side1Id: update.draft.side1Id,
+              side2Id: update.draft.side2Id,
+              status: update.draft.status,
+              winnerSide: update.draft.winnerSide,
+            },
+          });
+        }
+        if (plan.deletes.length) await tx.match.deleteMany({ where: { id: { in: plan.deletes } } });
+        if (plan.creates.length) await this.createMatchDrafts(tx, eventId, plan.creates);
+      }
+
+      await tx.drawBracket.update({ where: { id: draw.id }, data: { updatedBy: operatorId } });
+      await this.drawLogService.create(tx, {
+        eventItemId: eventId,
+        drawBracketId: draw.id,
+        operationType: DrawOperationType.SWAP,
+        operatorId,
+        operatorNameSnapshot: operatorName,
+        beforeData: {
+          scope: 'GROUP',
+          from: { group: currentFromGroup, entrantId: memberFrom.entrantId },
+          to: { group: currentToGroup, entrantId: memberTo.entrantId },
+        } as Prisma.InputJsonValue,
+        afterData: {
+          scope: 'GROUP',
+          from: { group: groupTo.groupCode, entrantId: memberFrom.entrantId },
+          to: { group: groupFrom.groupCode, entrantId: memberTo.entrantId },
+        } as Prisma.InputJsonValue,
+      });
+
+      return { changed: true, scope: 'GROUP' as const, drawId: draw.id };
+    });
+  }
+
+  /** A–H 第二阶段签位交换：换人后重算第二阶段规划表与正式场次，场次 id 保持不变。 */
+  async swapSecondStageSlots(
+    eventId: string,
+    dto: SwapDrawSlotsDto,
+    operatorId: string,
+    operatorName: string | null,
+  ) {
+    const fromSlot = dto.fromSlot;
+    const toSlot = dto.toSlot;
+    if (!fromSlot || !toSlot) throw new BadRequestException('请选择两个 A–H 签位');
+    if (fromSlot === toSlot) throw new BadRequestException('不能交换同一个签位');
+
+    return this.prisma.$transaction(async (tx) => {
+      await this.lockEventForDraw(tx, eventId);
+      const event = await this.ensureDrawEvent(eventId);
+      if (
+        event.format !== Format.SINGLE_ELIMINATION_PLUS_GROUP_RANKING &&
+        event.format !== Format.GROUP_PLUS_KNOCKOUT_STD
+      ) {
+        throw new BadRequestException('当前项目没有 A–H 第二阶段签位');
+      }
+      const stage = await tx.secondStage.findUnique({
+        where: { eventId },
+        include: { slots: { orderBy: { sortOrder: 'asc' } } },
+      });
+      if (!stage) throw new NotFoundException('第二阶段还没有生成，请先确认 A–H 签位');
+      if (stage.status === SecondStageStatus.FINISHED) {
+        throw new ConflictException('第二阶段已结束，不能换签位');
+      }
+      const slotA = stage.slots.find((slot) => slot.slot === fromSlot);
+      const slotB = stage.slots.find((slot) => slot.slot === toSlot);
+      if (!slotA || !slotB) throw new NotFoundException('签位不存在');
+
+      await this.assertDrawMatchIdle(tx, eventId, {
+        roundNo: { gte: SECOND_STAGE_FORMAL_ROUND_NO_BASE },
+      });
+
+      const action = this.swapAction(slotA.entrantId, slotB.entrantId, dto);
+      if (action === 'conflict') throw new ConflictException('签位已被其他人调整，请刷新后重试');
+      if (action === 'already') return { changed: false, scope: 'SECOND_STAGE' as const };
+
+      await tx.secondStageSlot.update({
+        where: { id: slotA.id },
+        data: { entrantId: slotB.entrantId, entrantNameSnapshot: slotB.entrantNameSnapshot },
+      });
+      await tx.secondStageSlot.update({
+        where: { id: slotB.id },
+        data: { entrantId: slotA.entrantId, entrantNameSnapshot: slotA.entrantNameSnapshot },
+      });
+
+      await this.reconcileSecondStageMatches(tx, stage.id, eventId);
+
+      const draw = await tx.drawBracket.findFirst({
+        where: { eventItemId: eventId, isCurrent: true },
+        orderBy: { version: 'desc' },
+      });
+      if (draw) {
+        await tx.drawBracket.update({ where: { id: draw.id }, data: { updatedBy: operatorId } });
+        await this.drawLogService.create(tx, {
+          eventItemId: eventId,
+          drawBracketId: draw.id,
+          operationType: DrawOperationType.SWAP,
+          operatorId,
+          operatorNameSnapshot: operatorName,
+          beforeData: {
+            scope: 'SECOND_STAGE',
+            from: { slot: fromSlot, entrantId: slotA.entrantId, name: slotA.entrantNameSnapshot },
+            to: { slot: toSlot, entrantId: slotB.entrantId, name: slotB.entrantNameSnapshot },
+          } as Prisma.InputJsonValue,
+          afterData: {
+            scope: 'SECOND_STAGE',
+            from: { slot: fromSlot, entrantId: slotB.entrantId, name: slotB.entrantNameSnapshot },
+            to: { slot: toSlot, entrantId: slotA.entrantId, name: slotA.entrantNameSnapshot },
+          } as Prisma.InputJsonValue,
+        });
+      }
+
+      return { changed: true, scope: 'SECOND_STAGE' as const };
+    });
+  }
+
+  /**
+   * 标准2023 出线超过 8 人时，淘汰赛由记分模块自动生成，只有 Match、没有 draw_slot。
+   * 这里直接换首轮两个位置上的选手，再按首轮签位重算整棵树（原地更新）。
+   */
+  async swapKnockoutSides(
+    eventId: string,
+    dto: SwapDrawSlotsDto,
+    operatorId: string,
+    operatorName: string | null,
+  ) {
+    const { fromRoundNo, fromMatchNo, fromSide, toRoundNo, toMatchNo, toSide } = dto;
+    if (!fromRoundNo || !fromMatchNo || !fromSide || !toRoundNo || !toMatchNo || !toSide) {
+      throw new BadRequestException('请选择两个要交换的签位');
+    }
+    if (fromRoundNo === toRoundNo && fromMatchNo === toMatchNo && fromSide === toSide) {
+      throw new BadRequestException('不能交换同一个位置');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      await this.lockEventForDraw(tx, eventId);
+      const event = await this.ensureDrawEvent(eventId);
+      const draw = await this.currentDrawBracket(tx, eventId, dto.drawId);
+      if (draw.format !== DrawFormat.group_then_elim) {
+        throw new BadRequestException('当前项目不是小组+淘汰赛');
+      }
+      this.assertDrawEditable(draw, event);
+      const stage = await tx.secondStage.findUnique({ where: { eventId }, select: { id: true } });
+      if (stage) {
+        throw new BadRequestException('本项目使用 A–H 第二阶段签位，请在第二阶段里换签位');
+      }
+
+      const matches = await tx.match.findMany({
+        where: { eventId, roundNo: { gte: 1, lt: SECOND_STAGE_FORMAL_ROUND_NO_BASE } },
+        orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }],
+      });
+      if (!matches.length) throw new BadRequestException('淘汰赛还没有生成，暂无可交换的签位');
+      const firstRoundNo = matches[0].roundNo;
+      if (fromRoundNo !== firstRoundNo || toRoundNo !== firstRoundNo) {
+        throw new BadRequestException('只能交换首轮签位');
+      }
+      const firstRound = matches
+        .filter((match) => match.roundNo === firstRoundNo)
+        .sort((a, b) => a.matchNo - b.matchNo);
+      if (firstRound.every((match) => !match.side1Id && !match.side2Id)) {
+        throw new BadRequestException('淘汰赛对阵还没有生成，小组赛打完后才能换签位');
+      }
+      await this.assertDrawMatchIdle(tx, eventId, {
+        roundNo: { gte: firstRoundNo, lt: SECOND_STAGE_FORMAL_ROUND_NO_BASE },
+      });
+
+      const matchA = firstRound.find((match) => match.matchNo === fromMatchNo);
+      const matchB = firstRound.find((match) => match.matchNo === toMatchNo);
+      if (!matchA || !matchB) throw new NotFoundException('场次不存在');
+      const currentFrom = fromSide === 1 ? matchA.side1Id : matchA.side2Id;
+      const currentTo = toSide === 1 ? matchB.side1Id : matchB.side2Id;
+
+      const action = this.swapAction(currentFrom, currentTo, dto);
+      if (action === 'conflict') throw new ConflictException('签位已被其他人调整，请刷新后重试');
+      if (action === 'already') return { changed: false, scope: 'KNOCKOUT_SIDE' as const, drawId: draw.id };
+
+      const slots = firstRound.flatMap((match) => [
+        { entrantId: match.side1Id, isBye: !match.side1Id },
+        { entrantId: match.side2Id, isBye: !match.side2Id },
+      ]);
+      const indexFrom = firstRound.findIndex((match) => match.matchNo === fromMatchNo) * 2 + (fromSide - 1);
+      const indexTo = firstRound.findIndex((match) => match.matchNo === toMatchNo) * 2 + (toSide - 1);
+      [slots[indexFrom], slots[indexTo]] = [slots[indexTo], slots[indexFrom]];
+
+      await this.reconcileEliminationMatches(tx, eventId, slots, {
+        bronze: matches.some((match) => match.round === 'BRONZE'),
+        fromRoundNo: firstRoundNo,
+      });
+      await tx.drawBracket.update({ where: { id: draw.id }, data: { updatedBy: operatorId } });
+      await this.drawLogService.create(tx, {
+        eventItemId: eventId,
+        drawBracketId: draw.id,
+        operationType: DrawOperationType.SWAP,
+        operatorId,
+        operatorNameSnapshot: operatorName,
+        beforeData: {
+          scope: 'KNOCKOUT_SIDE',
+          from: { roundNo: fromRoundNo, matchNo: fromMatchNo, side: fromSide, entrantId: currentFrom },
+          to: { roundNo: toRoundNo, matchNo: toMatchNo, side: toSide, entrantId: currentTo },
+        } as Prisma.InputJsonValue,
+        afterData: {
+          scope: 'KNOCKOUT_SIDE',
+          from: { roundNo: fromRoundNo, matchNo: fromMatchNo, side: fromSide, entrantId: currentTo },
+          to: { roundNo: toRoundNo, matchNo: toMatchNo, side: toSide, entrantId: currentFrom },
+        } as Prisma.InputJsonValue,
+      });
+
+      return { changed: true, scope: 'KNOCKOUT_SIDE' as const, drawId: draw.id };
+    });
+  }
+
+  /** 抽签编排页「换签位」可选项：按当前赛制给出有哪些签位可以换、以及为什么不能换。 */
+  async getSwapOptions(eventId: string) {
+    type SwapOptionView = {
+      key: string;
+      label: string;
+      entrantId: string | null;
+      group?: string;
+      position?: number;
+      slotCode?: string;
+      roundNo?: number;
+      matchNo?: number;
+      side?: number;
+    };
+    type SwapScopeView = {
+      scope: 'SLOT' | 'GROUP' | 'SECOND_STAGE' | 'KNOCKOUT_SIDE';
+      title: string;
+      description: string;
+      disabled: boolean;
+      reason: string | null;
+      options: SwapOptionView[];
+    };
+
+    const event = await this.ensureEvent(eventId);
+    const draw = await this.prisma.drawBracket.findFirst({
+      where: { eventItemId: eventId, isCurrent: true },
+      orderBy: { version: 'desc' },
+    });
+    const base = {
+      drawId: draw?.id ?? null,
+      drawStatus: draw?.status ?? null,
+      drawFormat: draw?.format ?? null,
+      eventFormat: event.format,
+      drawPublished: event.drawPublished,
+      drawLocked: event.drawLocked,
+    };
+
+    if (event.mixHostId) {
+      return { ...base, canSwap: false, reason: '并入混编的单项在主项目里换签位', scopes: [] as SwapScopeView[] };
+    }
+    if (!draw) return { ...base, canSwap: false, reason: '还没有抽签', scopes: [] as SwapScopeView[] };
+    if (event.drawPublished) {
+      return { ...base, canSwap: false, reason: '对阵已发布，请先取消发布', scopes: [] as SwapScopeView[] };
+    }
+    if (draw.status !== DrawStatus.DRAWN) {
+      return { ...base, canSwap: false, reason: '签表已冻结，请先解冻', scopes: [] as SwapScopeView[] };
+    }
+
+    const scopes: SwapScopeView[] = [];
+
+    if (draw.format === DrawFormat.single_elim) {
+      const slots = await this.prisma.drawSlot.findMany({
+        where: { drawBracketId: draw.id },
+        orderBy: { position: 'asc' },
+      });
+      const blocked = await this.hasMatchProgress({
+        eventId,
+        roundNo: { gte: 1, lt: SECOND_STAGE_FORMAL_ROUND_NO_BASE },
+      });
+      scopes.push({
+        scope: 'SLOT',
+        title: '淘汰赛签位',
+        description: '选择两个签位交换选手位置；轮空位也可以参与交换。',
+        disabled: blocked,
+        reason: blocked ? '已有场次开赛或产生比分' : null,
+        options: slots.map((slot) => ({
+          key: `SLOT:${slot.position}`,
+          label: `#${slot.position} ${slot.isBye || !slot.entrantNameSnapshot ? '轮空' : slot.entrantNameSnapshot}`,
+          entrantId: slot.entrantId,
+          position: slot.position,
+        })),
+      });
+    } else {
+      const groups = await this.prisma.drawGroup.findMany({
+        where: { drawBracketId: draw.id },
+        include: { members: true },
+        orderBy: { sortOrder: 'asc' },
+      });
+      const groupCodes = groups.map((group) => group.groupCode);
+      const blocked = groupCodes.length
+        ? await this.hasMatchProgress({ eventId, roundNo: 0, round: { in: groupCodes } })
+        : false;
+      scopes.push({
+        scope: 'GROUP',
+        title: '小组位置',
+        description: '选择两个不同小组的选手互换位置；同组内换位不改变组内循环对阵。',
+        disabled: blocked || groups.length < 2,
+        reason: blocked
+          ? '已有小组赛场次开赛或产生比分'
+          : groups.length < 2
+            ? groups.length === 1
+              ? '当前只有一个小组，组内换位不改变对阵'
+              : '还没有分组'
+            : null,
+        options: groups.flatMap((group) =>
+          group.members.map((member) => ({
+            key: `GROUP:${group.groupCode}:${member.entrantId}`,
+            label: `${group.groupCode}组 · ${member.entrantNameSnapshot ?? member.entrantId}`,
+            group: group.groupCode,
+            entrantId: member.entrantId,
+          })),
+        ),
+      });
+    }
+
+    const stage = await this.prisma.secondStage.findUnique({
+      where: { eventId },
+      include: { slots: { orderBy: { sortOrder: 'asc' } } },
+    });
+    if (stage) {
+      const blocked = await this.hasMatchProgress({
+        eventId,
+        roundNo: { gte: SECOND_STAGE_FORMAL_ROUND_NO_BASE },
+      });
+      scopes.push({
+        scope: 'SECOND_STAGE',
+        title: '第二阶段 A–H 签位',
+        description: '交换两个 A–H 签位上的选手，第二阶段对阵与正式场次原地重算。',
+        disabled: blocked || stage.status === SecondStageStatus.FINISHED,
+        reason: blocked
+          ? '第二阶段已有场次开赛或产生比分'
+          : stage.status === SecondStageStatus.FINISHED
+            ? '第二阶段已结束'
+            : null,
+        options: stage.slots.map((slot) => ({
+          key: `SECOND_STAGE:${slot.slot}`,
+          label: `${slot.slot} · ${slot.entrantNameSnapshot ?? '待定'}`,
+          slotCode: slot.slot,
+          entrantId: slot.entrantId,
+        })),
+      });
+    } else if (draw.format === DrawFormat.group_then_elim) {
+      const matches = await this.prisma.match.findMany({
+        where: { eventId, roundNo: { gte: 1, lt: SECOND_STAGE_FORMAL_ROUND_NO_BASE } },
+        orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }],
+      });
+      const firstRoundNo = matches.length ? matches[0].roundNo : null;
+      const firstRound = firstRoundNo === null ? [] : matches.filter((match) => match.roundNo === firstRoundNo);
+      const names = await this.entrantNameMap(eventId);
+      const generated = firstRound.some((match) => match.side1Id || match.side2Id);
+      const blocked = firstRoundNo === null
+        ? false
+        : await this.hasMatchProgress({
+            eventId,
+            roundNo: { gte: firstRoundNo, lt: SECOND_STAGE_FORMAL_ROUND_NO_BASE },
+          });
+      scopes.push({
+        scope: 'KNOCKOUT_SIDE',
+        title: '淘汰赛首轮位置',
+        description: '标准2023 出线超过 8 人时，淘汰赛由系统按小组名次自动生成，可交换首轮两个位置上的选手。',
+        disabled: !generated || blocked,
+        reason: !generated
+          ? '小组赛全部打完后才生成淘汰赛对阵'
+          : blocked
+            ? '已有场次开赛或产生比分'
+            : null,
+        options: firstRound.flatMap((match) =>
+          ([1, 2] as const).map((side) => {
+            const entrantId = side === 1 ? match.side1Id : match.side2Id;
+            return {
+              key: `KNOCKOUT_SIDE:${match.roundNo}:${match.matchNo}:${side}`,
+              label: `第${match.matchNo}场 ${side === 1 ? '上' : '下'} · ${entrantId ? (names.get(entrantId) ?? '待定') : '轮空'}`,
+              entrantId,
+              roundNo: match.roundNo,
+              matchNo: match.matchNo,
+              side,
+            };
+          }),
+        ),
+      });
+    }
+
+    const usable = scopes.filter((scope) => !scope.disabled && scope.options.length >= 2);
+    return {
+      ...base,
+      canSwap: usable.length > 0,
+      reason: usable.length ? null : (scopes[0]?.reason ?? '当前没有可交换的签位'),
+      scopes,
+    };
+  }
+
+  /** 锁定单项行，避免同一次抽签被并发改两次。 */
+  private async lockEventForDraw(tx: Prisma.TransactionClient, eventId: string) {
+    await tx.$queryRaw`SELECT id FROM Event WHERE id = ${eventId} FOR UPDATE`;
+  }
+
+  private async currentDrawBracket(tx: Prisma.TransactionClient, eventId: string, drawId?: string) {
+    if (drawId) {
+      const draw = await tx.drawBracket.findUnique({ where: { id: drawId } });
+      if (!draw || draw.eventItemId !== eventId) throw new NotFoundException('签表不存在');
+      return draw;
+    }
+    const draw = await tx.drawBracket.findFirst({
+      where: { eventItemId: eventId, isCurrent: true },
+      orderBy: { version: 'desc' },
+    });
+    if (!draw) throw new NotFoundException('当前单项还没有签表，请先抽签');
+    return draw;
+  }
+
+  private assertDrawEditable(draw: { status: DrawStatus }, event: { drawPublished: boolean }) {
+    if (event.drawPublished) throw new ConflictException('对阵已发布，请先取消发布再换签位');
+    if (draw.status !== DrawStatus.DRAWN) throw new ConflictException('当前签表已冻结，请先解冻再换签位');
+  }
+
+  /** 幂等 / 并发判定：apply 执行交换，already 已是目标状态，conflict 与前端看到的不一致。 */
+  private swapAction(
+    currentFrom: string | null,
+    currentTo: string | null,
+    dto: { expectFromId?: string | null; expectToId?: string | null },
+  ): 'apply' | 'already' | 'conflict' {
+    const hasExpect = dto.expectFromId !== undefined || dto.expectToId !== undefined;
+    if (!hasExpect) {
+      return !currentFrom && !currentTo ? 'already' : 'apply';
+    }
+    const expectFrom = dto.expectFromId ?? null;
+    const expectTo = dto.expectToId ?? null;
+    if (currentFrom === expectFrom && currentTo === expectTo) {
+      return currentFrom === currentTo ? 'already' : 'apply';
+    }
+    if (currentFrom === expectTo && currentTo === expectFrom) return 'already';
+    return 'conflict';
+  }
+
+  /** 指定范围内的场次里是否有「已开赛 / 已有比分 / 已结束的真实比赛」。 */
+  private async hasMatchProgress(scope: Prisma.MatchWhereInput) {
+    const count = await this.prisma.match.count({
+      where: { AND: [scope, this.matchProgressCondition()] },
+    });
+    return count > 0;
+  }
+
+  private async assertDrawMatchIdle(
+    tx: Prisma.TransactionClient,
+    eventId: string,
+    scope: Prisma.MatchWhereInput,
+  ) {
+    const count = await tx.match.count({
+      where: { AND: [{ eventId }, scope, this.matchProgressCondition()] },
+    });
+    if (count > 0) {
+      throw new ConflictException('这些场次已开赛或已有成绩，不能换签位；请先清空成绩再调整');
+    }
+  }
+
+  private matchProgressCondition(): Prisma.MatchWhereInput {
+    return {
+      OR: [
+        { status: MatchStatus.LIVE },
+        { startedAt: { not: null } },
+        { games: { some: {} } },
+        { forfeitedSide: { not: null } },
+        { status: MatchStatus.COMPLETED, side1Id: { not: null }, side2Id: { not: null } },
+      ],
+    };
+  }
+
+  /**
+   * 单淘汰签表的原地重算：按 (roundNo, matchNo) 对齐，只更新对阵与状态，
+   * 不动场次 id、场地、时间、裁判与时长，因此排程、签到、比分关联都不会丢。
+   */
+  private async reconcileEliminationMatches(
+    tx: Prisma.TransactionClient,
+    eventId: string,
+    slots: Array<{ entrantId: string | null; isBye: boolean }>,
+    options: { bronze: boolean; fromRoundNo?: number },
+  ) {
+    const fromRoundNo = options.fromRoundNo ?? 1;
+    const drafts = buildEliminationDrafts(slots, { bronze: options.bronze }).filter(
+      (draft) => draft.roundNo >= fromRoundNo,
+    );
+    const existing = await tx.match.findMany({
+      where: {
+        eventId,
+        roundNo: { gte: fromRoundNo, lt: SECOND_STAGE_FORMAL_ROUND_NO_BASE },
+      },
+      select: { id: true, roundNo: true, matchNo: true },
+    });
+    const plan = planMatchReconcile(existing, drafts);
+    for (const update of plan.updates) {
+      await tx.match.update({
+        where: { id: update.id },
+        data: {
+          round: update.draft.round,
+          side1Id: update.draft.side1Id,
+          side2Id: update.draft.side2Id,
+          status: update.draft.status,
+          winnerSide: update.draft.winnerSide,
+        },
+      });
+    }
+    if (plan.deletes.length) await tx.match.deleteMany({ where: { id: { in: plan.deletes } } });
+    if (plan.creates.length) await this.createMatchDrafts(tx, eventId, plan.creates);
+  }
+
+  /** 第二阶段 A–H 换位后重算：规划表按 matchNo 原地更新，正式场次走同一个 reconcile。 */
+  private async reconcileSecondStageMatches(
+    tx: Prisma.TransactionClient,
+    stageId: string,
+    eventId: string,
+  ) {
+    const stage = await tx.secondStage.findUnique({
+      where: { id: stageId },
+      include: { slots: { orderBy: { sortOrder: 'asc' } } },
+    });
+    if (!stage) throw new NotFoundException('第二阶段不存在');
+
+    const slotMap = new Map<SecondStageSlotCode, SecondStageEntrant>();
+    for (const slot of stage.slots) {
+      slotMap.set(this.normalizeSecondStageSlot(slot.slot), {
+        id: slot.entrantId,
+        name: slot.entrantNameSnapshot,
+      });
+    }
+    const templates = this.secondStageMatchTemplates(slotMap, stage.rankingMode);
+    const existing = await tx.secondStageMatch.findMany({
+      where: { secondStageId: stage.id },
+      orderBy: { matchNo: 'asc' },
+    });
+    const keep = new Set(templates.map((template) => template.matchNo));
+    for (const template of templates) {
+      const data = {
+        roundName: template.roundName,
+        area: template.area,
+        slotInfo: template.slotInfo ?? null,
+        side1Source: template.side1Source ?? null,
+        side2Source: template.side2Source ?? null,
+        side1Id: template.side1?.id ?? null,
+        side2Id: template.side2?.id ?? null,
+        side1NameSnapshot: template.side1?.name ?? null,
+        side2NameSnapshot: template.side2?.name ?? null,
+        score: null,
+        status: MatchStatus.PENDING,
+        winnerSide: null,
+        winnerId: null,
+        winnerNameSnapshot: null,
+      };
+      const current = existing.find((match) => match.matchNo === template.matchNo);
+      if (current) await tx.secondStageMatch.update({ where: { id: current.id }, data });
+      else await tx.secondStageMatch.create({ data: { secondStageId: stage.id, matchNo: template.matchNo, ...data } });
+    }
+    const stale = existing.filter((match) => !keep.has(match.matchNo)).map((match) => match.id);
+    if (stale.length) await tx.secondStageMatch.deleteMany({ where: { id: { in: stale } } });
+
+    await this.createSecondStageFormalMatches(tx, eventId, templates);
+    await this.secondStageProgress.progress(tx, {
+      secondStageId: stage.id,
+      eventId,
+      rankingMode: stage.rankingMode,
+    });
+  }
+
+  /** 报名 id → 显示名，用于换签位可选项的文案。 */
+  private async entrantNameMap(eventId: string) {
+    const registrations = await this.prisma.registration.findMany({
+      where: { eventId: await this.entrantScope(eventId) },
+      include: { player1: true, player2: true },
+    });
+    return new Map(registrations.map((registration) => [registration.id, this.registrationName(registration)]));
   }
 
   /**
@@ -2029,65 +2736,8 @@ export class DrawsService {
   ) {
     await tx.match.deleteMany({ where: { eventId } });
     await tx.registration.updateMany({ where: { eventId: await this.entrantScope(eventId, tx) }, data: { groupName: null } });
-
-    const entrantCount = slots.filter((slot) => !slot.isBye && slot.entrantId).length;
-    const slotEntries = slots.map((slot) => ({
-      entrantId: slot.isBye ? null : slot.entrantId,
-      isPendingWinner: false,
-    }));
-    const drafts: MatchDraft[] = [];
-    let roundNo = 1;
-    let currentSlots = slotEntries;
-
-    while (currentSlots.length >= 2) {
-      const roundLabel = this.drawAlgorithmService.roundLabel(currentSlots.length);
-      const nextSlots: Array<{ entrantId: string | null; isPendingWinner: boolean }> = [];
-      for (let i = 0; i < currentSlots.length; i += 2) {
-        const side1 = currentSlots[i];
-        const side2 = currentSlots[i + 1];
-        const side1Id = side1?.entrantId ?? null;
-        const side2Id = side2?.entrantId ?? null;
-        const side1IsRealBye = !side1Id && !side1?.isPendingWinner;
-        const side2IsRealBye = !side2Id && !side2?.isPendingWinner;
-        const bothByes = side1IsRealBye && side2IsRealBye;
-        const hasBye =
-          (Boolean(side1Id) && side2IsRealBye) ||
-          (Boolean(side2Id) && side1IsRealBye);
-        drafts.push({
-          round: roundLabel,
-          roundNo,
-          matchNo: i / 2 + 1,
-          side1Id,
-          side2Id,
-          // 一方有人一方轮空 → 直接判晋级（COMPLETED）；双方皆轮空 → 是空场，同样
-          // 标记 COMPLETED 但无胜者，绝不能留成永远打不了的 PENDING 把后续卡死。
-          status: hasBye || bothByes ? MatchStatus.COMPLETED : MatchStatus.PENDING,
-          winnerSide: hasBye ? (side1Id ? 1 : 2) : null,
-        });
-        nextSlots.push({
-          // 双方皆轮空时继续向下一轮传递“真实轮空”（isPendingWinner=false），
-          // 让相邻的真实队伍一路轮空晋级，直到遇见真正的对手。
-          entrantId: hasBye ? (side1Id ?? side2Id) : null,
-          isPendingWinner: !hasBye && !bothByes,
-        });
-      }
-      currentSlots = nextSlots;
-      roundNo += 1;
-    }
-
-    const finalRoundNo = roundNo - 1;
-    if (entrantCount >= 4 && finalRoundNo > 1) {
-      drafts.push({
-        round: 'BRONZE',
-        roundNo: finalRoundNo,
-        matchNo: 2,
-        side1Id: null,
-        side2Id: null,
-        status: MatchStatus.PENDING,
-        winnerSide: null,
-      });
-    }
-
+    // 配对规则与换签位的原地重算共用同一份纯函数，避免两处规则漂移。
+    const drafts = buildEliminationDrafts(slots, { bronze: true });
     await this.createMatchDrafts(tx, eventId, drafts);
   }
 

@@ -6,6 +6,7 @@ import { AuthActor, playerScope, tournamentScope } from '../auth/admin-scope';
 import { validateTeamRoster } from './team-roster';
 import { rankTeamGroup } from '../common/team-group-ranking';
 import { withOfficialTeamResult, type TeamResult } from '../common/team-official-result';
+import { buildEliminationDrafts, planMatchReconcile } from '../draws/draw-swap-plan';
 import {
   BadRequestException,
   ConflictException,
@@ -54,6 +55,7 @@ import {
   GenerateGroupDrawDto,
   AdjustGroupsDto,
   GenerateKnockoutFromGroupsDto,
+  SwapTeamDrawDto,
 } from './dto/team-competition.dto';
 import {
   generateRoundRobin,
@@ -2385,6 +2387,357 @@ export class TeamCompetitionsService {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
 
     return this.getGroups(teamCompetitionId);
+  }
+
+  /** 团体赛换签位可选项：单淘汰列出首轮位置，小组赛列出各组队伍位置。 */
+  async getSwapOptions(teamCompetitionId: string) {
+    type TeamSwapOptionView = {
+      key: string;
+      label: string;
+      teamId: string | null;
+      group?: string;
+      groupId?: string;
+      roundNo?: number;
+      matchNo?: number;
+      side?: number;
+    };
+    type TeamSwapScopeView = {
+      scope: 'TEAM_SLOT' | 'TEAM_GROUP';
+      title: string;
+      description: string;
+      disabled: boolean;
+      reason: string | null;
+      options: TeamSwapOptionView[];
+    };
+
+    const competition = await this.prisma.teamCompetition.findUnique({ where: { id: teamCompetitionId } });
+    if (!competition) throw new NotFoundException('团体赛不存在');
+    const scopes: TeamSwapScopeView[] = [];
+
+    if (competition.format === TeamCompetitionFormat.SINGLE_ELIMINATION) {
+      const matches = await this.prisma.teamMatch.findMany({
+        where: { teamCompetitionId, stage: 'KNOCKOUT' },
+        orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }],
+      });
+      const firstRoundNo = matches.length ? matches[0].roundNo : null;
+      const firstRound = firstRoundNo === null ? [] : matches.filter((match) => match.roundNo === firstRoundNo);
+      const blocked = matches.length
+        ? (await this.prisma.teamMatch.count({
+            where: { AND: [{ teamCompetitionId, stage: 'KNOCKOUT' }, this.teamMatchProgressCondition()] },
+          })) > 0
+        : false;
+      const names = new Map(
+        (await this.prisma.team.findMany({ where: { teamCompetitionId }, select: { id: true, name: true } })).map(
+          (team) => [team.id, team.name],
+        ),
+      );
+      scopes.push({
+        scope: 'TEAM_SLOT',
+        title: '淘汰赛首轮位置',
+        description: '选择两个首轮位置交换队伍；轮空位也可以参与交换。',
+        disabled: !matches.length || blocked,
+        reason: !matches.length ? '还没有生成团体对阵' : blocked ? '已有子项开赛或产生比分' : null,
+        options: firstRound.flatMap((match) =>
+          ([1, 2] as const).map((side) => {
+            const teamId = side === 1 ? match.team1Id : match.team2Id;
+            return {
+              key: `TEAM_SLOT:${match.roundNo}:${match.matchNo}:${side}`,
+              label: `第${match.matchNo}场 ${side === 1 ? '上' : '下'} · ${teamId ? (names.get(teamId) ?? '待定') : '轮空'}`,
+              teamId,
+              roundNo: match.roundNo,
+              matchNo: match.matchNo,
+              side,
+            };
+          }),
+        ),
+      });
+    } else {
+      const groups = await this.prisma.teamGroup.findMany({
+        where: { teamCompetitionId },
+        include: { teams: { include: { team: { select: { id: true, name: true } } } } },
+        orderBy: { groupNo: 'asc' },
+      });
+      const groupIds = groups.map((group) => group.id);
+      const blocked = groupIds.length
+        ? (await this.prisma.teamMatch.count({
+            where: {
+              AND: [
+                { teamCompetitionId, stage: 'GROUP', groupId: { in: groupIds } },
+                this.teamMatchProgressCondition(),
+              ],
+            },
+          })) > 0
+        : false;
+      scopes.push({
+        scope: 'TEAM_GROUP',
+        title: '小组位置',
+        description: '选择两个不同小组的队伍互换位置；只重排这两组的小组对阵。',
+        disabled: groups.length < 2 || blocked,
+        reason: blocked
+          ? '已有子项开赛或产生比分'
+          : groups.length < 2
+            ? '当前只有一个小组，组内换位不改变对阵'
+            : null,
+        options: groups.flatMap((group) =>
+          group.teams.map((member) => ({
+            key: `TEAM_GROUP:${group.groupName}:${member.teamId}`,
+            label: `${group.groupName} · ${member.team.name}`,
+            teamId: member.teamId,
+            group: group.groupName,
+            groupId: group.id,
+          })),
+        ),
+      });
+    }
+
+    const usable = scopes.filter((scope) => !scope.disabled && scope.options.length >= 2);
+    return {
+      canSwap: usable.length > 0,
+      reason: usable.length ? null : (scopes[0]?.reason ?? '还没有抽签'),
+      drawFormat: competition.format,
+      scopes,
+    };
+  }
+
+  /**
+   * 团体赛换签位：单淘汰换首轮两个位置上的队伍；小组赛换两个组里的队伍。
+   * 只原地更新对阵，场次 id、排程、裁判与子项名单都不动。
+   */
+  async swapTeamPositions(teamCompetitionId: string, dto: SwapTeamDrawDto) {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM TeamCompetition WHERE id = ${teamCompetitionId} FOR UPDATE`;
+      const competition = await tx.teamCompetition.findUnique({
+        where: { id: teamCompetitionId },
+        include: { items: { orderBy: { sortOrder: 'asc' } } },
+      });
+      if (!competition) throw new NotFoundException('团体赛不存在');
+      const isSingleElimination = competition.format === TeamCompetitionFormat.SINGLE_ELIMINATION;
+      if (isSingleElimination) {
+        if (dto.scope && dto.scope !== 'TEAM_SLOT') {
+          throw new BadRequestException('单淘汰团体赛请在首轮位置上换签位');
+        }
+        return this.swapTeamKnockoutSlots(tx, competition, dto);
+      }
+      if (dto.scope && dto.scope !== 'TEAM_GROUP') {
+        throw new BadRequestException('小组赛团体赛请在小组位置上换签位');
+      }
+      return this.swapTeamGroupPositions(tx, competition, dto);
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+  }
+
+  private async swapTeamKnockoutSlots(
+    tx: Prisma.TransactionClient,
+    competition: TeamCompetition & { items: TeamCompetitionItem[] },
+    dto: SwapTeamDrawDto,
+  ) {
+    const { fromRoundNo, fromMatchNo, fromSide, toRoundNo, toMatchNo, toSide } = dto;
+    if (!fromRoundNo || !fromMatchNo || !fromSide || !toRoundNo || !toMatchNo || !toSide) {
+      throw new BadRequestException('请选择两个要交换的首轮位置');
+    }
+    const matches = await tx.teamMatch.findMany({
+      where: { teamCompetitionId: competition.id, stage: 'KNOCKOUT' },
+      orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }],
+    });
+    if (!matches.length) throw new BadRequestException('还没有生成团体对阵，请先抽签');
+    const firstRoundNo = matches[0].roundNo;
+    if (fromRoundNo !== firstRoundNo || toRoundNo !== firstRoundNo) {
+      throw new BadRequestException('只能交换首轮位置');
+    }
+    const firstRound = matches.filter((match) => match.roundNo === firstRoundNo).sort((a, b) => a.matchNo - b.matchNo);
+    const matchA = firstRound.find((match) => match.matchNo === fromMatchNo);
+    const matchB = firstRound.find((match) => match.matchNo === toMatchNo);
+    if (!matchA || !matchB) throw new NotFoundException('场次不存在');
+
+    const currentFrom = fromSide === 1 ? matchA.team1Id : matchA.team2Id;
+    const currentTo = toSide === 1 ? matchB.team1Id : matchB.team2Id;
+    const action = this.teamSwapAction(currentFrom, currentTo, dto);
+    if (action === 'conflict') throw new ConflictException('签位已被其他人调整，请刷新后重试');
+    if (action === 'already') return { changed: false, scope: 'TEAM_SLOT' as const };
+
+    const progressed = await tx.teamMatch.count({
+      where: { AND: [{ teamCompetitionId: competition.id, stage: 'KNOCKOUT' }, this.teamMatchProgressCondition()] },
+    });
+    if (progressed) throw new ConflictException('已有子项开赛或产生成绩，不能换签位');
+
+    const slots = firstRound.flatMap((match) => [
+      { entrantId: match.team1Id, isBye: !match.team1Id },
+      { entrantId: match.team2Id, isBye: !match.team2Id },
+    ]);
+    const indexFrom = firstRound.findIndex((match) => match.matchNo === fromMatchNo) * 2 + (fromSide - 1);
+    const indexTo = firstRound.findIndex((match) => match.matchNo === toMatchNo) * 2 + (toSide - 1);
+    [slots[indexFrom], slots[indexTo]] = [slots[indexTo], slots[indexFrom]];
+
+    const size = firstRound.length * 2;
+    const teamCount = slots.filter((slot) => slot.entrantId).length;
+    const drafts = buildEliminationDrafts(slots, {
+      bronze: competition.thirdPlaceMode === TeamThirdPlaceMode.PLAYOFF && teamCount >= 4,
+    });
+    await this.applyTeamKnockoutDrafts(tx, competition, drafts, (roundNo) =>
+      this.roundLabel(size / 2 ** (roundNo - 1)),
+    );
+    return { changed: true, scope: 'TEAM_SLOT' as const };
+  }
+
+  private async swapTeamGroupPositions(
+    tx: Prisma.TransactionClient,
+    competition: TeamCompetition & { items: TeamCompetitionItem[] },
+    dto: SwapTeamDrawDto,
+  ) {
+    const { fromTeamId, toTeamId } = dto;
+    if (!fromTeamId || !toTeamId) throw new BadRequestException('请选择两个要交换的队伍');
+    if (fromTeamId === toTeamId) throw new BadRequestException('不能交换同一个位置');
+    const memberships = await tx.teamGroupMember.findMany({
+      where: { teamId: { in: [fromTeamId, toTeamId] }, group: { teamCompetitionId: competition.id } },
+      include: { group: true },
+    });
+    const memberFrom = memberships.find((member) => member.teamId === fromTeamId);
+    const memberTo = memberships.find((member) => member.teamId === toTeamId);
+    if (!memberFrom || !memberTo) throw new NotFoundException('队伍不在当前分组里');
+    if (memberFrom.groupId === memberTo.groupId) {
+      return { changed: false, scope: 'TEAM_GROUP' as const, message: '同一小组内换位不改变小组对阵' };
+    }
+
+    const action = this.teamSwapAction(memberFrom.groupId, memberTo.groupId, dto);
+    if (action === 'conflict') throw new ConflictException('分组已被其他人调整，请刷新后重试');
+    if (action === 'already') return { changed: false, scope: 'TEAM_GROUP' as const };
+
+    const groupFrom = memberFrom.group;
+    const groupTo = memberTo.group;
+    const progressed = await tx.teamMatch.count({
+      where: {
+        AND: [
+          { teamCompetitionId: competition.id, stage: 'GROUP', groupId: { in: [groupFrom.id, groupTo.id] } },
+          this.teamMatchProgressCondition(),
+        ],
+      },
+    });
+    if (progressed) throw new ConflictException('已有子项开赛或产生成绩，不能换签位');
+
+    await tx.teamGroupMember.update({ where: { id: memberFrom.id }, data: { groupId: groupTo.id } });
+    await tx.teamGroupMember.update({ where: { id: memberTo.id }, data: { groupId: groupFrom.id } });
+
+    const affected = await tx.teamGroup.findMany({
+      where: { id: { in: [groupFrom.id, groupTo.id] } },
+      include: { teams: { orderBy: [{ seedOrder: 'asc' }, { createdAt: 'asc' }] } },
+    });
+    for (const group of affected) {
+      const rounds = generateRoundRobin(group.teams.map((member) => ({ id: member.teamId, name: '' })));
+      const fixtures = rounds.flatMap((round) =>
+        round.matches.map((match) => ({ roundNo: round.roundNo, team1Id: match.team1Id, team2Id: match.team2Id })),
+      );
+      const existing = await tx.teamMatch.findMany({
+        where: { teamCompetitionId: competition.id, stage: 'GROUP', groupId: group.id },
+        orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }],
+      });
+      const structureChanged =
+        fixtures.length !== existing.length || existing.some((row, index) => row.roundNo !== fixtures[index]?.roundNo);
+      if (structureChanged) {
+        throw new ConflictException('小组对阵结构与当前分组不一致，请用「手动调整分组」重新生成');
+      }
+      for (let index = 0; index < existing.length; index += 1) {
+        await tx.teamMatch.update({
+          where: { id: existing[index].id },
+          data: {
+            team1Id: fixtures[index].team1Id,
+            team2Id: fixtures[index].team2Id,
+            team1Wins: 0,
+            team2Wins: 0,
+            winnerTeamId: null,
+            status: MatchStatus.PENDING,
+          },
+        });
+      }
+    }
+
+    return { changed: true, scope: 'TEAM_GROUP' as const };
+  }
+
+  /** 按目标对阵原地更新团体淘汰赛场次（保 id / 排程 / 裁判 / 子项名单）。 */
+  private async applyTeamKnockoutDrafts(
+    tx: Prisma.TransactionClient,
+    competition: TeamCompetition & { items: TeamCompetitionItem[] },
+    drafts: ReturnType<typeof buildEliminationDrafts>,
+    labelFor: (roundNo: number) => string,
+  ) {
+    const winnerOf = (draft: { side1Id: string | null; side2Id: string | null; winnerSide: number | null }) =>
+      draft.winnerSide === 1 ? draft.side1Id : draft.winnerSide === 2 ? draft.side2Id : null;
+    const existing = await tx.teamMatch.findMany({
+      where: { teamCompetitionId: competition.id, stage: 'KNOCKOUT' },
+      select: { id: true, roundNo: true, matchNo: true },
+    });
+    const plan = planMatchReconcile(existing, drafts);
+    for (const update of plan.updates) {
+      await tx.teamMatch.update({
+        where: { id: update.id },
+        data: {
+          round: update.draft.round === 'BRONZE' ? 'BRONZE' : labelFor(update.draft.roundNo),
+          team1Id: update.draft.side1Id,
+          team2Id: update.draft.side2Id,
+          status: update.draft.status,
+          winnerTeamId: winnerOf(update.draft),
+          team1Wins: 0,
+          team2Wins: 0,
+        },
+      });
+    }
+    if (plan.deletes.length) await tx.teamMatch.deleteMany({ where: { id: { in: plan.deletes } } });
+    for (const draft of plan.creates) {
+      await tx.teamMatch.create({
+        data: {
+          teamCompetitionId: competition.id,
+          round: draft.round === 'BRONZE' ? 'BRONZE' : labelFor(draft.roundNo),
+          roundNo: draft.roundNo,
+          matchNo: draft.matchNo,
+          team1Id: draft.side1Id,
+          team2Id: draft.side2Id,
+          status: draft.status,
+          winnerTeamId: winnerOf(draft),
+          stage: 'KNOCKOUT',
+        },
+      });
+    }
+    // 新出现的「双方都已确定」的对阵补齐子项场次，保证裁判端能记分。
+    const refreshed = await tx.teamMatch.findMany({
+      where: { teamCompetitionId: competition.id, stage: 'KNOCKOUT' },
+    });
+    for (const encounter of refreshed) {
+      if (encounter.team1Id && encounter.team2Id) await this.createEncounterMatches(tx, encounter, competition.items);
+    }
+  }
+
+  private teamSwapAction(
+    currentFrom: string | null,
+    currentTo: string | null,
+    dto: { expectFromId?: string | null; expectToId?: string | null },
+  ): 'apply' | 'already' | 'conflict' {
+    const hasExpect = dto.expectFromId !== undefined || dto.expectToId !== undefined;
+    if (!hasExpect) return !currentFrom && !currentTo ? 'already' : 'apply';
+    const expectFrom = dto.expectFromId ?? null;
+    const expectTo = dto.expectToId ?? null;
+    if (currentFrom === expectFrom && currentTo === expectTo) {
+      return currentFrom === currentTo ? 'already' : 'apply';
+    }
+    if (currentFrom === expectTo && currentTo === expectFrom) return 'already';
+    return 'conflict';
+  }
+
+  private teamMatchProgressCondition(): Prisma.TeamMatchWhereInput {
+    return {
+      OR: [
+        { lineupLocked: true },
+        {
+          matches: {
+            some: {
+              OR: [
+                { status: { not: MatchStatus.PENDING } },
+                { startedAt: { not: null } },
+                { games: { some: {} } },
+              ],
+            },
+          },
+        },
+      ],
+    };
   }
 
   /**
