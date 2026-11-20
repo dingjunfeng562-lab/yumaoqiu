@@ -120,7 +120,10 @@ function SideRow({ side, score, gameWins, fontScale }: { side: Side; score: numb
           <strong className={styles.name}>{player.name}</strong>
         </Fragment>
       )) : <strong className={styles.undecided}>选手待定</strong>}
-      <strong className={styles.matchScore} style={{ gridRow: `1 / span ${rows}` }}>{gameWins ?? '—'}</strong>
+      {/* 小比分（局分）只在打三局两胜这类需要看局数的比赛里显示；单局决胜或还没开赛时不显示占位的「—」。 */}
+      {gameWins === null ? null : (
+        <strong className={styles.matchScore} style={{ gridRow: `1 / span ${rows}` }}>{gameWins}</strong>
+      )}
       <strong className={styles.score} style={{ gridRow: `1 / span ${rows}` }}>{score ?? '—'}</strong>
     </div>
   );
