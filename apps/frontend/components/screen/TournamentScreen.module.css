@@ -35,6 +35,7 @@
 .cardViewport { position: absolute; inset: clamp(8px, 0.9vw, 16px); overflow: hidden; }
 .cardContent { display: flex; flex-direction: column; min-height: 100%; transform-origin: top left; }
 .courtHeader { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.eventType { min-width: 0; max-width: 60%; margin-top: 0.5em; padding-right: 0.5em; color: #a9d8ff; font-size: calc(clamp(16px, 1.3vw, 28px) * var(--card-font-scale, 1)); line-height: 1.25; text-align: right; overflow-wrap: anywhere; }
 /* 0.8 = 场地号相对比分字号缩小两档；padding-left: 0.5em = 距左边缘半个字符；
    margin-top: 0.5em = 下移半个字符高。 */
 .courtHeader h2 { min-width: 0; overflow-wrap: anywhere; padding-left: 0.5em; margin-top: 0.5em; font-weight: 700; font-size: calc(clamp(38px, 3vw, 64px) * 0.8 * var(--card-font-scale, 1)); line-height: 1.25; display: flex; align-items: baseline; gap: 12px; }

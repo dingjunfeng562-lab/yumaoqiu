@@ -39,6 +39,7 @@ export class TournamentScreenService {
                 teamCompetitionItemId: true,
                 event: { select: {
                   type: true, scoringRule: true, scoringMode: true,
+                  group: { select: { name: true } },
                   customGamePoint: true, customGameCap: true, customGamesToWin: true,
                   stageScoringRules: true,
                 } },
@@ -49,8 +50,8 @@ export class TournamentScreenService {
                 },
                 teamMatch: {
                   select: {
-                    team1Id: true, team2Id: true,
-                    teamCompetition: { select: { scoringRule: true, scoringMode: true, customGamePoint: true, customGameCap: true, customGamesToWin: true } },
+                    team1Id: true, team2Id: true, stage: true,
+                    teamCompetition: { select: { group: { select: { name: true } }, scoringRule: true, scoringMode: true, customGamePoint: true, customGameCap: true, customGamesToWin: true } },
                     lineups: {
                       select: {
                         teamId: true, teamCompetitionItemId: true,
@@ -107,6 +108,7 @@ export class TournamentScreenService {
           match: {
             id: match.id, status: match.status, round: match.round, matchNo: match.matchNo,
             eventType: match.event?.type ?? match.teamCompetitionItem?.eventType ?? null,
+            groupName: match.event?.group?.name ?? match.teamMatch?.teamCompetition.group?.name ?? null,
             gamesToWin: this.scoring.gamesToWinForMatch(match),
             scheduledAt: match.scheduledAt,
             side1: side(1), side2: side(2),

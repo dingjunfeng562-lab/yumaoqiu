@@ -4,6 +4,7 @@ import { Fragment, useEffect, useRef, useState, type CSSProperties, type ReactNo
 import { io } from 'socket.io-client';
 import { useSession } from 'next-auth/react';
 import { SettingOutlined } from '@ant-design/icons';
+import { GROUP_EVENT_OPTIONS } from '@/lib/registration-groups';
 import { defaultScreenSettings, readLocalScreenSettings, SCREEN_FONT_BOOST, screenCardFontScale, screenCardHeight, screenCardWidth, screenLayout, type BoardViewport, type ScreenSettings } from '@/lib/screen-settings';
 import { TournamentScreenSettings } from './TournamentScreenSettings';
 import styles from './TournamentScreen.module.css';
@@ -14,6 +15,8 @@ type Side = { players: { name: string; affiliation: string }[]; teamName: string
 type Game = { gameNo: number; side1Score: number; side2Score: number; winnerSide: number | null };
 type ScreenMatch = {
   id: string; status: 'LIVE' | 'PENDING'; gamesToWin: number;
+  eventType: string | null;
+  groupName?: string | null;
   side1: Side; side2: Side; games: Game[]; currentGame: Game | null;
 };
 type ScreenData = {
@@ -350,6 +353,9 @@ export function TournamentScreen({ tournamentId }: { tournamentId: string }) {
               <CourtCard key={court.id} id={court.id}>
                 <div className={styles.courtHeader}>
                   <h2>{court.name}</h2>
+                  {match && <p className={styles.eventType}>
+                    {[match.groupName, GROUP_EVENT_OPTIONS.find((event) => event.value === match.eventType)?.label ?? '待定'].filter(Boolean).join(' ')}
+                  </p>}
                 </div>
                 {match && <div className={styles.sides}>
                   <SideRow side={match.side1} score={live ? match.currentGame?.side1Score ?? 0 : 0} gameWins={showMatchScore ? side1Wins : null} fontScale={cardFontScale} />
