@@ -963,6 +963,14 @@ export class PublicService {
       : registration.player1.name;
   }
 
+  /** 签位、大屏用的单位：双打两人同单位只写一次。 */
+  private registrationAffiliation(registration: any) {
+    const units = [registration.player1?.affiliation, registration.player2?.affiliation]
+      .map((unit: string | null | undefined) => unit?.trim() ?? '')
+      .filter(Boolean);
+    return [...new Set(units)].join(' / ');
+  }
+
   private publicBracketView(event: any) {
     // 混编主项目显示混编名，其它单项照旧只显示项目名。
     const eventLabel: string = event.mixMembers?.length ? hostDisplayLabel(event) : (EVENT_TYPE_LABELS[event.type] ?? event.type);
@@ -1016,6 +1024,7 @@ export class PublicService {
             members,
             seed: registration.seedRank,
             isBye: false,
+            affiliation: this.registrationAffiliation(registration),
           };
         });
     const groups = this.publicGroupsView(event.registrations);
@@ -1424,6 +1433,7 @@ export class PublicService {
       members,
       seed: registration?.seedRank ?? null,
       isBye: false,
+      affiliation: registration ? this.registrationAffiliation(registration) : null,
     };
   }
 

@@ -1091,6 +1091,11 @@ function ParticipantBox({
             {participant.members.join(' / ')}
           </span>
         ) : null}
+        {participant.affiliation ? (
+          <span className="max-w-full truncate text-center text-[10px] font-semibold text-slate-400">
+            {participant.affiliation}
+          </span>
+        ) : null}
       </span>
     </div>
   );
@@ -1197,6 +1202,11 @@ function WinnerCard({
             {displayParticipant.members.join(' / ')}
           </span>
         ) : null}
+        {displayParticipant?.affiliation ? (
+          <span className="max-w-full truncate text-[10px] font-semibold leading-none text-slate-500">
+            {displayParticipant.affiliation}
+          </span>
+        ) : null}
         {/* Status / forfeit badge */}
         {bothForfeited ? (
           <span className="rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-black text-red-700">双方弃权</span>
@@ -1243,6 +1253,11 @@ function WinnerCard({
           {displayParticipant?.teamName && displayParticipant.members?.length ? (
             <span className="truncate text-center text-[10px] font-semibold text-slate-400">
               {displayParticipant.members.join(' / ')}
+            </span>
+          ) : null}
+          {displayParticipant?.affiliation ? (
+            <span className="max-w-full truncate text-center text-[10px] font-semibold text-slate-400">
+              {displayParticipant.affiliation}
             </span>
           ) : null}
         </span>
@@ -1718,6 +1733,11 @@ function SideRow({
           {participant?.teamName && participant.members?.length ? (
             <span className="truncate text-center text-[10px] font-semibold text-slate-400">
               {participant.members.join(' / ')}
+            </span>
+          ) : null}
+          {participant?.affiliation ? (
+            <span className="max-w-full truncate text-center text-[10px] font-semibold text-slate-400">
+              {participant.affiliation}
             </span>
           ) : null}
         </span>

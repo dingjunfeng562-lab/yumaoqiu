@@ -469,9 +469,11 @@ function sideName(registration?: Registration | null) {
 
 function affiliation(registration?: Registration | null) {
   if (!registration) return '';
-  return registration.player2
-    ? `${registration.player1.affiliation} / ${registration.player2.affiliation}`
-    : registration.player1.affiliation;
+  // 双打两人同单位只写一次，与秩序册、对阵图导出 PNG 的写法一致。
+  const units = [registration.player1.affiliation, registration.player2?.affiliation]
+    .map((unit) => unit?.trim() ?? '')
+    .filter(Boolean);
+  return [...new Set(units)].join(' / ');
 }
 
 // 字母编号 A=1…Z=26、AA=27；数字编号按数值（2组 在 10组 前）。与后端 groupCodeSortValue 一致。
