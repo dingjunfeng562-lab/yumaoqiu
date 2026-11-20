@@ -242,47 +242,29 @@ describe('CompetitionsService 赛事图片二维码', () => {
     return { service, prisma };
   }
 
-  it('赛事回到待审后，旧二维码也失效', async () => {
+  it('已有二维码的赛事即使当前不是已通过状态，也能继续查看原二维码', async () => {
     const { service, prisma } = buildPhotoAccessService({
       photoAccessToken: 'existing-token',
       approvalStatus: 'PENDING',
     });
 
-    await expect(service.getOrCreatePhotoAccess(competitionId)).rejects.toThrow(
-      '该赛事图片正在等待上级管理员同意，相关图片功能暂不可用',
-    );
-    expect(prisma.tournament.updateMany).not.toHaveBeenCalled();
-  });
+    const result = await service.getOrCreatePhotoAccess(competitionId);
 
-  it('驳回的赛事提示审核未通过并带上原因', async () => {
-    const prisma = {
-      tournament: {
-        findFirst: jest.fn().mockResolvedValue(buildTournament()),
-        findUnique: jest.fn().mockResolvedValueOnce({
-          name: '2026 羽动云赛',
-          photoAccessToken: null,
-          approvalStatus: 'REJECTED',
-          rejectReason: '资料不全',
-        }),
-        updateMany: jest.fn(),
-      },
-    };
-    const service = new CompetitionsService(prisma as never, { send: jest.fn() } as never);
-
-    await expect(service.getOrCreatePhotoAccess(competitionId)).rejects.toThrow(
-      '该赛事图片审核未通过：资料不全',
-    );
+    expect(result).toMatchObject({
+      accessToken: 'existing-token',
+      path: '/tupiannicai/existing-token',
+    });
     expect(prisma.tournament.updateMany).not.toHaveBeenCalled();
   });
 
   it('没有二维码且未通过审核时拒绝生成', async () => {
     const { service, prisma } = buildPhotoAccessService({
       photoAccessToken: null,
-      approvalStatus: 'PENDING',
+      approvalStatus: 'REJECTED',
     });
 
     await expect(service.getOrCreatePhotoAccess(competitionId)).rejects.toThrow(
-      '该赛事图片正在等待上级管理员同意，相关图片功能暂不可用',
+      '赛事审核通过后才能生成图片二维码',
     );
     expect(prisma.tournament.updateMany).not.toHaveBeenCalled();
   });

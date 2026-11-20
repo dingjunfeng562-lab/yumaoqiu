@@ -42,7 +42,7 @@ type ActivityForm = {
 };
 
 const STATUS = {
-  PENDING: { color: 'orange', label: '等待上级管理员同意' },
+  PENDING: { color: 'orange', label: '待审核' },
   APPROVED: { color: 'green', label: '已通过' },
   REJECTED: { color: 'red', label: '已驳回' },
 } as const;
@@ -228,20 +228,19 @@ export default function PhotoActivitiesPage() {
         {item.isArchived ? <Tag style={{ marginInlineEnd: 0 }}>已归档</Tag> : null}
       </Space>
       {item.rejectReason ? <Typography.Text type="danger" style={{ fontSize: 12 }}>驳回原因：{item.rejectReason}</Typography.Text> : null}
-      {item.approvalStatus === 'PENDING' ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>等待上级管理员同意</Typography.Text> : null}
     </Space> },
     { title: '时间', key: 'time', width: 230, render: (_: unknown, item: PhotoTarget) => item.endAt ? `${formatTime(item.startAt)} — ${formatTime(item.endAt)}` : formatTime(item.startAt) },
     ...(role === 'ROOT' ? [{ title: '创建人', key: 'creator', width: 110, render: (_: unknown, item: PhotoTarget) => item.submittedBy?.username ?? '—' }] : []),
     { title: '审核状态', dataIndex: 'approvalStatus', width: 96, render: (value: ApprovalStatus) => <Tag color={STATUS[value].color}>{STATUS[value].label}</Tag> },
     { title: '图片', dataIndex: 'photoCount', width: 70, render: (value: number) => `${value} 张` },
     { title: '操作', key: 'actions', width: 560, render: (_: unknown, item: PhotoTarget) => {
-      const canUsePhotos = item.approvalStatus === 'APPROVED';
-      const photoHint = canUsePhotos ? undefined : '等待上级管理员同意后才能使用';
+      const canShowQr = item.photoAccessEnabled || item.approvalStatus === 'APPROVED';
+      const qrHint = canShowQr ? undefined : '审核通过后才能生成二维码';
       return <Space wrap>
         {item.targetType === 'ACTIVITY' ? <Button icon={<EditOutlined />} onClick={() => openEdit(item)}>编辑</Button> : null}
-        <Button icon={<SafetyCertificateOutlined />} disabled={!canUsePhotos} title={photoHint} onClick={() => router.push(`${targetBasePath(item)}/watermark`)}>Logo 设置</Button>
+        <Button icon={<SafetyCertificateOutlined />} onClick={() => router.push(`${targetBasePath(item)}/watermark`)}>Logo 设置</Button>
         <Button type="primary" icon={<PictureOutlined />} onClick={() => router.push(`${targetBasePath(item)}/photos`)}>图片管理</Button>
-        <Button icon={<QrcodeOutlined />} loading={qrLoading === targetKey(item)} disabled={!canUsePhotos} title={photoHint} onClick={() => void showQr(item)}>{item.photoAccessEnabled ? '查看二维码' : '生成二维码'}</Button>
+        <Button icon={<QrcodeOutlined />} loading={qrLoading === targetKey(item)} disabled={!canShowQr} title={qrHint} onClick={() => void showQr(item)}>{item.photoAccessEnabled ? '查看二维码' : '生成二维码'}</Button>
         {role === 'ROOT' && item.targetType === 'ACTIVITY' && item.approvalStatus !== 'APPROVED' ? <Button icon={<CheckOutlined />} onClick={() => void approve(item)}>通过</Button> : null}
         {role === 'ROOT' && item.targetType === 'ACTIVITY' && item.approvalStatus !== 'REJECTED' ? <Button danger icon={<StopOutlined />} onClick={() => setRejecting(item)}>驳回</Button> : null}
         {role === 'ROOT' && item.targetType === 'ACTIVITY' ? <Button danger type="primary" icon={<DeleteOutlined />} onClick={() => { setDeleting(item); setDeleteInput(''); }}>删除</Button> : null}
@@ -269,7 +268,7 @@ export default function PhotoActivitiesPage() {
           style={{ width: 150 }}
           value={statusFilter}
           onChange={(value) => setStatusFilter(value as 'ALL' | ApprovalStatus)}
-          options={[{ value: 'ALL', label: '全部状态' }, { value: 'PENDING', label: '等待上级管理员同意' }, { value: 'APPROVED', label: '已通过' }, { value: 'REJECTED', label: '已驳回' }]}
+          options={[{ value: 'ALL', label: '全部状态' }, { value: 'PENDING', label: '待审核' }, { value: 'APPROVED', label: '已通过' }, { value: 'REJECTED', label: '已驳回' }]}
         />
         <Checkbox checked={includeArchived} onChange={(event) => setIncludeArchived(event.target.checked)}>包含已归档赛事</Checkbox>
         <Typography.Text type="secondary">赛事图片管理已并入本页；赛事名称与报名信息仍在赛事管理中维护。</Typography.Text>

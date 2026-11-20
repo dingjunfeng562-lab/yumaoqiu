@@ -153,10 +153,9 @@ export default function AdminPhotosPage() {
   }, [token, id, isActivity]);
 
   const title = target?.title ?? '当前内容';
-  // 未通过审核时只允许只读预览：上传、删除、水印和二维码全部不可用。
-  const readOnly = !!target && target.approvalStatus !== 'APPROVED';
-  const uploadQrBlocked = readOnly;
-  const uploadQrHint = uploadQrBlocked ? '等待上级管理员同意后才能使用' : undefined;
+  // 审核门槛只影响「第一次生成」；已经有授权二维码的对象始终可以查看。
+  const uploadQrBlocked = !!target && !target.photoUploadAccessEnabled && target.approvalStatus !== 'APPROVED';
+  const uploadQrHint = uploadQrBlocked ? `${targetLabel}审核通过后才能生成上传授权二维码` : undefined;
 
   const load = useCallback(async () => {
     if (!token || !id) return;
@@ -370,17 +369,13 @@ export default function AdminPhotosPage() {
         </Typography.Title>
       </Space>
 
-      {readOnly ? (
+      {target && target.approvalStatus !== 'APPROVED' ? (
         <Alert
           type={target.approvalStatus === 'REJECTED' ? 'error' : 'warning'}
           showIcon
           style={{ marginBottom: 16 }}
-          message={target.approvalStatus === 'REJECTED' ? '审核未通过' : '等待上级管理员同意'}
-          description={
-            target.approvalStatus === 'REJECTED'
-              ? `该${targetLabel}图片审核未通过${target.rejectReason ? `：${target.rejectReason}` : ''}，审核通过前只能查看，上传、删除、水印和二维码均不可用。`
-              : `该${targetLabel}图片需超级管理员同意后才能使用，同意前只能查看，上传、删除、水印和二维码均不可用。`
-          }
+          message={`${targetLabel}${target.approvalStatus === 'REJECTED' ? '审核未通过' : '尚未通过审核'}`}
+          description={`${targetLabel}审核通过后才能生成上传授权二维码；已经生成过的二维码仍可正常查看和使用。${target.rejectReason ? `驳回原因：${target.rejectReason}` : ''}`}
         />
       ) : null}
 
@@ -419,7 +414,7 @@ export default function AdminPhotosPage() {
       </Card>
 
       <Space style={{ marginBottom: 12 }} wrap>
-        <Button type="primary" icon={<UploadOutlined />} disabled={readOnly} title={readOnly ? '等待上级管理员同意后才能使用' : undefined} onClick={() => setUploadOpen(true)}>
+        <Button type="primary" icon={<UploadOutlined />} onClick={() => setUploadOpen(true)}>
           上传图片
         </Button>
         <Button icon={<QrcodeOutlined />} loading={uploadAccessLoading} disabled={uploadQrBlocked} title={uploadQrHint} onClick={() => void showUploadAccessQr()}>
@@ -428,7 +423,6 @@ export default function AdminPhotosPage() {
         <Checkbox
           checked={allSelected}
           indeterminate={selected.size > 0 && !allSelected}
-          disabled={readOnly}
           onChange={(e) => {
             if (e.target.checked) setSelected(new Set(photos.map((p) => p.id)));
             else setSelected(new Set());
@@ -439,13 +433,13 @@ export default function AdminPhotosPage() {
         <Popconfirm
           title={`确认删除选中的 ${selected.size} 张图片?`}
           onConfirm={deleteSelected}
-          disabled={readOnly || selected.size === 0}
+          disabled={selected.size === 0}
         >
-          <Button danger icon={<DeleteOutlined />} disabled={readOnly || selected.size === 0}>
+          <Button danger icon={<DeleteOutlined />} disabled={selected.size === 0}>
             批量删除({selected.size})
           </Button>
         </Popconfirm>
-        <Button danger type="primary" icon={<DeleteOutlined />} disabled={readOnly} title={readOnly ? '等待上级管理员同意后才能使用' : undefined} onClick={() => setPurgeOpen(true)}>
+        <Button danger type="primary" icon={<DeleteOutlined />} onClick={() => setPurgeOpen(true)}>
           删除全部图片
         </Button>
         <Typography.Text type="secondary">共 {total} 张</Typography.Text>
@@ -478,7 +472,6 @@ export default function AdminPhotosPage() {
                 />
                 <Checkbox
                   checked={selected.has(photo.id)}
-                  disabled={readOnly}
                   onChange={() => toggle(photo.id)}
                   style={{ position: 'absolute', top: 6, left: 6, background: 'rgba(255,255,255,0.85)', borderRadius: 4, padding: 2 }}
                 />
@@ -501,8 +494,8 @@ export default function AdminPhotosPage() {
                 <Button size="small" icon={<EyeOutlined />} onClick={() => viewOriginal(photo)}>
                   原图
                 </Button>
-                <Popconfirm title="确认删除该图片?" disabled={readOnly} onConfirm={() => deleteOne(photo)}>
-                  <Button size="small" danger disabled={readOnly} icon={<DeleteOutlined />}>
+                <Popconfirm title="确认删除该图片?" onConfirm={() => deleteOne(photo)}>
+                  <Button size="small" danger icon={<DeleteOutlined />}>
                     删除
                   </Button>
                 </Popconfirm>

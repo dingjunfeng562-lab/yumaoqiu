@@ -1051,19 +1051,12 @@ export class CompetitionsService {
     await this.findCompetition(id, true);
     const existing = await this.prisma.tournament.findUnique({
       where: { id },
-      select: { name: true, photoAccessToken: true, approvalStatus: true, rejectReason: true },
+      select: { name: true, photoAccessToken: true, approvalStatus: true },
     });
     if (!existing) {
       throw new NotFoundException('赛事不存在');
     }
-    // 审核门槛严格生效：赛事回到待审/驳回后，旧二维码也一并失效。
-    if (existing.approvalStatus !== 'APPROVED') {
-      throw new BadRequestException(
-        existing.approvalStatus === 'REJECTED'
-          ? `该赛事图片审核未通过${existing.rejectReason ? `：${existing.rejectReason}` : ''}`
-          : '该赛事图片正在等待上级管理员同意，相关图片功能暂不可用',
-      );
-    }
+    // 存量兼容：已经发出过图片二维码的赛事始终可以再次查看；审核门槛只拦第一次生成。
     if (existing.photoAccessToken) {
       return {
         competitionId: id,
@@ -1071,6 +1064,9 @@ export class CompetitionsService {
         accessToken: existing.photoAccessToken,
         path: `/tupiannicai/${existing.photoAccessToken}`,
       };
+    }
+    if (existing.approvalStatus !== 'APPROVED') {
+      throw new BadRequestException('赛事审核通过后才能生成图片二维码');
     }
     const generatedToken = randomUUID().replace(/-/g, '');
 
