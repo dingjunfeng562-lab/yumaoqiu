@@ -47,7 +47,7 @@ describe('Image moderation upload gate and ROOT settings', () => {
     jest.resetAllMocks();
     database.imageModerationConfig.findUnique.mockResolvedValue(stored);
     database.imageModerationConfig.upsert.mockImplementation(async ({ create, update }) => ({ ...stored, ...create, ...update }));
-    database.tournament.findUnique.mockResolvedValue({ id: 'fixture-tournament' });
+    database.tournament.findUnique.mockResolvedValue({ id: 'fixture-tournament', approvalStatus: 'APPROVED', rejectReason: null });
     database.tournamentWatermark.findUnique.mockResolvedValue(null);
     service = new ImageModerationService(database as unknown as PrismaService);
     fetchMock = jest.spyOn(global, 'fetch').mockImplementation(async () => answer());
@@ -198,7 +198,10 @@ describe('Image moderation upload gate and ROOT settings', () => {
     beforeEach(async () => {
       const module = await Test.createTestingModule({
         controllers: [ImageModerationController],
-        providers: [{ provide: ImageModerationService, useValue: service }],
+        providers: [
+          { provide: ImageModerationService, useValue: service },
+          { provide: PrismaService, useValue: database },
+        ],
       }).overrideGuard(JwtAuthGuard).useValue({
         canActivate(context: ExecutionContext) {
           const req = context.switchToHttp().getRequest();
@@ -213,7 +216,7 @@ describe('Image moderation upload gate and ROOT settings', () => {
 
     afterEach(async () => { await app.close(); });
 
-    it.each([Role.ADMIN, Role.ROOT, Role.PHOTOGRAPHER, Role.PLAYER, Role.REFEREE])('denies %s access to settings, saving and connection tests', async (role) => {
+    it.each([Role.ADMIN, Role.PHOTOGRAPHER, Role.PLAYER, Role.REFEREE])('denies %s access to settings, saving and connection tests', async (role) => {
       const http = request(app.getHttpServer());
       await http.get('/admin/image-moderation').set('x-test-role', role).expect(403);
       await http.patch('/admin/image-moderation').set('x-test-role', role).send({ enabled: false }).expect(403);

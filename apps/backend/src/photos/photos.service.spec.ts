@@ -13,6 +13,12 @@ function buildService() {
       findUnique: jest.fn(),
       update: jest.fn(),
     },
+    photo: {
+      findUnique: jest.fn(),
+      findMany: jest.fn(),
+      update: jest.fn(),
+      updateMany: jest.fn(),
+    },
     user: { findMany: jest.fn() },
   };
   const service = new PhotosService(prisma as never, {} as never, {} as never);
@@ -22,57 +28,148 @@ function buildService() {
 const root = { id: 'root-1', role: Role.ROOT };
 const admin = { id: 'admin-1', role: Role.ADMIN };
 
+describe('PhotosService 审核门禁', () => {
+  it('审核通过的对象可以正常使用图片功能', async () => {
+    const { service, prisma } = buildService();
+    prisma.tournament.findUnique.mockResolvedValue({ approvalStatus: 'APPROVED', rejectReason: null });
+
+    await expect(service.assertImageTargetUsable({ type: 'TOURNAMENT', id: 't1' })).resolves.toBeUndefined();
+  });
+
+  it('待审核对象提示「等待上级管理员同意」', async () => {
+    const { service, prisma } = buildService();
+    prisma.photoActivity.findUnique.mockResolvedValue({ approvalStatus: 'PENDING', rejectReason: null });
+
+    await expect(service.assertImageTargetUsable({ type: 'ACTIVITY', id: 'a1' })).rejects.toThrow(
+      '该活动图片正在等待上级管理员同意，相关图片功能暂不可用',
+    );
+  });
+
+  it('驳回对象提示审核未通过并带上原因', async () => {
+    const { service, prisma } = buildService();
+    prisma.photoActivity.findUnique.mockResolvedValue({ approvalStatus: 'REJECTED', rejectReason: '封面不合规' });
+
+    await expect(service.assertImageTargetUsable({ type: 'ACTIVITY', id: 'a1' })).rejects.toThrow(
+      '该活动图片审核未通过：封面不合规',
+    );
+  });
+
+  it('对象不存在时返回不存在', async () => {
+    const { service, prisma } = buildService();
+    prisma.tournament.findUnique.mockResolvedValue(null);
+
+    await expect(service.assertImageTargetUsable({ type: 'TOURNAMENT', id: 'missing' })).rejects.toThrow(
+      '赛事不存在',
+    );
+  });
+
+  it('赛事待审时上传接口直接拒绝，不进入图片处理', async () => {
+    const { service, prisma } = buildService();
+    prisma.tournament.findUnique
+      .mockResolvedValueOnce({ id: 't1' })
+      .mockResolvedValue({ approvalStatus: 'PENDING', rejectReason: null });
+
+    await expect(
+      service.uploadPhotos('t1', 'MATCH', [
+        { buffer: Buffer.from('x'), mimetype: 'image/jpeg', originalname: 'a.jpg', size: 1 },
+      ], 'u1'),
+    ).rejects.toThrow('该赛事图片正在等待上级管理员同意');
+    expect(prisma.photo.findMany).not.toHaveBeenCalled();
+  });
+
+  it('待审对象下的图片不允许删除', async () => {
+    const { service, prisma } = buildService();
+    prisma.photo.findUnique.mockResolvedValue({
+      id: 'p1',
+      deletedAt: null,
+      tournamentId: null,
+      activityId: 'a1',
+      originalPath: '',
+      fullPath: '',
+      thumbnailPath: '',
+    });
+    prisma.photoActivity.findUnique.mockResolvedValue({ approvalStatus: 'PENDING', rejectReason: null });
+
+    await expect(service.deletePhoto('p1', root)).rejects.toThrow('等待上级管理员同意');
+    expect(prisma.photo.update).not.toHaveBeenCalled();
+  });
+});
+
 describe('PhotosService 上传授权二维码', () => {
-  it('赛事已有授权二维码时始终可以再次查看，不受审核状态影响', async () => {
+  it('赛事已有二维码但当前待审时也拒绝使用', async () => {
     const { service, prisma } = buildService();
     prisma.tournament.findUnique.mockResolvedValue({
       photoUploadToken: 'existing-token',
       approvalStatus: 'PENDING',
+      rejectReason: null,
     });
 
-    const result = await service.createTournamentUploadAccess('t1');
-
-    expect(result).toEqual({ token: 'existing-token', path: '/photographer/authorize/existing-token' });
+    await expect(service.createTournamentUploadAccess('t1')).rejects.toThrow(
+      '该赛事图片正在等待上级管理员同意，相关图片功能暂不可用',
+    );
     expect(prisma.tournament.update).not.toHaveBeenCalled();
   });
 
-  it('赛事没有授权二维码且未通过审核时拒绝生成', async () => {
+  it('赛事驳回时提示审核未通过并带上原因', async () => {
     const { service, prisma } = buildService();
     prisma.tournament.findUnique.mockResolvedValue({
       photoUploadToken: null,
       approvalStatus: 'REJECTED',
+      rejectReason: '资料不全',
     });
 
     await expect(service.createTournamentUploadAccess('t1')).rejects.toThrow(
-      '赛事审核通过后才能生成上传授权二维码',
+      '该赛事图片审核未通过：资料不全',
     );
     expect(prisma.tournament.update).not.toHaveBeenCalled();
   });
 
-  it('活动已有授权二维码时始终可以再次查看，不受审核状态影响', async () => {
+  it('赛事审核通过后首次生成二维码', async () => {
+    const { service, prisma } = buildService();
+    prisma.tournament.findUnique.mockResolvedValue({
+      photoUploadToken: null,
+      approvalStatus: 'APPROVED',
+      rejectReason: null,
+    });
+    prisma.tournament.update.mockResolvedValue({});
+
+    const result = await service.createTournamentUploadAccess('t1');
+
+    expect(result.token).toMatch(/^[A-Za-z0-9_-]{32}$/);
+    expect(result.path).toBe(`/photographer/authorize/${result.token}`);
+    expect(prisma.tournament.update).toHaveBeenCalledWith({
+      where: { id: 't1' },
+      data: { photoUploadToken: result.token },
+    });
+  });
+
+  it('活动已有二维码但当前待审时也拒绝使用', async () => {
     const { service, prisma } = buildService();
     prisma.photoActivity.findUnique.mockResolvedValue({
       photoUploadToken: 'activity-token',
-      approvalStatus: 'REJECTED',
-    });
-
-    const result = await service.createActivityUploadAccess('a1');
-
-    expect(result).toEqual({ token: 'activity-token', path: '/photographer/authorize/activity-token' });
-    expect(prisma.photoActivity.update).not.toHaveBeenCalled();
-  });
-
-  it('活动没有授权二维码且未通过审核时拒绝生成', async () => {
-    const { service, prisma } = buildService();
-    prisma.photoActivity.findUnique.mockResolvedValue({
-      photoUploadToken: null,
       approvalStatus: 'PENDING',
+      rejectReason: null,
     });
 
     await expect(service.createActivityUploadAccess('a1')).rejects.toThrow(
-      '活动审核通过后才能生成上传授权二维码',
+      '该活动图片正在等待上级管理员同意，相关图片功能暂不可用',
     );
     expect(prisma.photoActivity.update).not.toHaveBeenCalled();
+  });
+
+  it('活动审核通过后首次生成二维码', async () => {
+    const { service, prisma } = buildService();
+    prisma.photoActivity.findUnique.mockResolvedValue({
+      photoUploadToken: null,
+      approvalStatus: 'APPROVED',
+      rejectReason: null,
+    });
+    prisma.photoActivity.update.mockResolvedValue({});
+
+    const result = await service.createActivityUploadAccess('a1');
+
+    expect(result.token).toMatch(/^[A-Za-z0-9_-]{32}$/);
+    expect(result.path).toBe(`/photographer/authorize/${result.token}`);
   });
 });
 
