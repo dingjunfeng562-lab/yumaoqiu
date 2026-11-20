@@ -140,7 +140,7 @@ export default function GroupRegistrationForm({ info, registrationCode, onBack }
     <Form form={form} layout="vertical" onFinish={submit}>
       <Form.Item label={`参赛项目（最多${maxEvents}项）`} required><Checkbox.Group value={events} onChange={values => setEvents(values as string[])} options={info.events.map(e => ({ value: e.id, label: `${e.label}${capacityText(e)}`, disabled: !events.includes(e.id) && (events.length >= maxEvents || e.remaining === 0) }))} /></Form.Item>
       {personFields()}
-      {fields.email !== 'hidden' && <Form.Item name="guestEmail" label={`邮箱${fields.email === 'optional' ? '（选填）' : ''}`} rules={[{ required: fields.email === 'required' }, { type: 'email', message: '邮箱格式有误' }]}><Input type="email" /></Form.Item>}
+      {fields.email !== 'hidden' && <Form.Item name="guestEmail" label={`邮箱${fields.email === 'optional' ? '（选填）' : ''}`} extra="邮箱用于接收报名成功、审核通过等邮件提醒。" rules={[{ required: fields.email === 'required' }, { type: 'email', message: '邮箱格式有误' }]}><Input type="email" /></Form.Item>}
       {info.events.filter(e => events.includes(e.id) && e.isDouble).map(event => <Card key={event.id} size="small" title={`${event.label} · 搭档资料`} style={{ marginBottom: 16 }}>{personFields(event.id)}</Card>)}
       <Button type="primary" htmlType="submit" size="large" block loading={busy} disabled={info.registrationOpen === false}>提交报名</Button>
     </Form>
