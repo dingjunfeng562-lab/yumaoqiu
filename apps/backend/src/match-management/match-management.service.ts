@@ -48,6 +48,7 @@ const TEAM_FORMAT_LABELS: Record<string, string> = {
   ROUND_ROBIN: '单组循环赛',
   GROUP_ROUND_ROBIN: '多组循环赛',
   GROUP_PLUS_KNOCKOUT: '小组循环 + 淘汰赛',
+  GROUP_PLUS_KNOCKOUT_STD: '小组循环赛-淘汰赛2023',
 };
 
 /** 对局管理的操作人：管理员（只能管自己的赛事）或超级管理员。 */
@@ -104,13 +105,23 @@ export type MatchView = {
   scoreText: string;
   hasBothSides: boolean;
   isSecondStage: boolean;
+  /** 该场实际生效规则（含分阶段计分）下先赢几局，补录比分时据此决定显示几局。 */
+  gamesToWin: number;
 };
 
 const matchInclude = {
   games: { orderBy: { gameNo: 'asc' } },
   venue: { select: { id: true, name: true, isActive: true, sortOrder: true } },
   referee: { select: { id: true, username: true } },
-  event: { select: { id: true, type: true, format: true } },
+  event: {
+    select: {
+      id: true, type: true, format: true,
+      // 解析该场实际生效的计分规则（含分阶段计分）
+      scoringRule: true, scoringMode: true,
+      customGamePoint: true, customGameCap: true, customGamesToWin: true,
+      stageScoringRules: true,
+    },
+  },
   teamCompetitionItem: {
     select: { id: true, eventType: true, sortOrder: true },
   },
@@ -125,8 +136,16 @@ const matchInclude = {
       team1Wins: true,
       team2Wins: true,
       winnerTeamId: true,
+      stage: true,
       team1: { select: { id: true, name: true } },
       team2: { select: { id: true, name: true } },
+      teamCompetition: {
+        select: {
+          scoringRule: true, scoringMode: true,
+          customGamePoint: true, customGameCap: true, customGamesToWin: true,
+          stageScoringRules: true,
+        },
+      },
     },
   },
 } satisfies Prisma.MatchInclude;
@@ -528,7 +547,7 @@ export class MatchManagementService {
 
     await this.prisma.match.update({
       where: { id: matchId },
-      data: { refereeId: null },
+      data: { refereeId: null, refereeClaimExpiresAt: null },
     });
     this.logger.log(
       `release-referee match=${matchId} referee=${match.refereeId} actor=${actorId ?? '-'} force=${Boolean(options.force)}`,
@@ -700,6 +719,7 @@ export class MatchManagementService {
         .join(' / '),
       hasBothSides: Boolean(match.side1Id && match.side2Id),
       isSecondStage,
+      gamesToWin: this.scoring.gamesToWinForMatch(match),
     };
   }
 }

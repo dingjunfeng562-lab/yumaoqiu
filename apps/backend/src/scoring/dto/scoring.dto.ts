@@ -3,6 +3,7 @@ import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   ArrayMinSize,
+  ArrayUnique,
   IsArray,
   IsBoolean,
   IsEnum,
@@ -47,6 +48,21 @@ export class UndoPointDto {
 export class AssignRefereeDto {
   @IsString()
   refereeId: string;
+}
+
+export class SaveCourtRefereesDto {
+  @IsArray()
+  @ArrayMaxSize(50)
+  @ArrayUnique()
+  @IsString({ each: true })
+  refereeIds: string[];
+}
+
+export class ClaimCourtMatchDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(191)
+  expectedRefereeId?: string;
 }
 
 export class CorrectGameScoreDto {

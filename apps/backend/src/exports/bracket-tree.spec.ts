@@ -72,6 +72,43 @@ async function flowTexts(t: ExportTournament, stage?: 'first' | 'second') {
 
 const count = (texts: string[], value: string) => texts.filter((text) => text === value).length;
 
+describe('自定义第二阶段的名次汇总', () => {
+  async function summary(finalRank?: number) {
+    const event = stdEvent({
+      format: 'SINGLE_ELIMINATION_PLUS_GROUP_RANKING',
+      registrations: [
+        { ...reg('p1', '选手甲'), finalRank },
+        { ...reg('p2', '选手乙'), finalRank: finalRank == null ? null : 4 },
+      ],
+      matches: [match({
+        id: 'first-stage-final', round: 'F', roundNo: 1, matchNo: 1, status: 'COMPLETED',
+        side1Id: 'p1', side2Id: 'p2', winnerSide: 1,
+      })],
+      secondStage: {
+        status: 'CONFIRMED', mode: 'MANUAL_BY_REFEREE', rankingMode: 'TOP_6', rankingLimit: 3,
+        slots: [], matches: [], rankings: [],
+      },
+    });
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(await buildOrderbookWorkbook(tournament([event])) as never);
+    return workbook.getWorksheet('名次汇总')!;
+  }
+
+  it('排位赛未出结果时标为待定', async () => {
+    const sheet = await summary();
+    expect(sheet.getCell('B3').text).toBe('待定');
+    expect(sheet.getCell('D3').text).toBe('第二阶段排名');
+    expect(sheet.getCell('C4').text).toBe('');
+  });
+
+  it('手动名次也遵守第二阶段自定义范围', async () => {
+    const sheet = await summary(2);
+    expect(sheet.getCell('B3').text).toBe('第2名');
+    expect(sheet.getCell('C3').text).toBe('选手甲');
+    expect(sheet.getCell('B4').text).toBe('');
+  });
+});
+
 describe('第二阶段淘汰对阵树', () => {
   it('淘汰赛生成后，后面几轮双方都「待定」的场次逐场保留，不再缩成一个框', async () => {
     const group = groupStage();

@@ -1,7 +1,9 @@
 import { BadRequestException } from '@nestjs/common';
+import { validateSync } from 'class-validator';
+import { FIFTH_PLACE_FINAL, KNOCKOUT_WALKOVER, PLACEMENT_SEMIFINAL, SEVENTH_PLACE_FINAL } from '../common/knockout-placement-playoff';
 import { PrismaService } from '../prisma/prisma.service';
 import { SchedulingService, normalizePlayDates } from './scheduling.service';
-import type { AutoScheduleDto } from './dto/scheduling.dto';
+import { AutoScheduleDto } from './dto/scheduling.dto';
 
 type TestDailyWindow = {
   startMinutes: number;
@@ -106,6 +108,96 @@ describe('manual team court adjustments', () => {
       expect(update.data.scheduledAt).toEqual(matches[index].scheduledAt);
       expect(update.data.scheduleLocked).toBe(true);
     }
+    expect(gateway.emitBracketUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('swaps a later team child as the anchor, persists one undo and restores the entire encounter', async () => {
+    const { service, tx, matches, gateway } = setup();
+    const opponent = { ...matches[0], id: 'opponent', teamMatchId: 'second', venueId: 'court4',
+      scheduledAt: new Date('2026-10-22T01:00:00Z'), scheduleLocked: true };
+    matches.push(opponent);
+    const logs: Array<Record<string, unknown>> = [];
+    Object.assign(tx.scheduleOperationLog, { findFirst: async () => logs[logs.length - 1] });
+    tx.scheduleOperationLog.create.mockImplementation(({ data }) => {
+      const row = { ...data, id: 'op' + logs.length };
+      logs.push(row); return row;
+    });
+    tx.match.updateMany.mockImplementation(({ where, data }) => {
+      const match = matches.find(m => m.id === where.id)!;
+      Object.assign(match, data, { scheduledAt: new Date(data.scheduledAt) });
+      return { count: 1 };
+    });
+    const initial = matches.map(m => [m.id, m.scheduledAt, m.venueId, m.scheduleLocked]);
+    const { boardVersion: version } = await service.getSchedule('t');
+    const result = await service.moveOnBoard('t', { version, matchId: 'm1', targetMatchId: opponent.id }, 'staff');
+    expect(result.count).toBe(4);
+    expect(matches[1].scheduledAt.toISOString()).toBe('2026-10-22T01:00:00.000Z');
+    expect(opponent.scheduledAt).toEqual(initial[1][1]);
+    expect(matches.map(m => m.venueId)).toEqual(['court4','court4','court4','court1']);
+    expect(gateway.emitBracketUpdate).toHaveBeenCalledTimes(1);
+    await expect(service.moveOnBoard('t', { version, matchId: 'm1', targetMatchId: opponent.id }, 'staff')).rejects.toThrow('已有更新');
+    await expect(service.undoBoardMove('t',result.operationId,'another')).rejects.toThrow('本人');
+    await service.undoBoardMove('t',result.operationId,'staff');
+    expect(matches.map(m => [m.id,m.scheduledAt,m.venueId,m.scheduleLocked])).toEqual(initial);
+    expect(gateway.emitBracketUpdate).toHaveBeenCalledTimes(2);
+    await expect(service.undoBoardMove('t',result.operationId,'staff')).rejects.toThrow('撤销');
+  });
+
+  it('offers undo only to the actor whose latest board move still matches the board version', async () => {
+    const { service, tx } = setup();
+    const { boardVersion: version } = await service.getSchedule('t');
+
+    Object.assign(tx.scheduleOperationLog, {
+      findFirst: async () => ({ id: 'op1', actorId: 'staff', action: 'BOARD_MOVE', after: { version } }),
+    });
+    await expect(service.getSchedule('t', undefined, 'staff')).resolves.toMatchObject({
+      undoable: { operationId: 'op1', version },
+    });
+    await expect(service.getSchedule('t', undefined, 'another')).resolves.toMatchObject({ undoable: null });
+
+    // 排程板已被后续改动翻版本：不能再撤回
+    Object.assign(tx.scheduleOperationLog, {
+      findFirst: async () => ({ id: 'op1', actorId: 'staff', action: 'BOARD_MOVE', after: { version: 'stale' } }),
+    });
+    await expect(service.getSchedule('t', undefined, 'staff')).resolves.toMatchObject({ undoable: null });
+
+    // 最新一条不是调场（例如已撤回）：不可再撤回
+    Object.assign(tx.scheduleOperationLog, {
+      findFirst: async () => ({ id: 'op2', actorId: 'staff', action: 'BOARD_UNDO', after: { version } }),
+    });
+    await expect(service.getSchedule('t', undefined, 'staff')).resolves.toMatchObject({ undoable: null });
+
+    // 没传操作者（页面之外的内部调用）不下发
+    Object.assign(tx.scheduleOperationLog, {
+      findFirst: async () => ({ id: 'op3', actorId: 'staff', action: 'BOARD_MOVE', after: { version } }),
+    });
+    await expect(service.getSchedule('t')).resolves.toMatchObject({ undoable: null });
+  });
+
+  it('requires confirmation before saving a swap that conflicts with another match', async () => {
+    const { service, tx, matches, gateway } = setup();
+    matches.splice(1);
+    matches.push({ ...matches[0], id: 'long', teamMatchId: 'second', venueId: 'court4', durationMinutes: 40,
+      scheduledAt: new Date('2026-10-22T01:00:00Z') });
+    matches.push({ ...matches[0], id: 'later', teamMatchId: 'third', scheduledAt: new Date('2026-10-22T00:30:00Z') });
+    const { boardVersion: version } = await service.getSchedule('t');
+    let conflictResponse: unknown;
+    try {
+      await service.moveOnBoard('t', { version, matchId: 'm0', targetMatchId: 'long' }, 'staff');
+    } catch (error) {
+      conflictResponse = error instanceof Error && 'getResponse' in error
+        ? (error as { getResponse: () => unknown }).getResponse()
+        : undefined;
+    }
+    expect(conflictResponse).toMatchObject({ code: 'SCHEDULE_CONFLICT_CONFIRMATION_REQUIRED' });
+    expect((conflictResponse as { conflicts: Array<{ type: string }> }).conflicts.map(item => item.type)).toEqual(
+      expect.arrayContaining(['VENUE', 'PLAYER']),
+    );
+    expect(tx.match.updateMany).not.toHaveBeenCalled();
+    expect(gateway.emitBracketUpdate).not.toHaveBeenCalled();
+
+    await service.moveOnBoard('t', { version, matchId: 'm0', targetMatchId: 'long', confirmConflicts: true }, 'staff');
+    expect(tx.match.updateMany).toHaveBeenCalledTimes(2);
     expect(gateway.emitBracketUpdate).toHaveBeenCalledTimes(1);
   });
   it('shifts times while preserving the zero-minute gap chosen in automatic scheduling', async () => {
@@ -378,8 +470,8 @@ describe('auto schedule by stage, player rest and keeping placed matches', () =>
     expect([result.at('g1'), result.at('g2'), result.at('s1')].every(Boolean)).toBe(true);
   });
 
-  it('仅第二阶段：团体循环赛第 2 轮不算第二阶段，团体「小组+淘汰」的淘汰赛算', async () => {
-    const result = await preview([teamMatch('rr', 'ROUND_ROBIN', 'GROUP', 2), teamMatch('ko', 'GROUP_PLUS_KNOCKOUT', 'KNOCKOUT', 3)], { scheduleStage: 'second' });
+  it.each(['GROUP_PLUS_KNOCKOUT', STD])('仅第二阶段：团体循环赛第 2 轮不算第二阶段，%s 的淘汰赛算', async (format) => {
+    const result = await preview([teamMatch('rr', 'ROUND_ROBIN', 'GROUP', 2), teamMatch('ko', format, 'KNOCKOUT', 3)], { scheduleStage: 'second' });
     expect(result.at('ko')).toBe('2026-10-22T00:00:00.000Z');
     expect(result.at('rr')).toBeNull();
   });
@@ -481,6 +573,29 @@ describe('auto schedule by stage, player rest and keeping placed matches', () =>
     expect(result.at('q1')).toBe('2026-10-22T00:00:00.000Z');
     expect(result.at('s1')).toBeNull();
     expect(result.at('f')).toBeNull();
+  });
+
+  it.each([FIFTH_PLACE_FINAL, SEVENTH_PLACE_FINAL])('轮次：单独排传统签表和 A-H 签表的 %s', async (round) => {
+    const other = round === FIFTH_PLACE_FINAL ? SEVENTH_PLACE_FINAL : FIFTH_PLACE_FINAL;
+    const startAt = '2026-10-22T00:00:00.000Z';
+    const options = { tournamentId: 't', startAt, rounds: [round] };
+    expect(validateSync(Object.assign(new AutoScheduleDto(), options)).find(error => error.property === 'rounds')).toBeUndefined();
+    const placed = { round: PLACEMENT_SEMIFINAL, venueId: 'court1', scheduledAt: new Date(startAt) };
+    const result = await preview([
+      eventMatch('classic-source', 'eA', STD, 3, 3, placed),
+      eventMatch('ah-source', 'eB', STD, 101, 9, placed),
+      eventMatch('classic-final', 'eA', STD, 4, round === FIFTH_PLACE_FINAL ? 3 : 4, { round }),
+      eventMatch('ah-final', 'eB', STD, 102, round === FIFTH_PLACE_FINAL ? 11 : 12, { round }),
+      eventMatch('other-rank', 'eA', STD, 4, other === FIFTH_PLACE_FINAL ? 3 : 4, { round: other }),
+      eventMatch('main-final', 'eA', STD, 4, 1, { round: 'F' }),
+      eventMatch('walkover', 'eC', STD, 4, 4, { round, forfeitReason: KNOCKOUT_WALKOVER }),
+    ], { ...options, scheduleStage: 'second' }, 2);
+    expect(result.scheduledCount).toBe(2);
+    expect(result.at('classic-final')).toBe('2026-10-22T00:40:00.000Z');
+    expect(result.at('ah-final')).toBe('2026-10-22T00:40:00.000Z');
+    expect(result.at('other-rank')).toBeNull();
+    expect(result.at('main-final')).toBeNull();
+    expect(result.at('walkover')).toBeNull();
   });
 
   it('轮次：小组赛 F 组不是决赛；没有所选轮次时提示', async () => {

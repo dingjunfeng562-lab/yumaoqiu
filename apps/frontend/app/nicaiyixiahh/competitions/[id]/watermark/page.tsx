@@ -209,7 +209,7 @@ export default function WatermarkSettingsPage() {
     if (!token || !id) return;
     setLoading(true);
     try {
-      const data = await apiFetch<WatermarkConfig>(`${resourceBase}/watermark`, { token });
+      const data = await apiFetch<WatermarkConfig>(`${resourceBase}/watermark`, { token, redirectOnForbidden: false });
       setLogos(data.logos);
       setLogoPercent(data.logoHeightPercent ?? DEFAULT_LOGO_PERCENT);
       setPortraitLogoPercent(
@@ -238,10 +238,11 @@ export default function WatermarkSettingsPage() {
       setDirty(false);
     } catch (error) {
       message.error(error instanceof Error ? error.message : '水印配置加载失败');
+      if ((error as { status?: number }).status === 403) router.replace('/nicaiyixiahh/photo-activities');
     } finally {
       setLoading(false);
     }
-  }, [token, id, resourceBase]);
+  }, [token, id, resourceBase, router]);
 
   useEffect(() => {
     // Initial data fetch; the state updates come from the request lifecycle.

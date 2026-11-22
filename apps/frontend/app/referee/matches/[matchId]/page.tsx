@@ -87,21 +87,25 @@ type PreMatchSetup = {
   side1CourtSide: CourtSide;
 };
 
+type SavedPreMatchSetup = { claimKey: string; setup: PreMatchSetup };
+
 const preMatchSetupStorageKey = (matchId: string) => `referee:match-setup:${matchId}`;
 
-function readPreMatchSetup(matchId: string): PreMatchSetup | null {
+function readPreMatchSetup(matchId: string, claimKey: string): SavedPreMatchSetup | null {
   if (typeof window === 'undefined') return null;
   try {
     const raw = window.sessionStorage.getItem(preMatchSetupStorageKey(matchId));
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<PreMatchSetup>;
+    const saved = JSON.parse(raw) as Partial<SavedPreMatchSetup> | null;
+    const setup = saved?.setup;
     if (
-      (parsed.servingSide === 1 || parsed.servingSide === 2) &&
-      (parsed.serverPlayerIndex === 1 || parsed.serverPlayerIndex === 2) &&
-      (parsed.receiverPlayerIndex === 1 || parsed.receiverPlayerIndex === 2) &&
-      (parsed.side1CourtSide === 'left' || parsed.side1CourtSide === 'right')
+      saved?.claimKey === claimKey && setup &&
+      (setup.servingSide === 1 || setup.servingSide === 2) &&
+      (setup.serverPlayerIndex === 1 || setup.serverPlayerIndex === 2) &&
+      (setup.receiverPlayerIndex === 1 || setup.receiverPlayerIndex === 2) &&
+      (setup.side1CourtSide === 'left' || setup.side1CourtSide === 'right')
     ) {
-      return parsed as PreMatchSetup;
+      return { claimKey, setup };
     }
   } catch {
     // 存储被禁用或内容损坏时当作没设置过。
@@ -109,10 +113,10 @@ function readPreMatchSetup(matchId: string): PreMatchSetup | null {
   return null;
 }
 
-function writePreMatchSetup(matchId: string, setup: PreMatchSetup) {
+function writePreMatchSetup(matchId: string, saved: SavedPreMatchSetup) {
   if (typeof window === 'undefined') return;
   try {
-    window.sessionStorage.setItem(preMatchSetupStorageKey(matchId), JSON.stringify(setup));
+    window.sessionStorage.setItem(preMatchSetupStorageKey(matchId), JSON.stringify(saved));
   } catch {
     // 隐私模式下写入失败不影响本次操作。
   }
@@ -153,6 +157,7 @@ type PendingRefereeAction =
 type ScoreState = {
   id: string;
   referee?: { id: string; username?: string | null } | null;
+  refereeClaimExpiresAt?: string | null;
   /** 赛事开启了「比赛结束需签字」：结束、弃权、退赛、黑牌前先让胜方和裁判签字。 */
   signatureRequired?: boolean;
   /** 本场电子比分单的签字时间；没签过为 null。 */
@@ -171,6 +176,8 @@ type ScoreState = {
     customGamePoint?: number | null;
     customGameCap?: number | null;
     customGamesToWin?: number | null;
+    /** 后端按比赛阶段选中的分阶段规则（GROUP、KNOCKOUT、F…）；用默认规则时为空。 */
+    appliedStage?: string | null;
     tournament: { id: string; name: string; edition: number } | null;
   };
   venue?: { id: string; name: string } | null;
@@ -234,6 +241,10 @@ const SCORING_RULE_BASE: Record<string, { label: string; target: number; cap: nu
   THIRTYONE_BO3: { label: '31分3局2胜', target: 31, cap: 31, gamesToWin: 2 },
 };
 
+const APPLIED_STAGE_LABELS: Record<string, string> = {
+  GROUP: '小组赛', KNOCKOUT: '淘汰赛', BEFORE_TOP4: '四强前', QF: '八强', TOP4: '四强', SF: '半决赛', BRONZE: '季军赛', F: '决赛',
+};
+
 function formatScoringRule(event: ScoreState['event']) {
   const base = SCORING_RULE_BASE[event.scoringRule] ?? { label: event.scoringRule, target: 21, cap: 30, gamesToWin: 2 };
   const target = event.customGamePoint && event.customGamePoint > 0 ? event.customGamePoint : base.target;
@@ -247,8 +258,11 @@ function formatScoringRule(event: ScoreState['event']) {
   const isCustom = Boolean(event.customGamePoint || event.customGameCap || event.customGamesToWin);
   const capPart = cap > target ? `（封顶${cap}）` : '';
   const seriesPart = gamesToWin === 1 ? '单局制' : `${gamesToWin * 2 - 1}局${gamesToWin}胜`;
+  const stage = event.appliedStage ? APPLIED_STAGE_LABELS[event.appliedStage] : undefined;
+  const ruleLabel = isCustom ? `自定义：${target}分/局${capPart}，${seriesPart}` : base.label;
   return {
-    label: isCustom ? `自定义：${target}分/局${capPart}，${seriesPart}` : base.label,
+    // 设了分阶段计分时注明用的是哪个阶段的规则，裁判一眼能看出这场为什么和别的场不一样
+    label: stage ? `${ruleLabel}（${stage}规则）` : ruleLabel,
     target,
     cap,
     gamesToWin,
@@ -565,7 +579,7 @@ export default function RefereeScoringPage() {
   // 赛事要求签字时，结束类操作先进签字流程；这里记下签完要提交的是哪种结束。
   const [signingRequest, setSigningRequest] = useState<SigningRequest | null>(null);
   const [setupOpen, setSetupOpen] = useState(false);
-  const [preMatchSetup, setPreMatchSetup] = useState<PreMatchSetup | null>(null);
+  const [savedPreMatchSetup, setSavedPreMatchSetup] = useState<SavedPreMatchSetup | null>(null);
   const [startServingSide, setStartServingSide] = useState<1 | 2 | null>(null);
   const [startServerPlayerIndex, setStartServerPlayerIndex] = useState<PlayerIndex | null>(null);
   const [startReceiverPlayerIndex, setStartReceiverPlayerIndex] = useState<PlayerIndex | null>(null);
@@ -589,6 +603,8 @@ export default function RefereeScoringPage() {
     setScore(nextScore);
   }, []);
   const noLongerAssigned = access.ready && !!score && !access.can('SCORING') && score.referee?.id !== session?.user?.id;
+  const claimKey = score?.id === matchId ? `${matchId}:${score.refereeClaimExpiresAt ?? score.referee?.id ?? ''}` : null;
+  const preMatchSetup = savedPreMatchSetup?.claimKey === claimKey ? savedPreMatchSetup.setup : null;
 
   const winnerName = useMemo(() => {
     if (!score?.winnerSide) return '';
@@ -668,6 +684,13 @@ export default function RefereeScoringPage() {
     setSetupOpen(true);
   }
 
+  function persistPreMatchSetup(setup: PreMatchSetup) {
+    if (!claimKey) return;
+    const saved = { claimKey, setup };
+    setSavedPreMatchSetup(saved);
+    writePreMatchSetup(matchId, saved);
+  }
+
   /** 赛前设置只存在本机（sessionStorage），刷新不丢；开赛时随 /start 一起提交。 */
   function saveSetup() {
     if (!startServingSide || !startServerPlayerIndex || !startReceiverPlayerIndex) {
@@ -680,8 +703,7 @@ export default function RefereeScoringPage() {
       receiverPlayerIndex: startReceiverPlayerIndex,
       side1CourtSide: startSide1CourtSide,
     };
-    setPreMatchSetup(setup);
-    if (matchId) writePreMatchSetup(matchId, setup);
+    persistPreMatchSetup(setup);
     setSetupOpen(false);
   }
 
@@ -708,8 +730,7 @@ export default function RefereeScoringPage() {
       side1CourtSide: startSide1CourtSide,
     };
     if (!await postAction(`/matches/${matchId}/opening-setup`, setup)) return;
-    setPreMatchSetup(setup);
-    if (matchId) writePreMatchSetup(matchId, setup);
+    persistPreMatchSetup(setup);
     setSetupOpen(false);
     messageApi.success('赛前设置已更正');
   }
@@ -753,12 +774,12 @@ export default function RefereeScoringPage() {
     loadScore();
   }, [token, matchId]);
 
-  // 刷新页面 / 锁屏回来后恢复本机保存的赛前设置。
+  // 刷新后恢复本次执裁的赛前设置。超时重新接手会取得新的截止时间。
   useEffect(() => {
-    if (!matchId) return;
-    const saved = readPreMatchSetup(matchId);
-    if (saved) setPreMatchSetup(saved);
-  }, [matchId]);
+    if (!claimKey) return;
+    const saved = readPreMatchSetup(matchId, claimKey);
+    if (saved) setSavedPreMatchSetup(saved);
+  }, [matchId, claimKey]);
 
   // 比分越过决胜阈值后，自动弹窗请裁判确认结束比赛。
   // 后端此时保持 status=LIVE 并写入 winnerSide（pendingFinish=true），

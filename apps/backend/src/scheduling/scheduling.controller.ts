@@ -5,6 +5,7 @@ import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import {
   AutoScheduleDto,
+  BoardMoveDto,
   ClearScheduleDto,
   CreateVenueDto,
   KnockoutPlaceholdersDto,
@@ -61,8 +62,12 @@ export class SchedulingController {
   }
 
   @Get('scheduling')
-  getSchedule(@Query('tournamentId') tournamentId: string, @Query('eventId') eventId?: string) {
-    return this.schedulingService.getSchedule(tournamentId, eventId);
+  getSchedule(
+    @Query('tournamentId') tournamentId: string,
+    @Query('eventId') eventId: string | undefined,
+    @Req() req: { user: { id: string } },
+  ) {
+    return this.schedulingService.getSchedule(tournamentId, eventId, req.user.id);
   }
 
   @Post('scheduling/auto')
@@ -73,6 +78,16 @@ export class SchedulingController {
   @Post('scheduling/clear')
   clearSchedule(@Body() dto: ClearScheduleDto, @Req() req: { user: { id: string } }) {
     return this.schedulingService.clearSchedule(dto, req.user.id);
+  }
+
+  @Post('tournaments/:tournamentId/schedule-board')
+  moveOnBoard(@Param('tournamentId') id: string, @Body() dto: BoardMoveDto, @Req() req: { user: { id: string } }) {
+    return this.schedulingService.moveOnBoard(id, dto, req.user.id);
+  }
+
+  @Post('tournaments/:tournamentId/schedule-board/:operationId/undo')
+  undoBoardMove(@Param('tournamentId') id: string, @Param('operationId') operationId: string, @Req() req: { user: { id: string } }) {
+    return this.schedulingService.undoBoardMove(id, operationId, req.user.id);
   }
 
   /** 预排淘汰赛空位：小组赛打完前先建出淘汰赛各轮非轮空的场次（双方待定），可以先排时间场地。 */

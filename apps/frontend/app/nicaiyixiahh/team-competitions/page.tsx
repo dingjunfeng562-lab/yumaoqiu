@@ -19,6 +19,7 @@ import { PlusOutlined, EyeOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 
 import TeamCompetitionFields, { TEAM_EVENT_OPTIONS, teamDefaults, teamAppearanceLabel, teamFormatLabel, teamFormatPayload } from '@/components/TeamCompetitionFields';
+import { isTeamGroupKnockout } from '@/lib/team-competition-format';
 
 type Tournament = {
   id: string;
@@ -176,7 +177,7 @@ export default function TeamCompetitionsPage() {
             title: '项目顺序',
             render: (_, row: TeamCompetition) => row.items.map((item) => TEAM_EVENT_OPTIONS.find(option => option.value === item.eventType)?.label ?? item.eventType).join(' → '),
           },
-          { title: '赛制', render: (_, row: TeamCompetition) => `${teamFormatLabel(row.format)}${row.groupCount ? ` · ${row.groupCount} 组` : ''}${row.format === 'GROUP_PLUS_KNOCKOUT' ? ` · 每组晋级 ${row.advancePerGroup ?? 2} 队` : ''}` },
+          { title: '赛制', render: (_, row: TeamCompetition) => `${teamFormatLabel(row.format)}${row.groupCount ? ` · ${row.groupCount} 组` : ''}${isTeamGroupKnockout(row.format) ? ` · 每组晋级 ${row.advancePerGroup ?? 2} 队` : ''}` },
           { title: '抢几胜', dataIndex: 'winThreshold', width: 100 },
           { title: '每队人数', render: () => '人数不限' },
           { title: '兼项规则', render: (_, row: TeamCompetition) => teamAppearanceLabel(row.maxPlayerAppearances) },

@@ -23,6 +23,7 @@ import {
 import { apiFetch } from '@/lib/api';
 import { useCurrentAccess } from '@/lib/use-current-role';
 import { CompetitionRankingsModal } from '@/components/admin/CompetitionRankingsModal';
+import { CompetitionOrderModal } from '@/components/admin/CompetitionOrderModal';
 
 const PUBLISHER_ROLE_LABELS: Record<string, string> = {
   ROOT: '超级管理员',
@@ -102,6 +103,7 @@ export default function AdminCompetitionsPage() {
   const [competitions, setCompetitions] = useState<Competition[]>([]);
   const [loading, setLoading] = useState(false);
   const [rankingCompetition, setRankingCompetition] = useState<Competition>();
+  const [orderOpen, setOrderOpen] = useState(false);
   const [screenAccess, setScreenAccess] = useState<{ id: string; title: string; url: string }>();
 
   const loadCompetitions = useCallback(async () => {
@@ -204,10 +206,8 @@ export default function AdminCompetitionsPage() {
       }
     }
     // 图片、水印和图片二维码已移到「活动图片」统一管理，这里不再提供入口。
-    if (canOperate) {
+    if (role === 'ADMIN' || role === 'ROOT') {
       items.push({ key: 'rankings', icon: <TrophyOutlined />, label: '设置排名' });
-    }
-    if (access.can('PHOTOS')) {
       items.push({ key: 'screen', icon: <DesktopOutlined />, label: '赛事大屏' });
     }
     if (role === 'ROOT') {
@@ -417,6 +417,7 @@ export default function AdminCompetitionsPage() {
           <Button icon={<EyeOutlined />} onClick={() => router.push('/competitions')}>
             查看前台赛事
           </Button>
+          {access.ready && role === 'ROOT' && <Button onClick={() => setOrderOpen(true)}>前台排序</Button>}
         </Space>
       </div>
       <Card
@@ -437,6 +438,7 @@ export default function AdminCompetitionsPage() {
           locale={{ emptyText: '暂无赛事' }}
         />
       </Card>
+      {orderOpen && role === 'ROOT' && token && <CompetitionOrderModal token={token} onClose={() => setOrderOpen(false)} />}
       {rankingCompetition && token && <CompetitionRankingsModal
         key={rankingCompetition.id} competition={rankingCompetition} token={token}
         onClose={() => setRankingCompetition(undefined)} />}

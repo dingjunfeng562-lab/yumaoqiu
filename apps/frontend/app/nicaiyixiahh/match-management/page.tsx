@@ -129,6 +129,7 @@ interface MatchView {
   scoreText: string;
   hasBothSides: boolean;
   isSecondStage: boolean;
+  gamesToWin?: number;
 }
 
 interface EventSummary {
@@ -233,6 +234,8 @@ function matchVersus(match: MatchView) {
 
 function maxGamesFor(match: MatchView, overview: Overview | null) {
   const fallback = Math.max(match.games.length, 1);
+  // 后端按该场所处阶段解析出的实际规则（含分阶段计分）；旧接口没有该字段时按默认规则推算
+  if (typeof match.gamesToWin === 'number') return Math.max(match.gamesToWin * 2 - 1, fallback);
   if (!overview) return Math.max(fallback, 3);
   if (match.teamMatchId) {
     const competition = overview.teamCompetitions.find((item) => item.id === match.teamCompetitionId);

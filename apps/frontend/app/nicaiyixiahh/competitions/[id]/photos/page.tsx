@@ -35,6 +35,7 @@ import {
   UploadOutlined,
 } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
+import { useCurrentAccess } from '@/lib/use-current-role';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 const API_ORIGIN = API_BASE.replace(/\/api$/, '');
@@ -115,6 +116,8 @@ export default function AdminPhotosPage() {
   const router = useRouter();
   const { data: session } = useSession();
   const token = session?.user?.accessToken as string | undefined;
+  const access = useCurrentAccess();
+  const canDeleteAllPhotos = isActivity || (access.ready && access.role === 'ROOT');
 
   const [target, setTarget] = useState<PhotoTarget>();
   const [photos, setPhotos] = useState<AdminPhoto[]>([]);
@@ -146,7 +149,7 @@ export default function AdminPhotosPage() {
   useEffect(() => {
     if (!token || !id) return;
     let cancelled = false;
-    apiFetch<PhotoTarget>(`/admin/photo-targets/${isActivity ? 'ACTIVITY' : 'TOURNAMENT'}/${encodeURIComponent(id)}`, { token })
+    apiFetch<PhotoTarget>(`/admin/photo-targets/${isActivity ? 'ACTIVITY' : 'TOURNAMENT'}/${encodeURIComponent(id)}`, { token, redirectOnForbidden: false })
       .then((item) => { if (!cancelled) setTarget(item); })
       .catch(() => undefined);
     return () => { cancelled = true; };
@@ -170,7 +173,7 @@ export default function AdminPhotosPage() {
       if (uploaderId) params2.set('uploaderId', uploaderId);
       if (range.from) params2.set('from', range.from);
       if (range.to) params2.set('to', range.to);
-      const data = await apiFetch<PhotoPage>(`/admin/photos?${params2.toString()}`, { token });
+      const data = await apiFetch<PhotoPage>(`/admin/photos?${params2.toString()}`, { token, redirectOnForbidden: false });
       setPhotos(data.items);
       setTotal(data.total);
       setSelected(new Set());
@@ -184,10 +187,11 @@ export default function AdminPhotosPage() {
       });
     } catch (error) {
       message.error(error instanceof Error ? error.message : '图片加载失败');
+      if ((error as { status?: number }).status === 403) router.replace('/nicaiyixiahh/photo-activities');
     } finally {
       setLoading(false);
     }
-  }, [token, id, page, category, uploaderId, range.from, range.to, isActivity]);
+  }, [token, id, page, category, uploaderId, range.from, range.to, isActivity, router]);
 
   useEffect(() => {
     void load();
@@ -251,7 +255,7 @@ export default function AdminPhotosPage() {
   }
 
   async function purgeTournament() {
-    if (!token || !id) return;
+    if (!canDeleteAllPhotos || !token || !id) return;
     setPurging(true);
     try {
       const res = await apiFetch<{ deleted: number }>(isActivity ? `/admin/photo-activities/${id}/photos` : `/admin/tournaments/${id}/photos`, {
@@ -439,9 +443,9 @@ export default function AdminPhotosPage() {
             批量删除({selected.size})
           </Button>
         </Popconfirm>
-        <Button danger type="primary" icon={<DeleteOutlined />} onClick={() => setPurgeOpen(true)}>
+        {canDeleteAllPhotos && <Button danger type="primary" icon={<DeleteOutlined />} onClick={() => setPurgeOpen(true)}>
           删除全部图片
-        </Button>
+        </Button>}
         <Typography.Text type="secondary">共 {total} 张</Typography.Text>
       </Space>
 
@@ -533,7 +537,7 @@ export default function AdminPhotosPage() {
 
       <Modal
         title="删除全部图片"
-        open={purgeOpen}
+        open={canDeleteAllPhotos && purgeOpen}
         onCancel={() => {
           setPurgeOpen(false);
           setPurgeInput('');

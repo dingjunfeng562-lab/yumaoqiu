@@ -36,6 +36,45 @@ describe('group ranking ties', () => {
   });
 });
 
+describe('2023 team group standings', () => {
+  const standings = (ids: string[], matches: Parameters<typeof rankTeamGroup>[1]) =>
+    rankTeamGroup(ids.map(teamId => ({ teamId, teamName: teamId })), matches, { format: 'GROUP_PLUS_KNOCKOUT_STD' })
+      .map(row => row.teamId);
+
+  it('keeps the group display order until there are results', () => {
+    expect(standings(['c', 'a', 'b'], [])).toEqual(['c', 'a', 'b']);
+  });
+
+  it('uses head-to-head immediately when exactly two teams have the same wins', () => {
+    const matches = [tie('a', 'b', 3, 2), tie('c', 'a', 3, 0), tie('b', 'd', 3, 0), tie('c', 'd', 3, 0)];
+    expect(standings(['a', 'b', 'c', 'd'], matches)).toEqual(['c', 'a', 'b', 'd']);
+  });
+
+  it('uses head-to-head after match difference narrows a three-way tie to two teams', () => {
+    const matches = [tie('a', 'b', 3, 0), tie('b', 'c', 3, 2), tie('c', 'a', 3, 1)];
+    expect(standings(['a', 'b', 'c'], matches)).toEqual(['c', 'a', 'b']);
+  });
+
+  const withGames = (first: string, second: string, scores: Array<[number, number]>) => ({
+    ...tie(first, second, 3, 2),
+    matches: [{ status: 'COMPLETED', winnerSide: 1, games: scores.map(([side1Score, side2Score]) => ({
+      side1Score, side2Score, winnerSide: side1Score > side2Score ? 1 : 2,
+    })) }],
+  });
+
+  it('compares game difference before point difference', () => {
+    const matches = [withGames('a', 'b', [[21, 19], [21, 19]]), withGames('b', 'c', [[21, 0], [19, 21]]), withGames('c', 'a', [[21, 19]])];
+    expect(standings(['a', 'b', 'c'], matches)).toEqual(['c', 'a', 'b']);
+  });
+
+  it('compares point difference and keeps the drawing order stable on a complete tie', () => {
+    const matches = [withGames('a', 'b', [[30, 20]]), withGames('b', 'c', [[21, 19]]), withGames('c', 'a', [[21, 20]])];
+    expect(standings(['a', 'b', 'c'], matches)).toEqual(['a', 'c', 'b']);
+    const equal = [tie('a', 'b', 3, 2), tie('b', 'c', 3, 2), tie('c', 'a', 3, 2)];
+    expect(standings(['c', 'b', 'a'], [...equal].reverse())).toEqual(standings(['a', 'b', 'c'], equal));
+  });
+});
+
 describe('team final standings for group formats', () => {
   it('ranks multi-group round robin by group placing first, then per-encounter record across groups', () => {
     const g1 = { stage: 'GROUP', groupId: 'g1' };

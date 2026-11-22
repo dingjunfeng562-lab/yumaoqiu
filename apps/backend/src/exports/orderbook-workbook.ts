@@ -10,6 +10,8 @@ import {
   type SkeletonMatch,
 } from '../common/knockout-skeleton';
 import { isByeMatch, knockoutPlacements } from '../common/knockout-placement';
+import { isKnockoutPlacementPlayoff } from '../common/knockout-placement-playoff';
+import { includesSecondStageMatch, secondStageRankingLimit } from '../common/second-stage-bracket';
 import { teamStandings } from '../common/final-rankings';
 import { withOfficialTeamResult } from '../common/team-official-result';
 import { teamResultsReady } from '../common/tournament-results-ready';
@@ -433,20 +435,32 @@ function matchCodeMap(tournament: Pick<ExportTournament, 'events'>) {
   return map;
 }
 
-// 组内循环按 i<j 嵌套生成；据此还原每个成员的组内签位号。
+// 团体赛直接使用小组成员签位。单项循环按 i<j 嵌套生成，可从首位的对阵还原签位。
 function groupPositions(event: ExportEvent) {
   const map = new Map<string, { group: string; pos: number }>();
+  const storedGroups = new Set<string>();
+  for (const group of event.teamCompetition?.groups ?? []) {
+    if (!group.teams?.length) continue;
+    const code = group.groupName.replace(/组$/, '');
+    storedGroups.add(code);
+    group.teams.forEach(({ teamId }, index) => map.set(teamId, { group: code, pos: index + 1 }));
+  }
   const byGroup = new Map<string, ExportMatch[]>();
   for (const match of event.matches) {
     if ((match.roundNo ?? 0) !== 0) continue;
     const group = typeof match.round === 'string' ? match.round : match.round != null ? String(match.round) : '';
-    if (!group) continue;
+    if (!group || storedGroups.has(group)) continue;
     const list = byGroup.get(group) ?? [];
     list.push(match);
     byGroup.set(group, list);
   }
   for (const [group, groupMatches] of byGroup) {
     const sorted = [...groupMatches].sort((a, b) => (a.matchNo ?? 0) - (b.matchNo ?? 0));
+    if (event.teamCompetition) {
+      const teams = new Set(sorted.flatMap(match => [match.side1Id, match.side2Id]).filter((id): id is string => Boolean(id)));
+      [...teams].forEach((id, index) => map.set(id, { group, pos: index + 1 }));
+      continue;
+    }
     const member0 = sorted[0]?.side1Id;
     if (!member0) continue;
     const order = [member0];
@@ -464,21 +478,17 @@ function pairKey(a: string, b: string) {
   return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
 
-// 团体赛一场对外对阵包含多个子项场次；流程表/对阵表按“场”呈现，
-// 因此同一轮次、同一场团体对阵（第N场）只保留一条。单项每条都是独立场次，不去重——
-// 否则淘汰赛后面几轮双方都还是「待定」的场次会被当成同一场，只剩一个框。
+// 流程表按团体对阵绘制，取该对阵最早排程的子项作为场次号和开赛时间的来源。
 function dedupeFixtures(matches: ExportMatch[]) {
-  const seen = new Set<string>();
-  const kept: ExportMatch[] = [];
+  const kept = new Map<string, ExportMatch>();
   for (const match of matches) {
-    const key = match.matchNoText
-      ? `${match.roundNo ?? 0}|${String(match.round)}|${match.matchNoText}`
-      : match.id;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    kept.push(match);
+    const encounter = match.teamEncounter;
+    const key = encounter?.id ?? match.id;
+    const existing = kept.get(key);
+    if (existing && (!encounter || scheduleSortValueForMatch(existing) <= scheduleSortValueForMatch(match))) continue;
+    kept.set(key, encounter ? { ...match, matchNo: encounter.matchNo } : match);
   }
-  return kept;
+  return [...kept.values()];
 }
 
 // 一场比赛中某一方赢下的局数。
@@ -576,6 +586,7 @@ export function teamCompetitionEvents(tournament: ExportTournament): ExportEvent
           side1Name: encounter.team1Id ? teamById.get(encounter.team1Id)?.name ?? '' : '',
           side2Name: encounter.team2Id ? teamById.get(encounter.team2Id)?.name ?? '' : '',
           matchNoText: `第${encounter.matchNo}场`,
+          teamEncounter: { id: encounter.id, matchNo: encounter.matchNo },
           scoreText: encounter.resultDecided ? `${encounter.team1Wins}:${encounter.team2Wins}` : '',
         });
       });
@@ -588,6 +599,7 @@ export function teamCompetitionEvents(tournament: ExportTournament): ExportEvent
       codePrefix: '团体',
       codeStart: codeOffset,
       format: competition.format === 'ROUND_ROBIN' ? 'ROUND_ROBIN' : groups.length ? GROUP_KNOCKOUT_STD : 'SINGLE_ELIMINATION',
+      qualifiersPerGroup: competition.advancePerGroup,
       registrations,
       matches,
       secondStage: null,
@@ -1124,7 +1136,7 @@ export type BracketTree = {
 };
 
 function knockoutTreeMatches(event: ExportEvent) {
-  return event.matches.filter((m) => (m.roundNo ?? 0) >= 1 && (m.roundNo ?? 0) < 100 && !isPlayoff(m));
+  return event.matches.filter((m) => (m.roundNo ?? 0) >= 1 && (m.roundNo ?? 0) < 100 && !isPlayoff(m) && !isKnockoutPlacementPlayoff(m.round));
 }
 
 function shortMatchDateTime(match: ExportMatch) {
@@ -1252,7 +1264,7 @@ export function eventBracketTreeForImage(event: ExportEvent): { tree: BracketTre
     return { reason: '该项目第二阶段是排位赛，没有淘汰对阵图，请看秩序册「流程表」' };
   }
   const regMap = new Map(event.registrations.map((registration) => [registration.id, registration]));
-  const tree = eventBracketTree(event, regMap, matchCodeMap({ events: [event] }));
+  const tree = eventBracketTree({ ...event, matches: dedupeFixtures(event.matches) }, regMap, matchCodeMap({ events: [event] }));
   return tree ? { tree } : { reason: '该项目还没有淘汰赛对阵（抽签后再下载）' };
 }
 
@@ -1284,7 +1296,7 @@ export function eventImageParts(
 ): { label: string; parts: EventImagePart[]; tree: BracketTree | null } | { reason: string } {
   const deduped: ExportEvent = { ...event, matches: dedupeFixtures(event.matches) };
   const regMap = new Map(deduped.registrations.map((registration) => [registration.id, registration]));
-  const codeMap = matchCodeMap({ events: [deduped] });
+  const codeMap = matchCodeMap({ events: [event] });
   const groupsPart = (label: string): EventImagePart | null => {
     if (!groupPositions(deduped).size) return null;
     const sheet = scratchSheet((ws) => renderGroupGrids(ws, 1, deduped, regMap, codeMap));
@@ -1323,8 +1335,8 @@ export function eventImageParts(
     secondReason = '第二阶段排位赛还没有对阵（淘汰赛结束后在抽签编排页确定）';
   } else if (GROUP_STAGE_IMAGE_FORMATS.includes(event.format ?? '')) {
     first = groupsPart('第一阶段（小组赛）');
-    const top6 = deduped.secondStage?.rankingMode === 'TOP_6';
-    second = placementPart(`第二阶段（前${top6 ? 6 : 8}名晋级赛）`)
+    const rankLimit = secondStageRankingLimit(deduped.secondStage);
+    second = placementPart(`第二阶段（前${rankLimit}名晋级赛）`)
       ?? playoffPart('第二阶段（交叉排位赛）')
       ?? (event.format === 'GROUP_PLUS_PLAYOFF' ? null : treePart('第二阶段（淘汰赛）'));
     firstReason = '该项目还没有小组赛场次（抽签后再下载）';
@@ -1768,7 +1780,7 @@ function buildGroupStandingSheet(wb: ExcelJS.Workbook, tournament: ExportTournam
     ws.getRow(row).height = 40;
     row += 1;
     const matchesByPair = new Map<string, ExportMatch>();
-    for (const match of event.matches) {
+    for (const match of dedupeFixtures(event.matches)) {
       if ((match.roundNo ?? 0) === 0 && match.side1Id && match.side2Id) {
         matchesByPair.set(pairKey(match.side1Id, match.side2Id), match);
       }
@@ -1862,19 +1874,6 @@ function buildRankingSummarySheet(wb: ExcelJS.Workbook, tournament: ExportTourna
       }
       continue;
     }
-    if (event.registrations.some((registration) => registration.finalRank != null)) {
-      for (const registration of [...event.registrations].sort((a, b) => (a.finalRank ?? Infinity) - (b.finalRank ?? Infinity) || a.id.localeCompare(b.id))) {
-        ws.getCell(row, 1).value = eventLabel(event);
-        ws.getCell(row, 2).value = registration.finalRank == null ? '未设置' : `第${registration.finalRank}名`;
-        ws.getCell(row, 3).value = registrationName(registration);
-        ws.getCell(row, 4).value = '手动设置';
-        ws.getCell(row, 5).value = registration.finalRank == null ? '待定' : '已确定';
-        if (showOrigin) ws.getCell(row, 6).value = registration.mixOrigin ?? '';
-        styleBodyRange(ws, row, row, 1, lastCol);
-        row++;
-      }
-      continue;
-    }
     const regMap = registrationMap(tournament);
     const origins = new Map(event.registrations.map((registration) => [registration.id, registration.mixOrigin ?? '']));
     const writeRow = (rank: string, name: string, source: string, status: string, entrantId?: string | null) => {
@@ -1888,13 +1887,37 @@ function buildRankingSummarySheet(wb: ExcelJS.Workbook, tournament: ExportTourna
       row += 1;
     };
 
+    const customLimit = event.secondStage?.rankingLimit;
+    if (event.registrations.some((registration) => registration.finalRank != null)) {
+      const registrations = event.registrations.filter(
+        ({ finalRank }) => customLimit == null || (finalRank != null && finalRank <= customLimit),
+      );
+      registrations.sort((a, b) => (a.finalRank ?? Infinity) - (b.finalRank ?? Infinity) || a.id.localeCompare(b.id));
+      if (!registrations.length) writeRow('待定', '—', '手动设置', '待定');
+      for (const registration of registrations) {
+        writeRow(
+          registration.finalRank == null ? '未设置' : `第${registration.finalRank}名`,
+          registrationName(registration),
+          '手动设置',
+          registration.finalRank == null ? '待定' : '已确定',
+          registration.id,
+        );
+      }
+      continue;
+    }
+
     // 第二阶段排名（抽签时指定的名次）优先。
-    const stageRankings = event.secondStage?.rankings ?? [];
+    const stageRankings = (event.secondStage?.rankings ?? [])
+      .filter(({ rank }) => rank <= secondStageRankingLimit(event.secondStage));
     if (stageRankings.length) {
       for (const item of [...stageRankings].sort((a, b) => a.rank - b.rank)) {
         const registration = item.entrantId ? regMap.get(item.entrantId) : null;
         writeRow(`第${item.rank}名`, registrationName(registration) || item.entrantNameSnapshot || '待定', '第二阶段排名', '已确定', item.entrantId);
       }
+      continue;
+    }
+    if (customLimit != null) {
+      writeRow('待定', '—', '第二阶段排名', '待定');
       continue;
     }
 
@@ -2005,14 +2028,14 @@ const PLACEMENT_POS: Record<number, { col: number; row: number }> = {
   12: { col: 2, row: 23 },
 };
 
-function placementRoundLabel(no: number, top6: boolean) {
+function placementRoundLabel(no: number, rankLimit: number) {
   if (no <= 4) return '前8初始赛';
   if (no === 5 || no === 6) return '1-4 半决赛';
-  if (no === 7) return '1-2名决赛';
-  if (no === 8) return '3-4名决赛';
-  if (no === 9 || no === 10) return top6 ? '5-6 资格赛' : '5-8 半决赛';
-  if (no === 11) return '5-6名决赛';
-  return '7-8名决赛';
+  if (no === 7) return rankLimit === 1 ? '冠军决赛' : '1-2名决赛';
+  if (no === 8) return rankLimit === 3 ? '第3名决赛' : '3-4名决赛';
+  if (no === 9 || no === 10) return rankLimit < 7 ? '资格赛' : '5-8 半决赛';
+  if (no === 11) return rankLimit === 5 ? '第5名决赛' : '5-6名决赛';
+  return rankLimit === 7 ? '第7名决赛' : '7-8名决赛';
 }
 
 type NameResolver = (id: string | null, snapshot: string | null, source: string | null) => string;
@@ -2024,7 +2047,7 @@ function renderSecondStagePlacement(
   stage: ExportSecondStage,
   regMap: Map<string, ExportRegistration>,
 ) {
-  const top6 = stage.rankingMode === 'TOP_6';
+  const rankLimit = secondStageRankingLimit(stage);
   const displayName: NameResolver = (id, snapshot, source) => {
     const reg = id ? regMap.get(id) ?? null : null;
     if (reg) return reg.teamName?.trim() || registrationName(reg) || snapshot || source || '待定';
@@ -2036,7 +2059,7 @@ function renderSecondStagePlacement(
   // A-H 签位表（后台指定）。
   const slots = [...stage.slots].sort((a, b) => SLOT_ORDER.indexOf(a.slot) - SLOT_ORDER.indexOf(b.slot));
   if (slots.length) {
-    ws.getCell(row, 1).value = `A-H 签位（${stage.rankingMode === 'TOP_6' ? '取前6名' : '取前8名'}，后台手动指定）`;
+    ws.getCell(row, 1).value = `A-H 签位（取前${rankLimit}名，后台手动指定）`;
     ws.getCell(row, 1).font = { bold: true };
     row += 1;
     for (const slot of slots) {
@@ -2065,7 +2088,7 @@ function renderSecondStagePlacement(
   const bracketTop = row;
   const matchNos = Object.keys(PLACEMENT_POS)
     .map(Number)
-    .filter((no) => !(top6 && no === 12));
+    .filter((no) => includesSecondStageMatch(no, rankLimit));
   let maxRel = 0;
   for (const no of matchNos) {
     const pos = PLACEMENT_POS[no];
@@ -2075,25 +2098,21 @@ function renderSecondStagePlacement(
       1 + pos.col * 7,
       no,
       byNo.get(no),
-      placementRoundLabel(no, top6),
+      placementRoundLabel(no, rankLimit),
       displayName,
       scheduleMeta(formalMatchByNo.get(no)),
     );
     maxRel = Math.max(maxRel, pos.row + 3);
   }
-  const dividerCell = ws.getCell(bracketTop + 16, 1 + 7);
-  dividerCell.value = '▲ 1-4名争夺区 ／ ▼ 5-8名争夺区';
-  dividerCell.font = { italic: true, size: 9, color: { argb: 'FF6B7280' } };
+  if (rankLimit >= 5) {
+    const dividerCell = ws.getCell(bracketTop + 16, 1 + 7);
+    dividerCell.value = `▲ 1-4名争夺区 ／ ▼ ${rankLimit === 5 ? '第5' : `5-${rankLimit}`}名争夺区`;
+    dividerCell.font = { italic: true, size: 9, color: { argb: 'FF6B7280' } };
+  }
   row = bracketTop + maxRel + 1;
 
-  if (top6) {
-    ws.getCell(row, 1).value = '本项目仅取前6名，不进行第7、第8名排位赛。';
-    ws.getCell(row, 1).font = { italic: true, size: 9, color: { argb: 'FFB45309' } };
-    row += 2;
-  }
-
   // 最终排名（如已产生）。
-  const rankings = [...stage.rankings].filter((r) => !top6 || r.rank <= 6).sort((a, b) => a.rank - b.rank);
+  const rankings = stage.rankings.filter((r) => r.rank <= rankLimit).sort((a, b) => a.rank - b.rank);
   if (rankings.length) {
     ws.getCell(row, 1).value = '最终排名';
     ws.getCell(row, 1).font = { bold: true };

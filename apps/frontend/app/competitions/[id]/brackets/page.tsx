@@ -14,6 +14,7 @@ type CompetitionBrief = {
   id: string;
   title: string;
   subtitle?: string | null;
+  eventOptions?: Array<{ id: string }>;
 };
 
 async function getCompetition(id: string): Promise<CompetitionBrief | null> {
@@ -37,6 +38,7 @@ export default async function CompetitionBracketsPage({ params }: { params: Prom
 
   const brackets = allBrackets.filter((bracket) => bracket.tournamentId === competition.id);
   const publishedCount = brackets.length + teamBoard.length;
+  const showLiveScreen = brackets.length > 0 || Boolean(competition.eventOptions?.length);
 
   return (
     <PortalFeaturePage
@@ -64,12 +66,14 @@ export default async function CompetitionBracketsPage({ params }: { params: Prom
             >
               比分直播
             </Link>
-            <Link
-              href={`/live-screen?tournamentId=${encodeURIComponent(competition.id)}`}
-              className="inline-flex h-10 items-center justify-center rounded-lg bg-blue-600 px-4 text-sm font-black text-white transition hover:bg-blue-700"
-            >
-              直播大屏
-            </Link>
+            {showLiveScreen ? (
+              <Link
+                href={`/live-screen?tournamentId=${encodeURIComponent(competition.id)}`}
+                className="inline-flex h-10 items-center justify-center rounded-lg bg-blue-600 px-4 text-sm font-black text-white transition hover:bg-blue-700"
+              >
+                直播大屏
+              </Link>
+            ) : null}
           </div>
         </div>
 

@@ -11,7 +11,8 @@ import dayjs from 'dayjs';
 import { apiFetch } from '@/lib/api';
 import { GroupAdminFields } from '@/components/admin/GroupAdminFields';
 import type { AgeRule, GroupFields } from '@/lib/registration-groups';
-import { importTeamRoster, parseTeamRoster, TeamRosterImportInput, type TeamImportCompetition } from '@/components/TeamRosterImport';
+import { importTeamRoster, TeamRosterImportInput, type TeamImportCompetition } from '@/components/TeamRosterImport';
+import { parseTeamRoster } from '@/lib/team-roster-import';
 import {
   duplicateIdentities,
   fieldStateText,
@@ -596,7 +597,7 @@ export default function AdminCompetitionPlayersPage() {
       try {
         const result = await importTeamRoster(batchTeam, batchText, token);
         if (!result) return; // 标黄提醒确认框里点了取消
-        message.success(`已导入 ${result.teamCount} 个团体、${result.playerCount} 名队员${result.drawCleared ? '；原对阵尚未发布，已清空，请在团体赛中重新生成' : '，请在团体赛管理中查看名单'}`);
+        message.success(`已导入 ${result.teamCount} 个团体、${result.playerCount} 名队员${result.reusedCount ? `（其中 ${result.reusedCount} 人沿用选手库已有档案）` : ''}${result.drawCleared ? '；原对阵尚未发布，已清空，请在团体赛中重新生成' : '，请在团体赛管理中查看名单'}`);
         setBatchModalOpen(false); setBatchText(''); await loadData();
       } catch (error) { message.error(error instanceof Error ? error.message : '团体导入失败'); }
       finally { setBatchSubmitting(false); }

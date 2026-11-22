@@ -1,4 +1,6 @@
 import { roundCn } from './round';
+import { TEAM_GROUP_KNOCKOUT_2023, TEAM_GROUP_KNOCKOUT_2023_LABEL } from './team-competition-format';
+import { teamScoringSummary, type TeamStageRules } from './team-stage-scoring';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 
@@ -18,6 +20,9 @@ export type TeamBoardChild = {
   winnerSide: number | null;
   forfeitedSide: number | null;
   scheduledAt: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  matchPaused?: boolean;
   venueName: string | null;
   games: TeamBoardGame[];
 };
@@ -63,6 +68,7 @@ export type TeamBoardCompetition = {
   tournamentId: string;
   name: string;
   description: string | null;
+  timeZone?: string;
   entrantTypeLabel: string;
   format: string;
   groupCount: number | null;
@@ -74,8 +80,11 @@ export type TeamBoardCompetition = {
   customGamePoint: number | null;
   customGameCap: number | null;
   customGamesToWin: number | null;
+  /** 「小组赛 + 淘汰赛」赛制下分阶段的子项计分，未设置时为 null。 */
+  stageScoringRules?: TeamStageRules | null;
   items: Array<{ id: string; eventType: string; label: string }>;
   teamCount: number;
+  teams?: Array<TeamBoardTeam & { memberCount: number }>;
   groups: TeamBoardGroup[];
   encounters: TeamBoardEncounter[];
 };
@@ -91,25 +100,16 @@ export async function fetchTeamBoard(tournamentId: string): Promise<TeamBoardCom
 const FORMAT_LABELS: Record<string, string> = {
   GROUP_ROUND_ROBIN: '小组赛',
   GROUP_PLUS_KNOCKOUT: '小组赛 + 淘汰赛',
+  [TEAM_GROUP_KNOCKOUT_2023]: TEAM_GROUP_KNOCKOUT_2023_LABEL,
   SINGLE_ELIMINATION: '淘汰赛',
   ROUND_ROBIN: '单组循环',
 };
 
 export const teamFormatText = (format: string) => FORMAT_LABELS[format] ?? format;
 
-const PRESET_SCORING: Record<string, { point: number; gamesToWin: number }> = {
-  FIFTEEN_ONE: { point: 15, gamesToWin: 1 },
-  FIFTEEN_BO3: { point: 15, gamesToWin: 2 },
-  TWENTYONE_BO3: { point: 21, gamesToWin: 2 },
-  THIRTYONE_BO3: { point: 31, gamesToWin: 2 },
-};
-
-/** 子项计分：如「21 分 3 局 2 胜」「11 分 1 局」。 */
-export function teamScoringText(competition: Pick<TeamBoardCompetition, 'scoringRule' | 'customGamePoint' | 'customGamesToWin'>) {
-  const preset = PRESET_SCORING[competition.scoringRule] ?? PRESET_SCORING.TWENTYONE_BO3;
-  const point = competition.customGamePoint || preset.point;
-  const gamesToWin = competition.customGamesToWin || preset.gamesToWin;
-  return gamesToWin === 1 ? `${point} 分 1 局` : `${point} 分 ${gamesToWin * 2 - 1} 局 ${gamesToWin} 胜`;
+/** 子项计分：如「21 分 3 局 2 胜」「11 分 1 局」；分阶段时为「小组赛 21 分 1 局，淘汰赛 15 分 3 局 2 胜」。 */
+export function teamScoringText(competition: Pick<TeamBoardCompetition, 'scoringRule' | 'customGamePoint' | 'customGamesToWin' | 'stageScoringRules'>) {
+  return teamScoringSummary(competition);
 }
 
 /** 团体对阵的轮次：小组赛直接用后台的「A组第1轮」，淘汰赛换成中文轮次名。 */
@@ -117,13 +117,12 @@ export function teamRoundText(encounter: Pick<TeamBoardEncounter, 'stage' | 'rou
   return encounter.stage === 'GROUP' ? encounter.round : roundCn(encounter.round);
 }
 
-const TIME_FORMAT = new Intl.DateTimeFormat('zh-CN', {
-  timeZone: 'Asia/Shanghai', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
-});
-
-/** 按北京时间显示，服务端渲染和浏览器结果一致。 */
-export function teamTimeText(value: string | null) {
+/** 使用赛事设置的时区，服务端渲染和浏览器结果一致。 */
+export function teamTimeText(value: string | null, timeZone = 'Asia/Shanghai') {
   if (!value) return '';
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '' : TIME_FORMAT.format(date);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(date);
 }

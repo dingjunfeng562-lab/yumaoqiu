@@ -1,5 +1,6 @@
 import * as ExcelJS from 'exceljs';
-import { buildOrderbookWorkbook } from './orderbook-workbook';
+import { buildOrderbookWorkbook, eventBracketTreeForImage, teamCompetitionEvents } from './orderbook-workbook';
+import { generateRoundRobin } from '../team-competitions/group-round-robin';
 import type { ExportTournament } from './exports.service';
 
 function fixture(): ExportTournament {
@@ -19,6 +20,60 @@ async function rankingRows(tournament: ExportTournament) {
   await workbook.xlsx.load(await buildOrderbookWorkbook(tournament) as never);
   return workbook.getWorksheet('名次汇总')!.getRows(3, 3)!.map(row => [2, 3, 4, 5].map(col => row.getCell(col).text));
 }
+
+it('exports all eight teams, all twelve group fixtures and distinct reserved knockout slots', async () => {
+  const tournament = fixture();
+  const competition = tournament.teamCompetitions![0];
+  competition.format = 'GROUP_PLUS_KNOCKOUT_STD';
+  competition.advancePerGroup = 2;
+  competition.groups = ['A', 'B'].map((name, index) => ({ id: name, groupNo: index + 1, groupName: `${name}组`,
+    teams: [1, 2, 3, 4].map(n => ({ teamId: `${name}${n}` })) }));
+  competition.teams = competition.groups.flatMap(group => group.teams!.map(({ teamId }) => ({ id: teamId, name: teamId, affiliation: '' })));
+  const childMatches = (id: string, offset: number) => [1, 2].map(matchNo => ({
+    id: `${id}-${matchNo}`, status: 'PENDING', winnerSide: null,
+    scheduledAt: new Date(tournament.startDate.getTime() + (offset + matchNo) * 60_000),
+    lineupLocked: false, teamCompetitionItemId: null, teamCompetitionItem: null,
+    venue: { id: 'court1', name: '1号场', sortOrder: 1 },
+  }));
+  competition.teamMatches = competition.groups.flatMap((group, index) => {
+    const teams = group.teams!.map(({ teamId }) => ({ id: teamId, name: teamId }));
+    return generateRoundRobin(teams).flatMap(round => round.matches.map((match, slot) => {
+      const id = `${group.id}-${round.roundNo}-${slot}`;
+      return { id, round: `${group.groupName}第${round.roundNo}轮`, roundNo: round.roundNo, matchNo: index * 2 + slot + 1,
+        stage: 'GROUP', groupId: group.id, team1Id: match.team1Id, team2Id: match.team2Id, winnerTeamId: null,
+        team1Wins: 0, team2Wins: 0, status: 'PENDING', matches: childMatches(id, round.roundNo * 10 + index * 4 + 2 * slot) };
+    }));
+  });
+  for (const [round, roundNo, matchNo] of [['SF', 4, 1], ['SF', 4, 2], ['F', 5, 1], ['BRONZE', 5, 2]] as const) {
+    const id = `ko-${roundNo}-${matchNo}`;
+    competition.teamMatches.push({ id, round, roundNo, matchNo, stage: 'KNOCKOUT', team1Id: null, team2Id: null,
+      winnerTeamId: null, team1Wins: 0, team2Wins: 0, status: 'PENDING', matches: childMatches(id, roundNo * 10 + matchNo * 2) });
+  }
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(await buildOrderbookWorkbook(tournament) as never);
+  for (const sheet of ['流程表', '分组表']) {
+    const teamRows = new Map<string, ExcelJS.Row>();
+    workbook.getWorksheet(sheet)!.eachRow(row => {
+      const name = row.getCell(2).text;
+      if (/^[AB][1-4]$/.test(name)) teamRows.set(name, row);
+    });
+    expect([...teamRows.keys()]).toEqual(['A1', 'A2', 'A3', 'A4', 'B1', 'B2', 'B3', 'B4']);
+    if (sheet === '流程表') {
+      const fixtureCodes = [...teamRows.values()].flatMap(row => [5, 9, 13, 17].map(col => row.getCell(col).text).filter(Boolean));
+      expect(fixtureCodes).toHaveLength(24);
+      expect(new Set(fixtureCodes).size).toBe(12);
+    }
+  }
+  const result = eventBracketTreeForImage(teamCompetitionEvents(tournament)[0]);
+  expect(result).toHaveProperty('tree');
+  if ('tree' in result) {
+    const [semis, final] = result.tree.rounds;
+    expect(semis.matches.map(match => match.info)).toHaveLength(2);
+    const info = [...semis.matches, ...final.matches, result.tree.bronze!].map(match => match.info);
+    expect(info.every(label => label.startsWith('团体'))).toBe(true);
+    expect(new Set(info).size).toBe(4);
+  }
+});
 
 describe('team orderbook final rankings', () => {
   it.each(['LIVE', 'COMPLETED'])('exports the official 3:0 and +45 points while the encounter is %s', async (status) => {
@@ -50,7 +105,9 @@ describe('team orderbook final rankings', () => {
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(await buildOrderbookWorkbook(fixture()) as never);
     const texts: string[] = [];
-    workbook.getWorksheet('流程表')!.eachRow(row => row.eachCell(cell => texts.push(cell.text)));
+    workbook.getWorksheet('流程表')!.eachRow(row => row.eachCell(cell => {
+      if (cell.master.address === cell.address) texts.push(cell.text);
+    }));
     expect(texts).toContain('团体循环第二阶段：');
     expect(texts).toContain('单组循环全部结束后确定各队名次，见“名次汇总”。');
     expect(workbook.getWorksheet('淘汰赛')!.getCell('A3').text).toBe('暂无淘汰赛场次');

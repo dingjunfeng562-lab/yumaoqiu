@@ -8,6 +8,7 @@ import { ReloadOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { roundCn } from '@/lib/round';
 import TournamentRefereeQr from '@/components/referee/TournamentRefereeQr';
+import CourtRefereesPanel from '@/components/admin/CourtRefereesPanel';
 import {
   MatchSignaturePanel,
   ScoreSheetStatusTag,
@@ -91,7 +92,7 @@ interface BracketData {
 }
 
 function refereeAccountLabel(referee: UserItem) {
-  return `账号：${referee.username || referee.email || referee.id}`;
+  return referee.username || referee.email || referee.id;
 }
 
 function matchScoreText(games?: GameScore[]) {
@@ -274,7 +275,7 @@ export default function AdminScoringPage() {
       >
         <div>
           <Typography.Title level={3} style={{ margin: 0 }}>裁判分配</Typography.Title>
-          <Typography.Text type="secondary">裁判可扫码选择场地执裁，也可继续在下方手动分配裁判。</Typography.Text>
+          <Typography.Text type="secondary">在下方按场地或按场次分配裁判。</Typography.Text>
         </div>
         <Button
           icon={<ReloadOutlined />}
@@ -316,6 +317,10 @@ export default function AdminScoringPage() {
         />
         </div>
       </Card>
+
+      {token && selectedTournamentId && (
+        <CourtRefereesPanel key={selectedTournamentId} tournamentId={selectedTournamentId} token={token} referees={referees} />
+      )}
 
       <MatchSignaturePanel
         token={token}

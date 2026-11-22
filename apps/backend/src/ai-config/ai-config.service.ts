@@ -27,7 +27,10 @@ export class AiConfigService {
 
   async getConfig() {
     const config = await this.getRawConfig();
-    const { apiKey, ...rest } = config;
+    // 报名表识别的开关和提示词只给超级管理员看（admin/roster-recognition），
+    // 有「AI 配置」权限的普通管理员也能读这个接口，所以这里不返回。
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { apiKey, rosterEnabled, rosterPrompt, ...rest } = config;
     return {
       ...rest,
       hasApiKey: !!apiKey && apiKey.length > 0,

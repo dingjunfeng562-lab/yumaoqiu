@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { useSession } from 'next-auth/react';
 import { Avatar, Button, Card, Checkbox, Dropdown, Form, Input, InputNumber, Modal, Popconfirm, Progress, Select, Space, Switch, Table, Tag, Typography, message } from 'antd';
 import type { MenuProps } from 'antd';
@@ -18,6 +19,7 @@ import {
   TeamOutlined,
 } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
+import { PHOTO_MANAGEMENT_REVIEW_PAGE } from '@/lib/photo-management-access';
 import { useCurrentRole } from '@/lib/use-current-role';
 
 type UserRole = 'ROOT' | 'ADMIN' | 'REFEREE' | 'PLAYER' | 'PHOTOGRAPHER';
@@ -81,6 +83,10 @@ const ROLE_CREATE_ENDPOINT: Record<CreatableRole, string> = {
 };
 
 const usernamePattern = /^[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9_-]{1,19}$/;
+const passwordRule = {
+  pattern: /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[^\s\u4e00-\u9fa5]{8,32}$/,
+  message: '密码需为 8-32 位，并同时包含大写字母、小写字母和数字，且不能包含空格或中文',
+};
 
 const statusLabels: Record<UserItem['status'], string> = {
   ACTIVE: '启用',
@@ -118,6 +124,9 @@ export default function AdminUsersPage() {
   const [resetSubmitting, setResetSubmitting] = useState(false);
   const [resetTarget, setResetTarget] = useState<UserItem | null>(null);
   const [temporaryPassword, setTemporaryPassword] = useState<string | null>(null);
+  const [passwordTargets, setPasswordTargets] = useState<UserItem[]>([]);
+  const [passwordSubmitting, setPasswordSubmitting] = useState(false);
+  const [passwordForm] = Form.useForm<{ newPassword: string }>();
   const [roleFilter, setRoleFilter] = useState<UserRole | 'ALL'>('ALL');
   const [keyword, setKeyword] = useState('');
   const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
@@ -145,8 +154,11 @@ export default function AdminUsersPage() {
   const activeCount = filteredUsers.filter((user) => user.status === 'ACTIVE').length;
   const disabledCount = filteredUsers.length - activeCount;
   const selectedCount = selectedUserIds.length;
+  const selectedIds = new Set(selectedUserIds);
+  const passwordSelection = users.filter(user => selectedIds.has(user.id) && user.id !== currentUserId && canManageUser(user));
+  const searchableSelection = filteredUsers.filter(user => user.id !== currentUserId && canManageUser(user));
   const assignablePermissionOptions = useMemo(
-    () => permissionOptions.filter((item) => item.key !== 'INVITES'),
+    () => permissionOptions.filter((item) => item.key !== 'INVITES' && item.key !== 'PHOTOS'),
     [permissionOptions],
   );
 
@@ -159,7 +171,7 @@ export default function AdminUsersPage() {
       ]);
       setPermissionOptions(catalog.options);
       setPermissionDefaults(catalog.defaults);
-      setSelectedPermissions(saved.permissions.filter((key) => key !== 'INVITES'));
+      setSelectedPermissions(saved.permissions.filter((key) => key !== 'INVITES' && key !== 'PHOTOS'));
       setCustomPermissions(saved.customized);
       setPermissionTarget(user);
     } catch (error) { message.error(error instanceof Error ? error.message : '加载功能权限失败'); }
@@ -200,7 +212,8 @@ export default function AdminUsersPage() {
   function moreMenuItems(user: UserItem): NonNullable<MenuProps['items']> {
     const isSelf = user.id === currentUserId;
     const items: NonNullable<MenuProps['items']> = [
-      { key: 'reset', icon: <LockOutlined />, label: '重置密码' },
+      { key: 'set-password', icon: <LockOutlined />, label: '设置密码' },
+      { key: 'reset', icon: <LockOutlined />, label: '生成临时密码' },
       { key: 'rename', icon: <EditOutlined />, label: '修改昵称' },
     ];
     if (role === 'ROOT') {
@@ -236,6 +249,9 @@ export default function AdminUsersPage() {
 
   function handleMoreAction(user: UserItem, key: string) {
     switch (key) {
+      case 'set-password':
+        openPasswordForm([user]);
+        break;
       case 'reset':
         setResetTarget(user);
         setTemporaryPassword(null);
@@ -475,6 +491,36 @@ export default function AdminUsersPage() {
     }
   }
 
+  function openPasswordForm(targets: UserItem[]) {
+    passwordForm.resetFields();
+    setPasswordTargets(targets);
+  }
+
+  async function submitPasswords() {
+    if (!token || !passwordTargets.length || passwordSubmitting) return;
+    let values: { newPassword: string };
+    try {
+      values = await passwordForm.validateFields();
+    } catch {
+      return;
+    }
+    setPasswordSubmitting(true);
+    try {
+      const result = await apiFetch<{ updated: number }>('/auth/users/passwords', {
+        method: 'PATCH',
+        token,
+        body: JSON.stringify({ ids: passwordTargets.map(user => user.id), newPassword: values.newPassword }),
+      });
+      message.success(`已设置 ${result.updated} 个账号的密码`);
+      setPasswordTargets([]);
+      passwordForm.resetFields();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '设置密码失败');
+    } finally {
+      setPasswordSubmitting(false);
+    }
+  }
+
   const columns = [
     {
       title: '用户',
@@ -675,7 +721,13 @@ export default function AdminUsersPage() {
               批量删除{selectedCount ? `(${selectedCount})` : ''}
             </Button>
           </Popconfirm>
+          <Button icon={<LockOutlined />} disabled={!passwordSelection.length} onClick={() => openPasswordForm(passwordSelection)}>
+            批量设置密码{passwordSelection.length ? ` (${passwordSelection.length})` : ''}
+          </Button>
           <Button icon={<ReloadOutlined />} onClick={() => void loadUsers()} loading={loading}>刷新</Button>
+          {role === 'ROOT' ? (
+            <Button href={PHOTO_MANAGEMENT_REVIEW_PAGE} icon={<SafetyCertificateOutlined />}>图片管理申请</Button>
+          ) : null}
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>新建账号</Button>
         </Space>
       </div>
@@ -718,6 +770,9 @@ export default function AdminUsersPage() {
         title={<span style={{ fontSize: 14, fontWeight: 700 }}>账号列表</span>}
         extra={
           <Space size={8} wrap>
+            <Button size="small" disabled={!searchableSelection.length} onClick={() => setSelectedUserIds(searchableSelection.map(user => user.id))}>
+              全选筛选结果
+            </Button>
             <Typography.Text type="secondary">共 {filteredUsers.length} 个账号</Typography.Text>
             <Tag color="green">启用 {activeCount}</Tag>
             <Tag color="red">禁用 {disabledCount}</Tag>
@@ -748,6 +803,12 @@ export default function AdminUsersPage() {
 
       <Modal title={permissionTarget ? `功能权限：${permissionTarget.username}` : '功能权限'} open={!!permissionTarget} onCancel={() => setPermissionTarget(null)} onOk={savePermissions} confirmLoading={permissionSaving} width={760} okText="保存权限">
         <Typography.Paragraph type="secondary">自定义功能不会扩大赛事归属范围，也不会重置邀请码余额。邀请码权限由角色固定：仅管理员和超级管理员拥有；修改角色会恢复角色默认权限。</Typography.Paragraph>
+        {permissionTarget?.role === 'ADMIN' ? (
+          <Space style={{ display: 'flex', marginBottom: 16 }}>
+            <Typography.Text>图片管理按赛事和活动逐项审核</Typography.Text>
+            <Link href={PHOTO_MANAGEMENT_REVIEW_PAGE} onClick={() => setPermissionTarget(null)}>查看审核</Link>
+          </Space>
+        ) : null}
         <Space style={{ marginBottom: 16 }}>
           <Switch checked={customPermissions} onChange={(checked) => { setCustomPermissions(checked); if (!checked && permissionTarget) setSelectedPermissions(permissionDefaults[permissionTarget.role] ?? []); }} />
           <Typography.Text>{customPermissions ? '自定义功能' : '使用角色默认权限'}</Typography.Text>
@@ -808,10 +869,7 @@ export default function AdminUsersPage() {
             label="密码"
             rules={[
               { required: true, message: '请输入密码' },
-              {
-                pattern: /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[^\s\u4e00-\u9fa5]{8,32}$/,
-                message: '密码需为 8-32 位，并同时包含大写字母、小写字母和数字，且不能包含空格或中文',
-              },
+              passwordRule,
             ]}
           >
             <Input.Password />
@@ -883,7 +941,30 @@ export default function AdminUsersPage() {
       </Modal>
 
       <Modal
-        title={resetTarget ? `重置密码：${resetTarget.email || resetTarget.username}` : '重置密码'}
+        title={passwordTargets.length === 1 ? `设置 ${passwordTargets[0].username || passwordTargets[0].email || '账号'} 的密码` : '批量设置密码'}
+        open={passwordTargets.length > 0}
+        onOk={submitPasswords}
+        onCancel={() => {
+          if (passwordSubmitting) return;
+          setPasswordTargets([]);
+          passwordForm.resetFields();
+        }}
+        confirmLoading={passwordSubmitting}
+        okText="保存密码"
+        destroyOnHidden
+      >
+        {passwordTargets.length > 1 && (
+          <Typography.Paragraph>将选中的 {passwordTargets.length} 个账号设置为同一个新密码。</Typography.Paragraph>
+        )}
+        <Form form={passwordForm} layout="vertical" preserve={false}>
+          <Form.Item name="newPassword" label="新密码" rules={[{ required: true, message: '请输入新密码' }, passwordRule]}>
+            <Input.Password autoComplete="new-password" maxLength={32} disabled={passwordSubmitting} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title={resetTarget ? `为 ${resetTarget.email || resetTarget.username} 生成临时密码` : '生成临时密码'}
         open={resetOpen}
         onCancel={() => {
           setResetOpen(false);

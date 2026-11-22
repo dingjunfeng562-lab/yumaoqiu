@@ -1,5 +1,6 @@
 import { AuthActor } from '../auth/admin-scope';
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -10,12 +11,17 @@ import {
   Put,
   Query,
   Req,
+  StreamableFile,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { EntrantType, Role } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
+import { RosterRecognitionService, type RosterUploadFile } from '../roster-recognition/roster-recognition.service';
 import {
   AddTeamPlayersDto,
   BatchImportTeamsDto,
@@ -42,7 +48,16 @@ import { TeamCompetitionsService } from './team-competitions.service';
 @Roles(Role.ADMIN, Role.ROOT)
 @Controller('team-competitions')
 export class TeamCompetitionsController {
-  constructor(private readonly teamCompetitionsService: TeamCompetitionsService) {}
+  constructor(
+    private readonly teamCompetitionsService: TeamCompetitionsService,
+    private readonly rosterRecognition: RosterRecognitionService,
+  ) {}
+
+  /** 建队页判断是否显示「上传照片/PDF 识别」：只返回开关状态，不暴露配置。 */
+  @Get('ai-recognition/status')
+  rosterRecognitionStatus() {
+    return this.rosterRecognition.publicStatus();
+  }
 
   @Patch('teams/:teamId/members/:memberPlayerId/verify-eligibility')
   verifyMemberEligibility(@Param('teamId') teamId: string, @Param('memberPlayerId') playerId: string, @Body() dto: { note: string; gender: 'MALE' | 'FEMALE' }, @Req() req: { user: AuthActor }) {
@@ -93,6 +108,22 @@ export class TeamCompetitionsController {
     return this.teamCompetitionsService.availablePlayers(id, req.user);
   }
 
+  /** 本组报名字段（性别、身份证号必填 / 选填 / 不收集），导入预览按它校验。 */
+  @Get(':id/roster-fields')
+  rosterFields(@Param('id') id: string) {
+    return this.teamCompetitionsService.rosterFieldRules(id);
+  }
+
+  /** 按本组报名字段生成的团体队员导入模板。 */
+  @Get(':id/roster-template')
+  async rosterTemplate(@Param('id') id: string) {
+    const { buffer, filename } = await this.teamCompetitionsService.rosterTemplate(id);
+    return new StreamableFile(buffer, {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      disposition: `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
+    });
+  }
+
   @Post(':id/teams')
   createTeam(@Param('id') id: string, @Body() dto: CreateTeamDto, @Req() req: { user: AuthActor }) {
     return this.teamCompetitionsService.createTeam(id, dto, req.user);
@@ -106,6 +137,16 @@ export class TeamCompetitionsController {
   @Post(':id/teams/batch-import')
   batchImportTeams(@Param('id') id: string, @Body() dto: BatchImportTeamsDto, @Req() req: { user: AuthActor }) {
     return this.teamCompetitionsService.batchImportTeams(id, dto, req.user);
+  }
+
+  /**
+   * 报名表照片 / PDF 识别成队员行。只做识别，不落库；前端预览、人工核对后再调 batch-import。
+   */
+  @Post(':id/teams/ai-parse')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 15 * 1024 * 1024 } }))
+  parseRosterFile(@Param('id') id: string, @UploadedFile() file: RosterUploadFile | undefined, @Req() req: { user: AuthActor }) {
+    if (!file?.buffer?.length) throw new BadRequestException('请上传报名表照片或 PDF');
+    return this.rosterRecognition.parse(id, file, req.user.id);
   }
 
   @Post(':id/teams/quick-preview')
@@ -133,8 +174,8 @@ export class TeamCompetitionsController {
   }
 
   @Delete('teams/:teamId')
-  removeTeam(@Param('teamId') teamId: string) {
-    return this.teamCompetitionsService.removeTeam(teamId);
+  removeTeam(@Param('teamId') teamId: string, @Req() req: { user: AuthActor & { username?: string | null } }) {
+    return this.teamCompetitionsService.removeTeam(teamId, req.user);
   }
 
   @Post('teams/:teamId/players')
@@ -234,7 +275,7 @@ export class TeamCompetitionsController {
     return this.teamCompetitionsService.adjustGroups(id, dto);
   }
 
-@Get(':id/draw/swap-options')
+  @Get(':id/draw/swap-options')
   getSwapOptions(@Param('id') id: string) {
     return this.teamCompetitionsService.getSwapOptions(id);
   }

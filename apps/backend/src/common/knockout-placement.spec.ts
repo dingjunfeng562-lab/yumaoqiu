@@ -3,6 +3,7 @@ import {
   knockoutPlacements,
   type KnockoutMatchLike,
 } from './knockout-placement';
+import { FIFTH_PLACE_FINAL, knockoutPlacementSources, knockoutPlacementTargets, PLACEMENT_SEMIFINAL, SEVENTH_PLACE_FINAL } from './knockout-placement-playoff';
 
 const match = (
   round: string,
@@ -175,6 +176,34 @@ describe('knockoutPlacements 淘汰赛名次折算', () => {
     ]);
     expect(rows).toEqual([]);
     expect(decided).toBe(false);
+  });
+
+  it('八强负者通过排位赛分别取得第 5、6、7、8 名', () => {
+    const contenders = draw16({ rounds: 5, bronze: true });
+    const first = contenders.find((row) => row.round === 'QF')!;
+    const losing = contenders.filter((row) => row.round === 'QF').map(row => row.side2Id!);
+    const { rows } = knockoutPlacements([
+      ...contenders,
+      match(PLACEMENT_SEMIFINAL, 3, losing[0], losing[1], 1),
+      match(PLACEMENT_SEMIFINAL, 3, losing[2], losing[3], 1),
+      match(FIFTH_PLACE_FINAL, 4, losing[0], losing[2], 2),
+      match(SEVENTH_PLACE_FINAL, 4, losing[1], losing[3], 1),
+    ]);
+    expect(first.winnerSide).toBe(1);
+    expect(rows.filter((row) => row.rank >= 5 && row.rank <= 8).map((row) => [row.rank, row.entrantId, row.status])).toEqual([
+      [5, losing[2], '已确定'], [6, losing[0], '已确定'], [7, losing[1], '已确定'], [8, losing[3], '已确定'],
+    ]);
+  });
+
+  it('排位半决赛连接八强负者，五六名和七八名赛分别接胜负者', () => {
+    expect(knockoutPlacementTargets({ round: 'QF', roundNo: 2, matchNo: 4 })).toEqual([
+      { round: PLACEMENT_SEMIFINAL, roundNo: 3, matchNo: 4, side: 'side2Id', outcome: 'loser' },
+    ]);
+    expect(knockoutPlacementTargets({ round: PLACEMENT_SEMIFINAL, roundNo: 3, matchNo: 3 })).toEqual([
+      { round: FIFTH_PLACE_FINAL, roundNo: 4, matchNo: 3, side: 'side1Id', outcome: 'winner' },
+      { round: SEVENTH_PLACE_FINAL, roundNo: 4, matchNo: 4, side: 'side1Id', outcome: 'loser' },
+    ]);
+    expect(knockoutPlacementSources({ round: SEVENTH_PLACE_FINAL, roundNo: 4, matchNo: 4 }).map(source => source.matchNo)).toEqual([3, 4]);
   });
 });
 

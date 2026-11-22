@@ -39,6 +39,8 @@ import {
 } from './dto/competition-registration.dto';
 import { effectiveTournamentStatus } from '../tournaments/tournament-status';
 import { UpdateCompetitionRankingsDto } from './dto/competition-rankings.dto';
+import { COMPETITION_ORDER_MODES, orderPublicCompetitions } from './competition-order';
+import type { UpdateCompetitionOrderDto } from './dto/competition-order.dto';
 import {
   eventDisplayLabel,
   entrantTypeLabel,
@@ -70,6 +72,13 @@ import {
   groupEntrantCounts,
   remainingSlots,
 } from '../common/registration-capacity';
+
+const PUBLIC_COMPETITION_FILTER = {
+  isArchived: false,
+  isPublished: true,
+  approvalStatus: TournamentApprovalStatus.APPROVED,
+};
+const PUBLIC_ORDER_ID = 1;
 
 const EVENT_TYPE_LABELS: Record<EventType, string> = {
   MENS_SINGLES: '男子单打',
@@ -186,9 +195,9 @@ export class CompetitionsService {
     private emailService: EmailService,
   ) {}
 
-  async listPublicCompetitions() {
+  async listPublicCompetitions(applyListOrder = false) {
     const competitions = await this.prisma.tournament.findMany({
-      where: { isArchived: false, isPublished: true, approvalStatus: 'APPROVED' },
+      where: PUBLIC_COMPETITION_FILTER,
       include: {
         events: {
           include: {
@@ -211,7 +220,57 @@ export class CompetitionsService {
       orderBy: [{ startDate: 'desc' }, { edition: 'desc' }],
     });
 
-    return competitions.map((competition) => this.toCompetitionView(competition));
+    const ordered = applyListOrder
+      ? orderPublicCompetitions(competitions, await this.readPublicCompetitionOrder())
+      : competitions;
+    return ordered.map((competition) => this.toCompetitionView(competition));
+  }
+
+  private async readPublicCompetitionOrder(): Promise<UpdateCompetitionOrderDto> {
+    const saved = await this.prisma.publicCompetitionOrder.findUnique({ where: { id: PUBLIC_ORDER_ID } });
+    return {
+      mode: COMPETITION_ORDER_MODES.find((mode) => mode === saved?.mode) ?? 'REGISTRATION_FIRST',
+      orderedIds: Array.isArray(saved?.orderedIds)
+        ? saved.orderedIds.filter((id): id is string => typeof id === 'string')
+        : [],
+    };
+  }
+
+  async getPublicCompetitionOrder(actor: AuthActor) {
+    if (actor.role !== Role.ROOT) throw new ForbiddenException('仅超级管理员可设置前台赛事排序');
+    const [order, competitions] = await Promise.all([
+      this.readPublicCompetitionOrder(),
+      this.prisma.tournament.findMany({
+        where: PUBLIC_COMPETITION_FILTER,
+        select: { id: true, name: true, startDate: true, status: true },
+        orderBy: [{ startDate: 'desc' }, { edition: 'desc' }],
+      }),
+    ]);
+    const publicIds = new Set(competitions.map(({ id }) => id));
+    return {
+      ...order,
+      orderedIds: order.orderedIds.filter((id) => publicIds.has(id)),
+      competitions: orderPublicCompetitions(competitions, order),
+    };
+  }
+
+  async savePublicCompetitionOrder(order: UpdateCompetitionOrderDto, actor: AuthActor) {
+    if (actor.role !== Role.ROOT) throw new ForbiddenException('仅超级管理员可设置前台赛事排序');
+    if (order.orderedIds.length) {
+      const count = await this.prisma.tournament.count({
+        where: { ...PUBLIC_COMPETITION_FILTER, id: { in: order.orderedIds } },
+      });
+      if (count !== order.orderedIds.length) {
+        throw new ConflictException('前台赛事列表已变化，请重新打开排序设置');
+      }
+    }
+    const data = { mode: order.mode, orderedIds: order.orderedIds };
+    await this.prisma.publicCompetitionOrder.upsert({
+      where: { id: PUBLIC_ORDER_ID },
+      create: { id: PUBLIC_ORDER_ID, ...data },
+      update: data,
+    });
+    return data;
   }
 
   async getPublicCompetition(id: string) {

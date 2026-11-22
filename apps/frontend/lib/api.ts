@@ -23,7 +23,7 @@ async function readResponse<T>(res: Response, redirectOnForbidden: boolean): Pro
         window.location.assign(`/maintenance?from=${encodeURIComponent(from)}`);
       }
     }
-    throw Object.assign(new Error(err.message ?? '请求失败'), { status: res.status });
+    throw Object.assign(new Error(err.message ?? '请求失败'), { status: res.status, response: err });
   }
   return res.json();
 }

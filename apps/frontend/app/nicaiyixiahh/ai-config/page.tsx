@@ -36,6 +36,7 @@ import {
 } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
 import { useCurrentAccess } from '@/lib/use-current-role';
+import RosterRecognitionCard from '@/components/admin/RosterRecognitionCard';
 
 type AiConfigResponse = {
   id: string;
@@ -295,7 +296,7 @@ export default function AdminAiConfigPage() {
           AI 助手配置
         </Typography.Title>
         <Typography.Text type="secondary">
-          设置首页羽毛球 AI 的模型、接口、密钥和欢迎语。
+          设置首页羽毛球 AI 的模型、接口、密钥和欢迎语；报名表识别只对超级管理员开放。
         </Typography.Text>
       </div>
 
@@ -514,6 +515,7 @@ export default function AdminAiConfigPage() {
             </Col>
           </Row>
         </Form>
+        {access.role === 'ROOT' ? <RosterRecognitionCard token={token} /> : null}
       </Space>
     </div>
   );

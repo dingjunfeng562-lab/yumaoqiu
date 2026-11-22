@@ -15,6 +15,7 @@ import {
   CreateUserDto,
   LoginDto,
   RefreshTokenDto,
+  SetUserPasswordsDto,
   RegisterDto,
   RenameDto,
   UpdateUserRoleDto,
@@ -135,6 +136,13 @@ export class AuthController {
   @Post('users/:id/reset-password')
   resetUserPassword(@Param('id') id: string, @Req() req: RequestWithUser) {
     return this.authService.resetUserPassword(id, req.user);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.ROOT)
+  @Patch('users/passwords')
+  setUserPasswords(@Body() dto: SetUserPasswordsDto, @Req() req: RequestWithUser) {
+    return this.authService.setUserPasswords(dto.ids, dto.newPassword, req.user);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)

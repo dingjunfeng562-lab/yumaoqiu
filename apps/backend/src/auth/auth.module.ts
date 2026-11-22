@@ -5,6 +5,8 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { JwtStrategy } from './jwt.strategy';
+import { PhotoManagementAccessController } from './photo-management-access.controller';
+import { PhotoManagementAccessService } from './photo-management-access.service';
 
 @Module({
   imports: [
@@ -18,8 +20,8 @@ import { JwtStrategy } from './jwt.strategy';
       }),
     }),
   ],
-  providers: [AuthService, JwtStrategy],
-  controllers: [AuthController],
+  providers: [AuthService, JwtStrategy, PhotoManagementAccessService],
+  controllers: [AuthController, PhotoManagementAccessController],
   exports: [AuthService, JwtModule],
 })
 export class AuthModule {}

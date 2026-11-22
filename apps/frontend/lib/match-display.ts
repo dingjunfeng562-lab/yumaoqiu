@@ -94,6 +94,29 @@ export function finalStage(match: RoundInfo): FinalStage | null {
   return null;
 }
 
+const PLACEMENT_FINAL_TITLES: Record<number, string> = {
+  1: '冠亚军决赛',
+  3: '三四名决赛',
+  5: '五六名决赛',
+  7: '七八名决赛',
+};
+
+/** 赛事大屏只给直接决定名次的场次加轮次标题。 */
+export function placementFinalTitle(round?: string | null, roundNo?: number | null): string | null {
+  const title = round?.trim();
+  if (!title || roundNo === 0) return null;
+  if (title === 'F') return (roundNo ?? 0) > 0 ? PLACEMENT_FINAL_TITLES[1] : null;
+  if (title === '决赛') return PLACEMENT_FINAL_TITLES[1];
+  if (title === 'BRONZE' || title === '季军赛') return PLACEMENT_FINAL_TITLES[3];
+  if (Object.values(PLACEMENT_FINAL_TITLES).includes(title)) return title;
+
+  // 交叉排位赛用 P 加较高的名次编号，例如 P5 决定第 5、6 名。
+  const placement = /^P([1-9]\d*)$/.exec(title);
+  if (!placement) return null;
+  const rank = Number(placement[1]);
+  return PLACEMENT_FINAL_TITLES[rank] ?? `${rank}-${rank + 1}名决赛`;
+}
+
 function scheduleTime(value?: string | null) {
   if (!value) return Number.POSITIVE_INFINITY;
   const time = new Date(value).getTime();

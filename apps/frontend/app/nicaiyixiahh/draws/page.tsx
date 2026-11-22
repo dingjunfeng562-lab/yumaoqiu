@@ -46,6 +46,7 @@ import {
   type KnockoutBracketData,
 } from '@/components/bracket/KnockoutBracket';
 import { SecondStageBracket, type SecondStageData } from '@/components/bracket/SecondStageBracket';
+import { compactGroupRankLabel, SECOND_STAGE_MAX_RANK, secondStageRankingLimit } from '@/lib/second-stage-ranking';
 import { DrawSwapModal } from '@/components/DrawSwapModal';
 import TeamCompetitionGroups from '@/components/TeamCompetitionGroups';
 import ClearResultsButton from '@/components/ClearResultsButton';
@@ -54,8 +55,10 @@ import { DrawStaleNotice } from '@/components/admin/DrawStaleNotice';
 
 type TeamCompetitionOption = {
   id: string;
+  tournamentId: string;
   name: string;
   format?: string;
+  isPublished: boolean;
   groupCount?: number | null;
   advancePerGroup?: number | null;
   _count?: { teams: number; teamMatches: number };
@@ -84,6 +87,10 @@ const CIRCLED_SEEDS = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '
 const SECOND_STAGE_SLOT_CODES = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
 // 选中此哨兵值或留空，表示该 A-H 签位轮空（无选手）。
 const SECOND_STAGE_BYE = '__BYE__';
+const TOMATO_CUP_WOMENS_SINGLES_EVENT_ID = 'cmwczfqvr00mk0164kxrm9owi';
+const TOMATO_CUP_WOMENS_SINGLES_CROSS = [
+  ['A', 1], ['C', 2], ['C', 1], ['A', 2], ['B', 1], ['D', 2], ['D', 1], ['B', 2],
+] as const;
 
 interface Tournament {
   id: string;
@@ -152,6 +159,8 @@ interface MatchItem {
   side2?: Registration | null;
   status: string;
   winnerSide?: number | null;
+  scheduledAt?: string | null;
+  venue?: { name: string } | null;
 }
 
 interface RoundItem {
@@ -543,6 +552,8 @@ function toKnockoutBracketData(data: BracketData): KnockoutBracketData {
       side2Id: match.side2?.id ?? null,
       winnerSide: match.winnerSide ?? null,
       winnerId: match.winnerSide === 1 ? match.side1?.id ?? null : match.winnerSide === 2 ? match.side2?.id ?? null : null,
+      scheduledAt: match.scheduledAt ?? null,
+      venueName: match.venue?.name ?? null,
     })),
   );
 
@@ -568,11 +579,11 @@ function toSkeletonBracketData(
     id: `${data.event.id}-skeleton`,
     tournamentId: data.event.tournamentId,
     title: `${EVENT_TYPE_LABELS[data.event.type] ?? data.event.type} 淘汰赛预览`,
-    subtitle: `${skeleton.bracketSize} 签 · 出线 ${skeleton.participants.filter((item) => !item.isBye).length} 人 · 签位为「X组第N名」，小组赛全部结束后按此签表自动生成`,
+    subtitle: `${skeleton.bracketSize} 签 · 出线 ${skeleton.participants.filter((item) => !item.isBye).length} 人 · 小组赛全部结束后按此签表自动生成`,
     participants: skeleton.participants.map((item) => ({
       id: item.id,
       position: item.position,
-      name: item.name,
+      name: compactGroupRankLabel(item.name),
       isBye: item.isBye,
     })),
     matches: skeleton.matches
@@ -704,14 +715,18 @@ export default function DrawsPage() {
   const [rejectingRequest, setRejectingRequest] = useState<RedrawRequestItem | null>(null);
   const [rejectForm] = Form.useForm();
   const [secondStageForm] = Form.useForm();
+  const draftRankingLimit = Form.useWatch<number>('rankingLimit', secondStageForm);
+  const [confirmingSecondStage, setConfirmingSecondStage] = useState(false);
   const [teamCompetitions, setTeamCompetitions] = useState<TeamCompetitionOption[]>([]);
   const [selectedTeamCompetitionId, setSelectedTeamCompetitionId] = useState('');
   const [teamCompetitionTeams, setTeamCompetitionTeams] = useState<TeamCompetitionTeam[]>([]);
+  const [publishingTeam, setPublishingTeam] = useState(false);
 
   const selectedTeamCompetition = useMemo(
-    () => teamCompetitions.find((item) => item.id === selectedTeamCompetitionId),
-    [teamCompetitions, selectedTeamCompetitionId],
+    () => teamCompetitions.find((item) => item.id === selectedTeamCompetitionId && item.tournamentId === selectedTournamentId),
+    [teamCompetitions, selectedTeamCompetitionId, selectedTournamentId],
   );
+  const hasTeamDraw = (selectedTeamCompetition?._count?.teamMatches ?? 0) > 0;
 
   const selectedEvent = useMemo(
     () => events.find((event) => event.id === selectedEventId),
@@ -740,10 +755,10 @@ export default function DrawsPage() {
   const hasOfficialQualifiers = isStandardSecondStageFormat && standardEligibleEntrants.length > 0;
   const secondStageCandidates = useMemo(() => {
     if (isStandardSecondStageFormat && standardEligibleEntrants.length > 0) {
-      return standardEligibleEntrants.map((entrant) => ({
-        value: entrant.playerId,
-        label: `${entrant.playerName ?? '待定'} · ${entrant.group ?? '-'}组第${entrant.rank ?? '-'}名`,
-      }));
+      return standardEligibleEntrants.map((entrant) => {
+        const sourceLabel = compactGroupRankLabel(`${entrant.group ?? '-'}组第${entrant.rank ?? '-'}名`);
+        return { value: entrant.playerId, label: `${entrant.playerName ?? '待定'} · ${sourceLabel}` };
+      });
     }
     return visibleRegistrations.map((registration) => ({
       value: registration.id,
@@ -757,13 +772,28 @@ export default function DrawsPage() {
   const canConfirmSecondStage = secondStageCandidates.length >= 2 && !tooManyStandardQualifiers;
   const standardSecondStageAutoText =
     (selectedEvent?.qualifiersPerGroup ?? 2) <= 1 ? '随机补齐' : '按组别交叉补齐';
+  const tomatoCrossDraft = useMemo(() => {
+    if (selectedEventId !== TOMATO_CUP_WOMENS_SINGLES_EVENT_ID || visibleBracket?.event.id !== selectedEventId) return null;
+    const stage = visibleBracket.secondStage;
+    if (!stage || stage.kind || stage.status === 'FINISHED' || stage.matches?.some((match) => match.status !== 'PENDING')) return null;
+
+    const entrants = new Map((stage.eligibleEntrants ?? []).map((entrant) => [`${entrant.group}:${entrant.rank}`, entrant.playerId]));
+    const slots = TOMATO_CUP_WOMENS_SINGLES_CROSS.map(([group, rank], index) => ({
+      slot: SECOND_STAGE_SLOT_CODES[index],
+      playerId: entrants.get(`${group}:${rank}`),
+      sourceLabel: `${group}组第${rank}名`,
+    }));
+    if (slots.some((slot) => !slot.playerId) || new Set(slots.map((slot) => slot.playerId)).size !== slots.length) return null;
+    const savedSlots = new Map((stage.slots ?? []).map((slot) => [slot.slot, slot.playerId]));
+    return { slots, pending: slots.some((slot) => savedSlots.get(slot.slot) !== slot.playerId) };
+  }, [selectedEventId, visibleBracket]);
   const slotSourceLabelMap = useMemo(() => {
     const map = new Map<string, string>();
-    for (const slot of visibleBracket?.secondStage?.slots ?? []) {
-      if (slot.sourceLabel) map.set(slot.slot, slot.sourceLabel);
+    for (const slot of tomatoCrossDraft?.slots ?? visibleBracket?.secondStage?.slots ?? []) {
+      if (slot.sourceLabel) map.set(slot.slot, compactGroupRankLabel(slot.sourceLabel));
     }
     return map;
-  }, [visibleBracket?.secondStage?.slots]);
+  }, [tomatoCrossDraft, visibleBracket?.secondStage?.slots]);
   const secondStageStatus = String(
     visibleBracket?.secondStage?.secondStageStatus ?? visibleBracket?.secondStage?.status ?? 'NOT_STARTED',
   ).toUpperCase();
@@ -895,6 +925,23 @@ export default function DrawsPage() {
     await loadTeamCompetitions(selectedTournamentId);
   }
 
+  async function toggleTeamPublication(publish: boolean) {
+    if (!token || !access.can('TEAMS') || !selectedTeamCompetition || publishingTeam || (publish && !hasTeamDraw)) return;
+    const id = selectedTeamCompetition.id;
+    setPublishingTeam(true);
+    try {
+      const saved = await apiFetch<{ isPublished: boolean }>(`/team-competitions/${id}`, {
+        token, method: 'PATCH', body: JSON.stringify({ isPublished: publish }),
+      });
+      setTeamCompetitions(items => items.map(item => item.id === id ? { ...item, isPublished: saved.isPublished } : item));
+      message.success(saved.isPublished ? '团体对阵已发布' : '团体对阵已取消公开');
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '更新团体对阵公开状态失败');
+    } finally {
+      setPublishingTeam(false);
+    }
+  }
+
   useEffect(() => {
     if (!token || !selectedEventId) return;
     let alive = true;
@@ -935,16 +982,16 @@ export default function DrawsPage() {
     const secondStage = visibleBracket?.secondStage;
     if (!secondStage) {
       secondStageForm.resetFields();
-      secondStageForm.setFieldsValue({ rankingMode: 'TOP_8' });
+      secondStageForm.setFieldsValue({ rankingLimit: SECOND_STAGE_MAX_RANK });
       return;
     }
     secondStageForm.setFieldsValue({
-      rankingMode: secondStage.rankingMode ?? 'TOP_8',
+      rankingLimit: secondStageRankingLimit(secondStage),
       slots: Object.fromEntries(
-        (secondStage.slots ?? []).map((slot) => [slot.slot, slot.playerId ?? undefined]),
+        (tomatoCrossDraft?.slots ?? secondStage.slots ?? []).map((slot) => [slot.slot, slot.playerId ?? undefined]),
       ),
     });
-  }, [secondStageForm, visibleBracket?.secondStage]);
+  }, [secondStageForm, tomatoCrossDraft, visibleBracket?.secondStage]);
 
   async function handleAddRegistration() {
     const values = await registrationForm.validateFields();
@@ -1124,19 +1171,21 @@ export default function DrawsPage() {
   }
 
   async function handleConfirmSecondStage() {
-    if (!token || !selectedEventId) return;
-    const values = await secondStageForm.validateFields();
+    if (!token || !selectedEventId || confirmingSecondStage) return;
+    const values = await secondStageForm.validateFields().catch(() => null);
+    if (!values) return;
     const slots = SECOND_STAGE_SLOT_CODES.map((slot) => {
       const value = values.slots?.[slot];
       // 留空或选“轮空”哨兵 → 该签位无选手（轮空）。
       return { slot, entrantId: value && value !== SECOND_STAGE_BYE ? value : null };
     });
+    setConfirmingSecondStage(true);
     try {
       await apiFetch(`/events/${selectedEventId}/second-stage/confirm`, {
         method: 'POST',
         token,
         body: JSON.stringify({
-          rankingMode: values.rankingMode ?? 'TOP_8',
+          rankingLimit: values.rankingLimit,
           slots,
         }),
       });
@@ -1150,6 +1199,8 @@ export default function DrawsPage() {
       );
     } catch (error) {
       message.error(error instanceof Error ? error.message : '第二阶段生成失败');
+    } finally {
+      setConfirmingSecondStage(false);
     }
   }
 
@@ -1238,9 +1289,9 @@ export default function DrawsPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 12, flexWrap: 'wrap' }}>
         <div>
           <Typography.Title level={4} style={{ margin: 0 }}>抽签编排</Typography.Title>
-          <Typography.Text type="secondary">抽签后可调整签位，确认无误后点击发布，公众才能看到对阵图。</Typography.Text>
+          <Typography.Text type="secondary">确认签位后，在对应的单项或团体赛栏目发布对阵。</Typography.Text>
         </div>
-        <Space wrap>
+        {events.length > 0 && <Space wrap>
           <Button icon={<ReloadOutlined />} onClick={refreshDraw} disabled={!selectedEventId}>
             刷新
           </Button>
@@ -1311,7 +1362,7 @@ export default function DrawsPage() {
               抽签
             </Button>
           )}
-        </Space>
+        </Space>}
       </div>
 
       <UnpaidNotice kind="event" id={selectedEventId || undefined} token={token} revision={registrations} />
@@ -1328,6 +1379,7 @@ export default function DrawsPage() {
               options={tournaments.map((t) => ({ value: t.id, label: t.name }))}
             />
           </Col>
+          {events.length > 0 && <>
           <Col xs={24} md={10}>
             <Select
               style={{ width: '100%' }}
@@ -1353,6 +1405,7 @@ export default function DrawsPage() {
               <Tag color="orange">未发布</Tag>
             )}
           </Col>
+          </>}
         </Row>
       </section>
 
@@ -1461,6 +1514,22 @@ export default function DrawsPage() {
                   label: `${item.name} · ${item._count?.teams ?? 0} 队`,
                 }))}
               />
+              {selectedTeamCompetition && <>
+                <Tag color={selectedTeamCompetition.isPublished ? 'green' : hasTeamDraw ? 'orange' : 'default'}>
+                  {selectedTeamCompetition.isPublished ? '团体对阵已发布' : hasTeamDraw ? '团体对阵未发布' : '团体赛未编排'}
+                </Tag>
+                {selectedTeamCompetition.isPublished ? <>
+                  <Button href={`/competitions/${encodeURIComponent(selectedTournamentId)}/brackets`} target="_blank" rel="noreferrer">查看公开签表</Button>
+                  <Popconfirm title="取消公开团体对阵？" description="前台将隐藏这项团体赛的签表和比分。" onConfirm={() => toggleTeamPublication(false)}>
+                    <Button icon={<EyeInvisibleOutlined />} loading={publishingTeam} disabled={!token || !access.can('TEAMS')}>取消公开</Button>
+                  </Popconfirm>
+                </> : (
+                  <Button type="primary" icon={<CheckCircleOutlined />} loading={publishingTeam}
+                    disabled={!token || !hasTeamDraw || !access.can('TEAMS')} onClick={() => toggleTeamPublication(true)}>
+                    发布团体对阵
+                  </Button>
+                )}
+              </>}
               <Typography.Text type="secondary">
                 {selectedTeamCompetition?.format === 'ROUND_ROBIN'
                   ? '全部队伍在同一组，每两队交手一次。自动排程后，可在下方对阵表手工调整场地与时间，保留的空闲场地也可使用。'
@@ -1480,7 +1549,7 @@ export default function DrawsPage() {
                 token={token}
                 teams={teamCompetitionTeams}
                 format={selectedTeamCompetition.format}
-                hasDraw={(selectedTeamCompetition._count?.teamMatches ?? 0) > 0}
+                hasDraw={hasTeamDraw}
                 onChanged={refreshTeamCompetition}
                 showDraw
               />
@@ -1547,7 +1616,7 @@ export default function DrawsPage() {
         </section>
       )}
 
-      <Spin spinning={loading}>
+      {events.length > 0 && <Spin spinning={loading}>
         <Row gutter={[16, 16]}>
           <Col span={24}>
             <section
@@ -1626,7 +1695,11 @@ export default function DrawsPage() {
                   description="小组赛全部结束后，系统按官方名次自动生成淘汰赛：轮空优先给小组第一，同组第一、第二分在上下半区。抽签后可在上方「淘汰赛对阵（预览）」查看签表；前台对阵表、秩序册使用同一份签表。"
                 />
               )}
-              {isSecondStageFormat && !standardAutoKnockout && (
+              {visibleBracket?.secondStage?.kind === 'KNOCKOUT_PLACEMENT' && (
+                <SecondStageBracket data={visibleBracket.secondStage} showSchedule />
+              )}
+
+              {isSecondStageFormat && !standardAutoKnockout && visibleBracket?.secondStage?.kind !== 'KNOCKOUT_PLACEMENT' && (
                 <section style={{ border: '1px solid #d9f7be', borderRadius: 8, padding: 16, background: '#fff' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12, flexWrap: 'wrap' }}>
                     <div>
@@ -1639,7 +1712,7 @@ export default function DrawsPage() {
                           : '分组方式：裁判手动指定；签位来源：组委会手动安排。'}
                       </Typography.Text>
                     </div>
-                    <Button type="primary" icon={<TrophyOutlined />} onClick={handleConfirmSecondStage} disabled={!selectedEventId || !canConfirmSecondStage}>
+                    <Button type="primary" icon={<TrophyOutlined />} onClick={handleConfirmSecondStage} loading={confirmingSecondStage} disabled={!selectedEventId || !canConfirmSecondStage}>
                       确认生成第二阶段
                     </Button>
                   </div>
@@ -1648,24 +1721,24 @@ export default function DrawsPage() {
                     showIcon
                     style={{ marginBottom: 12 }}
                     message={
-                      isStandardSecondStageFormat
+                      tomatoCrossDraft
+                        ? tomatoCrossDraft.pending ? 'A/C、B/D 交叉签位已预填，待人工确认' : 'A/C、B/D 交叉签位'
+                        : isStandardSecondStageFormat
                         ? `可手动指定 A-H；不指定时${standardSecondStageAutoText}`
                         : '请手动指定 A-H 签位（可留空＝轮空）'
                     }
                     description={
-                      isStandardSecondStageFormat
-                        ? '取每组第一时随机排入 A-H；取每组前二时按 A组第一 vs B组第二、A组第二 vs B组第一 这类交叉规则生成。首轮负者进入 5-8 名争夺区；排名范围可设置为取前6名或取前8名。'
-                        : '确认后会生成 A vs B、C vs D、E vs F、G vs H，并按 TOP_6 / TOP_8 自动准备后续排位赛。签位可留空或选“轮空”（至少需 2 名选手），轮空位的对手不战自动晋级。重新抽签会清空已指定的 A-H 签位，需重新指定。'
+                      tomatoCrossDraft
+                        ? '首轮为 A1 对 C2、C1 对 A2、B1 对 D2、D1 对 B2。下方对阵图显示当前正式签表。'
+                        : isStandardSecondStageFormat
+                        ? '取每组第一时随机排入 A-H；取每组前二时交叉排入 A-H，例如 A 组第一对 B 组第二。'
+                        : '确认后会生成 A vs B、C vs D、E vs F、G vs H。签位可留空或选“轮空”（至少需 2 名选手）。重新抽签后需重新指定签位。'
                     }
                   />
-                  <Form form={secondStageForm} layout="vertical" initialValues={{ rankingMode: 'TOP_8' }}>
-                    <Form.Item name="rankingMode" label="排名范围" rules={[{ required: true, message: '请选择排名范围' }]}>
-                      <Select
-                        options={[
-                          { value: 'TOP_8', label: '取前8名' },
-                          { value: 'TOP_6', label: '取前6名' },
-                        ]}
-                      />
+                  <Form form={secondStageForm} layout="vertical" initialValues={{ rankingLimit: SECOND_STAGE_MAX_RANK }}>
+                    <Form.Item name="rankingLimit" label="取前几名" extra="按输入名次生成所需排位赛，比赛开打后不可重新生成。"
+                      rules={[{ required: true, type: 'integer', min: 1, max: SECOND_STAGE_MAX_RANK, message: '请输入 1 到 8 的整数' }]}>
+                      <InputNumber min={1} max={SECOND_STAGE_MAX_RANK} step={1} style={{ width: 120 }} />
                     </Form.Item>
                     <Row gutter={[12, 0]}>
                       {SECOND_STAGE_SLOT_CODES.map((slot) => (
@@ -1695,7 +1768,10 @@ export default function DrawsPage() {
                   </Form>
                   {visibleBracket?.secondStage ? (
                     <div style={{ marginTop: 8 }}>
-                      <SecondStageBracket data={visibleBracket.secondStage} />
+                      <SecondStageBracket showSchedule data={secondStageConfirmed || !Number.isInteger(draftRankingLimit)
+                        || draftRankingLimit < 1 || draftRankingLimit > SECOND_STAGE_MAX_RANK
+                        ? visibleBracket.secondStage
+                        : { ...visibleBracket.secondStage, rankingLimit: draftRankingLimit }} />
                       <Alert
                         type={secondStageConfirmed ? 'success' : 'warning'}
                         showIcon
@@ -1714,7 +1790,7 @@ export default function DrawsPage() {
             </Space>
           </Col>
         </Row>
-      </Spin>
+      </Spin>}
 
       <DrawSwapModal
         open={swapEventOpen}

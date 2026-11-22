@@ -1,6 +1,61 @@
 import { PrismaService } from '../prisma/prisma.service';
 import { TeamCompetitionsService } from './team-competitions.service';
-import { Prisma } from '@prisma/client';
+import { Prisma, Role } from '@prisma/client';
+import type { AuthActor } from '../auth/admin-scope';
+
+describe('team scoring for parallel timeslots', () => {
+  const start = new Date('2026-12-05T08:00:00.000Z');
+  const items = [
+    { id: 'first', matchNo: 1, scheduledAt: start, venueId: 'court1', scheduleLocked: true, status: 'PENDING' },
+    { id: 'parallel', matchNo: 5, scheduledAt: start, venueId: 'court2', scheduleLocked: true, status: 'PENDING' },
+    { id: 'later', matchNo: 2, scheduledAt: new Date('2026-12-05T08:25:00.000Z'), venueId: 'court1', scheduleLocked: true, status: 'PENDING' },
+  ];
+
+  function setup(matches: typeof items) {
+    const tx = { match: { findUniqueOrThrow: jest.fn().mockImplementation(({ where }) => ({
+      ...matches.find(match => match.id === where.id), lineupLocked: true, side1Id: 's1', side2Id: 's2',
+      teamMatch: { matches, status: 'PENDING' },
+    })) } };
+    const service = new TeamCompetitionsService(tx as unknown as PrismaService);
+    jest.spyOn(service, 'lockScoringMatch').mockResolvedValue({ teamMatchId: 'encounter', eventId: null, teamMatch: { teamCompetitionId: 'comp1' } });
+    return (id: string) => service.prepareScoring(tx as unknown as Prisma.TransactionClient, id, { starting: true });
+  }
+
+  it('allows both fixed courts to begin the same slot, then waits for both before the next slot', async () => {
+    const startMatch = setup(items);
+    await expect(startMatch('parallel')).resolves.toBeUndefined();
+    await expect(startMatch('later')).rejects.toThrow('请先完成更早时段的子项');
+    const finished = items.map(item => item.id === 'later' ? item : { ...item, status: 'COMPLETED' });
+    await expect(setup(finished)('later')).resolves.toBeUndefined();
+  });
+
+  it('keeps item order for team fixtures without a fixed parallel slot', async () => {
+    const sameCourt = items.map(item => ({ ...item, venueId: 'court1' }));
+    await expect(setup(sameCourt)('parallel')).rejects.toThrow('请按项目顺序比赛');
+  });
+
+  it('rejects a player named in both items of the same parallel slot', async () => {
+    const matches = items.slice(0, 2).map((item, index) => ({ ...item, games: [],
+      teamCompetitionItemId: `item${index + 1}`, teamCompetitionItem: { eventType: 'MENS_DOUBLES' },
+    }));
+    const encounter = { status: 'PENDING', team1Id: 'a', team2Id: 'b', matches,
+      lineups: [{ teamId: 'a', teamCompetitionItemId: 'item1', player1Id: 'p1', player2Id: 'p2' }],
+      teamCompetition: { maxPlayerAppearances: 2 },
+    };
+    const upsert = jest.fn();
+    const tx = { $queryRaw: jest.fn(), teamMatch: { findUnique: jest.fn().mockResolvedValue(encounter) },
+      teamMember: { findMany: jest.fn().mockResolvedValue(['p1', 'p2', 'p3'].map(playerId => ({
+        teamId: 'a', playerId, player: { gender: 'MALE' },
+      }))) },
+      teamLineup: { upsert },
+    };
+    const db = { $transaction: jest.fn().mockImplementation(fn => fn(tx)) };
+    const service = new TeamCompetitionsService(db as unknown as PrismaService);
+    await expect(service.setTeamLineups('encounter', { selections: [{ teamId: 'a', teamCompetitionItemId: 'item2', player1Id: 'p1', player2Id: 'p3' }] }))
+      .rejects.toThrow('同一选手不能参加同一时段');
+    expect(upsert).not.toHaveBeenCalled();
+  });
+});
 
 describe('TeamCompetitionsService draw view', () => {
   function setup() {
@@ -394,5 +449,51 @@ describe('团体赛出场项目：最多 7 项，同一项目可以重复', () =
     expect(ok.filter((error) => error.property === 'items')).toHaveLength(0);
     const tooMany = await validate(plainToInstance(UpdateTeamCompetitionDto, { items: items(8) }));
     expect(tooMany.find((error) => error.property === 'items')?.constraints).toHaveProperty('arrayMaxSize');
+  });
+});
+
+describe('团体赛建队候选取自选手库', () => {
+  const admin: AuthActor = { id: 'admin1', role: Role.ADMIN };
+  const root: AuthActor = { id: 'root1', role: Role.ROOT };
+
+  function setup(registered: Array<{ player1Id: string; player2Id: string | null }> = []) {
+    const prisma = {
+      teamCompetition: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'comp1', tournamentId: 'tour1', groupId: 'group1', entrantType: 'SCHOOL', items: [],
+        }),
+      },
+      registration: { findMany: jest.fn().mockResolvedValue(registered) },
+      player: { findMany: jest.fn().mockResolvedValue([{ id: 'p9', name: '赵二', gender: 'MALE', affiliation: '翎一' }]) },
+    };
+    const service = new TeamCompetitionsService(prisma as unknown as PrismaService);
+    return { prisma, service };
+  }
+
+  it('组内还没有报名时，选手管理里新加的选手也能选到', async () => {
+    const { prisma, service } = setup();
+    await service.availablePlayers('comp1', admin);
+    expect(prisma.player.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { isTemporary: false, ownerId: 'admin1' },
+    }));
+  });
+
+  it('本组已通过报名的选手也会列出来，即使不是当前管理员添加的', async () => {
+    const { prisma, service } = setup([
+      { player1Id: 'p1', player2Id: null },
+      { player1Id: 'p2', player2Id: 'p3' },
+    ]);
+    await service.availablePlayers('comp1', admin);
+    expect(prisma.player.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { isTemporary: false, OR: [{ ownerId: 'admin1' }, { id: { in: ['p1', 'p2', 'p3'] } }] },
+    }));
+  });
+
+  it('超级管理员看到整个非临时选手库', async () => {
+    const { prisma, service } = setup();
+    await service.availablePlayers('comp1', root);
+    expect(prisma.player.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { isTemporary: false },
+    }));
   });
 });

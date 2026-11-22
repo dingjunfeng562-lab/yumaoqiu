@@ -1,9 +1,11 @@
 'use client';
 
 import { Fragment, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import Image from 'next/image';
 import { io } from 'socket.io-client';
 import { useSession } from 'next-auth/react';
 import { SettingOutlined } from '@ant-design/icons';
+import { placementFinalTitle } from '@/lib/match-display';
 import { GROUP_EVENT_OPTIONS } from '@/lib/registration-groups';
 import { defaultScreenSettings, readLocalScreenSettings, SCREEN_FONT_BOOST, screenCardFontScale, screenCardHeight, screenCardWidth, screenLayout, type BoardViewport, type ScreenSettings } from '@/lib/screen-settings';
 import { TournamentScreenSettings } from './TournamentScreenSettings';
@@ -15,6 +17,8 @@ type Side = { players: { name: string; affiliation: string }[]; teamName: string
 type Game = { gameNo: number; side1Score: number; side2Score: number; winnerSide: number | null };
 type ScreenMatch = {
   id: string; status: 'LIVE' | 'PENDING'; gamesToWin: number;
+  round?: string | null;
+  roundNo?: number | null;
   eventType: string | null;
   groupName?: string | null;
   side1: Side; side2: Side; games: Game[]; currentGame: Game | null;
@@ -93,8 +97,9 @@ function CourtCard({ id, children }: { id: string; children: ReactNode }) {
     if (!viewport || !content) return;
     let frame = 0;
     const fit = () => {
-      const scale = Math.min(1, viewport.clientWidth / Math.max(1, content.scrollWidth), viewport.clientHeight / Math.max(1, content.scrollHeight));
-      content.style.transform = `translateX(${viewport.clientWidth * (1 - scale) / 2}px) scale(${scale})`;
+      const width = Math.max(1, content.scrollWidth);
+      const scale = Math.min(1, viewport.clientWidth / width, viewport.clientHeight / Math.max(1, content.scrollHeight));
+      content.style.transform = `translateX(${(viewport.clientWidth - width * scale) / 2}px) scale(${scale})`;
     };
     const schedule = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(fit); };
     const observer = new ResizeObserver(schedule);
@@ -119,7 +124,7 @@ function SideRow({ side, score, gameWins, fontScale }: { side: Side; score: numb
           <Affiliation name={player.affiliation || side.teamName || '—'} fontScale={fontScale} />
           <strong className={styles.name}>{player.name}</strong>
         </Fragment>
-      )) : <strong className={styles.undecided}>选手待定</strong>}
+      )) : <strong className={styles.undecided}>{side.teamName ?? '选手待定'}</strong>}
       {/* 小比分（局分）只在打三局两胜这类需要看局数的比赛里显示；单局决胜或还没开赛时不显示占位的「—」。 */}
       {gameWins === null ? null : (
         <strong className={styles.matchScore} style={{ gridRow: `1 / span ${rows}` }}>{gameWins}</strong>
@@ -149,9 +154,11 @@ export function TournamentScreen({ tournamentId }: { tournamentId: string }) {
   const gridRef = useRef<HTMLElement>(null);
   const titleViewportRef = useRef<HTMLDivElement>(null);
   const titleRef = useRef<HTMLHeadingElement>(null);
+  const settingsRevision = useRef(0);
   const [localSettings, setLocalSettings] = useState(() => readLocalScreenSettings(tournamentId));
   const [draftSettings, setDraftSettings] = useState<ScreenSettings | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsRevealed, setSettingsRevealed] = useState(false);
   const count = data?.courts.length ?? 0;
   const displaySettings = draftSettings ?? localSettings ?? data?.settings;
   // Measured board area. Until the first measurement the layout falls back to
@@ -161,7 +168,7 @@ export function TournamentScreen({ tournamentId }: { tournamentId: string }) {
   const requestedScale = (displaySettings?.scale ?? 100) / 100;
   const cardWidth = screenCardWidth(count, displaySettings);
   const cardHeight = screenCardHeight(count, displaySettings);
-  const cardFontScale = screenCardFontScale(count, displaySettings);
+  const cardFontScale = screenCardFontScale(displaySettings);
   // Effective zoom applied to the complete board, surfaced in the settings panel.
   const [fitPercent, setFitPercent] = useState<number | null>(null);
 
@@ -182,20 +189,18 @@ export function TournamentScreen({ tournamentId }: { tournamentId: string }) {
     return () => { cancelAnimationFrame(frame); observer.disconnect(); };
   }, []);
 
-  function closeSettings() { setSettingsOpen(false); setDraftSettings(null); }
+  function closeSettings() { setSettingsOpen(false); setSettingsRevealed(false); setDraftSettings(null); }
   function saveLocally(settings: ScreenSettings) {
     try { localStorage.setItem(`tournament-screen:${tournamentId}`, JSON.stringify(settings)); }
     catch { /* Storage unavailable: the draft still drives this screen until reload. */ }
     setLocalSettings(settings);
   }
   function saveSettings(settings: ScreenSettings) {
-    if (settingsToken) {
-      setData((current) => current && { ...current, settings });
-      setLocalSettings(null);
-      try { localStorage.removeItem(`tournament-screen:${tournamentId}`); } catch { /* Server save succeeded. */ }
-    } else {
-      saveLocally(settings);
-    }
+    settingsRevision.current += 1;
+    setData((current) => current && { ...current, settings });
+    setDraftSettings((current) => current && settings);
+    setLocalSettings(null);
+    try { localStorage.removeItem(`tournament-screen:${tournamentId}`); } catch { /* Server save succeeded. */ }
   }
 
   useEffect(() => {
@@ -261,6 +266,7 @@ export function TournamentScreen({ tournamentId }: { tournamentId: string }) {
       if (disposed) return;
       if (inFlight) { queued = true; return; }
       inFlight = true;
+      const revision = settingsRevision.current;
       controller = new AbortController();
       const timeout = setTimeout(() => controller?.abort(), 10000);
       try {
@@ -273,7 +279,11 @@ export function TournamentScreen({ tournamentId }: { tournamentId: string }) {
         }
         if (!response.ok) throw new Error('refresh failed');
         const next = await response.json() as ScreenData;
-        if (!disposed) { setData(next); setError(''); }
+        if (!disposed) {
+          // A poll started before a settings save can still return the old layout.
+          setData((current) => revision === settingsRevision.current ? next : { ...next, settings: current?.settings });
+          setError('');
+        }
       } catch {
         if (!disposed) setError('连接中断，正在重试；当前比分可能已过期');
       } finally {
@@ -326,8 +336,19 @@ export function TournamentScreen({ tournamentId }: { tournamentId: string }) {
   return (
     <main className={styles.screen} data-settings-open={settingsOpen} data-crowded={count > 6} style={{ '--boundary-padding': `${displaySettings?.boundaryPadding ?? 0}px`, '--font-boost': SCREEN_FONT_BOOST } as CSSProperties}>
       <header className={styles.header}>
-        <div ref={titleViewportRef} className={styles.titleViewport}>
-          <h1 ref={titleRef} style={data && displaySettings ? { fontSize: displaySettings.titleFontSize } : undefined}>{data?.tournament.name ?? (error ? '赛事大屏暂不可用' : '正在加载赛事…')}</h1>
+        <div className={styles.titleRow}>
+          <Image
+            src="/tournament-screen-logo-v3.png"
+            width={1536}
+            height={1024}
+            sizes="clamp(116px, min(21vw, 21dvh), 264px)"
+            loading="eager"
+            alt="羽动云赛比赛系统"
+            className={styles.logo}
+          />
+          <div ref={titleViewportRef} className={styles.titleViewport}>
+            <h1 ref={titleRef} style={data && displaySettings ? { fontSize: displaySettings.titleFontSize } : undefined}>{data?.tournament.name ?? (error ? '赛事大屏暂不可用' : '正在加载赛事…')}</h1>
+          </div>
         </div>
         <div className={styles.toolbar}>
           <span className={error ? styles.warning : styles.sync} role="status">
@@ -349,6 +370,7 @@ export function TournamentScreen({ tournamentId }: { tournamentId: string }) {
           {data.courts.map((court) => {
             const match = court.match;
             const live = match?.status === 'LIVE';
+            const placementTitle = placementFinalTitle(match?.round, match?.roundNo);
             const showMatchScore = match?.gamesToWin === 2;
             const side1Wins = match?.games.filter((game) => game.winnerSide === 1).length ?? 0;
             const side2Wins = match?.games.filter((game) => game.winnerSide === 2).length ?? 0;
@@ -356,9 +378,10 @@ export function TournamentScreen({ tournamentId }: { tournamentId: string }) {
               <CourtCard key={court.id} id={court.id}>
                 <div className={styles.courtHeader}>
                   <h2>{court.name}</h2>
-                  {match && <p className={styles.eventType}>
-                    {[match.groupName, GROUP_EVENT_OPTIONS.find((event) => event.value === match.eventType)?.label ?? '待定'].filter(Boolean).join(' ')}
-                  </p>}
+                  {match && <div className={styles.eventType}>
+                    <p>{[match.groupName, GROUP_EVENT_OPTIONS.find((event) => event.value === match.eventType)?.label ?? '待定'].filter(Boolean).join(' ')}</p>
+                    {placementTitle && <p className={styles.placementRound}>{placementTitle}</p>}
+                  </div>}
                 </div>
                 {match && <div className={styles.sides}>
                   <SideRow side={match.side1} score={live ? match.currentGame?.side1Score ?? 0 : 0} gameWins={showMatchScore ? side1Wins : null} fontScale={cardFontScale} />
@@ -371,10 +394,14 @@ export function TournamentScreen({ tournamentId }: { tournamentId: string }) {
         </div>
       ) : <div className={styles.empty}>{data ? '暂未设置比赛场地' : error || '正在读取场地与比分'}</div>}
       {data && <>
-        <div className={styles.settingsCorner}>
+        <div className={styles.settingsCorner} data-revealed={settingsRevealed || settingsOpen}>
           <button className={styles.settingsTrigger} type="button" aria-label="打开大屏设置" aria-expanded={settingsOpen}
             onClick={(event) => {
               event.currentTarget.blur();
+              if (!settingsOpen && !settingsRevealed && event.detail > 0 && window.matchMedia('(hover: none)').matches) {
+                setSettingsRevealed(true);
+                return;
+              }
               if (settingsOpen) closeSettings();
               else { setDraftSettings(displaySettings ?? defaultScreenSettings(count, viewport)); setSettingsOpen(true); }
             }}

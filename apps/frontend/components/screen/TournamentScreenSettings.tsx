@@ -17,7 +17,6 @@ export function TournamentScreenSettings({ tournamentId, settings, defaults, cou
   token?: string;
   onChange: (settings: ScreenSettings) => void;
   onSaved: (settings: ScreenSettings) => void;
-  /** Used when the server refuses to store the layout for this tournament. */
   onSavedLocally: (settings: ScreenSettings) => void;
   onClose: () => void;
 }) {
@@ -30,10 +29,14 @@ export function TournamentScreenSettings({ tournamentId, settings, defaults, cou
     setSaving(true);
     setFeedback(null);
     try {
-      if (token) await apiFetch('/tournaments/' + encodeURIComponent(tournamentId) + '/screen-settings', {
-        token, method: 'PATCH', body: JSON.stringify(settings), redirectOnForbidden: false,
-      });
-      onSaved(settings);
+      if (token) {
+        const saved = await apiFetch<{ settings: ScreenSettings }>('/tournaments/' + encodeURIComponent(tournamentId) + '/screen-settings', {
+          token, method: 'PATCH', body: JSON.stringify(settings), redirectOnForbidden: false,
+        });
+        onSaved(saved.settings);
+      } else {
+        onSavedLocally(settings);
+      }
       setFeedback({ error: false, text: token ? '已保存为赛事设置' : '已保存在当前浏览器' });
     } catch (reason) {
       const status = (reason as { status?: number } | null)?.status;
@@ -102,14 +105,14 @@ export function TournamentScreenSettings({ tournamentId, settings, defaults, cou
         </Form.Item>
         <Form.Item label="卡片内字体大小（%）">
           <div className={styles.settingsSlider}>
-            <Slider min={50} max={200} value={screenCardFontScale(courtCount, settings)} onChange={(value) => update('cardFontScale', value)} />
-            <InputNumber aria-label="卡片内字体大小" min={50} max={200} precision={0} value={screenCardFontScale(courtCount, settings)} onChange={(value) => update('cardFontScale', value)} />
+            <Slider min={50} max={200} value={screenCardFontScale(settings)} onChange={(value) => update('cardFontScale', value)} />
+            <InputNumber aria-label="卡片内字体大小" min={50} max={200} precision={0} value={screenCardFontScale(settings)} onChange={(value) => update('cardFontScale', value)} />
           </div>
         </Form.Item>
       </Form>
       {suggestWider && <div className={styles.settingsSuggestion}>
         <span>当前屏幕每行最多可放宽到 {widest.columns} 块，画面可再放大约 {gain}%。</span>
-        <Button size="small" disabled={saving} onClick={() => { onChange({ ...settings, columns: widest.columns, rows: widest.rows }); setFeedback(null); }}>用建议值</Button>
+        <Button size="small" disabled={saving} onClick={() => { onChange({ ...settings, columns: widest.columns, rows: Math.min(widest.rows, MAX_SCREEN_COLUMNS) }); setFeedback(null); }}>用建议值</Button>
       </div>}
       <p className={styles.settingsHint}>共 {courtCount} 块场地 · 自动排列 {layout.columns} 列 × {layout.rows} 行{fitPercent !== null && <> · 当前缩放 {fitPercent}%</>}。卡片宽高固定，内部字体单独调节；文字较多时自动缩小内容避免越界。</p>
       {crowded && <Alert type="warning" title={`场地较多，比分板已自动缩放到 ${fitPercent}%，以保证全部 ${courtCount} 块场地同屏显示。可放宽“每行最多场地数”，或调小“赛事名称字号”为场地留出更多高度。`} style={{ marginBottom: 12 }} />}

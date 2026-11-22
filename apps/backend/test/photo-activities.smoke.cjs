@@ -61,6 +61,7 @@ async function main() {
     const admin = await request(root, 'POST', '/auth/users/admin', credentials('admin'), 201);
     const otherAdmin = await request(root, 'POST', '/auth/users/admin', credentials('other'), 201);
     const photographer = await request(root, 'POST', '/auth/users/photographer', credentials('photo'), 201);
+    const player = await request(root, 'POST', '/auth/users/player', credentials('player'), 201);
     const tournament = await db.tournament.create({
       data: { name: `${prefix}授权赛事`, startDate: new Date('2026-10-05T00:00:00.000Z'), endDate: new Date('2026-10-06T00:00:00.000Z'), approvalStatus: 'APPROVED', submittedById: root.id },
     });
@@ -73,9 +74,14 @@ async function main() {
       title: `${prefix}管理员活动`, dateMode: 'RANGE', startAt: '2026-10-06T01:02:03.000Z', endAt: '2026-10-07T04:05:06.000Z', cover: new Blob([png], { type: 'image/png' }),
     });
     assert.equal(adminActivity.approvalStatus, 'PENDING');
+    await request(admin, 'POST', `/admin/photo-activities/${adminActivity.id}/photo-access`, {}, 403);
+    const application = await request(admin, 'POST', '/auth/photo-management-access', {
+      targetType: 'ACTIVITY', targetId: adminActivity.id, purpose: '图片管理测试',
+    }, 201);
+    await request(root, 'PATCH', `/auth/photo-management-access/requests/${application.id}`, { decision: 'approve' });
     await request(admin, 'POST', `/admin/photo-activities/${adminActivity.id}/photo-access`, {}, 400);
     await request(admin, 'PATCH', `/admin/photo-activities/${adminActivity.id}/approve`, {}, 403);
-    await request(otherAdmin, 'GET', `/admin/photo-activities/${adminActivity.id}`, undefined, 404);
+    await request(otherAdmin, 'GET', `/admin/photo-activities/${adminActivity.id}`, undefined, 403);
     assert.deepEqual((await request(admin, 'GET', '/admin/photo-activities')).map((item) => item.id), [adminActivity.id]);
     assert((await request(root, 'GET', '/admin/photo-activities')).some((item) => item.id === adminActivity.id));
     await request(root, 'PATCH', `/admin/photo-activities/${adminActivity.id}/approve`, {});
@@ -85,7 +91,7 @@ async function main() {
     assert.deepEqual(await request(photographer, 'GET', '/photographer/targets'), []);
     await multipart(photographer, 'POST', '/photographer/upload', { targetType: 'ACTIVITY', targetId: adminActivity.id, category: 'MATCH', photos: new Blob([png], { type: 'image/png' }) }, 403);
     const activityUploadAccess = await request(admin, 'POST', `/admin/photo-activities/${adminActivity.id}/photo-upload-access`, {}, 201);
-    await request(admin, 'POST', `/photographer/upload-access/${activityUploadAccess.token}`, {}, 403);
+    await request(player, 'POST', `/photographer/upload-access/${activityUploadAccess.token}`, {}, 403);
     await request(photographer, 'POST', `/photographer/upload-access/${activityUploadAccess.token}`, {}, 201);
     const authorizedActivityTargets = await request(photographer, 'GET', '/photographer/targets');
     assert(authorizedActivityTargets.some((item) => item.targetType === 'ACTIVITY' && item.id === adminActivity.id));
@@ -155,8 +161,8 @@ async function main() {
     assert.equal(publicPhotos.items.length, 2);
     const adminPhotos = await request(admin, 'GET', `/admin/photos?activityId=${adminActivity.id}`);
     assert.equal(adminPhotos.items.length, 2);
-    await request(otherAdmin, 'GET', `/admin/photos?activityId=${adminActivity.id}`, undefined, 200).then((page) => assert.equal(page.items.length, 0));
-    await request(otherAdmin, 'DELETE', `/admin/photos/${adminPhotos.items[0].id}`, undefined, 404);
+    await request(otherAdmin, 'GET', `/admin/photos?activityId=${adminActivity.id}`, undefined, 403);
+    await request(otherAdmin, 'DELETE', `/admin/photos/${adminPhotos.items[0].id}`, undefined, 403);
     assert.equal(moderationCalls, 6, 'covers, logo and all uploaded photos must use AI moderation');
 
     const deletableActivity = await multipart(root, 'POST', '/admin/photo-activities', {
@@ -289,6 +295,7 @@ async function main() {
     }
     await db.photoActivity.deleteMany({ where: { title: { startsWith: prefix } } });
     await db.tournament.deleteMany({ where: { name: { startsWith: prefix } } });
+    await db.photoManagementRequest.deleteMany({ where: { applicantName: { startsWith: prefix } } });
     await db.user.deleteMany({ where: { username: { startsWith: prefix } } });
     await db.$disconnect();
     paths.forEach((path) => { if (existsSync(path)) rmSync(path, { recursive: true, force: true }); });

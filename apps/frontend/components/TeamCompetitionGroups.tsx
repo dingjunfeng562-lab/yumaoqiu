@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Alert, Button, Card, Checkbox, DatePicker, Empty, Form, Modal, Select, Space, Table, Tag, Typography, message } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { apiFetch } from '@/lib/api';
+import { isTeamGroupKnockout, TEAM_GROUP_KNOCKOUT_2023 } from '@/lib/team-competition-format';
 import { useCurrentAccess } from '@/lib/use-current-role';
 import { teamFormatLabel } from './TeamCompetitionFields';
 import TeamDrawActions from './TeamDrawActions';
@@ -121,7 +122,7 @@ export default function TeamCompetitionGroups({ competitionId, token, teams, for
     const payload = groups.map(group => ({ groupNo: group.groupNo, teamIds: teams.filter(team => assignments[team.id] === group.groupNo).map(team => team.id) }));
     if (teams.some(team => !assignments[team.id])) { message.error('请为所有队伍选择小组'); return; }
     if (payload.some(group => group.teamIds.length < 2)) { message.error('每组至少需要 2 支队伍'); return; }
-    if (format === 'GROUP_PLUS_KNOCKOUT' && payload.some(group => group.teamIds.length < (data?.competition.advancePerGroup ?? 2))) { message.error('每组队数不能少于晋级队数'); return; }
+    if (isTeamGroupKnockout(format) && payload.some(group => group.teamIds.length < (data?.competition.advancePerGroup ?? 2))) { message.error('每组队数不能少于晋级队数'); return; }
     Modal.confirm({ title: '保存分组并重新生成小组对阵？', content: '现有小组对阵和赛前名单将重建。已有比赛开赛时，服务器会拒绝调整。', okText: '保存并重新生成', cancelText: '取消', onOk: () => run('groups/adjust', { groups: payload }, '分组已保存，小组对阵已重新生成', 'PATCH') });
   }
   async function openSchedule(encounter: TeamEncounter) {
@@ -160,7 +161,7 @@ export default function TeamCompetitionGroups({ competitionId, token, teams, for
   </Space></div>}>
     {showDraw && hasDraw && <div style={{ marginBottom: 16 }}><TeamDrawActions key={competitionId} competitionId={competitionId} token={token} hasDraw={hasDraw} disabled={busy} revision={data} onChanged={async () => { await onChanged(); await load(); }} /></div>}
     {error && <Alert type="error" showIcon title={error} style={{ marginBottom: 12 }} />}
-    {isGroup && <Alert type="info" showIcon title={`${teamFormatLabel(format)} · ${data?.competition.groupCount ?? groups.length} 组${format === 'GROUP_PLUS_KNOCKOUT' ? ` · 每组晋级 ${data?.competition.advancePerGroup ?? 2} 队` : ''}`} description={format === 'ROUND_ROBIN' ? '全部团体在同一组，每两队交手一次，全部打完即结束比赛并确定各队名次。胜场为赢下的团体对阵数；胜次为正式子项获胜数；净胜分为正式子项每局得分减失分的合计。排名依次比较胜场、胜次、净胜分、两队相互胜负；仍无法区分时并列。各子项双方名单填齐并锁定后，才会显示在裁判端。' : '排名依次比较胜场（赢下团体对阵数）、胜次（正式子项获胜数）、净胜分（正式子项逐局得分减失分的合计）；仍相同时比较同分队之间的相互战绩（两队即交手胜负，三队及以上只统计这几队之间的对阵），再比较负次。补打不计入胜次和净胜分。'} style={{ marginBottom: 16 }} />}
+    {isGroup && <Alert type="info" showIcon title={`${teamFormatLabel(format)} · ${data?.competition.groupCount ?? groups.length} 组${isTeamGroupKnockout(format) ? ` · 每组晋级 ${data?.competition.advancePerGroup ?? 2} 队` : ''}`} description={format === 'ROUND_ROBIN' ? '全部团体在同一组，每两队交手一次，全部打完即结束比赛并确定各队名次。胜场为赢下的团体对阵数；胜次为正式子项获胜数；净胜分为正式子项每局得分减失分的合计。排名依次比较胜场、胜次、净胜分、两队相互胜负；仍无法区分时并列。各子项双方名单填齐并锁定后，才会显示在裁判端。' : format === TEAM_GROUP_KNOCKOUT_2023 ? '先比较团体胜场。两队同分时看交手胜负。三队及以上同分时，依次比较净胜场、净胜子项、净胜局、净胜分，每一步若只剩两队同分即看交手胜负。仍同分时系统抽签。补打不计入排名。' : '排名依次比较胜场（赢下团体对阵数）、胜次（正式子项获胜数）、净胜分（正式子项逐局得分减失分的合计）；仍相同时比较同分队之间的相互战绩（两队即交手胜负，三队及以上只统计这几队之间的对阵），再比较负次。补打不计入胜次和净胜分。'} style={{ marginBottom: 16 }} />}
     {isGroup && <Alert type="success" showIcon title="每个子项的出场名单和每局比分都会显示在对阵下方，比赛进行中自动刷新。" description={`先赢 ${data?.competition.winThreshold ?? '规定'} 场时即计入胜场和排名；胜次、净胜分只统计到胜负确定的那一场，之后的补打只保留比分，不计排名。`} style={{ marginBottom: 16 }} />}
     {showPlayAllHint && (
       <Alert
@@ -207,7 +208,7 @@ export default function TeamCompetitionGroups({ competitionId, token, teams, for
       <Table<Standing> rowKey="teamId" size="small" pagination={false} dataSource={[...group.standings].sort((a, b) => (a.groupRank ?? 999) - (b.groupRank ?? 999))} scroll={{ x: 620 }} columns={[
         { title: '排名', dataIndex: 'groupRank', render: value => value || '-' }, { title: '队伍', dataIndex: 'teamName' },
         { title: '胜场', dataIndex: 'wins' }, { title: '胜次', dataIndex: 'matchesWon' }, { title: '净胜分', dataIndex: 'netMatches' },
-        ...(format === 'GROUP_PLUS_KNOCKOUT' ? [{ title: '晋级', render: (_: unknown, row: Standing) => row.advanced ? <Tag color="green">已晋级</Tag> : <Tag>待定</Tag> }] : []),
+        ...(isTeamGroupKnockout(format) ? [{ title: '晋级', render: (_: unknown, row: Standing) => row.advanced ? <Tag color="green">已晋级</Tag> : <Tag>待定</Tag> }] : []),
       ]} />
       <div style={{ marginTop: 12 }}>
         <TeamEncounterTable encounters={group.matches} busy={busy} showRound={false} canSchedule={access.can('SCHEDULING')} onSchedule={openSchedule} />
@@ -228,12 +229,12 @@ export default function TeamCompetitionGroups({ competitionId, token, teams, for
         <Form.Item name="allowOutsideGroup" valuePropName="checked"><Checkbox>允许本场临时超出组别规则（范围外场地或日期）</Checkbox></Form.Item>
       </Form>
     </Modal>
-    {format === 'GROUP_PLUS_KNOCKOUT' && groups.length > 0 && knockoutEmpty && <Space orientation="vertical" style={{ marginTop: 16 }}>
+    {isTeamGroupKnockout(format) && groups.length > 0 && knockoutEmpty && <Space orientation="vertical" style={{ marginTop: 16 }}>
       {!completed && <Alert type="info" title="全部小组赛结束后，可按小组名次生成淘汰赛。" />}
       <Button type="primary" disabled={!completed} loading={busy} onClick={() => Modal.confirm({ title: '按小组排名生成淘汰赛？', content: '将使用每组达到晋级名次的队伍生成淘汰赛对阵。', okText: '生成淘汰赛', cancelText: '取消', onOk: () => run('knockout', { force: false }, '淘汰赛对阵已生成') })}>小组赛后生成淘汰赛</Button>
       <Typography.Text type="secondary">同名次队伍按小组赛场均胜场、胜次、净胜分排种子，小组第一中战绩好的优先轮空；其余出线队伍调换签位，同组队伍尽量分在不同半区、晚相遇。</Typography.Text>
     </Space>}
-    {format === 'GROUP_PLUS_KNOCKOUT' && !knockoutEmpty && !knockoutStarted && <Space orientation="vertical" style={{ marginTop: 16 }}>
+    {isTeamGroupKnockout(format) && !knockoutEmpty && !knockoutStarted && <Space orientation="vertical" style={{ marginTop: 16 }}>
       <Button disabled={busy} onClick={() => Modal.confirm({ title: '按最新小组名次重新生成淘汰赛？', content: '小组赛成绩改动后，已生成的淘汰赛对阵不会自动更新。重新生成会删除现有淘汰赛对阵、出场名单和排程。淘汰赛已有子项开赛时不能重新生成。', okText: '重新生成', cancelText: '取消', onOk: () => run('knockout', { force: true }, '淘汰赛对阵已重新生成') })}>重新生成淘汰赛</Button>
       <Typography.Text type="secondary">淘汰赛还没有子项开赛。小组赛成绩改过时，可按最新名次重新生成。</Typography.Text>
     </Space>}

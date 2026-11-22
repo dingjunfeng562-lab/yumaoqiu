@@ -20,6 +20,7 @@ import {
   AssignRefereeDto,
   AuthorizeRefereeTournamentDto,
   CardMatchDto,
+  ClaimCourtMatchDto,
   CorrectMatchScoreDto,
   FaultMatchDto,
   FinishMatchDto,
@@ -30,6 +31,7 @@ import {
   PauseMatchDto,
   ResetOpeningSetupDto,
   RetireMatchDto,
+  SaveCourtRefereesDto,
   ScorePointDto,
   SetGameServeDto,
   StartMatchDto,
@@ -75,6 +77,23 @@ export class ScoringController {
   @Get('scoring/referees')
   listAssignableReferees(@Req() req: RequestWithUser) {
     return this.scoringService.listAssignableReferees(req.user);
+  }
+
+  @Roles(Role.ADMIN, Role.ROOT)
+  @Get('scoring/tournaments/:tournamentId/court-referees')
+  listCourtReferees(@Param('tournamentId') tournamentId: string, @Req() req: RequestWithUser) {
+    return this.scoringService.listCourtReferees(tournamentId, req.user);
+  }
+
+  @Roles(Role.ADMIN, Role.ROOT)
+  @Patch('scoring/tournaments/:tournamentId/courts/:venueId/referees')
+  saveCourtReferees(
+    @Param('tournamentId') tournamentId: string,
+    @Param('venueId') venueId: string,
+    @Body() dto: SaveCourtRefereesDto,
+    @Req() req: RequestWithUser,
+  ) {
+    return this.scoringService.saveCourtReferees(tournamentId, venueId, dto.refereeIds, req.user);
   }
 
   /** 比赛结束签字开关（按赛事）。 */
@@ -170,9 +189,10 @@ export class ScoringController {
     @Param('tournamentId') tournamentId: string,
     @Param('venueId') venueId: string,
     @Param('id') id: string,
+    @Body() dto: ClaimCourtMatchDto,
     @Req() req: RequestWithUser,
   ) {
-    const result = await this.scoringService.claimCourtMatch(tournamentId, venueId, id, req.user);
+    const result = await this.scoringService.claimCourtMatch(tournamentId, venueId, id, req.user, dto?.expectedRefereeId);
     this.scoringGateway.emitBracketUpdate({ tournamentId, matchId: id });
     return result;
   }

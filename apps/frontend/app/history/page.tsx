@@ -80,7 +80,7 @@ export default async function HistoryPage() {
     <main className="min-h-screen bg-[#f5f7fb] text-slate-950">
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-4 px-5 py-4 lg:px-8">
-          <Link href="/" className="flex items-center gap-3">
+          <Link href="/home" className="flex items-center gap-3">
             <Image src="/logo.png" alt="羽动云赛" width={1536} height={1024} className="h-11 w-16 object-contain" />
             <div>
               <p className="text-lg font-black">羽动云赛</p>

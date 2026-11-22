@@ -4,7 +4,7 @@ export type TeamResultChild = {
   status: string;
   winnerSide: number | null;
   finishedAt?: Date | string | null;
-  games?: Array<{ side1Score: number; side2Score: number }>;
+  games?: Array<{ side1Score: number; side2Score: number; winnerSide?: number | null }>;
 };
 
 export type TeamResult = {
@@ -55,7 +55,9 @@ export function withOfficialTeamResult<T extends TeamResult>(match: T, winThresh
     : [];
   const team1PointDiff = officialChildren.reduce((total, child) => total
     + (child.games ?? []).reduce((sum, game) => sum + game.side1Score - game.side2Score, 0), 0);
-  return { ...match, team1Wins, team2Wins, winnerTeamId, resultDecided, supplementalMatchIds, team1PointDiff };
+  const team1GameDiff = officialChildren.reduce((total, child) => total
+    + (child.games ?? []).reduce((sum, game) => sum + (game.winnerSide === 1 ? 1 : game.winnerSide === 2 ? -1 : 0), 0), 0);
+  return { ...match, team1Wins, team2Wins, winnerTeamId, resultDecided, supplementalMatchIds, team1PointDiff, team1GameDiff };
 }
 
 export function hasOfficialTeamResult(match: { status: string; winnerTeamId: string | null; resultDecided?: boolean }) {

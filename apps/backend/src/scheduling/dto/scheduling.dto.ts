@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
 import { VenueRuleMode } from '@prisma/client';
+import { FIFTH_PLACE_FINAL, SEVENTH_PLACE_FINAL } from '../../common/knockout-placement-playoff';
 import {
   ArrayMaxSize,
   IsArray,
@@ -25,6 +26,29 @@ export class ScheduleBreakPeriodDto {
   @Min(1)
   @Max(24 * 60)
   durationMinutes: number;
+}
+
+export class BoardMoveDto {
+  @IsString()
+  matchId: string;
+
+  @Matches(/^[0-9a-f]{64}$/)
+  version: string;
+
+  @IsOptional() @IsString()
+  targetMatchId?: string;
+
+  @IsOptional() @IsString()
+  venueId?: string;
+
+  @IsOptional() @IsDateString()
+  scheduledAt?: string;
+
+  @IsOptional() @IsBoolean()
+  allowOutsideGroup?: boolean;
+
+  @IsOptional() @IsBoolean()
+  confirmConflicts?: boolean;
 }
 
 export class CreateVenueDto {
@@ -66,6 +90,7 @@ export const KNOCKOUT_ROUND_CODES = [
   'BRONZE',
   'F',
 ];
+export const PLACEMENT_FINAL_ROUND_CODES: readonly string[] = [FIFTH_PLACE_FINAL, SEVENTH_PLACE_FINAL];
 
 export class AutoScheduleDto {
   @IsOptional()
@@ -164,14 +189,13 @@ export class AutoScheduleDto {
   @IsBoolean()
   onlyUnscheduled?: boolean;
 
-  // 只排这几轮淘汰赛（含单淘汰）：R4 1/64、R3 1/32、R2 1/16、R1 1/8 决赛、QF、SF、BRONZE 季军赛、F 决赛。
-  // 选了轮次时小组赛、排位赛等其他场次都不排；不传为不限。
+  // 只排选中的淘汰赛轮次或五六名、七八名附加赛；不传为不限。
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(16)
-  @IsIn(KNOCKOUT_ROUND_CODES, {
+  @IsIn([...KNOCKOUT_ROUND_CODES, ...PLACEMENT_FINAL_ROUND_CODES], {
     each: true,
-    message: '轮次应为 1/64 决赛到决赛、季军赛之一',
+    message: '请选择有效的淘汰赛轮次或附加赛',
   })
   rounds?: string[];
 

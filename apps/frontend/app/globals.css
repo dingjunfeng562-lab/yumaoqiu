@@ -1995,6 +1995,24 @@ body [data-allow-copy] * {
    Admin sidebar
    ───────────────────────────────────────────────────────────── */
 
+:root:has(.admin-viewport),
+body:has(.admin-viewport) {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+.admin-viewport {
+  position: fixed;
+  inset: 0;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.admin-content-scroll {
+  overscroll-behavior-y: contain;
+}
+
 .admin-navigation-panel {
   background:
     radial-gradient(120% 55% at 18% -8%, rgba(37, 99, 235, 0.42) 0%, rgba(3, 32, 92, 0) 62%),

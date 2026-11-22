@@ -1292,7 +1292,7 @@ export default function TournamentsPage() {
                 <Form.Item name="teamMaxPlayerAppearances" label="团体赛兼项规则" rules={[{ required: true }]} extra="按同一场团体对阵计算，下一轮重新计算。每队人数不限，不限制男女人数。">
                   <Select options={TEAM_APPEARANCE_OPTIONS} />
                 </Form.Item>
-                <Form.Item name="teamScoringRule" label="团体子项计分规则" rules={[{ required: true }]} extra="自定义分数和局数可在团体赛设置中调整。"><Select options={TEAM_SCORING_OPTIONS} /></Form.Item>
+                <Form.Item name="teamScoringRule" label="团体子项计分规则" rules={[{ required: true }]} extra="自定义分数和局数、小组赛与淘汰赛分开计分，可在团体赛设置中调整。"><Select options={TEAM_SCORING_OPTIONS} /></Form.Item>
                 <Form.Item name="teamPlayAllMatches" label="胜负确定后继续比赛" valuePropName="checked" extra="开启后打完剩余子项并保留比分；正式比分、胜次和净胜分只统计到先赢够场数时，补打不影响排名。关闭时达到胜场数即结束。抽签后开启可恢复尚未开赛的剩余子项（已生成淘汰赛时不恢复）。">
                   <Switch checkedChildren="继续比赛" unCheckedChildren="结束对阵" />
                 </Form.Item>

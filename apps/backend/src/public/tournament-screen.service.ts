@@ -30,12 +30,13 @@ export class TournamentScreenService {
                 // Scope both the court and its matches to this tournament.
                 OR: [
                   { event: { tournamentId } },
-                  { teamMatch: { teamCompetition: { tournamentId } } },
+                  { teamMatch: { teamCompetition: { tournamentId, isPublished: true } } },
                 ],
               },
               select: {
                 id: true, status: true, round: true, roundNo: true, matchNo: true,
                 scheduledAt: true, startedAt: true, side1Id: true, side2Id: true,
+                lineupLocked: true,
                 teamCompetitionItemId: true,
                 event: { select: {
                   type: true, scoringRule: true, scoringMode: true,
@@ -51,7 +52,8 @@ export class TournamentScreenService {
                 teamMatch: {
                   select: {
                     team1Id: true, team2Id: true, stage: true,
-                    teamCompetition: { select: { group: { select: { name: true } }, scoringRule: true, scoringMode: true, customGamePoint: true, customGameCap: true, customGamesToWin: true } },
+                    team1: { select: { name: true } }, team2: { select: { name: true } },
+                    teamCompetition: { select: { group: { select: { name: true } }, scoringRule: true, scoringMode: true, customGamePoint: true, customGameCap: true, customGamesToWin: true, stageScoringRules: true } },
                     lineups: {
                       select: {
                         teamId: true, teamCompetitionItemId: true,
@@ -95,18 +97,19 @@ export class TournamentScreenService {
         if (!match) return { ...court, match: null };
         const side = (sideNo: 1 | 2) => {
           const teamId = sideNo === 1 ? match.teamMatch?.team1Id : match.teamMatch?.team2Id;
-          const lineup = match.teamMatch?.lineups.find((item) =>
-            item.teamId === teamId && item.teamCompetitionItemId === match.teamCompetitionItemId);
+          const team = sideNo === 1 ? match.teamMatch?.team1 : match.teamMatch?.team2;
+          const lineup = (match.lineupLocked || match.status !== 'PENDING') ? match.teamMatch?.lineups.find((item) =>
+            item.teamId === teamId && item.teamCompetitionItemId === match.teamCompetitionItemId) : undefined;
           const entrant = match.teamMatch ? lineup : registrationMap.get(
             (sideNo === 1 ? match.side1Id : match.side2Id) ?? '',
           );
           const players = entrant ? [entrant.player1, ...(entrant.player2 ? [entrant.player2] : [])] : [];
-          return { players, teamName: lineup?.team.name ?? null };
+          return { players, teamName: team?.name ?? lineup?.team.name ?? null };
         };
         return {
           ...court,
           match: {
-            id: match.id, status: match.status, round: match.round, matchNo: match.matchNo,
+            id: match.id, status: match.status, round: match.round, roundNo: match.roundNo, matchNo: match.matchNo,
             eventType: match.event?.type ?? match.teamCompetitionItem?.eventType ?? null,
             groupName: match.event?.group?.name ?? match.teamMatch?.teamCompetition.group?.name ?? null,
             gamesToWin: this.scoring.gamesToWinForMatch(match),

@@ -1,5 +1,5 @@
 import { RolesGuard } from '../auth/roles.guard';
-import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { CompetitionsService } from './competitions.service';
 import {
   PublicCompetitionRegistrationDto,
@@ -18,8 +18,8 @@ export class CompetitionsController {
   constructor(private competitionsService: CompetitionsService) {}
 
   @Get()
-  listCompetitions() {
-    return this.competitionsService.listPublicCompetitions();
+  listCompetitions(@Query('order') order?: string) {
+    return this.competitionsService.listPublicCompetitions(order === 'list');
   }
 
   // Must be declared BEFORE the `:id` route so Nest matches "/me/registrations"

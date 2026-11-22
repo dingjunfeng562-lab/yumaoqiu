@@ -4,17 +4,20 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import dayjs, { Dayjs } from 'dayjs';
-import { Button, Card, Checkbox, DatePicker, Form, Image, Input, Modal, QRCode, Radio, Segmented, Select, Space, Table, Tag, Typography, Upload, message } from 'antd';
+import { Button, Card, Checkbox, DatePicker, Form, Image, Input, Modal, QRCode, Radio, Segmented, Select, Skeleton, Space, Table, Tag, Typography, Upload, message } from 'antd';
 import type { UploadFile } from 'antd';
 import { CheckOutlined, CopyOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, PictureOutlined, PlusOutlined, QrcodeOutlined, ReloadOutlined, SafetyCertificateOutlined, StopOutlined, UploadOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
-import { useCurrentRole } from '@/lib/use-current-role';
+import { useCurrentAccess } from '@/lib/use-current-role';
+import { PHOTO_MANAGEMENT_ACCESS, PHOTO_MANAGEMENT_REVIEW_PAGE, PHOTO_MANAGEMENT_STATUS, photoManagementTargetKey } from '@/lib/photo-management-access';
+import type { PhotoManagementRequest, PhotoManagementTargetType } from '@/lib/photo-management-access';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 const API_ORIGIN = API_BASE.replace(/\/api$/, '');
 
-type TargetType = 'TOURNAMENT' | 'ACTIVITY';
+type TargetType = PhotoManagementTargetType;
 type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+type UsageFilter = 'ALL' | 'USED' | 'UNUSED';
 
 type PhotoTarget = {
   targetType: TargetType;
@@ -28,6 +31,9 @@ type PhotoTarget = {
   isArchived: boolean;
   dateMode: 'SINGLE' | 'RANGE' | null;
   photoCount: number;
+  managementAllowed: boolean;
+  managementOpened: boolean;
+  managementApprovalId: string | null;
   photoAccessEnabled: boolean;
   photoUploadAccessEnabled: boolean;
   submittedBy: { id: string; username: string | null } | null;
@@ -41,7 +47,7 @@ type ActivityForm = {
   range?: [Dayjs, Dayjs];
 };
 
-const STATUS = {
+const ACTIVITY_APPROVAL_STATUS = {
   PENDING: { color: 'orange', label: '待审核' },
   APPROVED: { color: 'green', label: '已通过' },
   REJECTED: { color: 'red', label: '已驳回' },
@@ -49,6 +55,17 @@ const STATUS = {
 
 const TYPE_LABEL: Record<TargetType, string> = { TOURNAMENT: '赛事', ACTIVITY: '活动' };
 const TYPE_COLOR: Record<TargetType, string> = { TOURNAMENT: 'blue', ACTIVITY: 'purple' };
+
+const ACTIVITY_APPROVAL_FILTERS = [
+  { value: 'ALL', label: '全部活动审核状态' },
+  ...Object.entries(ACTIVITY_APPROVAL_STATUS).map(([value, status]) => ({ value, label: status.label })),
+];
+
+const USAGE_FILTERS = [
+  { value: 'ALL', label: '全部图片使用状态' },
+  { value: 'USED', label: '已使用' },
+  { value: 'UNUSED', label: '未使用' },
+];
 
 function fullUrl(path?: string | null) {
   if (!path) return '';
@@ -66,17 +83,30 @@ function targetBasePath(item: PhotoTarget) {
 }
 
 function targetKey(item: PhotoTarget) {
-  return `${item.targetType}:${item.id}`;
+  return photoManagementTargetKey(item.targetType, item.id);
 }
 
 export default function PhotoActivitiesPage() {
-  const router = useRouter();
   const { data: session } = useSession();
-  const token = session?.user?.accessToken as string | undefined;
-  const role = useCurrentRole();
+  const token = session?.user?.accessToken;
+  const access = useCurrentAccess();
+  if (!access.ready || !token) return <Skeleton active />;
+  return <PhotoActivities token={token} role={access.role} />;
+}
+
+function PhotoActivities({ token, role }: { token: string; role: string | undefined }) {
+  const router = useRouter();
   const [form] = Form.useForm<ActivityForm>();
   const dateMode = Form.useWatch('dateMode', form) ?? 'SINGLE';
   const [rows, setRows] = useState<PhotoTarget[]>([]);
+  const [requests, setRequests] = useState<PhotoManagementRequest[]>([]);
+  const [requestOpen, setRequestOpen] = useState(false);
+  const [requestTargetKey, setRequestTargetKey] = useState<string>();
+  const [requestPurpose, setRequestPurpose] = useState('');
+  const [requestSaving, setRequestSaving] = useState(false);
+  const [revoking, setRevoking] = useState<PhotoTarget | null>(null);
+  const [revokeReason, setRevokeReason] = useState('');
+  const [revokeSaving, setRevokeSaving] = useState(false);
   const [loading, setLoading] = useState(false);
   const [editing, setEditing] = useState<PhotoTarget | null>(null);
   const [formOpen, setFormOpen] = useState(false);
@@ -90,28 +120,113 @@ export default function PhotoActivitiesPage() {
   const [qr, setQr] = useState<{ title: string; url: string }>();
   const [qrLoading, setQrLoading] = useState<string>();
   const [typeFilter, setTypeFilter] = useState<'ALL' | TargetType>('ALL');
-  const [statusFilter, setStatusFilter] = useState<'ALL' | ApprovalStatus>('ALL');
+  const [activityApprovalFilter, setActivityApprovalFilter] = useState<'ALL' | ApprovalStatus>('ALL');
+  const [usageFilter, setUsageFilter] = useState<UsageFilter>('ALL');
   const [includeArchived, setIncludeArchived] = useState(true);
   const qrRef = useRef<HTMLDivElement>(null);
+  const showActivityApproval = typeFilter === 'ACTIVITY'
+    || (typeFilter === 'ALL' && rows.some((item) => item.targetType === 'ACTIVITY'));
+  const deletingTournamentPhotos = deleting?.targetType === 'TOURNAMENT';
+  const deleteTargetLabel = deletingTournamentPhotos ? '赛事' : '活动';
 
   const load = useCallback(async () => {
     if (!token) return;
     setLoading(true);
-    try { setRows(await apiFetch<PhotoTarget[]>('/admin/photo-targets', { token })); }
+    try {
+      const [targets, applications] = await Promise.all([
+        apiFetch<PhotoTarget[]>('/admin/photo-targets', { token, cache: 'no-store' }),
+        role === 'ADMIN'
+          ? apiFetch<PhotoManagementRequest[]>(PHOTO_MANAGEMENT_ACCESS, { token, cache: 'no-store' })
+          : Promise.resolve([]),
+      ]);
+      setRows(targets);
+      setRequests(applications);
+    }
     catch (error) { message.error(error instanceof Error ? error.message : '活动图片加载失败'); }
     finally { setLoading(false); }
-  }, [token]);
+  }, [token, role]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => void load(), 0);
+    window.addEventListener('focus', load);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('focus', load);
+    };
+  }, [load]);
+
+  const requestByTarget = useMemo(() => new Map(requests.map((request) => [
+    photoManagementTargetKey(request.targetType, request.targetId), request,
+  ])), [requests]);
+  const [listedRows, applicationTournaments] = useMemo(() => [
+    rows.filter((row) => row.targetType === 'ACTIVITY' || row.managementOpened),
+    rows.filter((row) => row.targetType === 'TOURNAMENT' && !row.managementOpened),
+  ], [rows]);
+  const requestTarget = requestTargetKey ? rows.find((row) => targetKey(row) === requestTargetKey) : undefined;
+  const activeRequest = requestTargetKey ? requestByTarget.get(requestTargetKey) : undefined;
+  const canSubmitRequest = !!requestTarget && !requestTarget.managementOpened
+    && activeRequest?.status !== 'PENDING' && activeRequest?.status !== 'APPROVED';
+
+  function openRequest(target?: PhotoTarget) {
+    setRequestTargetKey(target ? targetKey(target) : undefined);
+    setRequestPurpose('');
+    setRequestOpen(true);
+  }
+
+  async function requestAccess() {
+    const purpose = requestPurpose.trim();
+    if (!requestTarget || !canSubmitRequest || !purpose || requestSaving) return;
+    setRequestSaving(true);
+    try {
+      await apiFetch(PHOTO_MANAGEMENT_ACCESS, {
+        token, method: 'POST',
+        body: JSON.stringify({ targetType: requestTarget.targetType, targetId: requestTarget.id, purpose }),
+      });
+      message.success('申请已提交，等待超级管理员审核');
+      setRequestOpen(false);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '申请提交失败');
+    } finally {
+      setRequestSaving(false);
+      await load();
+    }
+  }
+
+  async function revokeAccess() {
+    const approvalId = revoking?.managementApprovalId;
+    const reason = revokeReason.trim();
+    if (role !== 'ROOT' || !token || !approvalId || !reason || revokeSaving) return;
+
+    setRevokeSaving(true);
+    try {
+      await apiFetch(`${PHOTO_MANAGEMENT_ACCESS}/requests/${encodeURIComponent(approvalId)}`, {
+        token, method: 'PATCH', body: JSON.stringify({ decision: 'revoke', reason }),
+      });
+      message.success('已取消开通图片管理');
+      setRevoking(null);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '取消开通失败');
+      if ((error as { status?: number } | null)?.status === 409) setRevoking(null);
+    } finally {
+      await load();
+      setRevokeSaving(false);
+    }
+  }
 
   const filteredRows = useMemo(
-    () => rows.filter((item) => {
+    () => listedRows.filter((item) => {
       if (typeFilter !== 'ALL' && item.targetType !== typeFilter) return false;
-      if (statusFilter !== 'ALL' && item.approvalStatus !== statusFilter) return false;
+      if (showActivityApproval && activityApprovalFilter !== 'ALL'
+        && (item.targetType !== 'ACTIVITY' || item.approvalStatus !== activityApprovalFilter)) return false;
+      if (role === 'ROOT' && usageFilter !== 'ALL' && (item.photoCount > 0) !== (usageFilter === 'USED')) return false;
       if (!includeArchived && item.isArchived) return false;
       return true;
+    }).sort((a, b) => {
+      const aHasTournamentPhotos = a.targetType === 'TOURNAMENT' && a.photoCount > 0;
+      const bHasTournamentPhotos = b.targetType === 'TOURNAMENT' && b.photoCount > 0;
+      return Number(bHasTournamentPhotos) - Number(aHasTournamentPhotos);
     }),
-    [rows, typeFilter, statusFilter, includeArchived],
+    [listedRows, typeFilter, showActivityApproval, activityApprovalFilter, role, usageFilter, includeArchived],
   );
 
   function openCreate() {
@@ -177,15 +292,36 @@ export default function PhotoActivitiesPage() {
     } catch (error) { message.error(error instanceof Error ? error.message : '驳回失败'); }
   }
 
-  async function deleteActivity() {
-    if (!token || !deleting) return;
+  function openDelete(item: PhotoTarget) {
+    if (role !== 'ROOT') return;
+    setDeleting(item);
+    setDeleteInput('');
+  }
+
+  function closeDelete() {
+    setDeleting(null);
+    setDeleteInput('');
+  }
+
+  async function deleteTarget() {
+    const confirmation = deleteInput.trim();
+    if (role !== 'ROOT' || !token || !deleting || deleteLoading || confirmation !== deleting.title) return;
     setDeleteLoading(true);
     try {
-      await apiFetch(`/admin/photo-activities/${deleting.id}`, {
-        method: 'DELETE', token, body: JSON.stringify({ confirmTitle: deleteInput }),
-      });
-      message.success('活动及其全部图片已删除');
-      setDeleting(null); setDeleteInput(''); await load();
+      const id = encodeURIComponent(deleting.id);
+      if (deleting.targetType === 'TOURNAMENT') {
+        const { deleted } = await apiFetch<{ deleted: number }>(`/admin/tournaments/${id}/photos`, {
+          method: 'DELETE', token, body: JSON.stringify({ confirmName: confirmation }),
+        });
+        message.success(`已删除 ${deleted} 张赛事图片`);
+      } else {
+        await apiFetch(`/admin/photo-activities/${id}`, {
+          method: 'DELETE', token, body: JSON.stringify({ confirmTitle: confirmation }),
+        });
+        message.success('活动及其全部图片已删除');
+      }
+      closeDelete();
+      await load();
     } catch (error) { message.error(error instanceof Error ? error.message : '删除失败'); }
     finally { setDeleteLoading(false); }
   }
@@ -221,29 +357,71 @@ export default function PhotoActivitiesPage() {
 
   const columns = [
     { title: '封面', dataIndex: 'coverImageUrl', width: 92, render: (value: string | null) => value ? <Image alt="封面" src={fullUrl(value)} width={72} height={48} style={{ objectFit: 'cover', borderRadius: 6 }} /> : <div style={{ width: 72, height: 48, borderRadius: 6, background: '#f1f5f9' }} /> },
-    { title: '名称', dataIndex: 'title', render: (value: string, item: PhotoTarget) => <Space direction="vertical" size={2}>
+    { title: '名称', dataIndex: 'title', width: 230, render: (value: string, item: PhotoTarget) => <Space direction="vertical" size={2}>
       <Space size={6} wrap>
         <Tag color={TYPE_COLOR[item.targetType]} style={{ marginInlineEnd: 0 }}>{TYPE_LABEL[item.targetType]}</Tag>
         <Typography.Text strong>{value}</Typography.Text>
         {item.isArchived ? <Tag style={{ marginInlineEnd: 0 }}>已归档</Tag> : null}
       </Space>
-      {item.rejectReason ? <Typography.Text type="danger" style={{ fontSize: 12 }}>驳回原因：{item.rejectReason}</Typography.Text> : null}
+      {item.targetType === 'ACTIVITY' && item.rejectReason ? <Typography.Text type="danger" style={{ fontSize: 12 }}>驳回原因：{item.rejectReason}</Typography.Text> : null}
     </Space> },
-    { title: '时间', key: 'time', width: 230, render: (_: unknown, item: PhotoTarget) => item.endAt ? `${formatTime(item.startAt)} — ${formatTime(item.endAt)}` : formatTime(item.startAt) },
-    ...(role === 'ROOT' ? [{ title: '创建人', key: 'creator', width: 110, render: (_: unknown, item: PhotoTarget) => item.submittedBy?.username ?? '—' }] : []),
-    { title: '审核状态', dataIndex: 'approvalStatus', width: 96, render: (value: ApprovalStatus) => <Tag color={STATUS[value].color}>{STATUS[value].label}</Tag> },
-    { title: '图片', dataIndex: 'photoCount', width: 70, render: (value: number) => `${value} 张` },
-    { title: '操作', key: 'actions', width: 560, render: (_: unknown, item: PhotoTarget) => {
+    { title: '时间', key: 'time', width: 218, render: (_: unknown, item: PhotoTarget) => item.endAt ? `${formatTime(item.startAt)} — ${formatTime(item.endAt)}` : formatTime(item.startAt) },
+    ...(role === 'ROOT' ? [{ title: '创建人', key: 'creator', width: 100, render: (_: unknown, item: PhotoTarget) => item.submittedBy?.username ?? '—' }] : []),
+    ...(showActivityApproval ? [{
+      title: '活动审核', dataIndex: 'approvalStatus', width: 96,
+      render: (value: ApprovalStatus, item: PhotoTarget) => item.targetType === 'ACTIVITY'
+        ? <Tag color={ACTIVITY_APPROVAL_STATUS[value].color}>{ACTIVITY_APPROVAL_STATUS[value].label}</Tag>
+        : null,
+    }] : []),
+    ...(role === 'ROOT' ? [{
+      title: '图片管理开通', key: 'managementStatus', width: 142,
+      render: (_: unknown, item: PhotoTarget) => item.managementApprovalId ? (
+        <Space orientation="vertical" size={4}>
+          <Tag color="green">已开通</Tag>
+          <Button
+            size="small"
+            danger
+            onClick={() => { setRevokeReason(''); setRevoking(item); }}
+          >
+            取消开通
+          </Button>
+        </Space>
+      ) : item.managementOpened ? <Tag>平台管理</Tag> : null,
+    }] : []),
+    { title: '图片', dataIndex: 'photoCount', width: 70, render: (value: number, item: PhotoTarget) => item.managementAllowed ? `${value} 张` : '—' },
+    { title: '操作', key: 'actions', width: 384, render: (_: unknown, item: PhotoTarget) => {
       const canShowQr = item.photoAccessEnabled || item.approvalStatus === 'APPROVED';
       const qrHint = canShowQr ? undefined : '审核通过后才能生成二维码';
+      const request = requestByTarget.get(targetKey(item));
+      const requestStatus = request ? PHOTO_MANAGEMENT_STATUS[request.status] : null;
+      const reason = request?.status === 'REJECTED' ? request.reviewReason
+        : request?.status === 'REVOKED' ? request.revokeReason : null;
       return <Space wrap>
         {item.targetType === 'ACTIVITY' ? <Button icon={<EditOutlined />} onClick={() => openEdit(item)}>编辑</Button> : null}
-        <Button icon={<SafetyCertificateOutlined />} onClick={() => router.push(`${targetBasePath(item)}/watermark`)}>Logo 设置</Button>
-        <Button type="primary" icon={<PictureOutlined />} onClick={() => router.push(`${targetBasePath(item)}/photos`)}>图片管理</Button>
-        <Button icon={<QrcodeOutlined />} loading={qrLoading === targetKey(item)} disabled={!canShowQr} title={qrHint} onClick={() => void showQr(item)}>{item.photoAccessEnabled ? '查看二维码' : '生成二维码'}</Button>
+        {item.managementAllowed ? <>
+          {role === 'ADMIN' ? <Tag color="green">已开通</Tag> : null}
+          <Button icon={<SafetyCertificateOutlined />} onClick={() => router.push(`${targetBasePath(item)}/watermark`)}>Logo 设置</Button>
+          <Button type="primary" icon={<PictureOutlined />} onClick={() => router.push(`${targetBasePath(item)}/photos`)}>图片管理</Button>
+          <Button icon={<QrcodeOutlined />} loading={qrLoading === targetKey(item)} disabled={!canShowQr} title={qrHint} onClick={() => void showQr(item)}>{item.photoAccessEnabled ? '查看二维码' : '生成二维码'}</Button>
+          {role === 'ROOT' && item.targetType === 'TOURNAMENT' && item.photoCount > 0 ? (
+            <Button danger icon={<DeleteOutlined />} onClick={() => openDelete(item)}>删除赛事图片</Button>
+          ) : null}
+        </> : (
+          <Space orientation="vertical" size={4}>
+            <Space wrap>
+              {requestStatus ? <Tag color={requestStatus.color}>{requestStatus.label}</Tag> : <Tag>未申请</Tag>}
+              {request?.status !== 'PENDING' && request?.status !== 'APPROVED' ? (
+                <Button type="primary" onClick={() => openRequest(item)}>
+                  {request ? '重新申请' : '申请图片管理'}
+                </Button>
+              ) : null}
+            </Space>
+            {reason ? <Typography.Text type="secondary">{reason}</Typography.Text> : null}
+          </Space>
+        )}
         {role === 'ROOT' && item.targetType === 'ACTIVITY' && item.approvalStatus !== 'APPROVED' ? <Button icon={<CheckOutlined />} onClick={() => void approve(item)}>通过</Button> : null}
         {role === 'ROOT' && item.targetType === 'ACTIVITY' && item.approvalStatus !== 'REJECTED' ? <Button danger icon={<StopOutlined />} onClick={() => setRejecting(item)}>驳回</Button> : null}
-        {role === 'ROOT' && item.targetType === 'ACTIVITY' ? <Button danger type="primary" icon={<DeleteOutlined />} onClick={() => { setDeleting(item); setDeleteInput(''); }}>删除</Button> : null}
+        {role === 'ROOT' && item.targetType === 'ACTIVITY' ? <Button danger type="primary" icon={<DeleteOutlined />} onClick={() => openDelete(item)}>删除</Button> : null}
       </Space>;
     } },
   ];
@@ -253,6 +431,8 @@ export default function PhotoActivitiesPage() {
       <div><Typography.Title level={4} style={{ margin: 0 }}>活动图片</Typography.Title><Typography.Text type="secondary">赛事与活动图片、Logo 水印、AI 图片审核和二维码访问</Typography.Text></div>
       <Space wrap>
         <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>刷新</Button>
+        {role === 'ADMIN' && applicationTournaments.length > 0 ? <Button onClick={() => openRequest()}>申请图片管理</Button> : null}
+        {role === 'ROOT' ? <Button href={PHOTO_MANAGEMENT_REVIEW_PAGE}>图片管理申请</Button> : null}
         <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建活动</Button>
       </Space>
     </div>
@@ -260,22 +440,85 @@ export default function PhotoActivitiesPage() {
     <Card size="small" style={{ marginBottom: 16 }}>
       <Space wrap size="middle">
         <Segmented
-          options={[{ label: `全部 ${rows.length}`, value: 'ALL' }, { label: `赛事 ${rows.filter((item) => item.targetType === 'TOURNAMENT').length}`, value: 'TOURNAMENT' }, { label: `活动 ${rows.filter((item) => item.targetType === 'ACTIVITY').length}`, value: 'ACTIVITY' }]}
+          options={[{ label: `全部 ${listedRows.length}`, value: 'ALL' }, { label: `赛事 ${listedRows.filter((item) => item.targetType === 'TOURNAMENT').length}`, value: 'TOURNAMENT' }, { label: `活动 ${listedRows.filter((item) => item.targetType === 'ACTIVITY').length}`, value: 'ACTIVITY' }]}
           value={typeFilter}
           onChange={(value) => setTypeFilter(value as 'ALL' | TargetType)}
         />
-        <Select
-          style={{ width: 150 }}
-          value={statusFilter}
-          onChange={(value) => setStatusFilter(value as 'ALL' | ApprovalStatus)}
-          options={[{ value: 'ALL', label: '全部状态' }, { value: 'PENDING', label: '待审核' }, { value: 'APPROVED', label: '已通过' }, { value: 'REJECTED', label: '已驳回' }]}
-        />
+        {showActivityApproval ? (
+          <Select
+            aria-label="活动审核筛选"
+            style={{ width: 160 }}
+            value={activityApprovalFilter}
+            onChange={(value) => setActivityApprovalFilter(value as 'ALL' | ApprovalStatus)}
+            options={ACTIVITY_APPROVAL_FILTERS}
+          />
+        ) : null}
+        {role === 'ROOT' ? (
+          <Select
+            aria-label="图片使用状态筛选"
+            style={{ width: 176 }}
+            value={usageFilter}
+            onChange={(value) => setUsageFilter(value as UsageFilter)}
+            options={USAGE_FILTERS}
+          />
+        ) : null}
         <Checkbox checked={includeArchived} onChange={(event) => setIncludeArchived(event.target.checked)}>包含已归档赛事</Checkbox>
-        <Typography.Text type="secondary">赛事图片管理已并入本页；赛事名称与报名信息仍在赛事管理中维护。</Typography.Text>
       </Space>
     </Card>
 
-    <Card><Table rowKey={targetKey} columns={columns} dataSource={filteredRows} loading={loading} scroll={{ x: 1180 }} pagination={{ pageSize: 10, showSizeChanger: false }} locale={{ emptyText: '暂无赛事或活动' }} /></Card>
+    <Card><Table rowKey={targetKey} columns={columns} dataSource={filteredRows} loading={loading} scroll={{ x: (role === 'ROOT' ? 1236 : 994) + (showActivityApproval ? 96 : 0) }} pagination={{ pageSize: 10, showSizeChanger: false }} locale={{ emptyText: '暂无匹配项目' }} /></Card>
+
+    <Modal
+      title="申请开通图片管理"
+      open={requestOpen}
+      onCancel={() => { if (!requestSaving) setRequestOpen(false); }}
+      onOk={() => void requestAccess()}
+      confirmLoading={requestSaving}
+      okText="提交申请"
+      okButtonProps={{ disabled: !canSubmitRequest || !requestPurpose.trim() }}
+    >
+      <Space orientation="vertical" style={{ width: '100%' }}>
+        {requestTarget?.targetType === 'ACTIVITY' ? <Typography.Text strong>{requestTarget.title}</Typography.Text> : (
+          <Select
+            aria-label="选择赛事"
+            placeholder="选择要申请的赛事"
+            value={requestTargetKey}
+            onChange={(key) => { setRequestTargetKey(key); setRequestPurpose(''); }}
+            options={applicationTournaments.map((item) => ({
+              label: `${item.title} · ${formatTime(item.startAt)}`,
+              value: targetKey(item),
+            }))}
+            disabled={requestSaving}
+            style={{ width: '100%' }}
+          />
+        )}
+        {activeRequest ? (
+          <Space wrap>
+            <Tag color={PHOTO_MANAGEMENT_STATUS[activeRequest.status].color}>{PHOTO_MANAGEMENT_STATUS[activeRequest.status].label}</Tag>
+            <Typography.Text type="secondary">{activeRequest.revokeReason ?? activeRequest.reviewReason}</Typography.Text>
+          </Space>
+        ) : null}
+        {canSubmitRequest ? (
+          <Input.TextArea aria-label="申请用途" placeholder="填写图片管理用途" value={requestPurpose} onChange={(event) => setRequestPurpose(event.target.value)} disabled={requestSaving} maxLength={500} showCount rows={4} />
+        ) : null}
+      </Space>
+    </Modal>
+
+    <Modal
+      title="取消开通图片管理"
+      open={role === 'ROOT' && !!revoking}
+      onCancel={() => { if (!revokeSaving) setRevoking(null); }}
+      onOk={() => void revokeAccess()}
+      confirmLoading={revokeSaving}
+      closable={!revokeSaving}
+      cancelButtonProps={{ disabled: revokeSaving }}
+      okText="确认取消开通"
+      okButtonProps={{ danger: true, disabled: !revokeReason.trim() }}
+    >
+      <Typography.Paragraph strong>{revoking?.title}</Typography.Paragraph>
+      <Typography.Paragraph>取消后，{revoking?.submittedBy?.username || '创建人'}将失去图片管理权限，已有图片会保留。需要恢复时可以重新申请。</Typography.Paragraph>
+      <Input.TextArea aria-label="取消开通原因" placeholder="填写取消开通原因" value={revokeReason} onChange={(event) => setRevokeReason(event.target.value)} disabled={revokeSaving} maxLength={500} showCount rows={3} />
+    </Modal>
 
     <Modal title={editing ? '编辑活动图片' : '新建活动图片'} open={formOpen} onCancel={() => setFormOpen(false)} onOk={() => void save()} confirmLoading={saving} width={620} okText={role === 'ROOT' ? '保存' : '提交审核'} destroyOnHidden>
       <Form form={form} layout="vertical" initialValues={{ dateMode: 'SINGLE' }}>
@@ -292,10 +535,24 @@ export default function PhotoActivitiesPage() {
 
     <Modal title={rejecting ? `驳回：${rejecting.title}` : '驳回活动'} open={!!rejecting} onCancel={() => setRejecting(null)} onOk={() => void reject()} okButtonProps={{ danger: true, disabled: !rejectReason.trim() }} okText="确认驳回"><Input.TextArea value={rejectReason} onChange={(event) => setRejectReason(event.target.value)} maxLength={500} showCount rows={4} placeholder="填写驳回原因" /></Modal>
 
-    <Modal title={deleting ? `删除活动：${deleting.title}` : '删除活动'} open={!!deleting} onCancel={() => { setDeleting(null); setDeleteInput(''); }} onOk={() => void deleteActivity()} okText="永久删除" okButtonProps={{ danger: true, loading: deleteLoading, disabled: !deleting || deleteInput.trim() !== deleting.title }}>
-      <Typography.Paragraph>此操作会永久删除活动、封面、Logo、全部图片、二维码和操作记录，无法恢复。</Typography.Paragraph>
-      <Typography.Paragraph>请输入活动名称 <Typography.Text code>{deleting?.title}</Typography.Text> 进行确认：</Typography.Paragraph>
-      <Input value={deleteInput} onChange={(event) => setDeleteInput(event.target.value)} placeholder="输入完整活动名称" />
+    <Modal
+      title={deletingTournamentPhotos ? '删除赛事图片' : '删除活动'}
+      open={role === 'ROOT' && !!deleting}
+      onCancel={() => { if (!deleteLoading) closeDelete(); }}
+      onOk={() => void deleteTarget()}
+      confirmLoading={deleteLoading}
+      closable={!deleteLoading}
+      cancelButtonProps={{ disabled: deleteLoading }}
+      okText={deletingTournamentPhotos ? '删除全部图片' : '永久删除'}
+      okButtonProps={{ danger: true, disabled: !deleting || deleteInput.trim() !== deleting.title }}
+    >
+      <Typography.Paragraph>
+        {deletingTournamentPhotos
+          ? '此操作会永久清空该赛事相册中的原图、水印版和缩略图。'
+          : '此操作会永久删除活动、封面、Logo、全部图片、二维码和操作记录，无法恢复。'}
+      </Typography.Paragraph>
+      <Typography.Paragraph>请输入完整{deleteTargetLabel}名称 <Typography.Text code>{deleting?.title}</Typography.Text> 确认删除。</Typography.Paragraph>
+      <Input aria-label={`${deleteTargetLabel}名称`} value={deleteInput} onChange={(event) => setDeleteInput(event.target.value)} placeholder={`输入完整${deleteTargetLabel}名称`} />
     </Modal>
 
     <Modal title={qr ? `${qr.title} · 图片二维码` : '图片二维码'} open={!!qr} onCancel={() => setQr(undefined)} footer={null} width={440}>

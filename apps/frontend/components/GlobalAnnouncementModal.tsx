@@ -1,8 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import Link from 'next/link';
+import { usePathname, useRouter } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 import { isRichAnnouncementContent, sanitizeAnnouncementHtml } from '@/lib/announcement-html';
+import { useRoleAnnouncements } from './RoleAnnouncementsProvider';
 
 export type ActiveAnnouncement = {
   id: string;
@@ -13,6 +16,7 @@ export type ActiveAnnouncement = {
   scope: 'global' | 'home' | string;
   frequency: 'every_visit' | 'once_per_day' | 'once' | string;
   closable: boolean;
+  targetRole?: string | null;
   primaryButtonText?: string | null;
   primaryButtonLink?: string | null;
   secondaryButtonText?: string | null;
@@ -41,17 +45,18 @@ function todayKey() {
 // frequency / content) invalidates a user's previously-closed state and the
 // popup re-shows. Without this, switching frequency in the admin panel
 // silently does nothing for anyone who already dismissed the prior version.
-function cacheSuffix(announcement: ActiveAnnouncement) {
-  return announcement.updatedAt ? `${announcement.id}_${announcement.updatedAt}` : announcement.id;
+function cacheSuffix(announcement: ActiveAnnouncement, userId?: string) {
+  const version = announcement.updatedAt ? `${announcement.id}_${announcement.updatedAt}` : announcement.id;
+  return announcement.targetRole ? `${userId}_${version}` : version;
 }
 
-function shouldShowAnnouncement(announcement: ActiveAnnouncement) {
+function shouldShowAnnouncement(announcement: ActiveAnnouncement, userId?: string) {
   // During SSR / pre-hydration we cannot read localStorage, so suppress by
   // default. The client will flip it back on once the per-id cache has been
   // checked, which avoids the brief "flash" of a dismissed popup.
   if (typeof window === 'undefined') return false;
 
-  const suffix = cacheSuffix(announcement);
+  const suffix = cacheSuffix(announcement, userId);
 
   if (announcement.frequency === 'once') {
     return window.localStorage.getItem(`announcement_closed_${suffix}`) !== '1';
@@ -65,9 +70,9 @@ function shouldShowAnnouncement(announcement: ActiveAnnouncement) {
   return window.localStorage.getItem(`announcement_closed_date_${suffix}`) !== todayKey();
 }
 
-function recordAnnouncementClosed(announcement: ActiveAnnouncement, muteToday: boolean) {
+function recordAnnouncementClosed(announcement: ActiveAnnouncement, muteToday: boolean, userId?: string) {
   if (typeof window === 'undefined') return;
-  const suffix = cacheSuffix(announcement);
+  const suffix = cacheSuffix(announcement, userId);
 
   if (announcement.frequency === 'once') {
     window.localStorage.setItem(`announcement_closed_${suffix}`, '1');
@@ -88,13 +93,28 @@ function recordAnnouncementClosed(announcement: ActiveAnnouncement, muteToday: b
 
 export function GlobalAnnouncementModal({ initialAnnouncement }: { initialAnnouncement?: ActiveAnnouncement | null }) {
   const router = useRouter();
-  const [announcement, setAnnouncement] = useState<ActiveAnnouncement | null>(initialAnnouncement ?? null);
-  // Always start closed: shouldShowAnnouncement reads localStorage which is
-  // only available on the client, so we open the modal after hydration once
-  // the per-announcement cache has been consulted.
-  const [open, setOpen] = useState(false);
+  const pathname = usePathname();
+  const isHome = pathname === '/home';
+  const { data: session, status } = useSession();
+  const userId = session?.user.id;
+  const roleAnnouncements = useRoleAnnouncements();
+  const [publicPopup, setPublicPopup] = useState<ActiveAnnouncement | null>(initialAnnouncement ?? null);
+  const [publicBanner, setPublicBanner] = useState<ActiveAnnouncement | null>(null);
+  const [hydrated, setHydrated] = useState(false);
+  const [dismissed, setDismissed] = useState<string[]>([]);
+  const [previewBanner, setPreviewBanner] = useState<string>();
   const [muteToday, setMuteToday] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
+
+  const canDisplay = (item: ActiveAnnouncement) =>
+    hydrated && (item.scope === 'global' || isHome)
+    && !dismissed.includes(cacheSuffix(item, userId))
+    && shouldShowAnnouncement(item, userId);
+  const banner = roleAnnouncements.find((item) => item.displayMode === 'banner' && canDisplay(item))
+    ?? (publicBanner && canDisplay(publicBanner) ? publicBanner : null);
+  const announcement = banner && previewBanner === cacheSuffix(banner, userId) ? banner
+    : roleAnnouncements.find((item) => item.displayMode === 'popup' && canDisplay(item))
+      ?? (publicPopup && canDisplay(publicPopup) ? publicPopup : null);
 
   // 后台富文本编辑器产出 HTML；渲染前再过一次白名单过滤（后端保存时已过滤一次）。
   // 旧的纯文本公告保持原有 pre-wrap 渲染。
@@ -103,33 +123,42 @@ export function GlobalAnnouncementModal({ initialAnnouncement }: { initialAnnoun
     return sanitizeAnnouncementHtml(announcement.content);
   }, [announcement]);
 
-  const applyAnnouncement = useCallback((next: ActiveAnnouncement | null) => {
-    setAnnouncement(next);
-    setOpen(Boolean(next && shouldShowAnnouncement(next)));
+  useEffect(() => {
+    setHydrated(true);
   }, []);
 
-  const loadActiveAnnouncement = useCallback(async () => {
+  useEffect(() => {
     if (!API_BASE) return;
 
-    try {
-      const res = await fetch(`${API_BASE}/announcements/active`, {
-        cache: 'no-store',
-      });
-      if (!res.ok) return;
-
-      const next = (await res.json()) as ActiveAnnouncement | null;
-      applyAnnouncement(next);
-    } catch {
-      // The site must still render if the public announcement endpoint is temporarily unavailable.
+    const controller = new AbortController();
+    async function load(mode: 'popup' | 'banner', apply: (item: ActiveAnnouncement | null) => void) {
+      try {
+        const res = await fetch(`${API_BASE}/announcements/active?scope=${isHome ? 'home' : 'global'}&mode=${mode}`, {
+          signal: controller.signal,
+          cache: 'no-store',
+        });
+        if (!res.ok) return;
+        const item = (await res.json()) as ActiveAnnouncement | null;
+        if (!controller.signal.aborted) apply(item?.displayMode === mode ? item : null);
+      } catch {
+        // Announcements are optional while the endpoint is unavailable.
+      }
     }
-  }, [applyAnnouncement]);
+    void load('popup', setPublicPopup);
+    void load('banner', setPublicBanner);
+    return () => controller.abort();
+  }, [isHome]);
+
+  const dismiss = useCallback((item: ActiveAnnouncement, mute: boolean) => {
+    recordAnnouncementClosed(item, mute, userId);
+    setDismissed((current) => [...current, cacheSuffix(item, userId)]);
+  }, [userId]);
 
   const closeModal = useCallback(() => {
-    if (announcement) {
-      recordAnnouncementClosed(announcement, muteToday);
-    }
-    setOpen(false);
-  }, [announcement, muteToday]);
+    if (announcement) dismiss(announcement, muteToday);
+    setPreviewBanner(undefined);
+    setMuteToday(false);
+  }, [announcement, dismiss, muteToday]);
 
   const handlePrimary = useCallback(() => {
     if (!announcement?.primaryButtonLink) {
@@ -145,19 +174,11 @@ export function GlobalAnnouncementModal({ initialAnnouncement }: { initialAnnoun
     window.location.href = announcement.primaryButtonLink;
   }, [announcement, closeModal, router]);
 
-  useEffect(() => {
-    if (initialAnnouncement) {
-      setOpen(shouldShowAnnouncement(initialAnnouncement));
-    }
-    void loadActiveAnnouncement();
-  }, [initialAnnouncement, loadActiveAnnouncement]);
-
   // 弹窗打开后滚动条复位到顶部（内容区是唯一的滑动窗口）。
   useEffect(() => {
-    if (!open) return;
     const el = contentRef.current;
     if (el) el.scrollTop = 0;
-  }, [open, announcement?.content]);
+  }, [announcement?.id, announcement?.content]);
 
   const scrollContentDown = useCallback(() => {
     const el = contentRef.current;
@@ -181,7 +202,7 @@ export function GlobalAnnouncementModal({ initialAnnouncement }: { initialAnnoun
   }, [announcement?.primaryButtonLink, closeModal, handlePrimary, scrollContentDown]);
 
   useEffect(() => {
-    if (!open || announcement?.closable === false) return;
+    if (!announcement || announcement.closable === false) return;
 
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === 'Escape') {
@@ -191,16 +212,32 @@ export function GlobalAnnouncementModal({ initialAnnouncement }: { initialAnnoun
 
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [announcement?.closable, closeModal, open]);
+  }, [announcement, closeModal]);
 
-  if (!announcement || !open) return null;
+  if (status === 'loading') return null;
+  const bannerElement = banner ? (
+    <aside aria-label={banner.targetRole ? '定向通知' : '公告'} className="fixed inset-x-3 top-3 z-[1100] mx-auto flex max-w-3xl items-center gap-3 rounded-lg border border-sky-500 bg-slate-950 px-4 py-3 text-sm text-white shadow-lg">
+      <div className="min-w-0 flex-1 truncate font-semibold">{banner.title}</div>
+      {banner.primaryButtonLink ? (
+        <Link href={banner.primaryButtonLink} className="shrink-0 rounded px-2 py-1 font-semibold text-sky-200 hover:bg-white/10" onClick={() => dismiss(banner, false)}>
+          {banner.primaryButtonText?.trim() || '查看通知'}
+        </Link>
+      ) : (
+        <button type="button" className="shrink-0 rounded px-2 py-1 font-semibold text-sky-200 hover:bg-white/10" onClick={() => setPreviewBanner(cacheSuffix(banner, userId))}>查看通知</button>
+      )}
+      {banner.closable !== false && (
+        <button type="button" className="shrink-0 rounded px-2 py-1 text-xl leading-none hover:bg-white/10" aria-label="关闭横幅" onClick={() => dismiss(banner, false)}>×</button>
+      )}
+    </aside>
+  ) : null;
+  if (!announcement) return bannerElement;
 
   const hasLink = Boolean(announcement.primaryButtonLink);
   const primaryText =
     announcement.primaryButtonText?.trim() || (hasLink ? '立即查看' : '记得下滑哟！');
   const secondaryText = announcement.secondaryButtonText?.trim() || '关闭';
   const canClose = announcement.closable !== false;
-  const noticeTitle = NOTICE_TITLES[announcement.type] ?? NOTICE_TITLES.normal;
+  const noticeTitle = announcement.targetRole ? '定向通知' : NOTICE_TITLES[announcement.type] ?? NOTICE_TITLES.normal;
 
   return (
     <div

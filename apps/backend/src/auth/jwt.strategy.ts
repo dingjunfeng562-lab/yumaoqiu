@@ -4,6 +4,7 @@ import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
 import { UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { PHOTO_MANAGEMENT_APPROVAL } from './permissions';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
@@ -33,6 +34,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         email: true,
         role: true,
         permissions: true,
+        photoManagementRequests: PHOTO_MANAGEMENT_APPROVAL,
         status: true,
         mustChangePassword: true,
       },

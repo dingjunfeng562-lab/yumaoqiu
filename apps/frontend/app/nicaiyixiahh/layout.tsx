@@ -92,7 +92,8 @@ const baseMenuItems: NavItem[] = [
   { key: '/nicaiyixiahh/players', section: 'competition', icon: <UserOutlined />, label: '选手管理' },
   { key: '/nicaiyixiahh/payments', section: 'payment', icon: <WalletOutlined />, label: '缴费管理' },
   { key: '/nicaiyixiahh/draws', section: 'execution', icon: <BranchesOutlined />, label: '抽签编排' },
-  { key: '/nicaiyixiahh/scheduling', section: 'execution', icon: <CalendarOutlined />, label: '场地排程' },
+  { key: '/nicaiyixiahh/scheduling', section: 'execution', icon: <CalendarOutlined />, label: '场地自动排程' },
+  { key: '/nicaiyixiahh/court-schedule', section: 'execution', icon: <ScheduleOutlined />, label: '场地排程表' },
   { key: '/nicaiyixiahh/scoring', section: 'execution', icon: <FieldTimeOutlined />, label: '裁判分配' },
   { key: '/nicaiyixiahh/match-management', section: 'execution', icon: <ScheduleOutlined />, label: '裁判员对局管理' },
   { key: '/nicaiyixiahh/exports', section: 'execution', icon: <DownloadOutlined />, label: '秩序册/数据导出' },
@@ -291,7 +292,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
               />
             ) : null}
           </span>
-        ) : item.label,
+        ) : item.key === '/nicaiyixiahh/court-schedule' ? <a href={item.key} target="_blank" rel="noopener noreferrer">{item.label}</a> : item.label,
       })),
     }];
   });
@@ -446,9 +447,13 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       inlineCollapsed={!isMobile && collapsed}
       selectedKeys={[displayedSelectedKey]}
       items={menuItems}
-      onClick={({ key }) => {
+      onClick={({ key, domEvent }) => {
         const targetPath = String(key);
         setMobileDrawerOpen(false);
+        if (targetPath === '/nicaiyixiahh/court-schedule') {
+          if (!(domEvent.target instanceof Element && domEvent.target.closest('a'))) window.open(targetPath, '_blank', 'noopener,noreferrer');
+          return;
+        }
         if (targetPath === pathname) return;
 
         // Highlight immediately while Next.js loads the target route.
@@ -462,8 +467,12 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     />
   );
 
+  if (pathname === '/nicaiyixiahh/court-schedule') {
+    if (!access.ready || !canAccessAdminPage(role, pathname, access.permissions)) return null;
+    return <>{maintenanceOn && <MaintenanceBanner role={role} onManage={() => router.push('/nicaiyixiahh/maintenance')} />}{children}</>;
+  }
   return (
-    <Layout style={{ height: '100vh', minHeight: '100vh', overflow: 'hidden' }}>
+    <Layout className="admin-viewport">
       {isNavigating ? <div className="admin-nav-progress" aria-hidden /> : null}
       {!isMobile && (
         <Sider
@@ -471,7 +480,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           theme="dark"
           width={siderWidth}
           style={{
-            height: '100vh',
+            height: '100%',
             position: 'sticky',
             top: 0,
             overflow: 'visible',
@@ -551,7 +560,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         </div>
       </Drawer>
 
-      <Layout style={{ height: '100vh', minWidth: 0, overflow: 'hidden' }}>
+      <Layout style={{ height: '100%', minHeight: 0, minWidth: 0, overflow: 'hidden' }}>
         {maintenanceOn ? (
           <MaintenanceBanner
             role={role}
@@ -593,7 +602,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <Button
               icon={<HomeOutlined />}
-              onClick={() => router.push('/')}
+              onClick={() => router.push('/home')}
               style={isMobile ? { height: 40, paddingInline: 10 } : undefined}
             >
               {isMobile ? '' : '返回首页'}
@@ -630,6 +639,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           </div>
         </Header>
         <Content
+          className="admin-content-scroll"
           style={{
             margin: isMobile ? 8 : 24,
             padding: isMobile ? 12 : 24,

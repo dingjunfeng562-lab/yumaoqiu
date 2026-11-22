@@ -1,20 +1,22 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { Announcement, Prisma } from '@prisma/client';
+import { Announcement, Prisma, Role } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { sanitizeAnnouncementContent } from './announcement-content';
-import { AnnouncementStatus, CreateAnnouncementDto, UpdateAnnouncementDto } from './dto/announcement.dto';
+import { CreateAnnouncementDto, UpdateAnnouncementDto } from './dto/announcement.dto';
 
 const DEFAULT_TYPE = 'normal';
 const DEFAULT_DISPLAY_MODE = 'popup';
 const DEFAULT_SCOPE = 'global';
 const DEFAULT_FREQUENCY = 'every_visit';
+// Older public readers only recognize 'published' and isPublished = true.
+const TARGETED_PUBLISHED = 'targeted_published';
 
 @Injectable()
 export class AnnouncementsService {
   constructor(private prisma: PrismaService) {}
 
-  findAll() {
-    return this.prisma.announcement.findMany({
+  async findAll() {
+    const announcements = await this.prisma.announcement.findMany({
       orderBy: [
         { priority: 'desc' },
         { status: 'asc' },
@@ -22,47 +24,54 @@ export class AnnouncementsService {
         { createdAt: 'desc' },
       ],
     });
+    return announcements.map((announcement) => this.toAdminAnnouncement(announcement));
   }
 
   async findOne(id: string) {
+    return this.toAdminAnnouncement(await this.getAnnouncement(id));
+  }
+
+  private async getAnnouncement(id: string) {
     const announcement = await this.prisma.announcement.findUnique({ where: { id } });
     if (!announcement) throw new NotFoundException(`公告 ${id} 不存在`);
     return announcement;
   }
 
-  create(dto: CreateAnnouncementDto, operator?: string) {
+  async create(dto: CreateAnnouncementDto, operator?: string) {
     const data = this.toAnnouncementData(dto, 'create') as Prisma.AnnouncementUncheckedCreateInput;
     data.createdBy = operator;
     data.updatedBy = operator;
-    return this.prisma.announcement.create({ data });
+    return this.toAdminAnnouncement(await this.prisma.announcement.create({ data }));
   }
 
   async update(id: string, dto: UpdateAnnouncementDto, operator?: string) {
-    await this.findOne(id);
-    const data = this.toAnnouncementData(dto, 'update') as Prisma.AnnouncementUncheckedUpdateInput;
+    const current = await this.getAnnouncement(id);
+    const data = this.toAnnouncementData(dto, 'update', current) as Prisma.AnnouncementUncheckedUpdateInput;
     data.updatedBy = operator;
 
-    return this.prisma.announcement.update({
-      where: { id },
+    const where = dto.targetRole !== undefined || this.resolveStatus(dto) !== undefined
+      ? { id, targetRole: current.targetRole, status: current.status, isPublished: current.isPublished }
+      : { id };
+    return this.toAdminAnnouncement(await this.prisma.announcement.update({
+      where,
       data,
-    });
+    }));
   }
 
   async updateStatus(id: string, status: 'published' | 'disabled', operator?: string) {
-    const current = await this.findOne(id);
+    const current = await this.getAnnouncement(id);
     const now = new Date();
     const currentStartAt = current.startAt ?? current.publishedAt ?? current.createdAt;
     const startAt = status === 'published' && currentStartAt > now ? now : currentStartAt;
-    return this.prisma.announcement.update({
-      where: { id },
+    return this.toAdminAnnouncement(await this.prisma.announcement.update({
+      where: { id, targetRole: current.targetRole },
       data: {
-        status,
-        isPublished: status === 'published',
+        ...this.publicationFields(status, current.targetRole),
         startAt,
         publishedAt: status === 'published' ? (current.publishedAt && current.publishedAt <= now ? current.publishedAt : startAt) : current.publishedAt,
         updatedBy: operator,
       },
-    });
+    }));
   }
 
   async remove(id: string) {
@@ -70,9 +79,9 @@ export class AnnouncementsService {
     return this.prisma.announcement.delete({ where: { id } });
   }
 
-  async findPublished(limit?: number) {
+  async findPublished(limit?: number, targetRole: Role | null = null) {
     const announcements = await this.prisma.announcement.findMany({
-      where: this.activeAnnouncementWhere(),
+      where: this.activeAnnouncementWhere(targetRole, targetRole ? ['global', 'home'] : ['global']),
       orderBy: [
         { priority: 'desc' },
         { isPinned: 'desc' },
@@ -86,10 +95,14 @@ export class AnnouncementsService {
   }
 
   async findActivePopup(scope = DEFAULT_SCOPE) {
+    return this.findActive(scope, 'popup');
+  }
+
+  async findActive(scope: string, displayMode: 'popup' | 'banner') {
     const announcement = await this.prisma.announcement.findFirst({
       where: {
-        ...this.activeAnnouncementWhere(scope),
-        displayMode: 'popup',
+        ...this.activeAnnouncementWhere(null, scope === 'home' ? ['global', 'home'] : ['global']),
+        displayMode,
       },
       orderBy: [
         { priority: 'desc' },
@@ -101,11 +114,16 @@ export class AnnouncementsService {
     return announcement ? this.toActiveAnnouncement(announcement) : null;
   }
 
-  private toAnnouncementData(dto: CreateAnnouncementDto | UpdateAnnouncementDto, mode: 'create' | 'update') {
+  private toAnnouncementData(
+    dto: CreateAnnouncementDto | UpdateAnnouncementDto,
+    mode: 'create' | 'update',
+    current?: Announcement,
+  ) {
     const data: Record<string, unknown> = {};
 
     if (dto.title !== undefined) data.title = dto.title.trim();
     if (dto.content !== undefined) data.content = sanitizeAnnouncementContent(dto.content.trim());
+    if (dto.targetRole !== undefined) data.targetRole = dto.targetRole;
     if (dto.type !== undefined) data.type = this.normalizeType(dto.type);
     if (dto.displayMode !== undefined) data.displayMode = dto.displayMode;
     if (dto.scope !== undefined) data.scope = dto.scope;
@@ -123,20 +141,21 @@ export class AnnouncementsService {
       data.displayMode ??= DEFAULT_DISPLAY_MODE;
       data.scope ??= DEFAULT_SCOPE;
       data.frequency ??= DEFAULT_FREQUENCY;
-      data.status ??= 'draft';
       data.startAt ??= new Date();
       data.closable ??= true;
       data.priority ??= 0;
     }
 
     const status = this.resolveStatus(dto);
+    const targetRole = dto.targetRole !== undefined ? dto.targetRole : current?.targetRole ?? null;
     if (status !== undefined || mode === 'create') {
-      const resolved = (status ?? data.status ?? 'draft') as AnnouncementStatus;
-      data.status = resolved;
-      data.isPublished = resolved === 'published';
-      if (resolved === 'published') {
-        data.publishedAt = (data.startAt as Date | undefined) ?? (dto.publishedAt ? new Date(dto.publishedAt) : new Date());
-      }
+      Object.assign(data, this.publicationFields(status ?? 'draft', targetRole));
+    } else if (current && dto.targetRole !== undefined && targetRole !== current.targetRole) {
+      const currentStatus = current.isPublished ? 'published' : this.toAdminAnnouncement(current).status;
+      Object.assign(data, this.publicationFields(currentStatus, targetRole));
+    }
+    if (status === 'published') {
+      data.publishedAt = (data.startAt as Date | undefined) ?? (dto.publishedAt ? new Date(dto.publishedAt) : new Date());
     }
 
     if (dto.isPinned !== undefined) data.isPinned = dto.isPinned;
@@ -174,19 +193,35 @@ export class AnnouncementsService {
     return undefined;
   }
 
-  private activeAnnouncementWhere(scope = DEFAULT_SCOPE): Prisma.AnnouncementWhereInput {
+  private publicationFields(status: string, targetRole: Role | null) {
+    return {
+      status: status === 'published' && targetRole ? TARGETED_PUBLISHED : status,
+      isPublished: status === 'published' && targetRole === null,
+    };
+  }
+
+  private toAdminAnnouncement(announcement: Announcement) {
+    if (announcement.status !== TARGETED_PUBLISHED) return announcement;
+    return { ...announcement, status: 'published', isPublished: true };
+  }
+
+  private activeAnnouncementWhere(targetRole: Role | null, scopes: string[]): Prisma.AnnouncementWhereInput {
     const now = new Date();
     return {
-      OR: [{ status: 'published' }, { isPublished: true }],
+      targetRole,
+      scope: { in: scopes },
+      ...(targetRole
+        ? { status: TARGETED_PUBLISHED }
+        : { OR: [{ status: 'published' }, { isPublished: true }] }),
       AND: [
-        {
-          OR: [{ scope: 'global' }, { scope }],
-        },
         {
           OR: [{ startAt: { lte: now } }, { publishedAt: { lte: now } }],
         },
         {
           OR: [{ endAt: null }, { endAt: { gte: now } }],
+        },
+        {
+          OR: [{ expiresAt: null }, { expiresAt: { gte: now } }],
         },
       ],
     };
@@ -197,6 +232,7 @@ export class AnnouncementsService {
       id: announcement.id,
       title: announcement.title,
       content: announcement.content,
+      targetRole: announcement.targetRole,
       type: announcement.type,
       displayMode: announcement.displayMode,
       scope: announcement.scope,

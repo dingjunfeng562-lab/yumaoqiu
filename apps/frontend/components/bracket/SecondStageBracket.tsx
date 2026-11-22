@@ -1,6 +1,7 @@
 'use client';
 
 import { SecondStageCrossBracket } from './SecondStageCrossBracket';
+import { compactGroupRankLabel, secondStageRankingLimit } from '@/lib/second-stage-ranking';
 
 export type SecondStageStatus = 'NOT_STARTED' | 'DRAFT' | 'CONFIRMED' | 'FINISHED' | string;
 export type SecondStageRankingMode = 'TOP_6' | 'TOP_8' | string;
@@ -33,6 +34,9 @@ export type SecondStageMatch = {
   winnerId?: string | null;
   winnerName?: string | null;
   status?: string | null;
+  scheduledAt?: string | null;
+  venueName?: string | null;
+  walkover?: boolean;
 };
 
 export type SecondStageRanking = {
@@ -50,12 +54,14 @@ export type SecondStageEligibleEntrant = {
 };
 
 export type SecondStageData = {
+  kind?: 'KNOCKOUT_PLACEMENT';
   status?: SecondStageStatus;
   secondStageStatus?: SecondStageStatus;
   mode?: string | null;
   secondStageMode?: string | null;
   modeText?: string | null;
   rankingMode?: SecondStageRankingMode;
+  rankingLimit?: number | null;
   rankingModeText?: string | null;
   slotSourceText?: string | null;
   slots?: SecondStageSlot[];
@@ -83,15 +89,44 @@ function normalizedStatus(data: SecondStageData) {
   return String(data.secondStageStatus ?? data.status ?? 'NOT_STARTED').toUpperCase();
 }
 
-export function SecondStageBracket({ data }: { data: SecondStageData }) {
+function formatAppointment(value: string) {
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).format(new Date(value));
+}
+
+function PlacementSchedule({ matches }: { matches: SecondStageMatch[] }) {
+  return (
+    <section aria-label="排位赛程">
+      <h3 className="mb-2 text-sm font-black text-slate-900">排位赛程</h3>
+      <div className="divide-y divide-slate-200 rounded-lg border border-slate-200 bg-white">
+        {matches.map(match => (
+          <div key={match.id ?? match.matchNo} className="grid gap-1 px-3 py-2 text-sm text-slate-700 sm:grid-cols-[11rem_1fr_12rem]">
+            <strong>第{match.matchNo}场 · {match.roundName}</strong>
+            <span>
+              {match.player1Name ?? match.source1 ?? '待定'} / {match.player2Name ?? (match.walkover ? '轮空' : match.source2) ?? '待定'}
+              {match.score && !match.walkover && <span className="ml-2 font-semibold tabular-nums">{match.score}</span>}
+            </span>
+            <span>{match.walkover ? '轮空 · 无需排程' : match.scheduledAt
+              ? <><time dateTime={match.scheduledAt}>{formatAppointment(match.scheduledAt)}</time> · {match.venueName ?? '场地待定'}</>
+              : '待排程'}</span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+export function SecondStageBracket({ data, showSchedule = false }: { data: SecondStageData; showSchedule?: boolean }) {
   const status = normalizedStatus(data);
-  const rankingMode = data.rankingMode ?? 'TOP_8';
+  const rankingLimit = secondStageRankingLimit(data);
   const formal = status === 'CONFIRMED' || status === 'FINISHED';
+  const placement = data.kind === 'KNOCKOUT_PLACEMENT';
   const slots = [...(data.slots ?? [])].sort(
     (a, b) => SLOT_ORDER.indexOf(a.slot) - SLOT_ORDER.indexOf(b.slot),
   );
   const rankings = [...(data.rankings ?? [])]
-    .filter((ranking) => rankingMode !== 'TOP_6' || ranking.rank <= 6)
+    .filter((ranking) => ranking.rank <= rankingLimit)
     .sort((a, b) => a.rank - b.rank);
   const hasPreview = slots.length > 0 || (data.matches ?? []).length > 0;
 
@@ -104,12 +139,12 @@ export function SecondStageBracket({ data }: { data: SecondStageData }) {
               Second Stage
             </p>
             <h2 className="mt-1 text-base font-black tracking-wide sm:text-lg">
-              第二阶段：小组赛排位赛
+              {placement ? `第5–${rankingLimit}名排位赛` : '第二阶段：小组赛排位赛'}
             </h2>
           </div>
           <div className="flex flex-wrap gap-2 text-[11px] font-black sm:text-xs">
             <span className="rounded-full bg-white/15 px-2.5 py-1">{STATUS_TEXT[status] ?? status}</span>
-            <span className="rounded-full bg-white/15 px-2.5 py-1">{data.rankingModeText ?? '取前8名'}</span>
+            <span className="rounded-full bg-white/15 px-2.5 py-1">取前{rankingLimit}名</span>
           </div>
         </div>
         <div className="mt-3 flex flex-wrap gap-2 text-xs font-bold text-emerald-50/90">
@@ -129,7 +164,7 @@ export function SecondStageBracket({ data }: { data: SecondStageData }) {
         </div>
       ) : (
         <div className="space-y-5 bg-[#f7f9fd] px-4 py-4 sm:px-6 sm:py-5">
-          <section>
+          {slots.length > 0 && <section>
             <div className="mb-2 flex items-center justify-between gap-3">
               <h3 className="text-sm font-black text-slate-900">A-H 签位表</h3>
               <span className="text-xs font-bold text-slate-500">裁判手动指定</span>
@@ -145,7 +180,9 @@ export function SecondStageBracket({ data }: { data: SecondStageData }) {
                       {slot.slot}
                     </span>
                     {slot.sourceLabel ? (
-                      <span className="text-xs font-bold text-emerald-700">{slot.sourceLabel}</span>
+                      <span className="text-xs font-bold text-emerald-700" title={slot.sourceLabel}>
+                        {compactGroupRankLabel(slot.sourceLabel)}
+                      </span>
                     ) : null}
                   </span>
                   <span className="min-w-0 flex-1 truncate text-right text-sm font-black text-slate-800">
@@ -154,18 +191,14 @@ export function SecondStageBracket({ data }: { data: SecondStageData }) {
                 </div>
               ))}
             </div>
-          </section>
+          </section>}
 
-          <section>
+          {!placement && <section>
             <h3 className="mb-2 text-sm font-black text-slate-900">排位赛交叉对阵</h3>
-            <SecondStageCrossBracket matches={data.matches ?? []} rankingMode={rankingMode} variant="light" />
-          </section>
+            <SecondStageCrossBracket matches={data.matches ?? []} rankingLimit={rankingLimit} variant="light" />
+          </section>}
 
-          {rankingMode === 'TOP_6' ? (
-            <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800">
-              本项目仅取前6名，不进行第7、第8名排位赛。
-            </p>
-          ) : null}
+          {(showSchedule || placement) && Boolean(data.matches?.length) && <PlacementSchedule matches={data.matches!} />}
 
           <section>
             <h3 className="mb-2 text-sm font-black text-slate-900">最终排名</h3>

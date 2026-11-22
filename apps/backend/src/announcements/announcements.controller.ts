@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Header, Param, Patch, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
 import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -60,7 +60,14 @@ export class PublicAnnouncementsController {
   constructor(private announcementsService: AnnouncementsService) {}
 
   @Get('active')
-  findActive(@Query('scope') scope?: string) {
-    return this.announcementsService.findActivePopup(scope || 'global');
+  findActive(@Query('scope') scope?: string, @Query('mode') mode?: string) {
+    return this.announcementsService.findActive(scope || 'global', mode === 'banner' ? 'banner' : 'popup');
+  }
+
+  @Get('mine')
+  @UseGuards(JwtAuthGuard)
+  @Header('Cache-Control', 'private, no-store')
+  async findMine(@Req() req: { user: { role: Role } }) {
+    return { announcements: await this.announcementsService.findPublished(50, req.user.role) };
   }
 }

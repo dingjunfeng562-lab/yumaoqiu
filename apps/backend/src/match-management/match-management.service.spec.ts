@@ -63,7 +63,7 @@ describe('MatchManagementService releaseReferee', () => {
     expect(state.refereeId).toBeNull();
     expect(match.update).toHaveBeenCalledWith({
       where: { id: 'm1' },
-      data: { refereeId: null },
+      data: { refereeId: null, refereeClaimExpiresAt: null },
     });
     expect(gateway.emitBracketUpdate).toHaveBeenCalledWith({
       tournamentId: 'tournament-1',

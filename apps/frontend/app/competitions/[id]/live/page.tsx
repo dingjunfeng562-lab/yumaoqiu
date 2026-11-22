@@ -5,6 +5,7 @@ import { TournamentSwitcher } from '@/components/competitions/TournamentSwitcher
 import { API_BASE } from '@/components/competitions/types';
 import type { KnockoutBracketData } from '@/components/bracket/KnockoutBracket';
 import { fetchPublicBrackets } from '@/lib/live-brackets';
+import { fetchTeamBoard } from '@/lib/team-board';
 
 export const dynamic = 'force-dynamic';
 
@@ -41,9 +42,10 @@ export default async function CompetitionLivePage({
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
   const { id } = await params;
-  const [competition, brackets, { player }] = await Promise.all([
+  const [competition, brackets, teams, { player, status }] = await Promise.all([
     getCompetition(id),
     getBrackets(id),
+    fetchTeamBoard(id).catch(() => []),
     searchParams,
   ]);
   if (!competition) notFound();
@@ -53,14 +55,16 @@ export default async function CompetitionLivePage({
       activeHref="/competitions"
       eyebrow="Live Score · 比分直播"
       title={competition.title}
-      description="按场地和时间查看全部场次与实时比分。输入运动员姓名，可快速找到他所在的场地、排队顺序和当前比分。"
+      description="按场地和时间查看赛程与实时比分，可用选手姓名或队名查找场次。"
       actions={<TournamentSwitcher currentId={competition.id} target="live" />}
       back={{ href: `/competitions/${encodeURIComponent(competition.id)}`, label: '赛事主页' }}
     >
       <LiveMatchBoard
         tournamentId={competition.id}
         initialBrackets={brackets.filter((bracket) => bracket.tournamentId === competition.id)}
+        initialTeams={teams}
         initialPlayer={typeof player === 'string' ? player : ''}
+        initialTab={status === 'PENDING' ? 'PENDING' : 'ALL'}
       />
     </PortalFeaturePage>
   );

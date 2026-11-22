@@ -33,6 +33,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ResultsResetModule } from './common/results-reset.module';
 import { CheckInModule } from './check-in/check-in.module';
+import { RosterRecognitionModule } from './roster-recognition/roster-recognition.module';
 
 @Module({
   imports: [
@@ -63,6 +64,7 @@ import { CheckInModule } from './check-in/check-in.module';
     PhotoActivitiesModule,
     MatchManagementModule,
     CheckInModule,
+    RosterRecognitionModule,
     PaymentsModule,
     MaintenanceModule,
     StatisticsModule,

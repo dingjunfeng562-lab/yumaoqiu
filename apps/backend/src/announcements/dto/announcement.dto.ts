@@ -1,6 +1,7 @@
 import {
   IsBoolean,
   IsDateString,
+  IsEnum,
   IsIn,
   IsInt,
   IsOptional,
@@ -9,6 +10,7 @@ import {
   Min,
   MinLength,
 } from 'class-validator';
+import { Role } from '@prisma/client';
 
 export const ANNOUNCEMENT_TYPES = ['normal', 'event', 'maintenance', 'urgent'] as const;
 export const ANNOUNCEMENT_DISPLAY_MODES = ['popup', 'banner'] as const;
@@ -27,6 +29,10 @@ export class CreateAnnouncementDto {
   @IsString()
   @MinLength(1)
   content: string;
+
+  @IsOptional()
+  @IsEnum(Role)
+  targetRole?: Role | null;
 
   @IsOptional()
   @IsString()
@@ -118,6 +124,10 @@ export class UpdateAnnouncementDto {
   @IsString()
   @MinLength(1)
   content?: string;
+
+  @IsOptional()
+  @IsEnum(Role)
+  targetRole?: Role | null;
 
   @IsOptional()
   @IsString()

@@ -1,6 +1,7 @@
 import { AuthActor, tournamentScope } from '../auth/admin-scope';
+import { approvedPhotoTargetIds, assertCanManagePhotoTarget, canManagePhotoTarget } from '../auth/permissions';
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { PhotoCategory, Prisma, TournamentApprovalStatus } from '@prisma/client';
+import { PhotoCategory, PhotoManagementRequestStatus, PhotoManagementTargetType, Prisma, Role, TournamentApprovalStatus } from '@prisma/client';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, normalize } from 'node:path';
@@ -38,6 +39,11 @@ type UploadFile = {
 };
 
 type WatermarkLogo = { order: number; path: string; filename?: string };
+type OwnedUploadTarget = {
+  id: string;
+  targetType: PhotoManagementTargetType;
+  submittedById: string | null;
+};
 export type PhotoTargetType = 'TOURNAMENT' | 'ACTIVITY';
 /** 「活动图片」列表里赛事和活动共用的展示结构。 */
 export type PhotoTarget = {
@@ -53,6 +59,9 @@ export type PhotoTarget = {
   /** 仅活动有值（SINGLE / RANGE），赛事为 null。 */
   dateMode: string | null;
   photoCount: number;
+  managementAllowed: boolean;
+  managementOpened: boolean;
+  managementApprovalId: string | null;
   photoAccessEnabled: boolean;
   photoUploadAccessEnabled: boolean;
   submittedBy: { id: string; username: string | null } | null;
@@ -167,9 +176,12 @@ export class PhotosService {
 
   /** Tournaments that have at least one (non-deleted) public photo. */
   async listTournamentsWithPhotos(actor?: AuthActor) {
+    const targetFilter = actor && actor.role !== 'ROOT'
+      ? { tournamentId: { in: approvedPhotoTargetIds(actor, 'TOURNAMENT') } }
+      : {};
     const grouped = await this.prisma.photo.groupBy({
       by: ['tournamentId'],
-      where: { deletedAt: null, tournament: tournamentScope(actor) },
+      where: { deletedAt: null, tournament: tournamentScope(actor), ...targetFilter },
       _count: { _all: true },
       _sum: { viewCount: true, downloadCount: true },
     });
@@ -257,12 +269,33 @@ export class PhotosService {
     const users = userIds.length
       ? await this.prisma.user.findMany({
           where: { id: { in: userIds } },
-          select: { id: true, username: true },
+          select: { id: true, username: true, role: true },
         })
       : [];
     const usernameById = new Map(users.map((user) => [user.id, user.username]));
     const submittedBy = (id: string | null) =>
       id ? { id, username: usernameById.get(id) ?? null } : null;
+    const adminIds = new Set(users.filter((user) => user.role === Role.ADMIN).map((user) => user.id));
+    const approvals = actor?.role === Role.ROOT && adminIds.size
+      ? await this.prisma.photoManagementRequest.findMany({
+          where: {
+            applicantId: { in: [...adminIds] },
+            active: true,
+            status: PhotoManagementRequestStatus.APPROVED,
+          },
+          select: { id: true, applicantId: true, targetType: true, targetId: true },
+        })
+      : [];
+    const approvalIds = new Map(approvals.map((approval) => [
+      `${approval.applicantId}:${approval.targetType}:${approval.targetId}`, approval.id,
+    ]));
+    const managementStatus = (targetType: PhotoTargetType, id: string, ownerId: string | null) => {
+      if (actor?.role === Role.ROOT && ownerId && adminIds.has(ownerId)) {
+        const managementApprovalId = approvalIds.get(`${ownerId}:${targetType}:${id}`) ?? null;
+        return { managementOpened: managementApprovalId !== null, managementApprovalId };
+      }
+      return { managementOpened: !actor || canManagePhotoTarget(actor, targetType, id), managementApprovalId: null };
+    };
 
     const targets: PhotoTarget[] = [
       ...tournaments.map((row) => ({
@@ -277,6 +310,8 @@ export class PhotosService {
         isArchived: row.isArchived,
         dateMode: null,
         photoCount: row._count.photos,
+        managementAllowed: !actor || canManagePhotoTarget(actor, 'TOURNAMENT', row.id),
+        ...managementStatus('TOURNAMENT', row.id, row.submittedById),
         photoAccessEnabled: Boolean(row.photoAccessToken),
         photoUploadAccessEnabled: Boolean(row.photoUploadToken),
         submittedBy: submittedBy(row.submittedById),
@@ -294,6 +329,8 @@ export class PhotosService {
         isArchived: false,
         dateMode: row.dateMode,
         photoCount: row._count.photos,
+        managementAllowed: !actor || canManagePhotoTarget(actor, 'ACTIVITY', row.id),
+        ...managementStatus('ACTIVITY', row.id, row.submittedById),
         photoAccessEnabled: Boolean(row.photoAccessToken),
         photoUploadAccessEnabled: Boolean(row.photoUploadToken),
         submittedBy: submittedBy(row.submittedById),
@@ -301,7 +338,9 @@ export class PhotosService {
       })),
     ];
 
-    return targets.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    return targets.map((target) => target.managementAllowed ? target : {
+      ...target, photoCount: 0, photoAccessEnabled: false, photoUploadAccessEnabled: false,
+    }).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   }
 
   /** 「活动图片」子页（图片管理 / 水印设置）需要的单个对象信息。 */
@@ -316,6 +355,7 @@ export class PhotosService {
     if (!target) {
       throw new NotFoundException(normalized === 'TOURNAMENT' ? '赛事不存在或不属于你' : '活动不存在或不属于你');
     }
+    if (actor) assertCanManagePhotoTarget(actor, normalized, id);
     return target;
   }
 
@@ -432,14 +472,20 @@ export class PhotosService {
     const validToken = this.validUploadToken(token);
     const tournament = await this.prisma.tournament.findUnique({
       where: { photoUploadToken: validToken },
-      select: { id: true, name: true, startDate: true, endDate: true },
+      select: { id: true, name: true, startDate: true, endDate: true, submittedById: true },
     });
-    if (tournament) return { targetType: 'TOURNAMENT' as const, id: tournament.id, name: tournament.name, startAt: tournament.startDate, endAt: tournament.endDate };
+    if (tournament) {
+      await this.requirePhotoUploadManagement({ ...tournament, targetType: 'TOURNAMENT' });
+      return { targetType: 'TOURNAMENT' as const, id: tournament.id, name: tournament.name, startAt: tournament.startDate, endAt: tournament.endDate };
+    }
     const activity = await this.prisma.photoActivity.findFirst({
       where: { photoUploadToken: validToken, approvalStatus: 'APPROVED' },
-      select: { id: true, title: true, startAt: true, endAt: true },
+      select: { id: true, title: true, startAt: true, endAt: true, submittedById: true },
     });
-    if (activity) return { targetType: 'ACTIVITY' as const, id: activity.id, name: activity.title, startAt: activity.startAt, endAt: activity.endAt };
+    if (activity) {
+      await this.requirePhotoUploadManagement({ ...activity, targetType: 'ACTIVITY' });
+      return { targetType: 'ACTIVITY' as const, id: activity.id, name: activity.title, startAt: activity.startAt, endAt: activity.endAt };
+    }
     throw new NotFoundException('上传授权二维码无效');
   }
 
@@ -465,36 +511,66 @@ export class PhotosService {
     const grants = await this.prisma.photoUploadGrant.findMany({
       where: { userId },
       include: {
-        tournament: { select: { id: true, name: true, startDate: true, endDate: true, isArchived: true, approvalStatus: true } },
-        activity: { select: { id: true, title: true, startAt: true, endAt: true, approvalStatus: true } },
+        tournament: { select: { id: true, name: true, startDate: true, endDate: true, isArchived: true, approvalStatus: true, submittedById: true } },
+        activity: { select: { id: true, title: true, startAt: true, endAt: true, approvalStatus: true, submittedById: true } },
       },
       orderBy: { grantedAt: 'desc' },
     });
-    const targets: Array<{
-      targetType: 'TOURNAMENT' | 'ACTIVITY';
-      id: string;
+    const targets: Array<OwnedUploadTarget & {
       name: string;
       startAt: Date;
       endAt: Date | null;
     }> = [];
     grants.forEach((grant) => {
       if (grant.tournament && !grant.tournament.isArchived && grant.tournament.approvalStatus === 'APPROVED') {
-        targets.push({ targetType: 'TOURNAMENT', id: grant.tournament.id, name: grant.tournament.name, startAt: grant.tournament.startDate, endAt: grant.tournament.endDate });
+        targets.push({ targetType: 'TOURNAMENT', id: grant.tournament.id, name: grant.tournament.name, startAt: grant.tournament.startDate, endAt: grant.tournament.endDate, submittedById: grant.tournament.submittedById });
       } else if (grant.activity?.approvalStatus === 'APPROVED') {
-        targets.push({ targetType: 'ACTIVITY', id: grant.activity.id, name: grant.activity.title, startAt: grant.activity.startAt, endAt: grant.activity.endAt });
+        targets.push({ targetType: 'ACTIVITY', id: grant.activity.id, name: grant.activity.title, startAt: grant.activity.startAt, endAt: grant.activity.endAt, submittedById: grant.activity.submittedById });
       }
     });
-    return targets;
+    const allowed = await this.approvedPhotoUploadTargets(targets);
+    return allowed.map(({ submittedById: _owner, ...target }) => target);
   }
 
   async assertPhotoUploadAuthorized(userId: string, targetType: 'TOURNAMENT' | 'ACTIVITY', targetId: string) {
+    const select = { id: true, submittedById: true } as const;
     const grant = await this.prisma.photoUploadGrant.findFirst({
       where: targetType === 'TOURNAMENT'
         ? { userId, tournamentId: targetId, tournament: { isArchived: false, approvalStatus: 'APPROVED' } }
         : { userId, activityId: targetId, activity: { approvalStatus: 'APPROVED' } },
+      select: { tournament: { select }, activity: { select } },
+    });
+    const target = targetType === 'TOURNAMENT' ? grant?.tournament : grant?.activity;
+    if (!target) throw new ForbiddenException('请先扫描上传授权二维码');
+    await this.requirePhotoUploadManagement({ ...target, targetType });
+  }
+
+  private async approvedPhotoUploadTargets<T extends OwnedUploadTarget>(targets: T[]): Promise<T[]> {
+    const ownerIds = [...new Set(targets.map(target => target.submittedById).filter((id): id is string => !!id))];
+    if (!ownerIds.length) return targets;
+    const owners = await this.prisma.user.findMany({
+      where: { id: { in: ownerIds }, role: Role.ADMIN },
       select: { id: true },
     });
-    if (!grant) throw new ForbiddenException('请先扫描上传授权二维码');
+    const admins = new Set(owners.map(owner => owner.id));
+    const adminTargets = targets.flatMap(({ id, targetType, submittedById }) => submittedById && admins.has(submittedById)
+      ? [{ targetType, targetId: id, applicantId: submittedById }]
+      : []);
+    if (!adminTargets.length) return targets;
+
+    const approvals = await this.prisma.photoManagementRequest.findMany({
+      where: { status: PhotoManagementRequestStatus.APPROVED, active: true, OR: adminTargets },
+      select: { targetType: true, targetId: true, applicantId: true },
+    });
+    const approvalKeys = new Set(approvals.map(row => `${row.targetType}:${row.targetId}:${row.applicantId}`));
+    return targets.filter(({ id, targetType, submittedById }) => !submittedById || !admins.has(submittedById)
+      || approvalKeys.has(`${targetType}:${id}:${submittedById}`));
+  }
+
+  private async requirePhotoUploadManagement(target: OwnedUploadTarget) {
+    if (!(await this.approvedPhotoUploadTargets([target])).length) {
+      throw new ForbiddenException('该赛事或活动的图片管理尚未审核开通');
+    }
   }
 
   private validUploadToken(token: string) {
@@ -1337,6 +1413,10 @@ export class PhotosService {
     if (Boolean(query.tournamentId) === Boolean(query.activityId)) {
       throw new BadRequestException('必须且只能指定一个赛事或活动');
     }
+    if (actor) {
+      if (query.activityId) assertCanManagePhotoTarget(actor, 'ACTIVITY', query.activityId);
+      if (query.tournamentId) assertCanManagePhotoTarget(actor, 'TOURNAMENT', query.tournamentId);
+    }
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 30;
     const where: Prisma.PhotoWhereInput = {
@@ -1478,11 +1558,26 @@ export class PhotosService {
 
   async deletePhotos(
     ids: string[],
-    operator: { id: string; username?: string | null },
+    operator: AuthActor & { username?: string | null },
   ) {
     const photos = await this.prisma.photo.findMany({
       where: { id: { in: ids }, deletedAt: null },
+      include: {
+        tournament: { select: { submittedById: true } },
+        activity: { select: { submittedById: true } },
+      },
     });
+    if (operator.role !== 'ROOT') {
+      for (const photo of photos) {
+        if (photo.activityId && photo.activity?.submittedById === operator.id) {
+          assertCanManagePhotoTarget(operator, 'ACTIVITY', photo.activityId);
+        } else if (!photo.activityId && photo.tournamentId && photo.tournament?.submittedById === operator.id) {
+          assertCanManagePhotoTarget(operator, 'TOURNAMENT', photo.tournamentId);
+        } else {
+          throw new NotFoundException('图片不存在或不属于你');
+        }
+      }
+    }
     for (const photo of photos) this.hardRemoveFiles(photo);
     if (photos.length) {
       await this.prisma.photo.updateMany({
@@ -1505,8 +1600,9 @@ export class PhotosService {
   async deleteTournamentPhotos(
     tournamentId: string,
     confirmName: string,
-    operator: { id: string; username?: string | null },
+    operator: AuthActor & { username?: string | null },
   ) {
+    if (operator.role !== Role.ROOT) throw new ForbiddenException('仅超级管理员可以删除整届赛事图片');
     const tournament = await this.prisma.tournament.findUnique({
       where: { id: tournamentId },
       select: { name: true },

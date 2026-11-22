@@ -12,7 +12,8 @@ import * as bcrypt from 'bcryptjs';
 import { randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthActor, MANAGED_ROLES, STAFF_ROLES } from './admin-scope';
-import { effectivePermissions, hasPermission } from './permissions';
+import { effectivePermissions, hasPermission, PHOTO_MANAGEMENT_APPROVAL } from './permissions';
+import type { PermissionUser } from './permissions';
 import { LoginDto } from './dto/login.dto';
 import {
   CheckEmailDto,
@@ -191,6 +192,7 @@ export class AuthService {
 
     const updatedUser = await this.prisma.user.update({
       where: { id: user.id },
+      include: { photoManagementRequests: PHOTO_MANAGEMENT_APPROVAL },
       data: {
         failedAttempts: 0,
         lockedUntil: null,
@@ -226,7 +228,10 @@ export class AuthService {
       throw new UnauthorizedException('登录已过期，请重新登录');
     }
 
-    const user = await this.prisma.user.findUnique({ where: { id: payload.sub } });
+    const user = await this.prisma.user.findUnique({
+      where: { id: payload.sub },
+      include: { photoManagementRequests: PHOTO_MANAGEMENT_APPROVAL },
+    });
     if (!user || user.status !== UserStatus.ACTIVE) {
       throw new UnauthorizedException('登录已过期，请重新登录');
     }
@@ -327,7 +332,10 @@ export class AuthService {
   }
 
   async getMe(userId: string) {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: { photoManagementRequests: PHOTO_MANAGEMENT_APPROVAL },
+    });
     if (!user) {
       throw new UnauthorizedException('用户不存在');
     }
@@ -405,6 +413,36 @@ export class AuthService {
     };
   }
 
+  async setUserPasswords(ids: string[], password: string, actor: AuthActor) {
+    if (actor.role !== Role.ADMIN && actor.role !== Role.ROOT) {
+      throw new ForbiddenException('无权设置其他账号的密码');
+    }
+    const targets = [...new Set(ids)].sort();
+    if (!targets.length) throw new BadRequestException('请选择要设置密码的账号');
+    this.assertValidPassword(password);
+    const scope = this.manageableUsersScope(actor);
+    const scopeMessage = '部分账号已不存在或不在你的管辖范围内，请刷新后重试';
+    if (await this.prisma.user.count({ where: { ...scope, id: { in: targets } } }) !== targets.length) {
+      throw new ForbiddenException(scopeMessage);
+    }
+
+    const changes: Array<{ id: string; passwordHash: string }> = [];
+    for (const id of targets) {
+      changes.push({ id, passwordHash: await bcrypt.hash(password, 10) });
+    }
+
+    await this.prisma.$transaction(async tx => {
+      for (const { id, passwordHash } of changes) {
+        const updated = await tx.user.updateMany({
+          where: { id, ...scope },
+          data: { passwordHash, mustChangePassword: false, failedAttempts: 0, lockedUntil: null },
+        });
+        if (updated.count !== 1) throw new ForbiddenException(scopeMessage);
+      }
+    }, { timeout: 60000 });
+    return { updated: targets.length };
+  }
+
   async updateUserStatus(userId: string, dto: UpdateUserStatusDto, actor: AuthActor) {
     await this.requireManageableUser(userId, actor);
     const requesterId = actor.id;
@@ -420,6 +458,7 @@ export class AuthService {
 
     const updated = await this.prisma.user.update({
       where: { id: userId },
+      include: { photoManagementRequests: PHOTO_MANAGEMENT_APPROVAL },
       data: {
         status: dto.status,
         ...(dto.status === UserStatus.ACTIVE
@@ -440,7 +479,10 @@ export class AuthService {
     if (requesterId && requesterId === userId) {
       throw new BadRequestException('不能修改自己的角色');
     }
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: { photoManagementRequests: PHOTO_MANAGEMENT_APPROVAL },
+    });
     if (!user) {
       throw new NotFoundException('用户不存在');
     }
@@ -457,6 +499,7 @@ export class AuthService {
       await tx.inviteCode.updateMany({ where: { createdById: userId }, data: { isEnabled: false } });
       return tx.user.update({
         where: { id: userId },
+        include: { photoManagementRequests: PHOTO_MANAGEMENT_APPROVAL },
         data: { role, permissions: Prisma.DbNull, ...(charge ? { staffQuotaCharged: true } : {}) },
       });
     });
@@ -497,6 +540,7 @@ export class AuthService {
     try {
       const updated = await this.prisma.user.update({
         where: { id: userId },
+        include: { photoManagementRequests: PHOTO_MANAGEMENT_APPROVAL },
         data: {
           username: name,
           nameChangeCount: quota.used + 1,
@@ -529,6 +573,7 @@ export class AuthService {
     try {
       const updated = await this.prisma.user.update({
         where: { id: userId },
+        include: { photoManagementRequests: PHOTO_MANAGEMENT_APPROVAL },
         data: { username: name },
       });
       return this.serializeUser(updated);
@@ -539,8 +584,9 @@ export class AuthService {
 
   async listUsers(actor: AuthActor) {
     const users = await this.prisma.user.findMany({
-      where: actor.role !== Role.ROOT ? { managerId: actor.id, role: { in: MANAGED_ROLES } } : {},
+      where: this.manageableUsersScope(actor),
       include: {
+        photoManagementRequests: PHOTO_MANAGEMENT_APPROVAL,
         inviteCode: {
           select: { code: true },
         },
@@ -787,6 +833,10 @@ export class AuthService {
     return target;
   }
 
+  private manageableUsersScope(actor: AuthActor): Prisma.UserWhereInput {
+    return actor.role === Role.ROOT ? {} : { managerId: actor.id, role: { in: MANAGED_ROLES } };
+  }
+
   private requireManageableInvite(invite: { createdById: string | null; role: Role }, actor: AuthActor) {
     if (actor.role === Role.ROOT) return;
     if (invite.createdById === actor.id && MANAGED_ROLES.includes(invite.role)) return;
@@ -854,7 +904,10 @@ export class AuthService {
   }
 
   async getUserPermissions(userId: string) {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: { photoManagementRequests: PHOTO_MANAGEMENT_APPROVAL },
+    });
     if (!user) throw new NotFoundException('用户不存在');
     return { permissions: effectivePermissions(user), customized: Array.isArray(user.permissions), role: user.role };
   }
@@ -864,6 +917,7 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new NotFoundException('用户不存在');
     if (user.role === Role.ROOT) throw new BadRequestException('超级管理员固定拥有全部权限；如需限制，请先调整角色');
+    if (permissions?.includes('PHOTOS')) throw new BadRequestException('图片管理权限请在「图片管理申请」中审核');
     if (user.role !== Role.ADMIN && permissions?.includes('INVITES')) {
       throw new BadRequestException('邀请码权限仅可分配给管理员和超级管理员');
     }
@@ -945,16 +999,14 @@ export class AuthService {
     };
   }
 
-  private serializeUser(user: {
+  private serializeUser(user: PermissionUser & {
     id: string;
     username: string;
     email: string;
-    role: Role;
     status?: UserStatus;
     mustChangePassword?: boolean;
     nameChangeCount?: number | null;
     nameChangeWindowStart?: Date | null;
-    permissions?: Prisma.JsonValue;
     createdAt?: Date;
   }) {
     const quota = this.getRenameQuota(user);

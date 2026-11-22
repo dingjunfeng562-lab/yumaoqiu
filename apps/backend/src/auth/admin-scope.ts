@@ -1,6 +1,7 @@
-import { Prisma, Role } from '@prisma/client';
+import { Role } from '@prisma/client';
+import type { PermissionUser } from './permissions';
 
-export type AuthActor = { id: string; role: Role; permissions?: Prisma.JsonValue };
+export type AuthActor = PermissionUser & { id: string };
 export const MANAGED_ROLES: Role[] = [Role.PLAYER, Role.REFEREE, Role.PHOTOGRAPHER];
 export const STAFF_ROLES: Role[] = [Role.REFEREE, Role.PHOTOGRAPHER];
 
@@ -17,7 +18,7 @@ export function playerScope(actor?: AuthActor) {
 export const ADMIN_ACTIONS: Record<string, readonly string[]> = {
   AuthController: [
     'createReferee', 'createPlayer', 'createPhotographer', 'listUsers',
-    'resetUserPassword', 'updateUserStatus', 'renameUser', 'deleteUser', 'deleteUsers',
+    'resetUserPassword', 'setUserPasswords', 'updateUserStatus', 'renameUser', 'deleteUser', 'deleteUsers',
     'listInviteCodes', 'createInviteCode', 'updateInviteCode', 'deleteInviteCode', 'getInviteQuota',
   ],
   TournamentsController: ['uploadCover', 'create', 'findAll', 'findOne', 'update'],

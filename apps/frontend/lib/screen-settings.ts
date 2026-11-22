@@ -16,7 +16,7 @@ export type BoardViewport = { width: number; height: number };
 export const DEFAULT_CARD_WIDTH = 560;
 export const LARGE_SCREEN_CARD_WIDTH = 770;
 export const LARGE_SCREEN_CARD_HEIGHT = 495;
-export const LARGE_SCREEN_CARD_FONT_SCALE = 150;
+const DEFAULT_CARD_FONT_SCALE = 174;
 /**
  * Multiplier applied to every font on the big screen, on top of the per
  * tournament card font size. Raising this enlarges all screen text at once,
@@ -38,25 +38,15 @@ export function boardRows(count: number, columns: number) {
 }
 
 export function screenCardWidth(count: number, settings?: ScreenSettings | null) {
-  const configured = settings?.cardWidth;
-  // Upgrade former defaults for a crowded board, while preserving deliberate custom sizes.
-  if (count > 6 && (configured === undefined || configured === DEFAULT_CARD_WIDTH || configured === 620 || configured === 700)) return LARGE_SCREEN_CARD_WIDTH;
-  return configured ?? DEFAULT_CARD_WIDTH;
+  return settings?.cardWidth ?? (count > 6 ? LARGE_SCREEN_CARD_WIDTH : DEFAULT_CARD_WIDTH);
 }
 
 export function screenCardHeight(count: number, settings?: ScreenSettings | null) {
-  const configured = settings?.cardHeight;
-  if (count > 6 && (configured === undefined || configured === DEFAULT_CARD_HEIGHT || configured === 450)) return LARGE_SCREEN_CARD_HEIGHT;
-  return configured ?? DEFAULT_CARD_HEIGHT;
+  return settings?.cardHeight ?? (count > 6 ? LARGE_SCREEN_CARD_HEIGHT : DEFAULT_CARD_HEIGHT);
 }
 
-export function screenCardFontScale(count: number, settings?: ScreenSettings | null) {
-  const configured = settings?.cardFontScale;
-  // 100/110/120/140 are former defaults; 160 was the former ceiling, so a screen
-  // saved at exactly 160 was asking for "as large as allowed" and moves up a notch.
-  if (count > 6 && (configured === undefined || [100, 110, 120, 140].includes(configured))) return LARGE_SCREEN_CARD_FONT_SCALE;
-  if (count > 6 && configured === 160) return 170;
-  return configured ?? 100;
+export function screenCardFontScale(settings?: ScreenSettings | null) {
+  return settings?.cardFontScale ?? DEFAULT_CARD_FONT_SCALE;
 }
 
 /** Board size in CSS pixels when `count` venues are laid out `columns` wide. */
@@ -94,7 +84,7 @@ export function boardScale(count: number, columns: number, settings: ScreenSetti
  */
 export function screenLayout(count: number, settings?: ScreenSettings | null, viewport?: BoardViewport | null) {
   if (count <= 0) return { columns: 1, rows: 1 };
-  const maxColumns = Math.max(1, Math.min(MAX_SCREEN_COLUMNS, settings?.columns ?? MAX_SCREEN_COLUMNS));
+  const maxColumns = Math.max(1, Math.min(count, MAX_SCREEN_COLUMNS, settings?.columns ?? MAX_SCREEN_COLUMNS));
   // Nothing to optimise before the first measurement: keep the configured
   // shape, or the shape implied by the venue count.
   if (!viewport || viewport.width <= 0 || viewport.height <= 0) {
@@ -119,7 +109,7 @@ export function defaultScreenColumns(count: number) {
 
 export function defaultScreenSettings(count: number, viewport?: BoardViewport | null): ScreenSettings {
   const { columns, rows } = screenLayout(count, null, viewport);
-  return { columns, rows, scale: 100, titleFontSize: 48, cardWidth: screenCardWidth(count), cardHeight: screenCardHeight(count), boundaryPadding: 0, cardFontScale: 100 };
+  return { columns, rows: Math.min(rows, MAX_SCREEN_COLUMNS), scale: 100, titleFontSize: 48, cardWidth: screenCardWidth(count), cardHeight: screenCardHeight(count), boundaryPadding: 0, cardFontScale: screenCardFontScale() };
 }
 
 export function readLocalScreenSettings(id: string): ScreenSettings | null {

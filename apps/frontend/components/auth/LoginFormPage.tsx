@@ -146,7 +146,7 @@ function LoginContent() {
         </div>
 
         {/* 返回首页按钮 */}
-        <Link href="/" className="modern-login-back">
+        <Link href="/home" className="modern-login-back">
           <ArrowLeftOutlined />
           <span>返回首页</span>
         </Link>

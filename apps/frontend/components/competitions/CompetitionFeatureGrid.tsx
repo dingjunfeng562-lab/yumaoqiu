@@ -29,7 +29,9 @@ type Feature = {
   badge?: string;
 };
 
-export function CompetitionFeatureGrid({ competitionId, ongoing }: { competitionId: string; ongoing: boolean }) {
+export function CompetitionFeatureGrid({ competitionId, ongoing, teamOnly, showSchedule, showLiveScreen }: {
+  competitionId: string; ongoing: boolean; teamOnly?: boolean; showSchedule?: boolean; showLiveScreen: boolean;
+}) {
   const base = `/competitions/${encodeURIComponent(competitionId)}`;
   const features: Feature[] = [
     {
@@ -46,7 +48,7 @@ export function CompetitionFeatureGrid({ competitionId, ongoing }: { competition
     },
     {
       key: 'players',
-      label: '选手名单',
+      label: teamOnly ? '参赛队伍' : '选手名单',
       href: `${base}/players`,
       color: 'bg-rose-500 shadow-rose-500/30',
       icon: (
@@ -71,6 +73,13 @@ export function CompetitionFeatureGrid({ competitionId, ongoing }: { competition
         </Icon>
       ),
     },
+    ...(showSchedule ? [{
+      key: 'schedule',
+      label: '比赛赛程',
+      href: `${base}/live?status=PENDING`,
+      color: 'bg-teal-600 shadow-teal-600/30',
+      icon: <Icon><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M3 10h18M8 3v4m8-4v4m-7 8h6" /></Icon>,
+    }] : []),
     {
       key: 'live',
       label: '比分直播',
@@ -85,7 +94,7 @@ export function CompetitionFeatureGrid({ competitionId, ongoing }: { competition
         </Icon>
       ),
     },
-    {
+    ...(showLiveScreen ? [{
       key: 'screen',
       label: '直播大屏',
       href: `/live-screen?tournamentId=${encodeURIComponent(competitionId)}`,
@@ -97,7 +106,7 @@ export function CompetitionFeatureGrid({ competitionId, ongoing }: { competition
           <path d="M10.5 8.5v5l4-2.5z" />
         </Icon>
       ),
-    },
+    }] : []),
     {
       key: 'query',
       label: '报名查询',
@@ -126,7 +135,7 @@ export function CompetitionFeatureGrid({ competitionId, ongoing }: { competition
 
   return (
     <nav aria-label="赛事功能" className="rounded-xl border border-blue-100 bg-white px-2 py-4 shadow-sm sm:px-4 sm:py-5">
-      <ul className="grid grid-cols-4 gap-x-1 gap-y-4 sm:grid-cols-7 sm:gap-3">
+      <ul className={`grid grid-cols-4 gap-x-1 gap-y-4 sm:gap-3 ${features.length === 8 ? 'sm:grid-cols-8' : features.length === 7 ? 'sm:grid-cols-7' : 'sm:grid-cols-6'}`}>
         {features.map((feature) => (
           <li key={feature.key}>
             <Link

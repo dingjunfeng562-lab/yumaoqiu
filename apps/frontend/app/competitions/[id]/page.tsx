@@ -3,6 +3,7 @@ import { PortalFeaturePage } from '@/components/home/PortalFeaturePage';
 import { CompetitionFeatureGrid } from '@/components/competitions/CompetitionFeatureGrid';
 import { TournamentSwitcher } from '@/components/competitions/TournamentSwitcher';
 import { ViewCounter } from '@/components/competitions/ViewCounter';
+import { fetchTeamBoard } from '@/lib/team-board';
 
 export const dynamic = 'force-dynamic';
 
@@ -48,11 +49,11 @@ function normalizeCover(url?: string | null) {
   return '/generated/competition-cover-1.png';
 }
 
-function formatDate(value?: string | null) {
+function formatDate(value?: string | null, timeZone?: string) {
   if (!value) return '待定';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
+  return date.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone });
 }
 
 function formatDateTime(value?: string | null) {
@@ -80,13 +81,17 @@ async function getCompetition(id: string): Promise<CompetitionDetail | null> {
 
 export default async function CompetitionDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const competition = await getCompetition(id);
+  const [competition, teamCompetitions] = await Promise.all([getCompetition(id), fetchTeamBoard(id).catch(() => [])]);
   if (!competition) notFound();
 
-  const projects =
-    competition.eventOptions?.map((event) => event.label) ??
-    (competition.events?.length ? competition.events : competition.projects) ??
-    [];
+  const eventOptions = competition.eventOptions ?? [];
+  const configuredProjects = (competition.events?.length ? competition.events : competition.projects) ?? [];
+  const teamOnly = !eventOptions.length && teamCompetitions.length > 0;
+  const projects = eventOptions.length
+    ? [...eventOptions.map(event => event.label), ...teamCompetitions.map(team => team.name)]
+    : configuredProjects.length ? configuredProjects : teamCompetitions.map(team => team.name);
+  const teamCount = teamCompetitions.reduce((sum, team) => sum + team.teamCount, 0);
+  const timeZone = teamCompetitions.find(team => team.timeZone)?.timeZone;
 
   const cover = normalizeCover(competition.coverImage);
 
@@ -132,7 +137,13 @@ export default async function CompetitionDetailPage({ params }: { params: Promis
             </div>
           </article>
 
-          <CompetitionFeatureGrid competitionId={competition.id} ongoing={competition.status === 'ONGOING'} />
+          <CompetitionFeatureGrid
+            competitionId={competition.id}
+            ongoing={competition.status === 'ONGOING'}
+            teamOnly={teamOnly}
+            showSchedule={eventOptions.length > 0 && teamCompetitions.length > 0}
+            showLiveScreen={eventOptions.length > 0}
+          />
         </div>
 
         {/* Right column: facts + projects */}
@@ -141,9 +152,9 @@ export default async function CompetitionDetailPage({ params }: { params: Promis
             <h3 className="text-lg font-black text-slate-900">赛事信息</h3>
             <dl className="mt-4 space-y-4 text-sm">
               <Fact label="比赛日期">
-                {formatDate(competition.startDate)}
+                {formatDate(competition.startDate, timeZone)}
                 <span className="mx-2 text-slate-400">→</span>
-                {formatDate(competition.endDate)}
+                {formatDate(competition.endDate, timeZone)}
               </Fact>
               <Fact label="比赛地点">{competition.location || '地点待公布'}</Fact>
               <Fact label="报名时间">
@@ -151,15 +162,20 @@ export default async function CompetitionDetailPage({ params }: { params: Promis
                 <span className="mx-2 text-slate-400">→</span>
                 {formatDateTime(competition.registrationEndTime)}
               </Fact>
-              <Fact label="已通过审核">
-                <span className="text-base font-black text-blue-700">{competition.registeredCount ?? 0}</span>
-                <span className="ml-1 text-slate-500">人</span>
-              </Fact>
-              <Fact label="报名规则">
-                {competition.allowCrossEventRegistration
-                  ? `可同时报名 ${competition.maxRegistrationEvents ?? 1} 个项目`
-                  : '每人只能报名 1 个项目'}
-              </Fact>
+              {teamCount > 0 ? <Fact label="参赛队伍"><span className="font-black text-blue-700">{teamCount}</span> 支</Fact> : null}
+              {!teamOnly ? (
+                <>
+                  <Fact label="已通过审核">
+                    <span className="text-base font-black text-blue-700">{competition.registeredCount ?? 0}</span>
+                    <span className="ml-1 text-slate-500">人</span>
+                  </Fact>
+                  <Fact label="报名规则">
+                    {competition.allowCrossEventRegistration
+                      ? `可同时报名 ${competition.maxRegistrationEvents ?? 1} 个项目`
+                      : '每人只能报名 1 个项目'}
+                  </Fact>
+                </>
+              ) : null}
             </dl>
           </section>
 

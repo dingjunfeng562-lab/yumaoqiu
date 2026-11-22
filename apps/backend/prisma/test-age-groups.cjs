@@ -1,0 +1,94 @@
+/* Local service/database integration check. Creates and removes only its own fixture. */
+require('dotenv').config({ quiet: true });
+require('ts-node').register({ transpileOnly: true, project: 'tsconfig.json' });
+const assert = require('node:assert/strict');
+const { randomUUID } = require('node:crypto');
+const { PrismaService } = require('../src/prisma/prisma.service');
+const { CompetitionsService } = require('../src/competitions/competitions.service');
+const { RegistrationGroupsService, ensureLegacyGroups } = require('../src/registration-groups/registration-groups.service');
+const { TeamCompetitionsService } = require('../src/team-competitions/team-competitions.service');
+const { StatisticsService } = require('../src/statistics/statistics.service');
+const { DrawsService } = require('../src/draws/draws.service');
+const { TournamentsService } = require('../src/tournaments/tournaments.service');
+const { groupFields } = require('../src/common/age-eligibility');
+const url = new URL(process.env.DATABASE_URL);
+assert(['localhost', '127.0.0.1', '::1'].includes(url.hostname), 'Only local test databases are allowed');
+const db = new PrismaService();
+const id = `age-group-test-${randomUUID()}`;
+const userId = `${id}-user`;
+const svc = new CompetitionsService(db, { sendRegistrationNotification: async () => {} });
+const groups = new RegistrationGroupsService(db);
+const teams = new TeamCompetitionsService(db);
+function identity(birth, sequence) {
+  const prefix = `110101${birth.replaceAll('-', '')}${String(sequence).padStart(3, '0')}`;
+  const weights = [7,9,10,5,8,4,2,1,6,3,7,9,10,5,8,4,2];
+  return prefix + '10X98765432'[weights.reduce((sum,w,i) => sum + w * Number(prefix[i]), 0) % 11];
+}
+async function main() {
+  try {
+    await db.user.create({data:{id:userId,username:userId,email:`${userId}@example.invalid`,passwordHash:'fixture-no-login',role:'ROOT'}});
+    const tournament = await db.tournament.create({data:{id,name:id,startDate:new Date('2027-01-01'),endDate:new Date('2027-01-02'),status:'REGISTRATION_OPEN',isPublished:true,approvalStatus:'APPROVED',needsRegistrationReview:false,maxRegistrationEvents:3}});
+    await db.$transaction(tx => ensureLegacyGroups(tx,tournament));
+    const config = {name:'U7-U10',fieldTemplate:'GENERAL',enabled:true,registrationCodeEnabled:true,fieldRules:groupFields({}),ageRule:{mode:'AGE',minAge:7,maxAge:10,cutoffDate:'2027-01-01'},eventTypes:['MENS_SINGLES','MENS_DOUBLES','MIXED_DOUBLES'],paymentEnabled:true,singlesFee:3000,doublesFee:5000};
+    const group = await groups.save(id,config);
+    const other = await groups.save(id,{...config,name:'U18',ageRule:{mode:'AGE',maxAge:18,cutoffDate:'2027-01-01'},singlesFee:6000});
+    const events = await db.event.findMany({where:{groupId:group.id}});
+    const event = type => events.find(e => e.type===type).id;
+    const base = {groupId:group.id,registrationCode:group.registrationCode,name:'fixture-child-a',school:'fixture school',contact:'fixture-contact-a',items:[{eventId:event('MENS_SINGLES')}]};
+    const code = await svc.verifyRegistrationCode(group.registrationCode);
+    assert.equal(code.groupId,group.id); assert.equal(code.events.length,3);
+    const pending = (await svc.publicRegister(id,base)).registration;
+    assert.equal(pending.statusRaw,'PENDING');
+    await assert.rejects(svc.approveRegistration(pending.id,userId),/核验/);
+    await svc.verifyEligibility(pending.id,{note:'fixture: verified birth date and gender',gender:'MALE'},userId);
+    await svc.approveRegistration(pending.id,userId);
+    assert.equal(await db.registration.count({where:{competitionRegistrationId:pending.id,status:'APPROVED'}}),1);
+    const manualEntry = await db.registration.findFirst({where:{competitionRegistrationId:pending.id}});
+    await svc.updateAdminPlayer(id,manualEntry.id,{eventId:manualEntry.eventId,name:base.name,gender:'MALE',school:base.school,contact:base.contact},{id:userId});
+    assert.equal((await db.registration.findUnique({where:{id:manualEntry.id}})).eligibility.status,'MANUAL');
+    const imported = await svc.batchAddAdminPlayers(id,{eventId:event('MENS_SINGLES'),players:[{name:'fixture-import',school:'fixture school',contact:'fixture-import-contact'}]},userId);
+    assert.equal(imported.pendingCount,1);
+    const approved = (await svc.submitRegistration(id,userId,{...base,name:'fixture-child-b',contact:'fixture-contact-b',gender:'MALE',identityNumber:identity('2018-05-06',11)})).registration;
+    assert.equal(approved.statusRaw,'APPROVED');
+    const anotherChild = (await svc.submitRegistration(id,userId,{...base,name:'fixture-child-c',contact:'fixture-contact-c',gender:'MALE',identityNumber:identity('2019-04-03',13)})).registration;
+    assert.notEqual(approved.id,anotherChild.id);
+    await assert.rejects(svc.publicRegister(id,{...base,name:'fixture-too-old',gender:'MALE',identityNumber:identity('2000-01-01',15)}),/年龄/);
+    await assert.rejects(svc.publicRegister(id,{...base,name:'fixture-duplicate',gender:'MALE',identityNumber:identity('2018-05-06',11)}),/重复|报名/);
+    const otherEvent = await db.event.findFirst({where:{groupId:other.id,type:'MENS_SINGLES'}});
+    await assert.rejects(svc.publicRegister(id,{...base,groupId:other.id,registrationCode:other.registrationCode,items:[{eventId:otherEvent.id}],name:'fixture-cross',gender:'MALE',identityNumber:identity('2018-05-06',11)}),/组别/);
+    await assert.rejects(svc.publicRegister(id,{...base,name:'fixture-pair',gender:'MALE',identityNumber:identity('2018-01-01',17),items:[{eventId:event('MIXED_DOUBLES'),partnerName:'fixture-partner',partnerContact:'fixture-partner-contact',partnerGender:'FEMALE',partnerIdentityNumber:identity('2001-01-01',18)}]}),/年龄/);
+    const pair = (await svc.publicRegister(id,{...base,name:'fixture-valid-pair',contact:'fixture-pair-contact',gender:'MALE',identityNumber:identity('2018-02-01',19),items:[{eventId:event('MIXED_DOUBLES'),partnerName:'fixture-valid-partner',partnerContact:'fixture-valid-partner-contact',partnerGender:'FEMALE',partnerIdentityNumber:identity('2018-02-01',20)}]})).registration;
+    assert.equal(pair.statusRaw,'APPROVED');
+    await assert.rejects(groups.save(id,{...config,ageRule:{mode:'NONE'}},group.id),/已有报名/);
+    const fees = await db.tournamentPaymentSetting.findMany({where:{tournamentId:id}});
+    assert.equal(fees.find(f=>f.groupId===group.id).singlesFee,3000);assert.equal(fees.find(f=>f.groupId===other.id).singlesFee,6000);
+    const raw = await db.competitionRegistration.findUnique({where:{id:approved.id}});
+    assert(!JSON.stringify(raw.identityData).includes(identity('2018-05-06',11)));
+    const stats = await new StatisticsService(db).tournamentStatistics(id);
+    assert(stats.groups.find(g=>g.groupId===group.id));assert(stats.groups.find(g=>g.groupId===other.id));
+    const teamCompetition = await db.teamCompetition.create({data:{tournamentId:id,groupId:group.id,entrantType:'SOCIAL',name:'fixture team event',winThreshold:1,maxPlayerAppearances:1}});
+    const pendingMember = await teams.prepareTeamMember(db,teamCompetition.id,{name:'fixture team player'});
+    assert.equal(pendingMember.eligibility.status,'PENDING');
+    await assert.rejects(teams.prepareTeamMember(db,teamCompetition.id,{name:'fixture old player',gender:'MALE',identityNumber:identity('2000-01-01',21)}),/年龄/);
+    const team = await teams.importTeamPlayers(teamCompetition.id,{teamName:'fixture-team',affiliation:'fixture school',players:[{name:'fixture-team-member',affiliation:'fixture school'}]},{id:userId,role:'ROOT'});
+    await assert.rejects(teams.assertTeamsPaid(db,teamCompetition),/核验/);
+    await teams.verifyMemberEligibility(team.id,team.members[0].playerId,'fixture checked age','MALE',userId);
+    assert.equal((await db.teamMember.findFirst({where:{teamId:team.id}})).eligibility.status,'MANUAL');
+    await assert.rejects(new DrawsService(db,null,null,null).createRegistration(event('MENS_SINGLES'),{player1Id:manualEntry.player1Id}),/资格/);
+    const legacy = await groups.save(id,{...config,name:'学生公开组',fieldTemplate:'SCHOOL',fieldRules:groupFields({},true,true),ageRule:{mode:'NONE'},eventTypes:['WOMENS_SINGLES']},`${id}_SCHOOL`);
+    assert(legacy.registrationCode);
+    await new TournamentsService(db,teams).update(id,{description:'fixture updated',schoolEventTypes:['WOMENS_SINGLES']},{id:userId,role:'ROOT'});
+    assert.equal(await db.event.count({where:{groupId:group.id}}),3);
+    assert.equal((await db.event.findFirst({where:{groupId:legacy.id}})).groupLabel,'学生公开组');
+    console.log('PASS: custom group codes, optional fields, manual verification, approval, multiple children, age/partner checks, duplicates, group isolation, fees, encrypted storage, statistics and team qualification');
+  } finally {
+    const entries = await db.registration.findMany({where:{event:{tournamentId:id}},select:{player1Id:true,player2Id:true}});
+    const members = await db.teamMember.findMany({where:{team:{teamCompetition:{tournamentId:id}}},select:{playerId:true}});
+    const playerIds = [...new Set([...entries.flatMap(e=>[e.player1Id,e.player2Id]),...members.map(m=>m.playerId)].filter(Boolean))];
+    await db.tournament.deleteMany({where:{id,name:id}});
+    if(playerIds.length) await db.player.deleteMany({where:{id:{in:playerIds},name:{startsWith:'fixture-'}}});
+    await db.user.deleteMany({where:{id:userId,username:userId}});
+    await db.$disconnect();
+  }
+}
+main().catch(error=>{console.error(error);process.exitCode=1;});

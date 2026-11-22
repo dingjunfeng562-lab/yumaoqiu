@@ -1,10 +1,12 @@
 import { ConflictException, Injectable } from '@nestjs/common';
-import { MatchStatus, Prisma, SecondStageRankingMode, SecondStageStatus } from '@prisma/client';
+import { MatchStatus, Prisma, SecondStageStatus } from '@prisma/client';
 import {
+  SECOND_STAGE_PLACEMENT_MATCHES,
   SECOND_STAGE_PROPAGATION_EDGES,
   SecondStageSlotCode,
   computeSecondStageSideByes,
   secondStageFormalRoundNo,
+  includesSecondStageMatch,
 } from './second-stage-bracket';
 
 type SecondStageEntrant = { id: string | null; name: string | null };
@@ -27,9 +29,9 @@ const WALKOVER_SCORE = '轮空';
 export class SecondStageProgressService {
   async progress(
     tx: Prisma.TransactionClient,
-    params: { secondStageId: string; eventId: string; rankingMode: SecondStageRankingMode },
+    params: { secondStageId: string; eventId: string; rankingLimit: number },
   ) {
-    const { secondStageId, eventId, rankingMode } = params;
+    const { secondStageId, eventId, rankingLimit } = params;
 
     const slots = await tx.secondStageSlot.findMany({ where: { secondStageId } });
     const byeBySlot = new Map<string, boolean>(slots.map((slot) => [slot.slot, !slot.entrantId]));
@@ -48,7 +50,7 @@ export class SecondStageProgressService {
 
       // 1) 推进已完成场次的胜/负者到下游两侧（planning + 正式 Match）
       for (const edge of SECOND_STAGE_PROPAGATION_EDGES) {
-        if (edge.top8Only && rankingMode !== SecondStageRankingMode.TOP_8) continue;
+        if (!includesSecondStageMatch(edge.targetNo, rankingLimit)) continue;
         const entrant = this.outcome(byNo.get(edge.sourceNo), edge.outcome);
         const target = byNo.get(edge.targetNo);
         if (!entrant || !target) continue;
@@ -85,7 +87,7 @@ export class SecondStageProgressService {
       if (!changed) break;
     }
 
-    await this.rebuildRankings(tx, secondStageId, rankingMode);
+    await this.rebuildRankings(tx, secondStageId, rankingLimit);
   }
 
   /** 取某场次的胜者/负者参赛者；未完成或轮空（无真实选手）返回 null。 */
@@ -206,7 +208,7 @@ export class SecondStageProgressService {
   private async rebuildRankings(
     tx: Prisma.TransactionClient,
     secondStageId: string,
-    rankingMode: SecondStageRankingMode,
+    rankingLimit: number,
   ) {
     const matches = await tx.secondStageMatch.findMany({
       where: { secondStageId },
@@ -222,16 +224,11 @@ export class SecondStageProgressService {
       if (loser) ranks.set(loserRank, loser);
     };
 
-    rankFrom(7, 1, 2);
-    rankFrom(8, 3, 4);
-    rankFrom(11, 5, 6);
-    if (rankingMode === SecondStageRankingMode.TOP_8) {
-      rankFrom(12, 7, 8);
-    }
+    const placements = SECOND_STAGE_PLACEMENT_MATCHES.filter(({ winnerRank }) => winnerRank <= rankingLimit);
+    for (const { matchNo, winnerRank } of placements) rankFrom(matchNo, winnerRank, winnerRank + 1);
 
-    const maxRank = rankingMode === SecondStageRankingMode.TOP_6 ? 6 : 8;
     const rows = [...ranks.entries()]
-      .filter(([rank]) => rank <= maxRank)
+      .filter(([rank]) => rank <= rankingLimit)
       .sort(([a], [b]) => a - b)
       .map(([rank, entrant]) => ({
         secondStageId,
@@ -245,11 +242,15 @@ export class SecondStageProgressService {
       await tx.secondStageRanking.createMany({ data: rows });
     }
 
+    const finished = placements.every(({ matchNo }) => {
+      const status = byNo.get(matchNo)?.status;
+      return status === MatchStatus.COMPLETED || status === MatchStatus.CANCELLED;
+    });
     await tx.secondStage.update({
       where: { id: secondStageId },
       data: {
-        status: rows.length === maxRank ? SecondStageStatus.FINISHED : SecondStageStatus.CONFIRMED,
-        finishedAt: rows.length === maxRank ? new Date() : null,
+        status: finished ? SecondStageStatus.FINISHED : SecondStageStatus.CONFIRMED,
+        finishedAt: finished ? new Date() : null,
       },
     });
   }

@@ -56,14 +56,31 @@ const SCORING_MODE_LABELS: Record<string, string> = {
 
 const GROUP_COUNT_FORMATS = new Set(['GROUP_PLUS_KNOCKOUT', 'GROUP_PLUS_KNOCKOUT_STD']);
 
+// 有小组赛（roundNo = 0 的循环场次）且之后还有淘汰赛 / 排位赛的赛制。
+const GROUP_STAGE_FORMATS = new Set(['GROUP_PLUS_KNOCKOUT', 'GROUP_PLUS_KNOCKOUT_STD', 'GROUP_PLUS_PLAYOFF']);
+
 // 分阶段规则按由粗到细的顺序展示；后端按更具体的阶段优先生效。
+// groupOnly：只在带小组赛的赛制里显示（小组赛 / 淘汰赛分开设置）。
 const STAGE_DEFS = [
-  { key: 'QF', label: '八强', short: '八强', inheritLabel: '默认规则', description: '1/4 决赛、前 8 排名区' },
-  { key: 'TOP4', label: '四强', short: '四强', inheritLabel: '默认规则', description: '半决赛、季军赛、决赛的上级规则' },
-  { key: 'SF', label: '半决赛', short: '半决赛', inheritLabel: '四强规则', description: '未设置时继承四强' },
-  { key: 'BRONZE', label: '季军赛', short: '季军赛', inheritLabel: '四强规则', description: '未设置时继承四强' },
-  { key: 'F', label: '决赛', short: '决赛', inheritLabel: '四强规则', description: '未设置时继承四强' },
+  { key: 'GROUP', label: '小组赛', short: '小组赛', inheritLabel: '默认规则', description: '小组循环赛的全部场次', groupOnly: true },
+  { key: 'KNOCKOUT', label: '淘汰赛', short: '淘汰赛', inheritLabel: '默认规则', description: '小组出线后的全部轮次，含 16 强、32 强', groupOnly: true },
+  { key: 'QF', label: '八强', short: '八强', inheritLabel: '默认规则', description: '1/4 决赛、前 8 排名区', groupOnly: false },
+  { key: 'TOP4', label: '四强', short: '四强', inheritLabel: '默认规则', description: '半决赛、季军赛、决赛的上级规则', groupOnly: false },
+  { key: 'SF', label: '半决赛', short: '半决赛', inheritLabel: '四强规则', description: '未设置时继承四强', groupOnly: false },
+  { key: 'BRONZE', label: '季军赛', short: '季军赛', inheritLabel: '四强规则', description: '未设置时继承四强', groupOnly: false },
+  { key: 'F', label: '决赛', short: '决赛', inheritLabel: '四强规则', description: '未设置时继承四强', groupOnly: false },
 ] as const;
+
+/** 当前赛制下可设置的阶段；有小组赛时八强、四强改为继承「淘汰赛规则」。 */
+function stageDefsFor(format: string | undefined) {
+  const hasGroupStage = GROUP_STAGE_FORMATS.has(String(format));
+  return STAGE_DEFS
+    .filter((def) => hasGroupStage || !def.groupOnly)
+    .map((def) => ({
+      ...def,
+      inheritLabel: hasGroupStage && (def.key === 'QF' || def.key === 'TOP4') ? '淘汰赛规则' : def.inheritLabel,
+    }));
+}
 
 type StageScoringRule = {
   scoringRule?: string;
@@ -98,6 +115,7 @@ interface Event {
   groupSize?: number | null;
   groupCount?: number | null;
   qualifiersPerGroup?: number | null;
+  drawGeneratedAt?: string | null;
   /** 报名名额（单打按人、双打按队），空为不限；entryCount 为已占名额（已通过 + 待审核）。 */
   maxEntries?: number | null;
   entryCount?: number;
@@ -306,9 +324,10 @@ export default function EventsPage() {
       scoringMethod: 'preset' | 'custom';
     };
 
-    // 组装分阶段规则；所有阶段都是"同默认"时传 null 清空
+    // 组装分阶段规则；所有阶段都是"同默认"时传 null 清空。
+    // 只提交当前赛制下可见的阶段：改成没有小组赛的赛制后，小组赛 / 淘汰赛规则一并清掉。
     const stageRules: Record<string, StageScoringRule> = {};
-    for (const def of STAGE_DEFS) {
+    for (const def of stageDefsFor(String(others.format))) {
       const mode = (others[`stage_${def.key}_mode`] as string | undefined) ?? 'default';
       if (mode === 'default') continue;
       if (mode === 'custom') {
@@ -368,7 +387,15 @@ export default function EventsPage() {
           body: JSON.stringify(patch),
           token,
         });
-        message.success('已更新');
+        // 已抽签的单项改了分组设置：现有签表不会自动变，提醒去抽签编排重新抽签。
+        const groupSettingsChanged =
+          (patch.groupSize ?? null) !== (editing.groupSize ?? null) ||
+          (patch.groupCount ?? null) !== (editing.groupCount ?? null);
+        if (editing.drawGeneratedAt && groupSettingsChanged) {
+          message.warning('已更新。该单项已经抽过签，分组设置要到「抽签编排」重新抽签后才生效', 6);
+        } else {
+          message.success('已更新');
+        }
       } else {
         await apiFetch('/events', { method: 'POST', body: JSON.stringify(payload), token });
         message.success('已创建');
@@ -499,7 +526,7 @@ export default function EventsPage() {
         const base = r.customGamePoint
           ? `自定义：${customRuleSummary(r.customGamePoint, r.customGameCap, r.customGamesToWin)}`
           : SCORING_RULE_LABELS[r.scoringRule] || r.scoringRule;
-        const stages = STAGE_DEFS.map((def) => ({
+        const stages = stageDefsFor(r.format).map((def) => ({
           ...def,
           rule: stageRuleForForm(r.stageScoringRules, def.key),
         })).filter((def) => def.rule);
@@ -598,7 +625,7 @@ export default function EventsPage() {
           token={token}
           events={batchEvents}
           stages={STAGE_DEFS}
-          stageKeysFor={() => STAGE_DEFS.map((def) => def.key)}
+          stageKeysFor={(format) => stageDefsFor(format).map((def) => def.key)}
           labelOf={eventLabel}
           onClose={() => setBatchOpen(false)}
           onSaved={fetchEvents}
@@ -758,11 +785,17 @@ export default function EventsPage() {
           <Divider plain style={{ margin: '8px 0 12px' }}>
             分阶段规则（可选）
           </Divider>
+          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.format !== cur.format}>
+            {({ getFieldValue }) => {
+              const hasGroupStage = GROUP_STAGE_FORMATS.has(String(getFieldValue('format')));
+              return (
+                <>
           <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 12 }}>
-            八强、四强、半决赛、季军赛、决赛可分别设置每局分数、封顶分与胜出局数。
-            半决赛、季军赛、决赛未设置时继承四强；四强和八强未设置时继承默认规则。
+            {hasGroupStage
+              ? '小组赛、淘汰赛可以分别设置，例如小组赛一局 21 分、淘汰赛 15 分三局两胜。八强、四强未设置时继承淘汰赛；半决赛、季军赛、决赛未设置时继承四强；小组赛、淘汰赛未设置时用默认规则。'
+              : '八强、四强、半决赛、季军赛、决赛可分别设置每局分数、封顶分与胜出局数。半决赛、季军赛、决赛未设置时继承四强；四强和八强未设置时继承默认规则。'}
           </Typography.Paragraph>
-          {STAGE_DEFS.map((def) => (
+          {stageDefsFor(getFieldValue('format')).map((def) => (
             <div key={def.key}>
               <Form.Item
                 name={`stage_${def.key}_mode`}
@@ -814,6 +847,10 @@ export default function EventsPage() {
               </Form.Item>
             </div>
           ))}
+                </>
+              );
+            }}
+          </Form.Item>
 
           <Form.Item
             name="defaultMatchMinutes"

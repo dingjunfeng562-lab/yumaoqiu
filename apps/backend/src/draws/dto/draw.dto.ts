@@ -14,6 +14,7 @@ import {
 } from 'class-validator';
 import { GroupNaming, SecondStageRankingMode } from '@prisma/client';
 import { GROUP_COUNT_MAX } from '../draw-algorithm.service';
+import { SECOND_STAGE_MAX_RANK } from '../../common/second-stage-bracket';
 
 /**
  * 抽签编排页直接修改当前单项的分组设置。每组人数与手动小组数量互斥：
@@ -278,8 +279,15 @@ export class SecondStageSlotDto {
 }
 
 export class ConfirmSecondStageDto {
+  @IsOptional()
   @IsEnum(SecondStageRankingMode)
-  rankingMode: SecondStageRankingMode;
+  rankingMode?: SecondStageRankingMode;
+
+  @IsOptional()
+  @IsInt({ message: '取前几名必须为整数' })
+  @Min(1)
+  @Max(SECOND_STAGE_MAX_RANK)
+  rankingLimit?: number;
 
   @IsArray()
   @ValidateNested({ each: true })

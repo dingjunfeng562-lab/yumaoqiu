@@ -49,10 +49,15 @@ import {
 } from './group-plan-drift';
 import {
   SECOND_STAGE_FORMAL_ROUND_NO_BASE,
+  SECOND_STAGE_MAX_RANK,
+  includesSecondStageMatch,
   isSecondStageFormalRoundNo,
   secondStageFormalRoundNo,
+  secondStageRankingLimit,
 } from '../common/second-stage-bracket';
 import { SecondStageProgressService } from '../common/second-stage-progress.service';
+import { knockoutPlacementPlayoffView } from '../common/knockout-placement';
+import { isKnockoutPlacementPlayoff } from '../common/knockout-placement-playoff';
 import {
   buildKnockoutSkeleton,
   groupSizesFromGroupMatches,
@@ -1330,7 +1335,8 @@ export class DrawsService {
         name: slot.entrantNameSnapshot,
       });
     }
-    const templates = this.secondStageMatchTemplates(slotMap, stage.rankingMode);
+    const rankingLimit = secondStageRankingLimit(stage);
+    const templates = this.secondStageMatchTemplates(slotMap, rankingLimit);
     const existing = await tx.secondStageMatch.findMany({
       where: { secondStageId: stage.id },
       orderBy: { matchNo: 'asc' },
@@ -1364,7 +1370,7 @@ export class DrawsService {
     await this.secondStageProgress.progress(tx, {
       secondStageId: stage.id,
       eventId,
-      rankingMode: stage.rankingMode,
+      rankingLimit,
     });
   }
 
@@ -1931,7 +1937,7 @@ export class DrawsService {
     const registrationMap = new Map(registrations.map((item) => [item.id, item]));
     const matches = await this.prisma.match.findMany({
       where: { eventId },
-      include: { games: { orderBy: { gameNo: 'asc' } } },
+      include: { games: { orderBy: { gameNo: 'asc' } }, venue: { select: { name: true } } },
       orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }],
     });
     const sortedMatches = [...matches].sort((a, b) => this.bracketMatchCompare(a, b));
@@ -1960,6 +1966,7 @@ export class DrawsService {
       event.format === Format.GROUP_PLUS_KNOCKOUT_STD && knockoutPlaceholdersOnly(sortedMatches);
     const rounds = sortedMatches
       .filter((match) => match.roundNo > 0 && !isSecondStageFormalRoundNo(match.roundNo))
+      .filter(match => !isKnockoutPlacementPlayoff(match.round))
       .filter(() => !knockoutPlaceholders)
       .reduce<Array<{ roundNo: number; round: string; matches: ReturnType<typeof hydrateMatch>[] }>>(
         (acc, match) => {
@@ -2071,6 +2078,19 @@ export class DrawsService {
         })
       : null;
 
+    const placementPlayoff = knockoutPlacementPlayoffView(sortedMatches, id => {
+      const registration = registrationMap.get(id);
+      return registration ? this.registrationName(registration) : '待定';
+    }, event.rankingLimit === 7 ? 7 : 8);
+    const officialView = autoKnockout || placementPlayoff ? null : this.secondStageView(
+      secondStage,
+      event.format,
+      new Map(registrations.map((registration) => [registration.id, registration])),
+      secondStageEntrants,
+      event.qualifiersPerGroup ?? 2,
+      groups.map((group) => group.name),
+    );
+    const scheduledStageMatches = new Map(secondStageFormalMatches.map(match => [match.matchNo, match]));
     return {
       event,
       currentDraw,
@@ -2080,18 +2100,21 @@ export class DrawsService {
       groupPlan,
       groupPlanDrift: groupPlanDriftView,
       knockoutSkeleton,
-      secondStage: autoKnockout
-        ? null
-        : this.secondStageView(
-            secondStage,
-            event.format,
-            new Map(registrations.map((registration) => [registration.id, registration])),
-            secondStageEntrants,
-            event.qualifiersPerGroup ?? 2,
-            groups.map((group) => group.name),
-          ),
+      secondStage: placementPlayoff
+        ? { ...placementPlayoff, eligibleEntrants: this.secondStageEligibleView(secondStageEntrants) }
+        : officialView && {
+          ...officialView,
+          matches: officialView.matches.map((match: { matchNo: number }) => {
+            const scheduled = scheduledStageMatches.get(match.matchNo);
+            return {
+              ...match,
+              scheduledAt: scheduled?.scheduledAt?.toISOString() ?? null,
+              venueName: scheduled?.venue?.name ?? null,
+            };
+          }),
+        },
       secondStageFormalMatches,
-      autoKnockout,
+      autoKnockout: placementPlayoff ? null : autoKnockout,
     };
   }
 
@@ -2282,10 +2305,20 @@ export class DrawsService {
 
     await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM Event WHERE id = ${eventId} FOR UPDATE`;
-      const matchTemplates = this.secondStageMatchTemplates(slotMap, dto.rankingMode);
+      const rankingLimit = secondStageRankingLimit(dto);
+      const matchTemplates = this.secondStageMatchTemplates(slotMap, rankingLimit);
+      const phaseStart = isStandard2023Format ? 1 : SECOND_STAGE_FORMAL_ROUND_NO_BASE;
       const previousStage = await tx.secondStage.findUnique({ where: { eventId } });
-      const retainedMatches = previousStage?.status === SecondStageStatus.NOT_STARTED
-        ? await tx.match.findMany({ where: { eventId, roundNo: { gte: SECOND_STAGE_FORMAL_ROUND_NO_BASE }, matchNo: { in: matchTemplates.map(match => match.matchNo) } }, select: { id: true } })
+      const started = await tx.match.findFirst({
+        where: { ...this.lockedPlayableMatchWhere(eventId), roundNo: { gte: phaseStart } },
+        select: { id: true },
+      });
+      if (started) throw new ConflictException('第二阶段已有比赛开赛或录入成绩，无法重新生成对阵');
+      const retainedMatches = previousStage
+        ? await tx.match.findMany({
+          where: { eventId, OR: matchTemplates.map(({ matchNo }) => ({ matchNo, roundNo: secondStageFormalRoundNo(matchNo) })) },
+          select: { id: true },
+        })
         : [];
       await tx.secondStage.deleteMany({ where: { eventId } });
       const stage = await tx.secondStage.create({
@@ -2293,7 +2326,8 @@ export class DrawsService {
           eventId,
           status: SecondStageStatus.CONFIRMED,
           mode: SecondStageMode.MANUAL_BY_REFEREE,
-          rankingMode: dto.rankingMode,
+          rankingMode: rankingLimit <= 6 ? SecondStageRankingMode.TOP_6 : SecondStageRankingMode.TOP_8,
+          rankingLimit: dto.rankingLimit ?? null,
           confirmedAt: new Date(),
           createdBy: operatorId,
           updatedBy: operatorName ?? operatorId,
@@ -2333,7 +2367,7 @@ export class DrawsService {
         where: {
           eventId,
           roundNo: {
-            gte: isStandard2023Format ? 1 : SECOND_STAGE_FORMAL_ROUND_NO_BASE,
+            gte: phaseStart,
           },
           ...(retainedMatches.length ? { id: { notIn: retainedMatches.map(match => match.id) } } : {}),
         },
@@ -2345,7 +2379,7 @@ export class DrawsService {
       await this.secondStageProgress.progress(tx, {
         secondStageId: stage.id,
         eventId,
-        rankingMode: dto.rankingMode,
+        rankingLimit,
       });
     });
 
@@ -2362,9 +2396,11 @@ export class DrawsService {
 
   private secondStageMatchTemplates(
     slotMap: Map<SecondStageSlotCode, SecondStageEntrant>,
-    rankingMode: SecondStageRankingMode,
+    rankingLimit: number,
   ): SecondStageMatchTemplate[] {
     const slot = (code: SecondStageSlotCode) => slotMap.get(code) ?? { id: null, name: null };
+    const lowerArea = rankingLimit >= 7 ? '5-8名争夺区' : '5-6名争夺区';
+    const lowerRound = rankingLimit >= 7 ? '5-8名半决赛' : '5-6名资格赛';
     const templates: SecondStageMatchTemplate[] = [
       {
         matchNo: 1,
@@ -2436,38 +2472,35 @@ export class DrawsService {
       },
       {
         matchNo: 9,
-        roundName: rankingMode === SecondStageRankingMode.TOP_8 ? '5-8名半决赛' : '5-6名资格赛',
-        area: rankingMode === SecondStageRankingMode.TOP_8 ? '5-8名争夺区' : '5-6名争夺区',
+        roundName: lowerRound,
+        area: lowerArea,
         side1Source: '第1场负者',
         side2Source: '第2场负者',
       },
       {
         matchNo: 10,
-        roundName: rankingMode === SecondStageRankingMode.TOP_8 ? '5-8名半决赛' : '5-6名资格赛',
-        area: rankingMode === SecondStageRankingMode.TOP_8 ? '5-8名争夺区' : '5-6名争夺区',
+        roundName: lowerRound,
+        area: lowerArea,
         side1Source: '第3场负者',
         side2Source: '第4场负者',
       },
       {
         matchNo: 11,
         roundName: '五六名决赛',
-        area: rankingMode === SecondStageRankingMode.TOP_8 ? '5-8名争夺区' : '5-6名争夺区',
+        area: lowerArea,
         side1Source: '第9场胜者',
         side2Source: '第10场胜者',
       },
-    ];
-
-    if (rankingMode === SecondStageRankingMode.TOP_8) {
-      templates.push({
+      {
         matchNo: 12,
         roundName: '七八名决赛',
         area: '5-8名争夺区',
         side1Source: '第9场负者',
         side2Source: '第10场负者',
-      });
-    }
+      },
+    ];
 
-    return templates;
+    return templates.filter(({ matchNo }) => includesSecondStageMatch(matchNo, rankingLimit));
   }
 
   private secondStageView(
@@ -2489,6 +2522,7 @@ export class DrawsService {
     if (!stage) {
       if (!this.supportsSecondStageBracket(eventFormat)) return null;
       const rankingMode = SecondStageRankingMode.TOP_8;
+      const rankingLimit = SECOND_STAGE_MAX_RANK;
 
       // 标准2023「每组出线 ≥ 2」小组赛全部完赛后，按官方种子序（相邻两组交叉：
       // A1-B2 / A2-B1 / …）把出线队伍预排进 A-H 签位，让抽签编排页打开即看到默认对阵，
@@ -2516,7 +2550,7 @@ export class DrawsService {
           name: entrant?.name ?? sourceLabelOf(slot),
         });
       }
-      const previewMatches = this.secondStageMatchTemplates(templateSlotMap, rankingMode);
+      const previewMatches = this.secondStageMatchTemplates(templateSlotMap, rankingLimit);
       const membersById = (id: string | null | undefined) =>
         id ? entrantById.get(id)?.members ?? [] : [];
 
@@ -2528,7 +2562,8 @@ export class DrawsService {
         modeText:
           eventFormat === Format.GROUP_PLUS_KNOCKOUT_STD ? '标准2023出线抽签' : '裁判手动指定',
         rankingMode,
-        rankingModeText: '取前8名',
+        rankingLimit,
+        rankingModeText: `取前${rankingLimit}名`,
         slotSourceText: isStdReady
           ? '已按官方种子序自动排布，可手动调整后确认'
           : eventFormat === Format.GROUP_PLUS_KNOCKOUT_STD
@@ -2583,7 +2618,11 @@ export class DrawsService {
       return snapshot ?? source ?? '待定';
     };
 
+    const sourceLabelByEntrantId = new Map(
+      standardEntrants.map((entrant) => [entrant.id, `${entrant.group}组第${entrant.rank}名`]),
+    );
     const rankingMode = stage.rankingMode as SecondStageRankingMode;
+    const rankingLimit = secondStageRankingLimit(stage);
     return {
       id: stage.id,
       status: stage.status,
@@ -2592,7 +2631,8 @@ export class DrawsService {
       secondStageMode: stage.mode,
       modeText: '裁判手动指定',
       rankingMode,
-      rankingModeText: rankingMode === SecondStageRankingMode.TOP_6 ? '取前6名' : '取前8名',
+      rankingLimit,
+      rankingModeText: `取前${rankingLimit}名`,
       slotSourceText: '组委会手动安排',
       qualifierReady: standardEntrants.length >= 2,
       eligibleEntrants: this.secondStageEligibleView(standardEntrants),
@@ -2600,7 +2640,7 @@ export class DrawsService {
       finishedAt: stage.finishedAt?.toISOString?.() ?? null,
       slots: (stage.slots ?? []).map((slot: any) => ({
         slot: slot.slot,
-        sourceLabel: sourceLabelOf(slot.slot as SecondStageSlotCode),
+        sourceLabel: sourceLabelByEntrantId.get(slot.entrantId) ?? null,
         playerId: slot.entrantId,
         playerName: slot.entrantId ? displayName(slot.entrantId, slot.entrantNameSnapshot, null) : '轮空',
         playerMembers: membersOf(slot.entrantId),

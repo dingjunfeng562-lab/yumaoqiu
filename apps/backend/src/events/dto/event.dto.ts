@@ -5,9 +5,10 @@ import { GROUP_COUNT_MAX } from '../../draws/draw-algorithm.service';
 
 /**
  * 支持分阶段规则的键。
- * QF/TOP4/SF/BRONZE/F 是后台单项管理的可见阶段；BEFORE_TOP4 为旧两段配置兼容键。
+ * GROUP（小组赛/循环赛）、KNOCKOUT（淘汰赛全部轮次）、QF/TOP4/SF/BRONZE/F 是后台单项管理的可见阶段；
+ * BEFORE_TOP4 为旧两段配置兼容键。
  */
-export const STAGE_SCORING_KEYS = ['BEFORE_TOP4', 'TOP4', 'QF', 'SF', 'BRONZE', 'F'] as const;
+export const STAGE_SCORING_KEYS = ['GROUP', 'KNOCKOUT', 'BEFORE_TOP4', 'TOP4', 'QF', 'SF', 'BRONZE', 'F'] as const;
 export type StageScoringKey = (typeof STAGE_SCORING_KEYS)[number];
 
 /**
@@ -40,6 +41,18 @@ export class StageScoringRuleDto {
 }
 
 export class StageScoringRulesDto {
+  /** 小组赛 / 循环赛的全部场次。 */
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => StageScoringRuleDto)
+  GROUP?: StageScoringRuleDto;
+
+  /** 淘汰赛全部轮次（含 16 强、32 强）；八强、四强等未设置时继承它。 */
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => StageScoringRuleDto)
+  KNOCKOUT?: StageScoringRuleDto;
+
   @IsOptional()
   @ValidateNested()
   @Type(() => StageScoringRuleDto)

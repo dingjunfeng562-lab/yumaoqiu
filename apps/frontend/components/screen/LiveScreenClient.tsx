@@ -8,6 +8,7 @@ import type {
 } from '@/components/bracket/KnockoutBracket';
 import type { SecondStageData } from '@/components/bracket/SecondStageBracket';
 import { SecondStageCrossBracket } from '@/components/bracket/SecondStageCrossBracket';
+import { secondStageRankingLimit } from '@/lib/second-stage-ranking';
 import {
   finalStage,
   isByeMatch,
@@ -283,7 +284,8 @@ function SecondStageWall({ data }: { data: SecondStageData }) {
   const status = String(data.secondStageStatus ?? data.status ?? '').toUpperCase();
   if (status !== 'CONFIRMED' && status !== 'FINISHED') return null;
   if (!data.matches?.length) return null;
-  const rankings = [...(data.rankings ?? [])].sort((a, b) => a.rank - b.rank);
+  const rankingLimit = secondStageRankingLimit(data);
+  const rankings = (data.rankings ?? []).filter(({ rank }) => rank <= rankingLimit).sort((a, b) => a.rank - b.rank);
   return (
     <section className="rounded-lg border border-emerald-300/25 bg-emerald-400/[0.06] p-4">
       <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
@@ -292,13 +294,13 @@ function SecondStageWall({ data }: { data: SecondStageData }) {
           <h2 className="mt-1 truncate text-2xl font-black text-white">第二阶段：小组赛排位赛</h2>
         </div>
         <span className="shrink-0 rounded-full bg-emerald-300 px-3 py-1 text-xs font-black text-slate-950">
-          {data.rankingModeText ?? '取前8名'}
+          取前{rankingLimit}名
         </span>
       </div>
       <div className="space-y-5">
         <SecondStageCrossBracket
           matches={data.matches}
-          rankingMode={data.rankingMode ?? 'TOP_8'}
+          rankingLimit={rankingLimit}
           variant="dark"
         />
         {rankings.length ? (
@@ -492,7 +494,7 @@ export function LiveScreenClient({
                 对阵表
               </Link>
               <Link
-                href={lockedTournament ? `/competitions/${encodeURIComponent(lockedTournament.id)}` : '/'}
+                href={lockedTournament ? `/competitions/${encodeURIComponent(lockedTournament.id)}` : '/home'}
                 className="tappable inline-flex h-10 flex-1 items-center justify-center rounded-lg bg-amber-300 px-3 text-xs font-black text-slate-950 transition hover:bg-amber-200 sm:flex-none sm:px-4 sm:text-sm"
               >
                 {lockedTournament ? '赛事主页' : '返回首页'}

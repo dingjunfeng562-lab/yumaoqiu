@@ -5,16 +5,17 @@ import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { Alert, Button, Empty, Spin, Tag } from 'antd';
+import { Alert, Button, Empty, Popconfirm, Spin, Tag } from 'antd';
 import { ReloadOutlined, ScanOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
+import type { MatchStatusKey } from '@/lib/match-display';
 import { roundCn } from '@/lib/round';
 import { lockLandscape, releaseLandscape } from './orientation';
 import { io } from 'socket.io-client';
 
 const SOCKET_BASE = process.env.NEXT_PUBLIC_API_URL!.replace(/\/api$/, '');
 
-type Court = { id: string; name: string; courtNumber: number; matchCount: number };
+type Court = { id: string; name: string; courtNumber: number; matchCount: number; assigned?: boolean };
 type CourtsData = {
   tournament: { id: string; name: string };
   courts: Court[];
@@ -22,7 +23,7 @@ type CourtsData = {
 };
 type CourtMatch = {
   id: string;
-  status: 'PENDING' | 'LIVE' | 'COMPLETED';
+  status: MatchStatusKey;
   round: string;
   roundNo: number;
   matchNo: number;
@@ -31,12 +32,14 @@ type CourtMatch = {
   side1: { name: string } | null;
   side2: { name: string } | null;
   referee: { id: string; username: string | null } | null;
+  canTakeOver?: boolean;
   games: Array<{ side1Score: number; side2Score: number }>;
 };
-const statuses = {
+const statuses: Record<MatchStatusKey, { label: string; color: string }> = {
   PENDING: { label: '未开始', color: 'default' },
   LIVE: { label: '进行中', color: 'green' },
   COMPLETED: { label: '已结束', color: 'blue' },
+  CANCELLED: { label: '已取消', color: 'default' },
 };
 
 export default function TournamentCourts({ tournamentId, initialCourt }: { tournamentId: string; initialCourt?: string }) {
@@ -140,7 +143,12 @@ export default function TournamentCourts({ tournamentId, initialCourt }: { tourn
     setClaiming(match.id);
     setError('');
     try {
-      await apiFetch(`${base}/courts/${encodeURIComponent(courtId)}/matches/${encodeURIComponent(match.id)}/claim`, { method: 'POST', token, redirectOnForbidden: false });
+      await apiFetch(`${base}/courts/${encodeURIComponent(courtId)}/matches/${encodeURIComponent(match.id)}/claim`, {
+        method: 'POST',
+        token,
+        redirectOnForbidden: false,
+        ...(match.canTakeOver && match.referee ? { body: JSON.stringify({ expectedRefereeId: match.referee.id }) } : {}),
+      });
       router.push(`/referee/matches/${encodeURIComponent(match.id)}`);
     } catch (err) {
       releaseLandscape();
@@ -183,7 +191,7 @@ export default function TournamentCourts({ tournamentId, initialCourt }: { tourn
               className="flex items-center gap-4 rounded-2xl border border-blue-100 bg-white !p-5 text-left shadow-sm transition hover:border-blue-400"
             >
               <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-blue-600 text-xl font-black text-white">{item.courtNumber}</span>
-              <span className="min-w-0 flex-1"><span className="block text-lg font-black">{item.name}</span><span className="!mt-1 block text-sm text-slate-500">共 {item.matchCount} 场比赛</span></span>
+              <span className="min-w-0 flex-1"><span className="block text-lg font-black">{item.name} {item.assigned && <Tag color="blue">已分配</Tag>}</span><span className="!mt-1 block text-sm text-slate-500">共 {item.matchCount} 场比赛</span></span>
               <span className="text-blue-600">查看场次 →</span>
             </Link>)}
           </section> : <Empty description="该赛事暂未配置可用场地，请联系管理员在赛程编排中添加" />)}
@@ -203,9 +211,19 @@ export default function TournamentCourts({ tournamentId, initialCourt }: { tourn
                   {!!match.games.length && <p className="text-center font-bold text-blue-600">{match.games.map((game) => `${game.side1Score} : ${game.side2Score}`).join(' / ')}</p>}
                   <p className="text-sm text-slate-500">{match.scheduledAt ? new Date(match.scheduledAt).toLocaleString('zh-CN') : '待排时间'}</p>
                   <p className="break-words text-sm text-slate-500">裁判：{mine ? '我正在负责' : match.referee?.username ?? (match.referee ? '其他裁判' : available ? '未分配，可自行接手' : '未分配')}</p>
-                  <Button block size="large" type={mine || available ? 'primary' : 'default'} disabled={(!mine && !available) || (!!claiming && claiming !== match.id)} loading={claiming === match.id} onClick={() => void enterMatch(match)}>
-                    {mine ? (match.status === 'COMPLETED' ? '查看记分' : '进入记分') : match.referee ? '已有裁判执裁' : match.status !== 'PENDING' ? '不可接手' : !available ? '等待对阵确定' : '执裁此场比赛'}
-                  </Button>
+                  {match.canTakeOver ? (
+                    <Popconfirm
+                      title="接手这场比赛？"
+                      description="接手后由你的账号继续计分和判罚。"
+                      okText="确认接手"
+                      cancelText="取消"
+                      onConfirm={() => enterMatch(match)}
+                    >
+                      <Button block size="large" disabled={Boolean(claiming)} loading={claiming === match.id}>接手执裁</Button>
+                    </Popconfirm>
+                  ) : <Button block size="large" type={mine || available ? 'primary' : 'default'} disabled={(!mine && !available) || (!!claiming && claiming !== match.id)} loading={claiming === match.id} onClick={() => void enterMatch(match)}>
+                    {mine ? ((match.status === 'COMPLETED' || match.status === 'CANCELLED') ? '查看记分' : '进入记分') : match.referee ? '已有裁判执裁' : match.status !== 'PENDING' ? '不可接手' : !available ? '等待对阵确定' : '执裁此场比赛'}
+                  </Button>}
                 </article>;
               })}
             </div> : <Empty description="此场地暂无可执裁比赛。团体赛各子项须先填齐并锁定双方出场名单，完成后请刷新。" />}

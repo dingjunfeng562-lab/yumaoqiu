@@ -90,7 +90,7 @@ async function main() {
     await request(adminA, 'POST', `/tournaments/${ta.id}/approve`, {}, 403);
     await request(adminA, 'PATCH', `/tournaments/${ta.id}/archive`, {}, 403);
     await request(adminA, 'PATCH', `/tournaments/${ta.id}`, { isArchived: true }, 403);
-    await request(adminA, 'DELETE', `/tournaments/${ta.id}`, undefined, 403);
+    await request(adminB, 'DELETE', `/tournaments/${ta.id}`, undefined, 404);
     await request(adminA, 'GET', `/admin/competitions/${tb.id}/players`, undefined, 404);
     await request(adminA, 'GET', `/admin/competitions/${tb.id}/registrations`, undefined, 404);
     await request(adminA, 'GET', `/events?tournamentId=${tb.id}`, undefined, 404);
@@ -106,10 +106,88 @@ async function main() {
       await request(adminA, 'GET', path, undefined, 403);
     }
     // 仪表盘：管理员只能看到自己赛事下的图片统计；AI 用量仅超级管理员可见。
+    const secondTournament = await db.tournament.create({
+      data: {
+        name: `${prefix}-A2`, submittedById: adminA.id,
+        startDate: new Date('2026-12-01'), endDate: new Date('2026-12-02'),
+      },
+    });
+    tournaments.push(secondTournament.id);
     await db.photo.create({ data: { tournamentId: tb.id, uploaderId: adminB.id, category: 'MATCH', originalPath: 'qa', fullPath: 'qa', thumbnailPath: 'qa', fileSize: 1, width: 1, height: 1 } });
+    const unapprovedPhoto = await db.photo.create({ data: {
+      tournamentId: secondTournament.id, uploaderId: adminA.id, category: 'MATCH',
+      originalPath: 'qa', fullPath: 'qa', thumbnailPath: 'qa', fileSize: 1, width: 1, height: 1,
+    } });
+    const photoAccess = '/auth/photo-management-access';
+    const target = (item) => ({ targetType: 'TOURNAMENT', targetId: item.id });
+    const submit = (actor, item, purpose, status = 201) =>
+      request(actor, 'POST', photoAccess, { ...target(item), purpose }, status);
+    const review = (actor, id, decision, reason, status = 200) =>
+      request(actor, 'PATCH', `${photoAccess}/requests/${id}`, { decision, reason }, status);
+    const protectedPhotoRoutes = [
+      ['GET', '/admin/photos/tournaments'],
+      ['GET', '/admin/photo-activities'],
+      ['GET', `/admin/photo-targets/TOURNAMENT/${ta.id}`],
+      ['GET', `/admin/tournaments/${ta.id}/watermark`],
+      ['POST', `/admin/competitions/${ta.id}/photo-access`],
+    ];
+    for (const [method, path] of protectedPhotoRoutes) await request(adminA, method, path, undefined, 403);
+    await submit(restrictedPlayer, ta, '不允许的角色', 403);
+    await submit(adminB, ta, '跨账号赛事', 404);
+    await request(adminA, 'GET', `${photoAccess}/requests`, undefined, 403);
+    await request(root, 'PATCH', `/auth/users/${adminA.id}/permissions`, { permissions: ['PHOTOS'] }, 400);
+    await db.user.update({ where: { id: adminA.id }, data: { permissions: ['PHOTOS', 'DASHBOARD'] } });
+    await request(adminA, 'GET', '/admin/photos/tournaments', undefined, 403);
+    assert(!(await request(adminA, 'GET', '/auth/me')).permissions.includes('PHOTOS'));
+    await request(root, 'PATCH', `/auth/users/${adminA.id}/permissions`, { permissions: null });
+
+    assert.deepEqual(await request(adminA, 'GET', photoAccess), []);
+    await submit(adminA, ta, '  ', 400);
+    const first = await submit(adminA, ta, '管理赛事图片');
+    assert.equal(first.status, 'PENDING');
+    await submit(adminA, ta, '重复提交', 409);
+    const other = await submit(adminA, secondTournament, '独立的赛事图片申请');
+    const initialTargets = await request(adminA, 'GET', '/admin/photo-targets');
+    assert(initialTargets.every((t) => !t.managementAllowed && t.photoCount === 0));
+    await review(adminA, first.id, 'approve', undefined, 403);
+    await review(root, first.id, 'reject', '  ', 400);
+    await review(root, first.id, 'reject', '请说明使用范围');
+    assert.equal((await request(adminA, 'GET', photoAccess)).find(({ id }) => id === first.id).reviewReason, '请说明使用范围');
+    await review(root, first.id, 'approve', undefined, 409);
+
+    const second = await submit(adminA, ta, '管理本场赛事照片');
+    await review(rootPeer, second.id, 'approve');
+    assert((await request(adminA, 'GET', '/auth/me')).permissions.includes('PHOTOS'));
+    const targets = await request(adminA, 'GET', '/admin/photo-targets');
+    assert.deepEqual(targets.filter((t) => t.managementAllowed).map((t) => t.id), [ta.id]);
+    assert.equal((await request(adminA, 'GET', photoAccess)).find(({ id }) => id === other.id).status, 'PENDING');
+    await request(adminA, 'GET', `/admin/tournaments/${ta.id}/watermark`);
+    await request(adminA, 'GET', `/admin/photos?tournamentId=${ta.id}`);
+    await request(adminA, 'GET', `/admin/tournaments/${secondTournament.id}/watermark`, undefined, 403);
+    await request(adminA, 'GET', `/admin/photos?tournamentId=${secondTournament.id}`, undefined, 403);
+    await request(adminA, 'GET', `/admin/photos/${unapprovedPhoto.id}/original`, undefined, 403);
+    await request(adminA, 'DELETE', '/admin/photos', { ids: [unapprovedPhoto.id] }, 403);
+    await request(adminA, 'POST', `/admin/competitions/${secondTournament.id}/photo-access`, {}, 403);
+    const adminBRequest = await submit(adminB, tb, '管理本场赛事照片');
+    const granted = await review(root, adminBRequest.id, 'approve');
+    assert.equal(granted.status, 'APPROVED');
     assert.deepEqual((await request(adminA, 'GET', '/admin/photos/tournaments')).map((t) => t.id), []);
     assert.deepEqual((await request(adminB, 'GET', '/admin/photos/tournaments')).map((t) => t.id), [tb.id]);
     assert((await request(rootPeer, 'GET', '/admin/photos/tournaments')).some((t) => t.id === tb.id));
+    await request(adminA, 'GET', `/admin/tournaments/${tb.id}/watermark`, undefined, 404);
+    await review(rootPeer, other.id, 'approve');
+    await review(root, second.id, 'revoke', '合作结束');
+    assert.deepEqual((await request(adminA, 'GET', '/admin/photos/tournaments')).map((t) => t.id), [secondTournament.id]);
+    await request(adminA, 'GET', `/admin/tournaments/${secondTournament.id}/watermark`);
+    await request(adminA, 'GET', `/admin/tournaments/${ta.id}/watermark`, undefined, 403);
+    await review(root, other.id, 'revoke', '测试撤销');
+    const history = await request(root, 'GET', `${photoAccess}/requests`);
+    const revoked = history.find(({ id }) => id === second.id);
+    assert.equal(revoked.reviewedById, rootPeer.id);
+    assert.equal(revoked.revokedById, root.id);
+    assert.equal((await request(adminA, 'GET', photoAccess)).find(({ id }) => id === second.id).revokeReason, '合作结束');
+    assert(!(await request(adminA, 'GET', '/auth/me')).permissions.includes('PHOTOS'));
+    for (const [method, path] of protectedPhotoRoutes) await request(adminA, method, path, undefined, 403);
     await request(rootPeer, 'GET', '/usage-metrics/summary');
     for (const path of ['/admin/ai-config', '/admin/image-moderation', '/admin/email/settings']) await request(rootPeer, 'GET', path);
     assert((await request(rootPeer, 'GET', '/tournaments')).some((t) => t.id === tb.id));
@@ -233,6 +311,7 @@ async function main() {
     const ids = users.map((u) => u.id);
     await db.player.deleteMany({ where: { ownerId: { in: ids } } });
     await db.inviteCode.deleteMany({ where: { createdById: { in: ids } } });
+    await db.photoManagementRequest.deleteMany({ where: { applicantName: { startsWith: prefix } } });
     await db.user.deleteMany({ where: { id: { in: ids } } });
     await db.$disconnect();
   }

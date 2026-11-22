@@ -9,6 +9,7 @@ import { SECOND_STAGE_FORMAL_ROUND_NO_BASE } from '../common/second-stage-bracke
 import * as ExcelJS from 'exceljs';
 import { applyFinalRankings, teamStandings } from '../common/final-rankings';
 import { isByeMatch, knockoutPlacements } from '../common/knockout-placement';
+import { secondStageRankingLimit } from '../common/second-stage-bracket';
 import { groupSizesFromGroupMatches } from '../common/knockout-skeleton';
 import { buildOrderbookWorkbook, eventImageParts, eventMatchCodes, teamCompetitionEvents, type EventImageStage } from './orderbook-workbook';
 import { bracketTreeSection, formatBracketGeneratedAt, renderStagesSvg, sheetSection } from './bracket-svg';
@@ -165,6 +166,7 @@ type ExportMatch = {
   side2Name?: string;
   // 团体赛：场次号文字与团体总比分（子项胜负场）。
   matchNoText?: string;
+  teamEncounter?: { id: string; matchNo: number };
   scoreText?: string;
 };
 
@@ -197,6 +199,7 @@ type ExportSecondStage = {
   status: string;
   mode: string;
   rankingMode: string;
+  rankingLimit?: number | null;
   slots: ExportSecondStageSlot[];
   matches: ExportSecondStageMatch[];
   rankings: Array<{ rank: number; entrantId: string | null; entrantNameSnapshot: string | null }>;
@@ -385,7 +388,7 @@ export class ExportsService {
       : applyEventMixes(found);
 
     // 生成器版本也进指纹：改了出片逻辑（如淘汰赛名次折算）后，旧缓存文件会在下次下载/巡检时自动重建。
-    const fingerprint = createHash('sha256').update(kind === 'orderbook' ? 'team-orderbook-v11-stage-titles' : 'team-standings-v7-r4-label').update(kind).update(JSON.stringify(tournament)).digest('hex');
+    const fingerprint = createHash('sha256').update(kind === 'orderbook' ? 'team-orderbook-v12-group-fixtures' : 'team-standings-v7-r4-label').update(kind).update(JSON.stringify(tournament)).digest('hex');
     return { kind, tournament, fingerprint };
   }
 
@@ -552,6 +555,7 @@ export class ExportsService {
             status: true,
             mode: true,
             rankingMode: true,
+            rankingLimit: true,
             slots: {
               orderBy: { sortOrder: 'asc' },
               select: { slot: true, sortOrder: true, entrantId: true, entrantNameSnapshot: true },
@@ -820,7 +824,7 @@ export class ExportsService {
         teamCompetitions: { include: {
           teams: true,
           items: { orderBy: { sortOrder: 'asc' } },
-          groups: { orderBy: { groupNo: 'asc' }, include: { teams: { select: { teamId: true } } } },
+          groups: { orderBy: { groupNo: 'asc' }, include: { teams: { orderBy: [{ seedOrder: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }], select: { teamId: true } } } },
           teamMatches: { orderBy: [{ roundNo: 'asc' }, { matchNo: 'asc' }], include: {
             lineups: { include: { player1: true, player2: true } },
             matches: {
@@ -934,6 +938,7 @@ export class ExportsService {
                 status: true,
                 mode: true,
                 rankingMode: true,
+                rankingLimit: true,
                 slots: {
                   orderBy: { sortOrder: 'asc' },
                   select: { slot: true, sortOrder: true, entrantId: true, entrantNameSnapshot: true },
@@ -1599,6 +1604,16 @@ export class ExportsService {
         side1.gameDiff += game.side1Score - game.side2Score;
         side2.gameDiff += game.side2Score - game.side1Score;
       }
+    }
+
+    if (event.secondStage?.rankingLimit != null) {
+      const limit = secondStageRankingLimit(event.secondStage);
+      const ranks = new Map(event.secondStage.rankings.map((entry) => [entry.entrantId, entry.rank]));
+      return applyFinalRankings(
+        rows.map((row) => ({ ...row, rank: ranks.get(row.id) ?? null })),
+        event.registrations,
+      ).filter((row) => row.rank != null && row.rank <= limit)
+        .sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity));
     }
 
     // 淘汰赛名次优先：按决赛/季军赛/各轮负者折算，而不是按胜场数排

@@ -10,7 +10,10 @@ import { Format, MatchStatus, Prisma, TeamCompetitionFormat, VenueRuleMode } fro
 import { PrismaService } from '../prisma/prisma.service';
 import { TeamCompetitionsService } from '../team-competitions/team-competitions.service';
 import { hostDisplayLabel } from '../common/event-mix';
+import { areTeamItemsScheduledInParallel, teamScheduleTimeZone } from '../common/team-parallel-schedule';
+import { isTeamGroupKnockout } from '../common/team-competition-format';
 import { isByeMatch } from '../common/knockout-placement';
+import { isKnockoutPlacementPlayoff, isKnockoutWalkover, knockoutPlacementSources } from '../common/knockout-placement-playoff';
 import {
   knockoutPlaceholderNames,
   knockoutPlaceholderSlots,
@@ -18,8 +21,10 @@ import {
   knockoutSlotKey,
   skeletonFromGroupMatches,
 } from '../common/knockout-skeleton';
-import { AutoScheduleDto, ClearScheduleDto, CreateVenueDto, KNOCKOUT_ROUND_CODES, KnockoutPlaceholdersDto, UpdateMatchScheduleDto, UpdateVenueDto, SaveGroupVenuesDto } from './dto/scheduling.dto';
+import { AutoScheduleDto, ClearScheduleDto, CreateVenueDto, KNOCKOUT_ROUND_CODES, KnockoutPlaceholdersDto, PLACEMENT_FINAL_ROUND_CODES, UpdateMatchScheduleDto, UpdateVenueDto, SaveGroupVenuesDto } from './dto/scheduling.dto';
 import { ScoringGateway } from '../scoring/scoring.gateway';
+import type { Tournament, Venue } from '@prisma/client';
+import type { BoardMoveDto } from './dto/scheduling.dto';
 import {
   SECOND_STAGE_FORMAL_ROUND_NO_BASE,
   isSecondStageFormalRoundNo,
@@ -124,6 +129,24 @@ type ConflictItem = {
   message: string;
 };
 
+type BoardContext = { tournament: Tournament; all: ScheduleMatch[]; venues: Venue[] };
+
+function boardPlacement(m: ScheduleMatch) {
+  return { matchId: m.id, scheduledAt: m.scheduledAt?.toISOString() ?? null, venueId: m.venueId,
+    durationMinutes: m.durationMinutes, scheduleLocked: m.scheduleLocked, scheduleOverride: m.scheduleOverride,
+    dateOverride: m.dateOverride, unscheduledReason: m.unscheduledReason };
+}
+
+function boardVersion({ tournament: t, venues, all }: BoardContext) {
+  const matches = [...all].sort((a,b) => a.id.localeCompare(b.id)).map(m => [
+    boardPlacement(m), m.status, m.startedAt, m.teamMatchId, m.matchNo, m.isBye,
+    m.side1?.playerIds, m.side2?.playerIds, m.team1Id, m.team2Id, m.allowedDates,
+    m.allowedVenueIds && [...m.allowedVenueIds].sort(), m.dependencyMatchIds,
+  ]);
+  return createHash('sha256').update(JSON.stringify([t.id, t.startDate, t.endDate, t.schedulingSettings,
+    t.dailyStartTime, t.dailyEndTime, t.breakMinutes, venues.map(v => [v.id,v.isActive]), matches])).digest('hex');
+}
+
 type BusyInterval = {
   start: number;
   end: number;
@@ -173,7 +196,7 @@ export class SchedulingService {
   }
 
   private async audit(tournamentId: string, action: string, before: unknown, after: unknown, actorId?: string) {
-    await this.prisma.scheduleOperationLog.create({ data: {
+    return this.prisma.scheduleOperationLog.create({ data: {
       tournamentId, action, actorId,
       before: JSON.parse(JSON.stringify(before)) as Prisma.InputJsonValue,
       after: JSON.parse(JSON.stringify(after)) as Prisma.InputJsonValue,
@@ -351,7 +374,7 @@ export class SchedulingService {
     });
   }
 
-  async getSchedule(tournamentId: string, eventId?: string) {
+  async getSchedule(tournamentId: string, eventId?: string, actorId?: string) {
     const tournament = await this.ensureTournament(tournamentId);
     const [venues, allMatches, groups] = await Promise.all([
       this.listVenues(tournamentId),
@@ -369,12 +392,17 @@ export class SchedulingService {
         conflictMap.set(matchId, list);
       }
     }
+    const version = boardVersion({ tournament, venues, all: allMatches });
 
     return {
       groups,
       // 「组别场地与日期」里比赛日期的可选范围：赛事开始到结束的每一天。
       tournamentDays: this.tournamentDays(tournament),
       teamCourtLimits: eventId ? [] : await this.teamCourtLimits(tournamentId),
+      boardVersion: version,
+      boardGap: (tournament.schedulingSettings as { breakMinutes?: number } | null)?.breakMinutes ?? tournament.breakMinutes,
+      // 刷新后仍能撤回上一步：只有「本人最近一次调场」且排程板没被别人改动过才返回。
+      undoable: actorId ? await this.undoableOperation(tournamentId, actorId, version) : null,
       venues,
       matches: matches.map((match) => ({
         ...match,
@@ -412,6 +440,7 @@ export class SchedulingService {
         dailyEndTime: true,
         startDate: true,
         endDate: true,
+        schedulingSettings: true,
       },
     });
     if (!tournament) throw new NotFoundException('赛事不存在');
@@ -475,10 +504,11 @@ export class SchedulingService {
     const courtLimits = scopeEventIds ? [] : await this.teamCourtLimits(dto.tournamentId);
     const limitsByCompetition = new Map(courtLimits.map(limit => [limit.competitionId, limit.maxCourts]));
     const stageOf = (match: (typeof scopeMatches)[number]) => this.matchStage(match);
-    // 只排选中的淘汰赛轮次（各项目同名轮次一起排）；小组赛、排位赛等没有轮次代码的场次不排。
+    // 只排选中的淘汰赛轮次和附加赛，各项目同名轮次一起排。
     const rounds = dto.rounds?.length ? new Set(dto.rounds) : null;
     const targetMatches = scopeMatches.filter((match) =>
       (scheduleStage === 'all' || stageOf(match) === scheduleStage)
+      && !isKnockoutWalkover(match)
       && (!rounds || (this.knockoutRoundCode(match) !== null && rounds.has(this.knockoutRoundCode(match)!))));
     if (!targetMatches.length) {
       if (rounds) throw new BadRequestException('当前范围没有所选轮次的场次（淘汰赛要等小组赛打完才生成）');
@@ -802,8 +832,9 @@ export class SchedulingService {
       });
       if (changed.count !== 1) throw new ConflictException('比赛状态已变化，请重新预览');
     }
+    const timeZone = teamScheduleTimeZone(tournament.schedulingSettings);
     await this.prisma.tournament.update({ where: { id: dto.tournamentId }, data: {
-      schedulingSettings: { dailyStartTime: dto.dailyStartTime ?? tournament.dailyStartTime,
+      schedulingSettings: { ...(timeZone ? { timeZone } : {}), dailyStartTime: dto.dailyStartTime ?? tournament.dailyStartTime,
         dailyEndTime: dto.dailyEndTime ?? tournament.dailyEndTime, breakMinutes, breakPeriods: (dto.breakPeriods ?? []).map(p => ({ startTime: p.startTime, durationMinutes: p.durationMinutes })) },
     } });
     await this.audit(dto.tournamentId, 'AUTO', allScheduled.filter(m => adjustableIds.has(m.id)).map(m => this.placement(m)),
@@ -970,12 +1001,104 @@ export class SchedulingService {
     });
   }
 
-  private async manualPlan(tournamentId: string, matchId: string, dto: UpdateMatchScheduleDto) {
+  private async boardContext(tournamentId: string): Promise<BoardContext> {
     const [tournament, all, venues] = await Promise.all([
       this.ensureTournament(tournamentId), this.loadScheduleMatches(tournamentId), this.listVenues(tournamentId),
     ]);
+    return { tournament, all, venues };
+  }
+
+  private async writeBoardRows(before: ScheduleMatch[], changes: ReturnType<typeof boardPlacement>[]) {
+    const originals = new Map(before.map(m => [m.id, m]));
+    for (const { matchId, ...data } of changes) {
+      const original = originals.get(matchId);
+      if (!original || original.isBye) throw new ConflictException('场次已变化，请刷新排程板');
+      const { count } = await this.prisma.match.updateMany({ where: {
+        id: matchId, status: MatchStatus.PENDING, startedAt: null, venueId: original.venueId,
+        scheduledAt: original.scheduledAt, durationMinutes: original.durationMinutes, scheduleLocked: original.scheduleLocked,
+        scheduleOverride: original.scheduleOverride, dateOverride: original.dateOverride,
+      }, data });
+      if (count !== 1) throw new ConflictException('场次已开赛或被其他管理员调整，请刷新排程板');
+    }
+  }
+
+  async moveOnBoard(tournamentId: string, dto: BoardMoveDto, actorId: string) {
+    return this.withScheduleTransaction(tournamentId, async service => {
+      const ctx = await service.boardContext(tournamentId);
+      if (boardVersion(ctx) !== dto.version) throw new ConflictException('排程板已有更新，请重新选择比赛');
+      const source = ctx.all.find(m => m.id === dto.matchId);
+      const target = dto.targetMatchId ? ctx.all.find(m => m.id === dto.targetMatchId) : undefined;
+      if (!source || (dto.targetMatchId && !target)) throw new NotFoundException('场次不属于当前赛事');
+      if (source.isBye || target?.isBye) throw new BadRequestException('轮空场次无需排程');
+      if (target && (target.id === source.id || (source.teamMatchId && target.teamMatchId === source.teamMatchId))) {
+        throw new BadRequestException('同一场对阵不能与自身互换');
+      }
+      if (!target && (!dto.venueId || !dto.scheduledAt)) throw new BadRequestException('请选择目标场地和开始时间');
+      const plan = (m: ScheduleMatch, venueId: string | null, scheduledAt: string | null) =>
+        service.manualPlan(tournamentId, m.id, { venueId, scheduledAt, allowOutsideGroup: dto.allowOutsideGroup }, ctx);
+      const forward = await plan(source, target ? target.venueId : dto.venueId!, target ? target.scheduledAt?.toISOString() ?? null : dto.scheduledAt!);
+      const plans = [forward];
+      if (target) plans.push(await plan(target, source.venueId, source.scheduledAt?.toISOString() ?? null));
+      const changes = plans.flatMap(p => p.changes);
+      const changed = new Map(changes.map(m => [m.id, m]));
+      const final = ctx.all.map(m => changed.get(m.id) ?? m);
+      const gap = (ctx.tournament.schedulingSettings as { breakMinutes?: number } | null)?.breakMinutes ?? ctx.tournament.breakMinutes;
+      const conflicts = [...plans.flatMap(p => p.conflicts), ...service.detectPlacementConflicts(final, gap).filter(c => c.matchIds.some(id => changed.has(id)))];
+      const uniqueConflicts = [...new Map(conflicts.filter(c => c.type === 'VENUE' || c.type === 'PLAYER')
+        .map(c => [`${c.type}:${[...c.matchIds].sort().join(',')}:${c.message}`, c])).values()];
+      const hardConflict = conflicts.find(c => c.type === 'DEPENDENCY');
+      if (hardConflict) throw new ConflictException(hardConflict.message);
+      if (uniqueConflicts.length && !dto.confirmConflicts) {
+        throw new ConflictException({
+          code: 'SCHEDULE_CONFLICT_CONFIRMATION_REQUIRED',
+          message: '调整后存在排程冲突，确认后仍可保存',
+          conflicts: uniqueConflicts,
+        });
+      }
+      const outside = plans.find(p => p.outsideGroup);
+      if (outside && !dto.allowOutsideGroup) throw new BadRequestException(service.outsideRuleMessage(outside));
+      const before = plans.flatMap(p => p.before);
+      const rows = changes.map(boardPlacement);
+      await service.writeBoardRows(before, rows);
+      const version = boardVersion({ ...ctx, all: final });
+      const log = await service.audit(tournamentId, target ? 'BOARD_SWAP' : 'BOARD_MOVE', before.map(boardPlacement), { version, rows }, actorId);
+      return { operationId: log.id, version, count: rows.length };
+    });
+  }
+
+  /** 排程板「撤回上一步」：仅当赛事最新一条操作是本人做的调场、且排程板版本未变时可用。 */
+  private async undoableOperation(tournamentId: string, actorId: string, version: string) {
+    const log = await this.prisma.scheduleOperationLog.findFirst({
+      where: { tournamentId },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      select: { id: true, actorId: true, action: true, after: true },
+    });
+    if (!log || log.actorId !== actorId || !['BOARD_SWAP', 'BOARD_MOVE'].includes(log.action)) return null;
+    const after = log.after as { version?: string } | null;
+    return after?.version === version ? { operationId: log.id, version } : null;
+  }
+
+  async undoBoardMove(tournamentId: string, operationId: string, actorId: string) {
+    return this.withScheduleTransaction(tournamentId, async service => {
+      const log = await service.prisma.scheduleOperationLog.findFirst({ where: { tournamentId }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
+      if (log?.id !== operationId || log.actorId !== actorId || !['BOARD_SWAP','BOARD_MOVE'].includes(log.action)) {
+        throw new ConflictException('只能撤销本人最近一次且尚未被后续操作更改的调场');
+      }
+      const ctx = await service.boardContext(tournamentId);
+      const after = log.after as { version: string; rows: ReturnType<typeof boardPlacement>[] };
+      if (boardVersion(ctx) !== after.version) throw new ConflictException('比赛状态、排程或规则已变化，无法撤销');
+      const rows = log.before as ReturnType<typeof boardPlacement>[];
+      await service.writeBoardRows(ctx.all, rows);
+      await service.audit(tournamentId, 'BOARD_UNDO', after.rows, rows, actorId);
+      return { count: rows.length };
+    });
+  }
+
+  private async manualPlan(tournamentId: string, matchId: string, dto: UpdateMatchScheduleDto, board?: BoardContext) {
+    const { tournament, all, venues } = board ?? await this.boardContext(tournamentId);
     const selected = all.find(m => m.id === matchId);
     if (!selected) throw new NotFoundException('场次不存在');
+    if (selected.isBye) throw new BadRequestException('轮空场次无需排程');
     if (selected.status !== MatchStatus.PENDING || selected.startedAt) throw new ConflictException('只能调整尚未开始的比赛');
     const related = (selected.teamMatchId ? all.filter(m => m.teamMatchId === selected.teamMatchId) : [selected]).sort((a,b) => a.matchNo - b.matchNo);
     const before = related.filter(m => m.status === MatchStatus.PENDING && !m.startedAt);
@@ -1018,7 +1141,8 @@ export class SchedulingService {
     };
     const validate = (changes: ScheduleMatch[]): ConflictItem[] => {
       if (lockOnly) return [];
-      const conflicts = this.detectPlacementConflicts([...others, ...changes], gap).filter(c => c.matchIds.some(id => ids.has(id)));
+      // A board swap validates occupancy against both final placements together.
+      const conflicts = board ? [] as ConflictItem[] : this.detectPlacementConflicts([...others, ...changes], gap).filter(c => c.matchIds.some(id => ids.has(id)));
       if (selected.teamMatchId && changes[0]?.scheduledAt) {
         const lastFixed = fixed.filter(m => m.scheduledAt).sort((a, b) => this.endTime(b).getTime() - this.endTime(a).getTime())[0];
         const preservedGap = lastFixed?.scheduledAt && before[0]?.scheduledAt
@@ -1038,6 +1162,13 @@ export class SchedulingService {
       return conflicts;
     };
     let start = parsed;
+    if (board && start && selected.teamMatchId) {
+      // The dragged card is the anchor, even when it is a later child.
+      for (const m of before) {
+        if (m.id === selected.id) break;
+        start = this.addMinutes(start, -(m.durationMinutes + (gaps.get(m.id) ?? gap)));
+      }
+    }
     if (dto.findNextAvailable) {
       if (!venueId) throw new BadRequestException('请先选择场地');
       const minutes = before.reduce((sum, item, i) => sum + (item.id === matchId ? dto.durationMinutes ?? item.durationMinutes : item.durationMinutes) + (i < before.length - 1 ? gaps.get(item.id) ?? gap : 0), 0);
@@ -1074,7 +1205,7 @@ export class SchedulingService {
       return this.outsideGroupDates(m.allowedDates, m.scheduledAt)
         && !(original && m.scheduledAt && this.scheduleDay(original) === this.scheduleDay(m.scheduledAt));
     });
-    const venueOptions = venues.filter(v => v.isActive).map(v => {
+    const venueOptions = board ? [] : venues.filter(v => v.isActive).map(v => {
       const unavailable = fixedVenue && fixedVenue !== v.id ? '团体对阵已开赛，不能换场' : validate(project(v.id, start, reflow || dto.findNextAvailable))[0]?.message;
       return { id: v.id, name: v.name, inGroup: !selected.allowedVenueIds || selected.allowedVenueIds.includes(v.id), available: !unavailable, reason: unavailable ?? null };
     });
@@ -1109,6 +1240,8 @@ export class SchedulingService {
     // 预排的淘汰赛空位：按出线前骨架给双方占位名（A组第1名 / 待定），每个项目算一次。
     const placeholderNamesByEvent = new Map<string, Map<string, [string, string]> | null>();
     const placeholderNamesFor = (match: (typeof matches)[number]) => {
+      const placementSources = knockoutPlacementSources(match);
+      if (placementSources.length === 2) return [placementSources[0].label, placementSources[1].label] as [string, string];
       if (!match.eventId || match.event?.format !== Format.GROUP_PLUS_KNOCKOUT_STD || match.roundNo < 1 || match.roundNo >= SECOND_STAGE_FORMAL_ROUND_NO_BASE) return null;
       if (!placeholderNamesByEvent.has(match.eventId)) {
         const own = matches.filter((item) => item.eventId === match.eventId);
@@ -1133,8 +1266,9 @@ export class SchedulingService {
       // assignment, which is what the bracket fill / referee actually depends
       // on.
       const hasFullSchedule = Boolean(match.scheduledAt && match.venueId);
+      const walkover = isKnockoutWalkover(match);
       const scheduleStatus =
-        match.status === MatchStatus.PENDING && !hasFullSchedule
+        match.status === MatchStatus.PENDING && !hasFullSchedule && !walkover
           ? 'WAITING_SCHEDULE'
           : match.status === MatchStatus.COMPLETED && !dependenciesReady
             ? 'WAITING_SCHEDULE'
@@ -1161,7 +1295,7 @@ export class SchedulingService {
         dateOverride: match.dateOverride,
         scheduleLocked: match.scheduleLocked,
         scheduleOverride: match.scheduleOverride,
-        unscheduledReason: match.unscheduledReason,
+        unscheduledReason: walkover ? '轮空' : match.unscheduledReason,
         teamMatchId: match.teamMatchId,
         team1Id: match.teamMatch?.team1Id,
         team2Id: match.teamMatch?.team2Id,
@@ -1187,7 +1321,7 @@ export class SchedulingService {
         finishedAt: match.finishedAt,
         dependenciesReady,
         dependencyMatchIds,
-        isBye: Boolean(match.eventId) && isByeMatch(match),
+        isBye: Boolean(match.eventId) && (walkover || isByeMatch(match)),
         placeholderNames: placeholderNamesFor(match),
         scheduleStatus,
       };
@@ -1209,7 +1343,7 @@ export class SchedulingService {
         continue;
       }
 
-      if (match.status !== MatchStatus.PENDING) continue;
+      if (match.status !== MatchStatus.PENDING || match.isBye) continue;
       if (match.venueId && match.allowedVenueIds && !match.allowedVenueIds.includes(match.venueId) && !match.scheduleOverride) {
         conflicts.push({ type: 'GROUP_VENUE', matchIds: [match.id], message: `${this.venueScopeLabel(match)}的场地规则已变化，本场需调整或明确设置为临时借场` });
       }
@@ -1247,9 +1381,9 @@ export class SchedulingService {
           });
         }
 
-        const sharedPlayers = this.matchPlayerIds(a).filter((playerId) =>
-          this.matchPlayerIds(b).includes(playerId),
-        );
+        const parallel = Boolean(a.teamMatchId && a.teamMatchId === b.teamMatchId && areTeamItemsScheduledInParallel(a, b));
+        const playersB = this.matchPlayerIds(b, !parallel);
+        const sharedPlayers = this.matchPlayerIds(a, !parallel).filter(playerId => playersB.includes(playerId));
         if (sharedPlayers.length) {
           conflicts.push({
             type: 'PLAYER',
@@ -1372,9 +1506,11 @@ export class SchedulingService {
     );
   }
 
-  /** 单项淘汰赛（含单淘汰）场次的轮次代码（R4…R1、QF、SF、BRONZE、F）；小组赛、排位赛、团体赛为 null。 */
+  /** 单项淘汰赛可筛选的轮次，含传统签表和 A-H 第二阶段的五六名、七八名附加赛。 */
   private knockoutRoundCode(match: { eventId: string | null; roundNo: number; round: string }) {
-    if (!match.eventId || match.roundNo < 1 || match.roundNo >= SECOND_STAGE_FORMAL_ROUND_NO_BASE) return null;
+    if (!match.eventId || match.roundNo < 1) return null;
+    if (PLACEMENT_FINAL_ROUND_CODES.includes(match.round)) return match.round;
+    if (match.roundNo >= SECOND_STAGE_FORMAL_ROUND_NO_BASE) return null;
     return KNOCKOUT_ROUND_CODES.includes(match.round) ? match.round : null;
   }
 
@@ -1384,7 +1520,8 @@ export class SchedulingService {
    */
   private roundOrder(match: { eventId: string | null; roundNo: number; round: string }) {
     const code = this.knockoutRoundCode(match);
-    return code ? 1000 + KNOCKOUT_ROUND_CODES.indexOf(code) : match.roundNo;
+    const index = code ? KNOCKOUT_ROUND_CODES.indexOf(code) : -1;
+    return index >= 0 ? 1000 + index : match.roundNo;
   }
 
   /**
@@ -1408,7 +1545,7 @@ export class SchedulingService {
           return match.roundNo >= 1 ? 'second' : 'first';
       }
     }
-    if (match.teamMatch?.teamCompetition.format === TeamCompetitionFormat.GROUP_PLUS_KNOCKOUT) {
+    if (match.teamMatch && isTeamGroupKnockout(match.teamMatch.teamCompetition.format)) {
       return match.teamMatch.stage === 'KNOCKOUT' || match.teamMatch.stage === 'FINAL' ? 'second' : 'first';
     }
     return 'first';
@@ -1647,11 +1784,12 @@ export class SchedulingService {
     matchNo: number;
     status: MatchStatus;
     winnerSide: number | null;
+    forfeitReason?: string | null;
   }>(
-    match: { eventId: string | null; round?: string | null; roundNo: number; matchNo: number },
+    match: { eventId: string | null; round?: string | null; roundNo: number; matchNo: number; forfeitReason?: string | null },
     matchMap: Map<string, T>,
   ) {
-    if (!match.eventId) return true;
+    if (!match.eventId || isKnockoutWalkover(match)) return true;
     if (isSecondStageFormalRoundNo(match.roundNo)) {
       const expectedDependencies = secondStageDependencyMatchNos(match.matchNo);
       if (!expectedDependencies.length) return true;
@@ -1663,17 +1801,26 @@ export class SchedulingService {
     }
     if (match.roundNo <= 1) return true;
     const dependencies = this.dependencyMatches(match, matchMap);
-    return dependencies.length === 2 && dependencies.every(
+    return (isKnockoutPlacementPlayoff(match.round) ? dependencies.length >= 2 : dependencies.length === 2) && dependencies.every(
       (dependency) =>
         dependency?.status === MatchStatus.COMPLETED && Boolean(dependency.winnerSide),
     );
   }
 
-  private dependencyMatches<T extends { eventId: string | null; round?: string | null; roundNo: number; matchNo: number }>(
+  private dependencyMatches<T extends { eventId: string | null; round?: string | null; roundNo: number; matchNo: number; forfeitReason?: string | null; status?: MatchStatus }>(
     match: { eventId: string | null; round?: string | null; roundNo: number; matchNo: number },
     matchMap: Map<string, T>,
-  ) {
+  ): T[] {
     if (!match.eventId) return [];
+    const placementSources = knockoutPlacementSources({ ...match, round: match.round ?? '' });
+    if (placementSources.length) {
+      return placementSources
+        .map(source => matchMap.get(this.matchKey(match.eventId!, source.roundNo, source.matchNo)))
+        .filter((item): item is T => Boolean(item))
+        .flatMap(item => isKnockoutWalkover(item) && item.status === MatchStatus.PENDING
+          ? this.dependencyMatches(item, matchMap)
+          : [item]);
+    }
     if (isSecondStageFormalRoundNo(match.roundNo)) {
       return secondStageDependencyMatchNos(match.matchNo)
         .map((matchNo) =>
@@ -1711,9 +1858,9 @@ export class SchedulingService {
     return new Date(date.getTime() + minutes * 60 * 1000);
   }
 
-  private matchPlayerIds(match: ScheduleMatch) {
+  private matchPlayerIds(match: ScheduleMatch, includeTeams = true) {
     return [...(match.side1?.playerIds ?? []), ...(match.side2?.playerIds ?? []),
-      ...[match.team1Id, match.team2Id].filter(Boolean).map(id => `team:${id}`)];
+      ...(includeTeams ? [match.team1Id, match.team2Id].filter(Boolean).map(id => `team:${id}`) : [])];
   }
 
   private playerIds(registration: any) {

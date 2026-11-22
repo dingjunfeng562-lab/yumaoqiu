@@ -152,7 +152,7 @@ export default function PrivacyPage() {
         </Section>
 
         <div className="mt-9 border-t border-slate-100 pt-5">
-          <Link href="/" className="text-sm font-bold text-blue-700 transition hover:text-blue-900 hover:underline">
+          <Link href="/home" className="text-sm font-bold text-blue-700 transition hover:text-blue-900 hover:underline">
             ← 返回首页
           </Link>
         </div>

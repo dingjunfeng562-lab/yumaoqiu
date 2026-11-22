@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import sharp from 'sharp';
 import { AuthActor } from '../auth/admin-scope';
+import { approvedPhotoTargetIds, canManagePhotoTarget } from '../auth/permissions';
 import { ImageModerationService } from '../image-moderation/image-moderation.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreatePhotoActivityDto } from './dto/photo-activity.dto';
@@ -25,7 +26,10 @@ export class PhotoActivitiesService {
 
   async list(actor: AuthActor) {
     const rows = await this.prisma.photoActivity.findMany({
-      where: actor.role === Role.ROOT ? {} : { submittedById: actor.id },
+      where: actor.role === Role.ROOT ? {} : {
+        submittedById: actor.id,
+        id: { in: approvedPhotoTargetIds(actor, 'ACTIVITY') },
+      },
       include: {
         submittedBy: { select: { id: true, username: true } },
         approvedBy: { select: { id: true, username: true } },
@@ -97,7 +101,7 @@ export class PhotoActivitiesService {
         include: { submittedBy: { select: { id: true, username: true } }, approvedBy: { select: { id: true, username: true } } },
       });
       if (cover?.buffer && current.coverImageUrl !== nextCover) this.removeCover(current.coverImageUrl);
-      return this.serialize(row);
+      return this.serialize(row, canManagePhotoTarget(actor, 'ACTIVITY', id));
     } catch (error) {
       if (cover?.buffer && nextCover !== current.coverImageUrl) this.removeCover(nextCover);
       throw error;
@@ -214,8 +218,12 @@ export class PhotoActivitiesService {
     if (existsSync(path)) rmSync(path, { force: true });
   }
 
-  private serialize(row: ActivityRow) {
-    const { _count, ...activity } = row;
-    return { ...activity, photoCount: _count?.photos ?? 0, photoAccessEnabled: !!row.photoAccessToken };
+  private serialize(row: ActivityRow, managementAllowed = true) {
+    const { _count, photoAccessToken, photoUploadToken: _photoUploadToken, ...activity } = row;
+    return {
+      ...activity,
+      photoCount: managementAllowed ? _count?.photos ?? 0 : 0,
+      photoAccessEnabled: managementAllowed && !!photoAccessToken,
+    };
   }
 }

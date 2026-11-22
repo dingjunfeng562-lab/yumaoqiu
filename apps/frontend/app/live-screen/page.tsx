@@ -1,17 +1,17 @@
 import { notFound, redirect } from 'next/navigation';
 import { LiveScreenClient } from '@/components/screen/LiveScreenClient';
 import { fetchPublicBrackets } from '@/lib/live-brackets';
+import { fetchTeamBoard } from '@/lib/team-board';
 
 export const dynamic = 'force-dynamic';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 
-async function getCompetitionTitle(id: string) {
+async function getCompetition(id: string) {
   try {
     const res = await fetch(`${API_BASE}/competitions/${encodeURIComponent(id)}`, { cache: 'no-store' });
     if (!res.ok) return null;
-    const data = (await res.json()) as { title?: string | null };
-    return data.title ?? null;
+    return (await res.json()) as { title?: string | null; eventOptions?: Array<{ id: string }> };
   } catch {
     return null;
   }
@@ -28,12 +28,17 @@ export default async function LiveScreenPage({
   const id = typeof tournamentId === 'string' ? tournamentId.trim() : '';
   if (!id) redirect('/competitions');
 
-  const [brackets, title] = await Promise.all([
+  const [brackets, competition, teams] = await Promise.all([
     fetchPublicBrackets(id).catch(() => []),
-    getCompetitionTitle(id),
+    getCompetition(id),
+    fetchTeamBoard(id).catch(() => []),
   ]);
   const own = brackets.filter((bracket) => bracket.tournamentId === id);
+  const title = competition?.title;
   if (!title && !own.length) notFound();
+  if (!own.length && !competition?.eventOptions?.length && teams.length) {
+    redirect(`/competitions/${encodeURIComponent(id)}/live`);
+  }
 
   return (
     <LiveScreenClient

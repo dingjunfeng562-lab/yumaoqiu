@@ -1,4 +1,4 @@
-import { AuthActor } from '../auth/admin-scope';
+import { tournamentScope, type AuthActor } from '../auth/admin-scope';
 import { hasPermission } from '../auth/permissions';
 import {
   BadRequestException,
@@ -18,14 +18,14 @@ import {
   ScoreSheetStatus,
   ScoringMode,
   ScoringRule,
-  SecondStageRankingMode,
   SecondStageStatus,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TeamCompetitionsService } from '../team-competitions/team-competitions.service';
 import { ScoringGateway } from './scoring.gateway';
-import { isSecondStageFormalRoundNo } from '../common/second-stage-bracket';
+import { isSecondStageFormalRoundNo, secondStageRankingLimit } from '../common/second-stage-bracket';
 import { placeGroupQualifiers } from '../common/knockout-skeleton';
+import { isKnockoutPlacementPlayoff, isKnockoutWalkover, knockoutPlacementSources, knockoutPlacementTargets } from '../common/knockout-placement-playoff';
 import { SecondStageProgressService } from '../common/second-stage-progress.service';
 import { randomBytes } from 'node:crypto';
 import { MatchScoreSheetService } from './match-score-sheet.service';
@@ -40,6 +40,7 @@ import type {
 import { groupCodeSortValue } from '../common/group-code';
 
 type AuthUser = AuthActor;
+type RefereeEvent = Omit<Prisma.MatchEventUncheckedCreateInput, 'matchId'>;
 
 type PlayerIndex = 1 | 2;
 /**
@@ -137,10 +138,15 @@ export type MatchScoringInput = {
     customGamesToWin: number | null;
     stageScoringRules?: Prisma.JsonValue | null;
   } | null;
-  teamMatch?: { teamCompetition: {
-    scoringRule: ScoringRule; scoringMode: ScoringMode;
-    customGamePoint: number | null; customGameCap: number | null; customGamesToWin: number | null;
-  } } | null;
+  teamMatch?: {
+    /** 团体对阵所处阶段：GROUP（小组赛）/ KNOCKOUT（淘汰赛，含季军赛）。 */
+    stage?: string | null;
+    teamCompetition: {
+      scoringRule: ScoringRule; scoringMode: ScoringMode;
+      customGamePoint: number | null; customGameCap: number | null; customGamesToWin: number | null;
+      stageScoringRules?: Prisma.JsonValue | null;
+    };
+  } | null;
 };
 
 type MatchScoringConfig = {
@@ -187,6 +193,7 @@ const COURT_KEEP_NOTE_PREFIX = 'COURT_KEEP:';
 const RETIRE_NOTE_PREFIX = 'RETIRE:';
 const BLACK_CARD_NOTE_PREFIX = 'BLACK_CARD:';
 const SERVING_STATE_NOTE_PREFIX = 'RS:';
+const REFEREE_CLAIM_DURATION_MS = 3 * 60 * 60 * 1000;
 
 @Injectable()
 export class ScoringService {
@@ -201,7 +208,7 @@ export class ScoringService {
 
   async listRefereeMatches(user: AuthUser) {
     this.requireReferee(user);
-    const authorized = { isArchived: false, refereeGrants: { some: { userId: user.id } } };
+    const authorized = { isArchived: false, ...this.refereeTournamentScope(user.id) };
     return this.listMatchSummaries({
       refereeId: user.id,
       AND: [this.refereeLineupFilter()],
@@ -239,34 +246,86 @@ export class ScoringService {
 
   async listAuthorizedTournaments(user: AuthUser) {
     this.requireReferee(user);
-    const grants = await this.prisma.refereeTournamentGrant.findMany({
-      where: { userId: user.id, tournament: { isArchived: false } },
-      orderBy: { grantedAt: 'desc' },
+    const tournaments = await this.prisma.tournament.findMany({
+      where: { isArchived: false, ...this.refereeTournamentScope(user.id) },
       select: {
-        grantedAt: true,
-        tournament: { select: { id: true, name: true, _count: { select: { venues: { where: { isActive: true } } } } } },
+        id: true, name: true,
+        refereeGrants: { where: { userId: user.id }, select: { grantedAt: true } },
+        venues: { where: { isActive: true }, select: {
+          refereeAssignments: { select: { userId: true, assignedAt: true } },
+          matches: { where: { refereeId: user.id, ...this.refereeLineupFilter() }, take: 1, select: { id: true } },
+        } },
       },
     });
-    return grants.map(({ tournament, grantedAt }) => ({ id: tournament.id, name: tournament.name, courtCount: tournament._count.venues, grantedAt }));
+    return tournaments.map(({ id, name, venues, refereeGrants }) => {
+      const assigned = venues.flatMap(venue => venue.refereeAssignments.filter(item => item.userId === user.id));
+      const dates = [...refereeGrants.map(grant => grant.grantedAt), ...assigned.map(item => item.assignedAt)];
+      const courtCount = venues.filter(venue => venue.matches.length ||
+        (assigned.length ? venue.refereeAssignments.some(item => item.userId === user.id) : !venue.refereeAssignments.length)).length;
+      return { id, name, courtCount, grantedAt: new Date(Math.max(...dates.map(Number))) };
+    }).sort((a, b) => +b.grantedAt - +a.grantedAt);
+  }
+
+  private refereeTournamentScope(userId: string): Prisma.TournamentWhereInput {
+    return { OR: [
+      { refereeGrants: { some: { userId } } },
+      { venues: { some: { isActive: true, refereeAssignments: { some: { userId } } } } },
+    ] };
   }
 
   private async requireTournamentAuthorization(tournamentId: string, user: AuthUser) {
     this.requireReferee(user);
-    const grant = await this.prisma.refereeTournamentGrant.findUnique({
-      where: { tournamentId_userId: { tournamentId, userId: user.id } },
-      select: { tournament: { select: { isArchived: true } } },
+    const tournament = await this.prisma.tournament.findFirst({
+      where: { id: tournamentId, ...this.refereeTournamentScope(user.id) },
+      select: { isArchived: true },
     });
-    if (!grant) throw new ForbiddenException('尚未获得该赛事授权，请先扫描该赛事二维码');
-    if (grant.tournament.isArchived) throw new NotFoundException('赛事已归档');
+    if (!tournament) throw new ForbiddenException('尚未获得该赛事授权，请先扫描该赛事二维码');
+    if (tournament.isArchived) throw new NotFoundException('赛事已归档');
+  }
+
+  private assignableRefereeScope(actor?: AuthActor): Prisma.UserWhereInput {
+    return { role: Role.REFEREE, status: 'ACTIVE', ...(actor && actor.role !== Role.ROOT ? { managerId: actor.id } : {}) };
   }
 
   async listAssignableReferees(actor?: AuthActor) {
     const users = await this.prisma.user.findMany({
-      where: { role: Role.REFEREE, status: 'ACTIVE', ...(actor && actor.role !== Role.ROOT ? { managerId: actor.id } : {}) },
+      where: this.assignableRefereeScope(actor),
       select: { id: true, username: true, role: true, _count: { select: { matches: true } } },
       orderBy: { username: 'asc' },
     });
     return users.map(({ _count, ...user }) => ({ ...user, refereedMatchesCount: _count.matches }));
+  }
+
+  async listCourtReferees(tournamentId: string, actor: AuthActor) {
+    const tournament = await this.prisma.tournament.findFirst({
+      where: { id: tournamentId, isArchived: false, ...tournamentScope(actor) },
+      select: { venues: { where: { isActive: true }, orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }], select: {
+        id: true, name: true,
+        refereeAssignments: { orderBy: { assignedAt: 'asc' }, select: { user: { select: { id: true, username: true } } } },
+      } } },
+    });
+    if (!tournament) throw new NotFoundException('赛事不存在或已归档');
+    return tournament.venues.map(({ refereeAssignments, ...venue }) => ({ ...venue, referees: refereeAssignments.map(item => item.user) }));
+  }
+
+  async saveCourtReferees(tournamentId: string, venueId: string, refereeIds: string[], actor: AuthActor) {
+    const ids = [...new Set(refereeIds)];
+    await this.prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM Venue WHERE id = ${venueId} FOR UPDATE`;
+      const venue = await tx.venue.findFirst({
+        where: { id: venueId, tournamentId, isActive: true, tournament: { isArchived: false, ...tournamentScope(actor) } },
+        select: { refereeAssignments: { select: { userId: true } } },
+      });
+      if (!venue) throw new NotFoundException('场地不存在、已停用或不属于该赛事');
+      const additions = ids.filter(id => !venue.refereeAssignments.some(assignment => assignment.userId === id));
+      if (additions.length && await tx.user.count({ where: { id: { in: additions }, ...this.assignableRefereeScope(actor) } }) !== additions.length) {
+        throw new BadRequestException('请选择你有权管理的有效裁判账号');
+      }
+      await tx.refereeCourtAssignment.deleteMany({ where: { venueId, userId: { notIn: ids } } });
+      if (additions.length) await tx.refereeCourtAssignment.createMany({ data: additions.map(userId => ({ venueId, userId })) });
+    });
+    this.gateway.emitBracketUpdate({ tournamentId });
+    return this.listCourtReferees(tournamentId, actor);
   }
 
   private requireReferee(user: AuthUser) {
@@ -307,16 +366,26 @@ export class ScoringService {
         id: true,
         name: true,
         sortOrder: true,
+        refereeAssignments: { select: { userId: true } },
+        matches: { where: { ...this.tournamentMatchFilter(tournamentId), refereeId: user.id }, select: { id: true } },
         _count: { select: { matches: { where: this.tournamentMatchFilter(tournamentId) } } },
       },
     });
     const unscheduledCount = await this.prisma.match.count({
       where: { ...this.tournamentMatchFilter(tournamentId), venueId: null },
     });
+    const hasFixedCourt = courts.some(court => court.refereeAssignments.some(assignment => assignment.userId === user.id));
     return {
       tournament,
       courts: courts.sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, 'zh-CN', { numeric: true }))
-        .map((court, index) => ({ id: court.id, name: court.name, courtNumber: index + 1, matchCount: court._count.matches })),
+        .flatMap((court, index) => {
+          const assigned = court.refereeAssignments.some(assignment => assignment.userId === user.id);
+          const open = !hasFixedCourt && !court.refereeAssignments.length;
+          return assigned || open || court.matches.length ? [{
+            id: court.id, name: court.name, courtNumber: index + 1, assigned,
+            matchCount: assigned || open ? court._count.matches : court.matches.length,
+          }] : [];
+        }),
       unscheduledCount,
     };
   }
@@ -325,20 +394,30 @@ export class ScoringService {
     await this.requireTournamentAuthorization(tournamentId, user);
     const court = await this.prisma.venue.findFirst({
       where: { id: venueId, tournamentId, isActive: true, tournament: { isArchived: false } },
-      select: { id: true, name: true },
+      select: { id: true, name: true, refereeAssignments: { select: { userId: true } } },
     });
     if (!court) throw new NotFoundException('场地不存在、已停用或不属于该赛事');
-    return court;
+    const refereeIds = court.refereeAssignments.map(assignment => assignment.userId);
+    const assigned = refereeIds.includes(user.id);
+    const otherAssignment = !assigned && !refereeIds.length && await this.prisma.refereeCourtAssignment.findFirst({
+      where: { userId: user.id, venue: { tournamentId, isActive: true } }, select: { venueId: true },
+    });
+    return { id: court.id, name: court.name, refereeIds, assigned, canClaim: assigned || (!refereeIds.length && !otherAssignment) };
   }
 
   async listCourtMatches(tournamentId: string, venueId: string, user: AuthUser) {
     const court = await this.requireTournamentCourt(tournamentId, venueId, user);
-    const matches = await this.listMatchSummaries({ ...this.tournamentMatchFilter(tournamentId), venueId });
-    return { court, matches };
+    const matches = await this.listMatchSummaries({ ...this.tournamentMatchFilter(tournamentId), venueId, ...(court.canClaim ? {} : { refereeId: user.id }) });
+    if (!court.canClaim && !matches.length) throw new ForbiddenException('该场地已分配给其他裁判');
+    return { court: { id: court.id, name: court.name, canClaim: court.canClaim }, matches: matches.map(match => ({
+      ...match,
+      canTakeOver: court.assigned && Boolean(match.referee?.id && match.referee.id !== user.id && court.refereeIds.includes(match.referee.id))
+        && (match.status === MatchStatus.PENDING || match.status === MatchStatus.LIVE) && Boolean(match.side1 && match.side2),
+    })) };
   }
 
-  async claimCourtMatch(tournamentId: string, venueId: string, matchId: string, user: AuthUser) {
-    await this.requireTournamentCourt(tournamentId, venueId, user);
+  async claimCourtMatch(tournamentId: string, venueId: string, matchId: string, user: AuthUser, expectedRefereeId?: string) {
+    const court = await this.requireTournamentCourt(tournamentId, venueId, user);
     const scope: Prisma.MatchWhereInput = {
       ...this.tournamentMatchFilter(tournamentId),
       id: matchId,
@@ -347,21 +426,53 @@ export class ScoringService {
     };
     const match = await this.prisma.match.findFirst({ where: scope });
     if (!match) throw new NotFoundException('该场地没有此比赛，请刷新场次');
-    if (match.refereeId === user.id) return { id: match.id };
-    if (match.refereeId) throw new ConflictException('该比赛已由其他裁判执裁，请选择其他比赛');
-    if (match.status !== MatchStatus.PENDING) throw new ConflictException('只能接手尚未开始的比赛');
+    const now = new Date();
+    const unfinishedStatuses: MatchStatus[] = [MatchStatus.PENDING, MatchStatus.LIVE];
+    const unfinished = unfinishedStatuses.includes(match.status);
+    if (match.refereeId && unfinished && match.refereeClaimExpiresAt && match.refereeClaimExpiresAt <= now) {
+      throw new ConflictException('本场执裁已超时，请刷新场次后重新接手');
+    }
+    const expiresAt = new Date(now.getTime() + REFEREE_CLAIM_DURATION_MS);
+    if (match.refereeId === user.id) {
+      if (unfinished && !match.refereeClaimExpiresAt) {
+        // 后台指派裁判时不计时，裁判实际进入执裁时才开始计时。
+        const result = await this.prisma.match.updateMany({
+          where: { ...scope, refereeId: user.id, refereeClaimExpiresAt: null, status: { in: unfinishedStatuses } },
+          data: { refereeClaimExpiresAt: expiresAt },
+        });
+        if (result.count !== 1) throw new ConflictException('比赛安排已变化或已被接手，请刷新场次');
+      }
+      return { id: match.id };
+    }
+    if (!court.canClaim) throw new ForbiddenException('该场地已分配给其他裁判');
+    if (expectedRefereeId && expectedRefereeId !== match.refereeId) throw new ConflictException('执裁账号已变化，请刷新后重试');
+    const takeover = Boolean(expectedRefereeId && court.assigned && court.refereeIds.includes(expectedRefereeId));
+    if (match.refereeId && !takeover) throw new ConflictException('该比赛已由其他裁判执裁');
+    const allowedStatuses = takeover ? unfinishedStatuses : [MatchStatus.PENDING];
+    if (!allowedStatuses.includes(match.status)) throw new ConflictException('当前比赛状态不能接手');
     if (!match.side1Id || !match.side2Id) throw new BadRequestException('对阵尚未确定，暂不能执裁');
 
-    // 用带条件的更新，避免两名裁判同时扫码抢到同一场比赛。
+    // 交接时要求原裁判和场地成员关系仍匹配。
     const result = await this.prisma.match.updateMany({
       where: {
         ...scope,
-        refereeId: null,
-        status: MatchStatus.PENDING,
+        refereeId: match.refereeId,
+        refereeClaimExpiresAt: match.refereeClaimExpiresAt,
+        status: { in: allowedStatuses },
+        venue: { isActive: true, tournamentId, ...(court.assigned ? {
+          refereeAssignments: { some: { userId: user.id } },
+          ...(takeover ? { AND: [{ refereeAssignments: { some: { userId: expectedRefereeId } } }] } : {}),
+        } : {
+          refereeAssignments: { none: {} },
+          tournament: { venues: { none: { isActive: true, refereeAssignments: { some: { userId: user.id } } } } },
+        }) },
         side1Id: { not: null },
         side2Id: { not: null },
       },
-      data: { refereeId: user.id },
+      data: {
+        refereeId: user.id,
+        refereeClaimExpiresAt: match.refereeClaimExpiresAt ?? expiresAt,
+      },
     });
     if (result.count !== 1) throw new ConflictException('比赛安排已变化或已被接手，请刷新场次');
     return { id: matchId };
@@ -517,6 +628,7 @@ export class ScoringService {
           : null,
       },
       referee: match.referee,
+      refereeClaimExpiresAt: match.refereeClaimExpiresAt,
       venue: match.venue ? { id: match.venue.id, name: match.venue.name } : null,
       scheduledAt: match.scheduledAt,
       durationMinutes: match.durationMinutes,
@@ -605,7 +717,7 @@ export class ScoringService {
     );
 
     await this.prisma.$transaction(async (tx) => {
-      await this.teamCompetitionsService.prepareScoring(tx, matchId, { starting: true, expectedUpdatedAt: match.updatedAt });
+      await this.prepareRefereeMutation(tx, matchId, user, { starting: true, expectedUpdatedAt: match.updatedAt });
       await tx.game.upsert({
         where: { matchId_gameNo: { matchId, gameNo: 1 } },
         update: { server: options.servingSide },
@@ -670,7 +782,7 @@ export class ScoringService {
     }
 
     await this.prisma.$transaction(async (tx) => {
-      await this.teamCompetitionsService.prepareScoring(tx, matchId, { expectedUpdatedAt: match.updatedAt });
+      await this.prepareRefereeMutation(tx, matchId, user, { expectedUpdatedAt: match.updatedAt });
       const games = await tx.game.findMany({ where: { matchId }, orderBy: { gameNo: 'asc' } });
       const currentGame = games.find((game) => !game.winnerSide) ?? games.at(-1);
       if (!currentGame || currentGame.gameNo !== options.gameNo) {
@@ -784,7 +896,7 @@ export class ScoringService {
     );
 
     await this.prisma.$transaction(async (tx) => {
-      await this.teamCompetitionsService.prepareScoring(tx, matchId, { expectedUpdatedAt: match.updatedAt });
+      await this.prepareRefereeMutation(tx, matchId, user, { expectedUpdatedAt: match.updatedAt });
       const activePoints = await tx.matchEvent.count({
         where: { matchId, type: MatchEventType.POINT, undoneAt: null },
       });
@@ -862,7 +974,7 @@ export class ScoringService {
     };
   }
 
-  async addPoint(matchId: string, side: 1 | 2, user: AuthUser) {
+  async addPoint(matchId: string, side: 1 | 2, user: AuthUser, incident?: RefereeEvent) {
     await this.ensureMatchAccess(matchId, user);
     const match = await this.ensurePlayableMatch(matchId);
     if (match.status === MatchStatus.COMPLETED || match.status === MatchStatus.CANCELLED) {
@@ -879,7 +991,8 @@ export class ScoringService {
     }
 
     await this.prisma.$transaction(async (tx) => {
-      await this.teamCompetitionsService.prepareScoring(tx, matchId, { expectedUpdatedAt: match.updatedAt });
+      await this.prepareRefereeMutation(tx, matchId, user, { expectedUpdatedAt: match.updatedAt });
+      if (incident) await tx.matchEvent.create({ data: { matchId, ...incident } });
       const currentGame = await this.ensureCurrentGame(tx, matchId);
       const [gamesBeforePoint, servingEventsBeforePoint] = await Promise.all([
         tx.game.findMany({ where: { matchId }, orderBy: { gameNo: 'asc' } }),
@@ -1022,12 +1135,9 @@ export class ScoringService {
       return this.getMatchState(matchId, user);
     }
 
-    await this.prisma.matchEvent.create({
-      data: {
-        matchId,
-        type: MatchEventType.TIMEOUT,
-        note: this.encodeMatchPauseNote('START', reason),
-      },
+    await this.createRefereeEvent(matchId, user, {
+      type: MatchEventType.TIMEOUT,
+      note: this.encodeMatchPauseNote('START', reason),
     });
     return this.getMatchState(matchId, user);
   }
@@ -1042,12 +1152,9 @@ export class ScoringService {
       return this.getMatchState(matchId, user);
     }
 
-    await this.prisma.matchEvent.create({
-      data: {
-        matchId,
-        type: MatchEventType.TIMEOUT,
-        note: this.encodeMatchPauseNote('END'),
-      },
+    await this.createRefereeEvent(matchId, user, {
+      type: MatchEventType.TIMEOUT,
+      note: this.encodeMatchPauseNote('END'),
     });
     return this.getMatchState(matchId, user);
   }
@@ -1060,12 +1167,9 @@ export class ScoringService {
       throw new BadRequestException('比赛已开始，不能再开始练球');
     }
 
-    await this.prisma.matchEvent.create({
-      data: {
-        matchId,
-        type: MatchEventType.TIMEOUT,
-        note: this.encodeWarmupNote('START', seconds),
-      },
+    await this.createRefereeEvent(matchId, user, {
+      type: MatchEventType.TIMEOUT,
+      note: this.encodeWarmupNote('START', seconds),
     });
     return this.getMatchState(matchId, user);
   }
@@ -1085,12 +1189,9 @@ export class ScoringService {
       return this.getMatchState(matchId, user);
     }
 
-    await this.prisma.matchEvent.create({
-      data: {
-        matchId,
-        type: MatchEventType.TIMEOUT,
-        note: this.encodeWarmupNote('END'),
-      },
+    await this.createRefereeEvent(matchId, user, {
+      type: MatchEventType.TIMEOUT,
+      note: this.encodeWarmupNote('END'),
     });
     return this.getMatchState(matchId, user);
   }
@@ -1103,7 +1204,7 @@ export class ScoringService {
     }
 
     await this.prisma.$transaction(async (tx) => {
-      await this.teamCompetitionsService.prepareScoring(tx, matchId, { expectedUpdatedAt: match.updatedAt });
+      await this.prepareRefereeMutation(tx, matchId, user, { expectedUpdatedAt: match.updatedAt });
       const games = await tx.game.findMany({ where: { matchId }, orderBy: { gameNo: 'asc' } });
       const servingEvents = await tx.matchEvent.findMany({
         where: {
@@ -1153,7 +1254,7 @@ export class ScoringService {
     }
 
     await this.prisma.$transaction(async (tx) => {
-      await this.teamCompetitionsService.prepareScoring(tx, matchId, { expectedUpdatedAt: match.updatedAt });
+      await this.prepareRefereeMutation(tx, matchId, user, { expectedUpdatedAt: match.updatedAt });
       const games = await tx.game.findMany({ where: { matchId }, orderBy: { gameNo: 'asc' } });
       const currentGame = games.find((game) => !game.winnerSide) ?? games.at(-1);
       if (!currentGame) throw new BadRequestException('暂无比赛局');
@@ -1187,7 +1288,7 @@ export class ScoringService {
     }
 
     await this.prisma.$transaction(async (tx) => {
-      await this.teamCompetitionsService.prepareScoring(tx, matchId, { expectedUpdatedAt: match.updatedAt });
+      await this.prepareRefereeMutation(tx, matchId, user, { expectedUpdatedAt: match.updatedAt });
       const lastPoint = await tx.matchEvent.findFirst({
         where: { matchId, type: MatchEventType.POINT, undoneAt: null },
         orderBy: { createdAt: 'desc' },
@@ -1309,13 +1410,14 @@ export class ScoringService {
     const signing = await this.prepareScoreSheetSigning(match, user, signatures, winner);
 
     await this.withScoreSheetCleanup(signing, () => this.prisma.$transaction(async (tx) => {
-      await this.teamCompetitionsService.prepareScoring(tx, matchId, { expectedUpdatedAt: match.updatedAt });
+      await this.prepareRefereeMutation(tx, matchId, user, { expectedUpdatedAt: match.updatedAt });
       await tx.match.update({
         where: { id: matchId },
         data: {
           status: MatchStatus.COMPLETED,
           winnerSide: winner,
           finishedAt: new Date(),
+          refereeClaimExpiresAt: null,
         },
       });
       const secondStageSynced = await this.syncSecondStageFormalMatchResult(tx, match, winner);
@@ -1364,6 +1466,7 @@ export class ScoringService {
           status: MatchStatus.COMPLETED,
           winnerSide: winner,
           finishedAt: new Date(),
+          refereeClaimExpiresAt: null,
         },
       });
       const secondStageSynced = await this.syncSecondStageFormalMatchResult(tx, match, winner);
@@ -1417,6 +1520,7 @@ export class ScoringService {
           status: nextStatus,
           winnerSide: null,
           finishedAt: null,
+          refereeClaimExpiresAt: null,
         },
       });
       // 已签字的电子比分单不再代表本场结果：标为作废，记录保留。
@@ -1495,7 +1599,7 @@ export class ScoringService {
 
     if (current.eventId && current.roundNo >= 1) {
       const targetSide = current.matchNo % 2 === 1 ? 'side1Id' : 'side2Id';
-      const nextMatches = await tx.match.findMany({
+      const nextMatches = isKnockoutPlacementPlayoff(current.round) ? [] : await tx.match.findMany({
         where: {
           eventId: current.eventId,
           roundNo: current.roundNo + 1,
@@ -1510,7 +1614,8 @@ export class ScoringService {
         (item) => Boolean(targetSide === 'side1Id' ? item.side1Id : item.side2Id)
           && laterMatchStarted(item),
       );
-      if (blocking.length) {
+      const placementBlocking = await this.placementDependents(tx, current);
+      if (blocking.length || placementBlocking.some(({ match }) => match.status !== MatchStatus.PENDING)) {
         throw new BadRequestException(
           action === '重开'
             ? '后续轮次已开赛或结束，请先重开后续场次'
@@ -1538,9 +1643,7 @@ export class ScoringService {
       throw new BadRequestException('请选择该裁判操作对应的选手');
     }
 
-    await this.prisma.matchEvent.create({
-      data: { matchId, type, side, note },
-    });
+    await this.createRefereeEvent(matchId, user, { type, side, note });
     return this.getMatchState(matchId, user);
   }
 
@@ -1563,15 +1666,11 @@ export class ScoringService {
     const cleanFaultType = faultType.trim();
     if (!cleanFaultType) throw new BadRequestException('请选择违例类型');
     const opponentSide: 1 | 2 = faultedSide === 1 ? 2 : 1;
-    await this.prisma.matchEvent.create({
-      data: {
-        matchId,
-        type: MatchEventType.WARNING,
-        side: faultedSide,
-        note: this.encodeFaultNote(cleanFaultType, playerIndex),
-      },
+    return this.addPoint(matchId, opponentSide, user, {
+      type: MatchEventType.WARNING,
+      side: faultedSide,
+      note: this.encodeFaultNote(cleanFaultType, playerIndex),
     });
-    return this.addPoint(matchId, opponentSide, user);
   }
 
   async recordCard(
@@ -1591,18 +1690,15 @@ export class ScoringService {
     }
 
     const cleanReason = reason?.trim() || null;
+    const incident = {
+      type: MatchEventType.YELLOW_CARD,
+      side: penalizedSide,
+      note: this.encodeCardNote(cardType, playerIndex, cleanReason),
+    };
     if (cardType === 'black') {
       // 黑牌直接判对方胜：赛事要求签字时先校验签字，签字不合格就不记这张黑牌。
       const signing = await this.prepareScoreSheetSigning(match, user, signatures, penalizedSide === 1 ? 2 : 1);
       try {
-        await this.prisma.matchEvent.create({
-          data: {
-            matchId,
-            type: MatchEventType.YELLOW_CARD,
-            side: penalizedSide,
-            note: this.encodeCardNote(cardType, playerIndex, cleanReason),
-          },
-        });
         // 黑牌 → 对手因弃权获胜。给原因加前缀，公开对阵图 / 大屏才能显示
         // 「黑牌取消资格」而不是笼统的「弃权」（BWF 规则对两者有区分）。
         return await this.forfeitMatch(
@@ -1613,21 +1709,13 @@ export class ScoringService {
           undefined,
           meta,
           signing,
+          incident,
         );
       } catch (error) {
         if (signing) await this.scoreSheets?.discardFiles(signing);
         throw error;
       }
     }
-
-    await this.prisma.matchEvent.create({
-      data: {
-        matchId,
-        type: MatchEventType.YELLOW_CARD,
-        side: penalizedSide,
-        note: this.encodeCardNote(cardType, playerIndex, cleanReason),
-      },
-    });
 
     if (cardType === 'red') {
       if (match.status !== MatchStatus.LIVE) {
@@ -1637,9 +1725,10 @@ export class ScoringService {
         throw new BadRequestException('比赛暂停中，不能执行红牌罚分');
       }
       const opponentSide: 1 | 2 = penalizedSide === 1 ? 2 : 1;
-      return this.addPoint(matchId, opponentSide, user);
+      return this.addPoint(matchId, opponentSide, user, incident);
     }
 
+    await this.createRefereeEvent(matchId, user, incident);
     return this.getMatchState(matchId, user);
   }
 
@@ -1655,6 +1744,7 @@ export class ScoringService {
     signatures?: MatchSignatureInput,
     meta?: ScoreSheetRequestMeta,
     preparedSigning?: ScoreSheetSigning | null,
+    incident?: RefereeEvent,
   ) {
     await this.ensureMatchAccess(matchId, user);
     // 团体赛子项：缺人的一方填不出名单时也要能判弃权。
@@ -1670,7 +1760,7 @@ export class ScoringService {
       : await this.prepareScoreSheetSigning(match, user, signatures, winnerSide);
 
     await this.withScoreSheetCleanup(signing, () => this.prisma.$transaction(async (tx) => {
-      await this.applyForfeit(tx, match, forfeitedSide, note, match.updatedAt);
+      await this.applyForfeit(tx, match, forfeitedSide, note, user, match.updatedAt, incident);
       if (signing) await this.recordScoreSheet(tx, match, signing, user, this.scoreSheetEndType(note), meta);
     }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }));
 
@@ -1689,11 +1779,14 @@ export class ScoringService {
     match: PlayableMatch,
     forfeitedSide: 1 | 2,
     note: string,
+    user: AuthUser,
     expectedUpdatedAt?: Date,
+    incident?: RefereeEvent,
   ) {
     const matchId = match.id;
     const winnerSide: 1 | 2 = forfeitedSide === 1 ? 2 : 1;
-    await this.teamCompetitionsService.prepareScoring(tx, matchId, { forfeiting: true, expectedUpdatedAt });
+    await this.prepareRefereeMutation(tx, matchId, user, { forfeiting: true, expectedUpdatedAt });
+    if (incident) await tx.matchEvent.create({ data: { matchId, ...incident } });
     const existingGames = await tx.game.findMany({
       where: { matchId },
       orderBy: { gameNo: 'asc' },
@@ -1732,6 +1825,7 @@ export class ScoringService {
         status: MatchStatus.COMPLETED,
         winnerSide,
         forfeitedSide,
+        refereeClaimExpiresAt: null,
         forfeitReason: note,
         finishedAt: new Date(),
       },
@@ -1789,7 +1883,7 @@ export class ScoringService {
         if (current.status === MatchStatus.COMPLETED || current.status === MatchStatus.CANCELLED) break;
         const match = await tx.match.findUniqueOrThrow({ where: { id: child.id }, include: PLAYABLE_MATCH_INCLUDE });
         if (match.status === MatchStatus.COMPLETED || match.status === MatchStatus.CANCELLED) continue;
-        await this.applyForfeit(tx, match, forfeitedSide, note);
+        await this.applyForfeit(tx, match, forfeitedSide, note, user);
         forfeitedMatchIds.push(match.id);
       }
     }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, timeout: 30000 });
@@ -1829,7 +1923,7 @@ export class ScoringService {
     const signing = await this.prepareScoreSheetSigning(match, user, signatures, null);
 
     await this.withScoreSheetCleanup(signing, () => this.prisma.$transaction(async (tx) => {
-      await this.teamCompetitionsService.prepareScoring(tx, matchId, { forfeiting: true, expectedUpdatedAt: match.updatedAt });
+      await this.prepareRefereeMutation(tx, matchId, user, { forfeiting: true, expectedUpdatedAt: match.updatedAt });
       // 本场作废。forfeitedSide = 0 是哨兵值，表示双方都弃权。
       await tx.match.update({
         where: { id: matchId },
@@ -1837,6 +1931,7 @@ export class ScoringService {
           status: MatchStatus.CANCELLED,
           winnerSide: null,
           forfeitedSide: 0,
+          refereeClaimExpiresAt: null,
           forfeitReason: reason?.trim() || '双方均未到场,本场作废',
           finishedAt: new Date(),
         },
@@ -1880,7 +1975,7 @@ export class ScoringService {
     }
     const match = await this.prisma.match.update({
       where: { id: matchId },
-      data: { refereeId },
+      data: { refereeId, refereeClaimExpiresAt: null },
       select: { id: true },
     });
     return this.getMatchState(match.id);
@@ -2026,6 +2121,7 @@ export class ScoringService {
         data: {
           status: nextStatus,
           winnerSide,
+          ...(nextStatus === MatchStatus.COMPLETED ? { refereeClaimExpiresAt: null } : {}),
           startedAt: hasScore ? match.startedAt ?? now : match.startedAt,
           finishedAt: nextStatus === MatchStatus.COMPLETED ? match.finishedAt ?? now : null,
         },
@@ -2232,6 +2328,39 @@ export class ScoringService {
     });
   }
 
+  private async assertCurrentReferee(tx: Prisma.TransactionClient, matchId: string, user: AuthUser) {
+    if (hasPermission(user, 'SCORING')) return;
+    const [match] = await tx.$queryRaw<Array<{ refereeId: string | null; refereeClaimExpiresAt: Date | null }>>`
+      SELECT refereeId, refereeClaimExpiresAt FROM \`Match\` WHERE id = ${matchId} FOR UPDATE
+    `;
+    if (match?.refereeId !== user.id) {
+      throw new ForbiddenException('执裁账号已变化，请返回场地列表');
+    }
+    if (match.refereeClaimExpiresAt && match.refereeClaimExpiresAt <= new Date()) {
+      throw new ForbiddenException('本场执裁已超时，请返回场地列表重新接手');
+    }
+  }
+
+  private async prepareRefereeMutation(
+    tx: Prisma.TransactionClient,
+    matchId: string,
+    user: AuthUser,
+    options: Parameters<TeamCompetitionsService['prepareScoring']>[2],
+  ) {
+    await this.teamCompetitionsService.prepareScoring(tx, matchId, options);
+    await this.assertCurrentReferee(tx, matchId, user);
+  }
+
+  private async createRefereeEvent(matchId: string, user: AuthUser, event: RefereeEvent) {
+    if (hasPermission(user, 'SCORING')) {
+      return this.prisma.matchEvent.create({ data: { matchId, ...event } });
+    }
+    return this.prisma.$transaction(async tx => {
+      await this.assertCurrentReferee(tx, matchId, user);
+      return tx.matchEvent.create({ data: { matchId, ...event } });
+    });
+  }
+
   private async ensureMatchAccess(matchId: string, user: AuthUser) {
     const match = await this.prisma.match.findUnique({
       where: { id: matchId },
@@ -2251,6 +2380,10 @@ export class ScoringService {
     }
     if (!hasPermission(user, 'SCORING') && match.refereeId !== user.id) {
       throw new ForbiddenException('无权操作未分配给你的场次');
+    }
+    if (!hasPermission(user, 'SCORING') && match.refereeClaimExpiresAt && match.refereeClaimExpiresAt <= new Date()
+      && (match.status === MatchStatus.PENDING || match.status === MatchStatus.LIVE)) {
+      throw new ForbiddenException('本场执裁已超时，请返回场地列表重新接手');
     }
   }
 
@@ -3130,7 +3263,7 @@ export class ScoringService {
     await this.secondStageProgress.progress(tx, {
       secondStageId: stage.id,
       eventId: match.eventId,
-      rankingMode: stage.rankingMode,
+      rankingLimit: secondStageRankingLimit(stage),
     });
     await tx.secondStage.update({
       where: { id: stage.id },
@@ -3198,6 +3331,12 @@ export class ScoringService {
     const loserId = winnerSide === 1 ? match.side2Id : match.side1Id;
     if (!winnerId) return;
 
+    for (const { match: dependent, target } of await this.placementDependents(tx, match)) {
+      await this.updatePendingDependentMatch(tx, dependent, target.side, target.outcome === 'winner' ? winnerId : loserId);
+      if (isKnockoutWalkover(dependent)) await this.completePlacementWalkover(tx, dependent.id);
+    }
+    if (isKnockoutPlacementPlayoff(match.round)) return;
+
     const nextMatch = await tx.match.findFirst({
       where: {
         eventId: match.eventId,
@@ -3238,11 +3377,18 @@ export class ScoringService {
     tx: Prisma.TransactionClient,
     match: {
       eventId: string | null;
+      round: string;
       roundNo: number;
       matchNo: number;
     },
   ) {
     if (!match.eventId || match.roundNo < 1 || isSecondStageFormalRoundNo(match.roundNo)) return;
+
+    for (const { match: dependent, target } of await this.placementDependents(tx, match)) {
+      await this.updatePendingDependentMatch(tx, dependent, target.side, null);
+      if (isKnockoutWalkover(dependent)) await this.completePlacementWalkover(tx, dependent.id);
+    }
+    if (isKnockoutPlacementPlayoff(match.round)) return;
 
     const targetSide = match.matchNo % 2 === 1 ? 'side1Id' : 'side2Id';
     const nextMatches = await tx.match.findMany({
@@ -3259,6 +3405,49 @@ export class ScoringService {
     for (const nextMatch of nextMatches) {
       await this.updatePendingDependentMatch(tx, nextMatch, targetSide, null);
     }
+  }
+
+  private async placementDependents(
+    tx: Prisma.TransactionClient,
+    source: { eventId: string | null; round: string; roundNo: number; matchNo: number },
+  ) {
+    const targets = knockoutPlacementTargets(source);
+    if (!source.eventId || !targets.length) return [];
+    const matches = await tx.match.findMany({
+      where: {
+        eventId: source.eventId,
+        OR: targets.map(({ round, roundNo, matchNo }) => ({ round, roundNo, matchNo })),
+      },
+      select: { id: true, round: true, roundNo: true, matchNo: true, status: true, forfeitReason: true },
+    });
+    return targets.flatMap(target => {
+      const match = matches.find(row => row.round === target.round && row.roundNo === target.roundNo && row.matchNo === target.matchNo);
+      return match ? [{ match, target }] : [];
+    });
+  }
+
+  private async completePlacementWalkover(tx: Prisma.TransactionClient, matchId: string) {
+    const match = await tx.match.findUniqueOrThrow({ where: { id: matchId } });
+    if (!match.eventId || match.status !== MatchStatus.PENDING || !isKnockoutWalkover(match)) return;
+    const sources = knockoutPlacementSources(match);
+    if (!sources.length) return;
+    const settled = await tx.match.count({ where: {
+      eventId: match.eventId,
+      OR: sources.map(({ round, roundNo, matchNo }) => ({ round, roundNo, matchNo })),
+      status: { in: [MatchStatus.COMPLETED, MatchStatus.CANCELLED] },
+    } });
+    if (settled !== sources.length) return;
+    if (match.side1Id && match.side2Id) {
+      throw new ConflictException('轮空排位出现两名参赛者，请先核对上游晋级结果');
+    }
+    const winnerSide = match.side1Id ? 1 : match.side2Id ? 2 : null;
+    const completed = await tx.match.update({ where: { id: match.id }, data: {
+      status: winnerSide ? MatchStatus.COMPLETED : MatchStatus.CANCELLED,
+      winnerSide,
+      finishedAt: new Date(),
+    } });
+    if (winnerSide) await this.advanceSingleEliminationWinner(tx, completed, winnerSide);
+    else await this.clearSingleEliminationAdvancement(tx, completed);
   }
 
   /**
@@ -3285,8 +3474,11 @@ export class ScoringService {
 
   /**
    * 解析某场比赛实际生效的计分规则。
-   * 生效顺序：具体阶段（半决赛/季军赛/决赛）→ 四强 → 八强/默认。
-   * BEFORE_TOP4 是旧两段配置的兼容键。
+   * 单项：
+   * - 小组赛 / 循环赛（roundNo = 0）：小组赛规则 → 默认。
+   * - 淘汰赛：具体阶段（半决赛/季军赛/决赛）→ 四强 → 八强 → 淘汰赛规则 → 默认。
+   * - BEFORE_TOP4 是旧两段配置的兼容键。
+   * 团体赛子项：按所属团体对阵的 stage 取「小组赛」或「淘汰赛」规则 → 团体赛默认规则。
    */
   private resolveMatchScoring(match: MatchScoringInput): MatchScoringConfig {
     const rulesSource = match.event ?? match.teamMatch?.teamCompetition;
@@ -3298,6 +3490,8 @@ export class ScoringService {
       customGamesToWin: rulesSource?.customGamesToWin ?? null,
       appliedStage: null as string | null,
     };
+
+    if (!match.event && match.teamMatch) return this.resolveTeamStageScoring(match.teamMatch, base);
 
     const raw = match.event?.stageScoringRules;
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return base;
@@ -3311,11 +3505,28 @@ export class ScoringService {
     return base;
   }
 
+  /**
+   * 团体赛小组赛的团体对阵 roundNo 从 1 开始（第 1 轮、A组第 1 轮…），子项照抄这些轮次，
+   * 不能套用单项「roundNo = 0 即小组赛」的判断，只能看团体对阵的 stage。
+   */
+  private resolveTeamStageScoring(
+    teamMatch: NonNullable<MatchScoringInput['teamMatch']>,
+    base: MatchScoringConfig,
+  ): MatchScoringConfig {
+    const key = teamMatch.stage === 'GROUP' || teamMatch.stage === 'KNOCKOUT' ? teamMatch.stage : null;
+    const raw = teamMatch.teamCompetition.stageScoringRules;
+    if (!key || !raw || typeof raw !== 'object' || Array.isArray(raw)) return base;
+    return this.resolveStageScoringRule((raw as Record<string, unknown>)[key], base, key) ?? base;
+  }
+
   private stageRuleLookupKeys(match: {
     round?: string | null;
     roundNo?: number | null;
     matchNo?: number | null;
   }) {
+    // 小组赛 / 单循环的场次 roundNo 固定为 0，round 存的是组号（A、B…F…）。
+    // 必须先按 roundNo 判断：否则第 6 组「F」会被当成决赛、套用决赛规则。
+    if (match.roundNo === 0) return ['GROUP', 'BEFORE_TOP4'];
     const keys: string[] = [];
     const exactStage = this.exactScoringStageKey(match);
     if (exactStage) keys.push(exactStage);
@@ -3323,6 +3534,8 @@ export class ScoringService {
     if (exactStage === 'QF') keys.push('BEFORE_TOP4');
     if (!exactStage && this.isTop4Match(match)) keys.push('TOP4');
     if (!exactStage && !this.isTop4Match(match)) keys.push('BEFORE_TOP4');
+    // 淘汰赛（含 16 强、32 强）的统一规则；没有 roundNo 的调用方保持原来的行为。
+    if (typeof match.roundNo === 'number') keys.push('KNOCKOUT');
     return [...new Set(keys)];
   }
 

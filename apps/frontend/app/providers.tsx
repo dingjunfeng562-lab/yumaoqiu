@@ -6,6 +6,7 @@ import { SessionProvider, signOut, useSession } from 'next-auth/react';
 import { AntdRegistry } from '@ant-design/nextjs-registry';
 import { GlobalAnnouncementModal } from '@/components/GlobalAnnouncementModal';
 import type { ActiveAnnouncement } from '@/components/GlobalAnnouncementModal';
+import { RoleAnnouncementsProvider } from '@/components/RoleAnnouncementsProvider';
 
 export function Providers({
   children,
@@ -61,10 +62,12 @@ export function Providers({
     <SessionProvider>
       {!isTournamentScreen && <SessionExpiryHandler />}
       <AntdRegistry>
-        {children}
-        {!pathname.startsWith('/tupiannicai/') && !isTournamentScreen && (
-          <GlobalAnnouncementModal initialAnnouncement={initialAnnouncement} />
-        )}
+        <RoleAnnouncementsProvider enabled={!pathname.startsWith('/tupiannicai/') && !isTournamentScreen}>
+          {children}
+          {!pathname.startsWith('/tupiannicai/') && !isTournamentScreen && (
+            <GlobalAnnouncementModal initialAnnouncement={initialAnnouncement} />
+          )}
+        </RoleAnnouncementsProvider>
       </AntdRegistry>
     </SessionProvider>
   );

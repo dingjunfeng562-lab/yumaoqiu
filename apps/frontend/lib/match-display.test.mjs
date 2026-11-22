@@ -1,7 +1,7 @@
 // 决赛 / 季军赛的识别和先后顺序：cd apps/frontend && pnpm test（需要 Node 23.6+，可以直接 import .ts）
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { bronzeGoesFirst, finalStage, orderFinalPair } from './match-display.ts';
+import { bronzeGoesFirst, finalStage, orderFinalPair, placementFinalTitle } from './match-display.ts';
 
 const m = (id, roundLabel, extra = {}) => ({ id, roundNo: 3, roundLabel, ...extra });
 const ids = (list) => list.map((item) => item.id);
@@ -17,6 +17,27 @@ describe('finalStage', () => {
     assert.equal(finalStage({ id: 'g', roundNo: 0, roundLabel: 'F组' }), null);
     assert.equal(finalStage(m('sf', '半决赛')), null);
     assert.equal(finalStage(m('p1', '1-2 名决赛')), null);
+  });
+});
+
+describe('placementFinalTitle', () => {
+  it('为淘汰赛和排位决赛显示统一的名次标题', () => {
+    assert.equal(placementFinalTitle('F', 3), '冠亚军决赛');
+    assert.equal(placementFinalTitle('决赛', 102), '冠亚军决赛');
+    assert.equal(placementFinalTitle('BRONZE', 3), '三四名决赛');
+    assert.equal(placementFinalTitle('三四名决赛', 102), '三四名决赛');
+    assert.equal(placementFinalTitle('五六名决赛', 102), '五六名决赛');
+    assert.equal(placementFinalTitle('七八名决赛', 102), '七八名决赛');
+    assert.equal(placementFinalTitle('P5', 4), '五六名决赛');
+    assert.equal(placementFinalTitle('P9', 4), '9-10名决赛');
+  });
+
+  it('小组赛的 F 组和淘汰赛中间轮次都不显示名次标题', () => {
+    assert.equal(placementFinalTitle('F', 0), null);
+    assert.equal(placementFinalTitle('F'), null);
+    for (const round of ['前8初始赛', '1-4名半决赛', '5-8名半决赛', 'QF', 'SF', '1/4 决赛']) {
+      assert.equal(placementFinalTitle(round, 101), null);
+    }
   });
 });
 

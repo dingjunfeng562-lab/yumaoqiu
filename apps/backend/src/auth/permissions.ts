@@ -1,8 +1,9 @@
-import { Prisma, Role } from '@prisma/client';
+import { ForbiddenException } from '@nestjs/common';
+import { PhotoManagementRequestStatus, PhotoManagementTargetType, Prisma, Role } from '@prisma/client';
 
 export const PERMISSION_OPTIONS = [
   { key: 'TOURNAMENTS', label: '创建和编辑赛事', group: '赛事' },
-  { key: 'TOURNAMENT_ADMIN', label: '赛事审核、发布、归档和排名', group: '赛事' },
+  { key: 'TOURNAMENT_ADMIN', label: '赛事审核、发布和归档', group: '赛事' },
   { key: 'PLAYERS', label: '选手管理与报名审核', group: '赛事' },
   { key: 'PAYMENTS', label: '缴费管理', group: '赛事' },
   { key: 'ORDERBOOK', label: '秩序册导出', group: '赛事' },
@@ -13,7 +14,7 @@ export const PERMISSION_OPTIONS = [
   { key: 'SCHEDULING', label: '场地排程', group: '赛事' },
   { key: 'SCORING', label: '裁判分配与比赛记分管理', group: '赛事' },
   { key: 'MATCH_MANAGEMENT', label: '裁判员对局管理（改时间、场地、裁判、比分，结束与重开）', group: '赛事' },
-  { key: 'PHOTOS', label: '赛事图片、水印和图片二维码', group: '赛事' },
+  { key: 'PHOTOS', label: '赛事与活动图片、水印和二维码（审核开通）', group: '赛事' },
   { key: 'USERS', label: '管理下属账号', group: '账号' },
   { key: 'INVITES', label: '发放和管理邀请码', group: '账号' },
   { key: 'ANNOUNCEMENTS', label: '公告管理', group: '系统' },
@@ -27,14 +28,24 @@ export const PERMISSION_OPTIONS = [
 ] as const;
 export type PermissionKey = typeof PERMISSION_OPTIONS[number]['key'];
 export const PERMISSION_KEYS: string[] = PERMISSION_OPTIONS.map((item) => item.key);
-export type PermissionUser = { role: Role; permissions?: Prisma.JsonValue };
+export type PermissionUser = {
+  role: Role;
+  permissions?: Prisma.JsonValue;
+  photoManagementRequests?: Array<{ targetType: PhotoManagementTargetType; targetId: string }>;
+};
+
+export const PHOTO_MANAGEMENT_APPROVAL = {
+  where: { active: true, status: PhotoManagementRequestStatus.APPROVED },
+  select: { targetType: true, targetId: true },
+} satisfies Prisma.User$photoManagementRequestsArgs;
+
 export const DEFAULT_PERMISSIONS: Record<Role, PermissionKey[]> = {
   ROOT: PERMISSION_OPTIONS.map((item) => item.key),
   // 管理员默认拥有赛事运营的整套功能，只保留四项平台级配置（赛事审核发布、
   // 公告、AI 配置、图片审核、邮件设置）给超级管理员；邀请码始终由角色固定授予。
   ADMIN: [
     'TOURNAMENTS', 'PLAYERS', 'PAYMENTS', 'ORDERBOOK', 'DATA_EXPORT', 'EVENTS', 'TEAMS',
-    'DRAWS', 'SCHEDULING', 'SCORING', 'MATCH_MANAGEMENT', 'PHOTOS', 'USERS', 'DASHBOARD',
+    'DRAWS', 'SCHEDULING', 'SCORING', 'MATCH_MANAGEMENT', 'USERS', 'DASHBOARD',
     'REGISTRATION', 'REFEREE', 'PHOTO_UPLOAD',
   ],
   PLAYER: ['REGISTRATION'],
@@ -45,15 +56,37 @@ export function effectivePermissions(user: PermissionUser): PermissionKey[] {
   if (user.role === Role.ROOT) return [...DEFAULT_PERMISSIONS.ROOT];
   const permissions = !Array.isArray(user.permissions)
     ? [...DEFAULT_PERMISSIONS[user.role]]
-    : user.permissions.filter((value): value is PermissionKey => typeof value === 'string' && PERMISSION_KEYS.includes(value));
+    : user.permissions.filter((value): value is PermissionKey => typeof value === 'string' && value !== 'PHOTOS' && PERMISSION_KEYS.includes(value));
   // 邀请码管理属于角色边界，不能靠权限把选手、裁判或图片员变成发码人。
   if (user.role === Role.ADMIN) {
-    return permissions.includes('INVITES') ? permissions : [...permissions, 'INVITES'];
+    if (!permissions.includes('INVITES')) permissions.push('INVITES');
+    if (user.photoManagementRequests?.length) permissions.push('PHOTOS');
+    return permissions;
   }
   return permissions.filter((key) => key !== 'INVITES');
 }
 export function hasPermission(user: PermissionUser, ...keys: PermissionKey[]) {
   return user.role === Role.ROOT || keys.some((key) => effectivePermissions(user).includes(key));
+}
+
+export function approvedPhotoTargetIds(user: PermissionUser, targetType: PhotoManagementTargetType) {
+  return user.role === Role.ADMIN
+    ? (user.photoManagementRequests ?? []).filter((request) => request.targetType === targetType).map((request) => request.targetId)
+    : [];
+}
+
+export function canManagePhotoTarget(user: PermissionUser, targetType: PhotoManagementTargetType, targetId: string) {
+  return user.role === Role.ROOT || (
+    user.role === Role.ADMIN && !!user.photoManagementRequests?.some(
+      (request) => request.targetType === targetType && request.targetId === targetId,
+    )
+  );
+}
+
+export function assertCanManagePhotoTarget(user: PermissionUser, targetType: PhotoManagementTargetType, targetId: string) {
+  if (!canManagePhotoTarget(user, targetType, targetId)) {
+    throw new ForbiddenException('该赛事或活动的图片管理尚未审核开通');
+  }
 }
 
 // 空集合表示仅超级管理员可用。未列出的控制器仍走各自的角色守卫。
@@ -78,7 +111,9 @@ export function requiredPermissions(controller: string, action: string, kind?: s
     case 'AdminCompetitionsController':
       if (action === 'listCompetitions') return tournamentRead;
       if (action === 'createPhotoAccess') return ['PHOTOS'];
-      if (['publishCompetition', 'unpublishCompetition', 'getRankings', 'updateRankings'].includes(action)) return ['TOURNAMENT_ADMIN'];
+      // 排名沿用控制器的管理员角色和赛事归属校验。
+      if (action === 'getRankings' || action === 'updateRankings') return undefined;
+      if (action === 'publishCompetition' || action === 'unpublishCompetition') return ['TOURNAMENT_ADMIN'];
       return ['PLAYERS'];
     case 'EventsController': return ['findOne', 'findByTournament'].includes(action) ? tournamentRead : ['EVENTS'];
     case 'ExportsController':
@@ -92,13 +127,16 @@ export function requiredPermissions(controller: string, action: string, kind?: s
       if (['authorizeTournament', 'listAuthorizedTournaments', 'listRefereeMatches', 'listTournamentCourts', 'listCourtMatches', 'claimCourtMatch'].includes(action)) return ['REFEREE'];
       // 比赛结束签字开关、电子比分单与签名图片：只给有「裁判分配」权限的后台账号，裁判账号调不到。
       if ([
-        'listAssignableReferees', 'getRefereeAccessCode', 'correctMatchScore', 'assignReferee', 'forfeitTeamMatch',
+        'listAssignableReferees', 'listCourtReferees', 'saveCourtReferees', 'getRefereeAccessCode', 'correctMatchScore', 'assignReferee', 'forfeitTeamMatch',
         'getSignatureSetting', 'updateSignatureSetting', 'listTournamentScoreSheets', 'listMatchScoreSheets', 'downloadScoreSheetFile',
       ].includes(action)) return ['SCORING'];
       return ['SCORING', 'REFEREE'];
-    case 'AdminPhotosController': return action === 'listTournamentStats' ? ['PHOTOS', 'DASHBOARD'] : ['PHOTOS'];
+    case 'AdminPhotosController':
+      if (action === 'listTournamentStats') return ['PHOTOS', 'DASHBOARD'];
+      return ['listPhotoTargets', 'getPhotoTarget'].includes(action) ? undefined : ['PHOTOS'];
     case 'PhotoActivitiesController':
-      return ['approve', 'reject'].includes(action) ? [] : ['PHOTOS'];
+      if (['approve', 'reject', 'delete'].includes(action)) return [];
+      return ['create', 'update'].includes(action) ? undefined : ['PHOTOS'];
     case 'PhotosController': return ['PHOTO_UPLOAD'];
     case 'AdminAnnouncementsController': return ['ANNOUNCEMENTS'];
     case 'AiConfigController': return ['AI_CONFIG'];

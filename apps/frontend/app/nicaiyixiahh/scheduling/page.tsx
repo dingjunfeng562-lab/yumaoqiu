@@ -30,7 +30,7 @@ import {
 } from 'antd';
 import { DeleteOutlined, DownloadOutlined, DownOutlined, EditOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { apiFetch } from '@/lib/api';
-import { roundCn } from '@/lib/round';
+import { matchupText, scheduleGroupLabel, type ConflictItem, type ScheduleMatch } from '@/lib/court-schedule';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 
@@ -52,6 +52,8 @@ const KNOCKOUT_ROUND_OPTIONS = [
   { value: 'R1', label: '1/8 决赛' },
   { value: 'QF', label: '1/4 决赛' },
   { value: 'SF', label: '半决赛' },
+  { value: '五六名决赛', label: '第 5–6 名附加赛' },
+  { value: '七八名决赛', label: '第 7–8 名附加赛' },
   { value: 'BRONZE', label: '季军赛' },
   { value: 'F', label: '决赛' },
 ];
@@ -113,53 +115,6 @@ interface Venue {
   isActive: boolean;
 }
 
-interface ConflictItem {
-  type: 'VENUE' | 'PLAYER' | 'DEPENDENCY' | 'UNSCHEDULED' | 'GROUP_VENUE' | 'GROUP_DATE';
-  matchIds: string[];
-  message: string;
-}
-
-interface ScheduleMatch {
-  /** 轮空场：首轮一方没有对手、直接晋级，不用排场地和时间。 */
-  isBye?: boolean;
-  /** 预排的淘汰赛空位：双方占位名（A组第1名 / 待定）。 */
-  placeholderNames?: [string, string] | null;
-  groupId: string | null;
-  groupName: string | null;
-  scheduleLocked: boolean;
-  scheduleOverride: boolean;
-  allowedVenueIds: string[] | null;
-  /** 组别比赛日期（YYYY-MM-DD），null 为不限；dateOverride 为人工确认的临时改期。 */
-  allowedDates?: string[] | null;
-  dateOverride?: boolean;
-  id: string;
-  teamMatchId?: string | null;
-  team1Name?: string | null;
-  team2Name?: string | null;
-  eventId: string | null;
-  eventType: string;
-  eventTypeLabel: string;
-  round: string;
-  roundNo: number;
-  matchNo: number;
-  venueSequence?: number | null;
-  side1Id?: string | null;
-  side2Id?: string | null;
-  side1?: { name: string; affiliation: string } | null;
-  side2?: { name: string; affiliation: string } | null;
-  status: string;
-  scheduleStatus: string;
-  dependenciesReady: boolean;
-  venueId?: string | null;
-  venueName?: string | null;
-  scheduledAt?: string | null;
-  scheduledAtLocal?: string | null;
-  durationMinutes: number;
-  startedAt?: string | null;
-  finishedAt?: string | null;
-  conflicts: ConflictItem[];
-}
-
 function formatActualDuration(row: ScheduleMatch) {
   if (!row.startedAt) return '—';
   const end = row.finishedAt ? new Date(row.finishedAt).getTime() : Date.now();
@@ -171,6 +126,9 @@ function formatActualDuration(row: ScheduleMatch) {
 }
 
 interface ScheduleData {
+  scope?: string;
+  boardVersion?: string;
+  boardGap?: number;
   groups?: GroupVenueRule[];
   /** 赛事开始到结束的每一天，「组别场地与日期」里的比赛日期从这里选。 */
   tournamentDays?: string[];
@@ -200,14 +158,6 @@ type ManualPreview = {
   venues: Array<{ id: string; name: string; inGroup: boolean; available: boolean; reason: string | null }>;
 };
 
-// 对阵文字：团体赛写两队；轮空场没有对手的一边写「轮空」，其余未定的写「待定」。
-function matchupText(match: ScheduleMatch) {
-  if (match.teamMatchId) return `${match.team1Name ?? '待定'} VS ${match.team2Name ?? '待定'}`;
-  const side = (value: { name: string } | null | undefined, index: 0 | 1) =>
-    value?.name ?? (match.isBye ? '轮空' : match.placeholderNames?.[index] ?? '待定');
-  return `${side(match.side1, 0)} VS ${side(match.side2, 1)}`;
-}
-
 function hasSecondStageFormat(format?: string | null) {
   return SECOND_STAGE_FORMATS.includes(format ?? '');
 }
@@ -231,13 +181,6 @@ function parseScheduleLocalTime(value: string) {
     .minute(Number(match[5]))
     .second(0)
     .millisecond(0);
-}
-
-function scheduleGroupLabel(row: ScheduleMatch) {
-  const round = row.round?.trim();
-  if (!round) return '—';
-  if (row.roundNo === 0) return round.endsWith('组') ? round : `${round}组`;
-  return roundCn(round);
 }
 
 function rowConflictClass(row: ScheduleMatch) {
@@ -268,12 +211,17 @@ export default function AdminSchedulingPage() {
   const [events, setEvents] = useState<EventItem[]>([]);
   const [selectedTournamentId, setSelectedTournamentId] = useState('');
   const [selectedEventId, setSelectedEventId] = useState('');
-  const [schedule, setSchedule] = useState<ScheduleData>({ venues: [], matches: [], conflicts: [] });
+  const [loadedSchedule, setSchedule] = useState<ScheduleData>({ venues: [], matches: [], conflicts: [] });
   const [loading, setLoading] = useState(false);
   const [autoModalOpen, setAutoModalOpen] = useState(false);
   const [autoPreview, setAutoPreview] = useState<AutoPreview | null>(null);
   const [autoPayload, setAutoPayload] = useState<Record<string, unknown> | null>(null);
   const [scheduleBusy, setScheduleBusy] = useState(false);
+  const boardUrl = '/nicaiyixiahh/court-schedule?tournamentId=' + encodeURIComponent(selectedTournamentId);
+  const scheduleRequest = useRef(0);
+  const scheduleScope = useRef('');
+  const scope = selectedTournamentId + '/' + selectedEventId;
+  const schedule = loadedSchedule.scope === scope ? loadedSchedule : { venues: [], matches: [], conflicts: [] } as ScheduleData;
   const [manualPreview, setManualPreview] = useState<ManualPreview | null>(null);
   const manualVersion = useRef(0);
   const [includeLocked, setIncludeLocked] = useState(false);
@@ -310,17 +258,18 @@ export default function AdminSchedulingPage() {
   const activeVenues = useMemo(() => configuredVenues.filter((venue) => venue.isActive), [configuredVenues]);
 
   async function loadSchedule(tournamentId = selectedTournamentId, eventId = selectedEventId) {
-    if (!token || !tournamentId) return;
+    if (!token || !tournamentId || scheduleScope.current !== tournamentId + '/' + eventId) return;
+    const request = ++scheduleRequest.current;
     setLoading(true);
     try {
       const query = new URLSearchParams({ tournamentId });
       if (eventId) query.set('eventId', eventId);
       const data = await apiFetch<ScheduleData>(`/scheduling?${query.toString()}`, { token });
-      setSchedule(data);
+      if (request === scheduleRequest.current && scheduleScope.current === scope) setSchedule({ ...data, scope });
     } catch (error) {
       message.error(error instanceof Error ? error.message : '加载排程失败');
     } finally {
-      setLoading(false);
+      if (request === scheduleRequest.current) setLoading(false);
     }
   }
 
@@ -359,23 +308,26 @@ export default function AdminSchedulingPage() {
     let cancelled = false;
     const query = new URLSearchParams({ tournamentId: selectedTournamentId });
     if (selectedEventId) query.set('eventId', selectedEventId);
-    let request = 0;
+    scheduleScope.current = scope;
     const refresh = async () => {
-      const version = ++request;
+      const version = ++scheduleRequest.current;
       try {
         const data = await apiFetch<ScheduleData>(`/scheduling?${query.toString()}`, { token });
-        if (!cancelled && version === request) setSchedule(data);
+        if (!cancelled && version === scheduleRequest.current) setSchedule({ ...data, scope });
       } catch (error) { if (!cancelled) message.error(error instanceof Error ? error.message : '加载排程失败'); }
-      finally { if (!cancelled) setLoading(false); }
+      finally { if (!cancelled && version === scheduleRequest.current) setLoading(false); }
     };
     const socket = io(`${API_BASE.replace(/\/api\/?$/, '')}/scores`, { transports: ['polling', 'websocket'], withCredentials: true });
-    let timer: ReturnType<typeof setTimeout>;
-    const queueRefresh = () => { clearTimeout(timer); timer = setTimeout(() => void refresh(), 150); };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const queueRefresh = () => {
+      if (timer) return;
+      timer = setTimeout(() => { timer = undefined; void refresh(); }, 150);
+    };
     socket.on('connect', queueRefresh);
     socket.on('bracket:update', (payload: { tournamentId?: string }) => { if (payload.tournamentId === selectedTournamentId) queueRefresh(); });
     void refresh();
-    return () => { cancelled = true; clearTimeout(timer); socket.disconnect(); };
-  }, [token, selectedTournamentId, selectedEventId]);
+    return () => { cancelled = true; scheduleScope.current = ''; clearTimeout(timer); socket.disconnect(); };
+  }, [token, selectedTournamentId, selectedEventId, scope]);
 
   async function autoSchedule(values: {
     startAt: Dayjs; dailyEndTime: Dayjs; hasBreakPeriods?: boolean;
@@ -415,7 +367,8 @@ export default function AdminSchedulingPage() {
     setScheduleBusy(true);
     try {
       await apiFetch('/scheduling/auto', { method: 'POST', token, body: JSON.stringify({ ...autoPayload, fingerprint: autoPreview.fingerprint }) });
-      setAutoPreview(null); await loadSchedule(); message.success('排程已应用，大屏及裁判端已同步更新');
+      setAutoPreview(null); message.success('排程已应用，大屏及裁判端已同步更新');
+      router.push('/nicaiyixiahh/court-schedule?tournamentId=' + encodeURIComponent(String(autoPayload.tournamentId)));
     } catch (e) { message.error(e instanceof Error ? e.message : '应用失败，请重新预览'); }
     finally { setScheduleBusy(false); }
   }
@@ -433,7 +386,7 @@ export default function AdminSchedulingPage() {
           includeLocked,
         }),
       });
-      setSchedule(data);
+      if (scheduleScope.current === scope) setSchedule({ ...data, scope });
       message.success(includeLocked ? '已清空未开始比赛的排程及人工固定' : '已清空排程，人工固定的比赛已保留');
     } catch (error) {
       message.error(error instanceof Error ? error.message : '取消场地排程失败');
@@ -633,6 +586,7 @@ export default function AdminSchedulingPage() {
     if (Array.isArray(value)) return value.map(item => logDescription(item)).join('\n');
     if (!value || typeof value !== 'object') return '—';
     const row = value as Record<string, unknown>;
+    if (Array.isArray(row.rows)) return logDescription(row.rows);
     if (row.groupId) return `${String(row.name ?? '组别')}：${row.restrictVenues ? (row.venueIds as string[]).map(id => configuredVenues.find(v => v.id === id)?.name ?? '已删除场地').join('、') : '不限制'}；比赛日期：${playDaysText(row.playDates as string[] | undefined)}`;
     if (row.matchId) {
       const match = schedule.matches.find(m => m.id === row.matchId);
@@ -824,7 +778,8 @@ export default function AdminSchedulingPage() {
         />
       )}
 
-      <Card title="赛程表" size="small" className="schedule-table-compact">
+      <Card title="赛程表" size="small" className="schedule-table-compact"
+        extra={<Button disabled={!selectedTournamentId} href={boardUrl} target="_blank" rel="noopener noreferrer">打开场地排程表 ↗</Button>}>
         <Table
           rowKey="id"
           size="small"
@@ -967,7 +922,7 @@ export default function AdminSchedulingPage() {
           <Form.Item
             name="rounds"
             label="轮次"
-            extra="不选为全部。选了轮次就只排这几轮淘汰赛（含单淘汰），各项目同名的轮次一起排，小组赛等其他场次不排；没选的轮次留到下次再排。"
+            extra="可单独选淘汰赛轮次或附加赛。同名轮次按所选项目一起排，留空则排当前范围内的全部场次。"
           >
             <Select mode="multiple" allowClear placeholder="全部轮次" options={KNOCKOUT_ROUND_OPTIONS} />
           </Form.Item>
@@ -1212,7 +1167,7 @@ export default function AdminSchedulingPage() {
       <Modal title="最近 50 条排程调整记录" open={logs !== null} onCancel={() => setLogs(null)} footer={null} width={850}>
         <Table rowKey="id" dataSource={logs ?? []} pagination={{ pageSize: 10 }} columns={[
           { title: '时间', render: (_, r) => formatTime(r.createdAt) },
-          { title: '操作', render: (_, r) => ({ AUTO: '自动排程', MANUAL: '人工调整', CLEAR: '清空排程', GROUP_VENUES: '组别场地配置', KNOCKOUT_PLACEHOLDERS: '预排淘汰赛空位', KNOCKOUT_PLACEHOLDERS_REMOVE: '删除淘汰赛空位' }[r.action] ?? r.action) },
+          { title: '操作', render: (_, r) => ({ AUTO: '自动排程', MANUAL: '人工调整', BOARD_MOVE: '排程板调场', BOARD_SWAP: '场次互换', BOARD_UNDO: '撤销调场', CLEAR: '清空排程', GROUP_VENUES: '组别场地配置', KNOCKOUT_PLACEHOLDERS: '预排淘汰赛空位', KNOCKOUT_PLACEHOLDERS_REMOVE: '删除淘汰赛空位' }[r.action] ?? r.action) },
           { title: '操作人', dataIndex: 'actorName' },
         ]} expandable={{ expandedRowRender: r => <div style={{ maxHeight: 320, overflow: 'auto' }}><Typography.Text strong>调整前</Typography.Text><pre>{logDescription(r.before)}</pre><Typography.Text strong>调整后</Typography.Text><pre>{logDescription(r.after)}</pre></div> }} />
       </Modal>

@@ -3,7 +3,7 @@ import { Reflector } from '@nestjs/core';
 import { Role } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthActor } from './admin-scope';
-import { hasPermission, requiredPermissions } from './permissions';
+import { assertCanManagePhotoTarget, hasPermission, requiredPermissions } from './permissions';
 
 export const ROLES_KEY = 'roles';
 
@@ -21,6 +21,7 @@ export class RolesGuard implements CanActivate {
     const actionRoles = this.reflector.get<Role[]>(ROLES_KEY, context.getHandler());
     if (actionRoles?.length === 1 && actionRoles[0] === Role.ROOT) return false;
     const controller = context.getClass().name;
+    if (controller === 'SchedulingController' && user.role !== Role.ADMIN) return false;
     const action = context.getHandler().name;
     const params = req.params ?? {};
     const features = requiredPermissions(controller, action, params.kind);
@@ -42,6 +43,12 @@ export class RolesGuard implements CanActivate {
     const tournament = async (id: unknown) => {
       const found = typeof id === 'string' && await this.prisma.tournament.findFirst({ where: { id, submittedById: user.id }, select: { id: true } });
       if (!found) throw new NotFoundException('赛事不存在或不属于你');
+    };
+    const activity = async (id: string) => {
+      const found = await this.prisma.photoActivity.findFirst({
+        where: { id, submittedById: user.id }, select: { id: true },
+      });
+      if (!found) throw new NotFoundException('活动图片不存在或不属于你');
     };
     const event = async (id: string) => {
       const item = await this.prisma.event.findUnique({ where: { id }, select: { tournamentId: true } });
@@ -66,13 +73,14 @@ export class RolesGuard implements CanActivate {
     const photo = async (id: string) => {
       const item = await this.prisma.photo.findUnique({ where: { id }, select: { tournamentId: true, activityId: true } });
       if (item?.activityId) {
-        const activity = await this.prisma.photoActivity.findFirst({
-          where: { id: item.activityId, submittedById: user.id }, select: { id: true },
-        });
-        if (!activity) throw new NotFoundException('活动图片不存在或不属于你');
-        return;
+        await activity(item.activityId);
+        assertCanManagePhotoTarget(user, 'ACTIVITY', item.activityId);
+      } else if (item?.tournamentId) {
+        await tournament(item.tournamentId);
+        assertCanManagePhotoTarget(user, 'TOURNAMENT', item.tournamentId);
+      } else {
+        throw new NotFoundException('图片不存在或不属于你');
       }
-      await tournament(item?.tournamentId);
     };
     const player = async (id: string) => {
       const item = await this.prisma.player.findFirst({ where: { id, ownerId: user.id }, select: { id: true } });
@@ -96,6 +104,9 @@ export class RolesGuard implements CanActivate {
     }
     if (params.id) {
       if (['TournamentsController', 'AdminCompetitionsController', 'ExportsController'].includes(controller)) await tournament(params.id);
+      if (controller === 'AdminCompetitionsController' && action === 'createPhotoAccess') {
+        assertCanManagePhotoTarget(user, 'TOURNAMENT', params.id);
+      }
       if (controller === 'PlayersController') await player(params.id);
       if (controller === 'EventsController') await event(params.id);
       if (controller === 'ScoringController') await match(params.id);
@@ -106,7 +117,18 @@ export class RolesGuard implements CanActivate {
         const item = await this.prisma.teamCompetition.findUnique({ where: { id: params.id }, select: { tournamentId: true } });
         await tournament(item?.tournamentId);
       }
-      if (controller === 'AdminPhotosController') await (String(req.route.path).includes('tournaments/') ? tournament : photo)(params.id);
+      if (controller === 'AdminPhotosController') {
+        if (String(req.route.path).includes('tournaments/')) {
+          await tournament(params.id);
+          assertCanManagePhotoTarget(user, 'TOURNAMENT', params.id);
+        } else {
+          await photo(params.id);
+        }
+      }
+      if (controller === 'PhotoActivitiesController' && action !== 'update') {
+        await activity(params.id);
+        assertCanManagePhotoTarget(user, 'ACTIVITY', params.id);
+      }
       if (controller === 'DrawsController') {
         if (String(req.route.path).includes('redraw-requests')) {
           const item = await this.prisma.drawRedrawRequest.findUnique({ where: { id: params.id }, select: { eventItemId: true } });

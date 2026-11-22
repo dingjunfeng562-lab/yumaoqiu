@@ -32,6 +32,7 @@ type DisplayMode = 'popup' | 'banner';
 type Scope = 'global' | 'home';
 type Frequency = 'every_visit' | 'once_per_day' | 'once';
 type AnnouncementStatus = 'draft' | 'published' | 'disabled';
+type TargetRole = 'ROOT' | 'ADMIN' | 'REFEREE' | 'PLAYER' | 'PHOTOGRAPHER';
 
 type Announcement = {
   id: string;
@@ -40,6 +41,7 @@ type Announcement = {
   type: AnnouncementType;
   displayMode: DisplayMode;
   scope: Scope;
+  targetRole?: TargetRole | null;
   frequency: Frequency;
   status: AnnouncementStatus;
   startAt: string;
@@ -59,6 +61,7 @@ type AnnouncementFormValues = {
   type: AnnouncementType;
   displayMode: DisplayMode;
   scope: Scope;
+  targetRole: TargetRole | 'all';
   frequency: Frequency;
   status: AnnouncementStatus;
   startAt?: Dayjs | null;
@@ -87,10 +90,19 @@ const scopeOptions = [
   { label: '仅首页显示', value: 'home' },
 ];
 
+const recipientOptions = [
+  { label: '所有访客', value: 'all' },
+  { label: '超级管理员', value: 'ROOT' },
+  { label: '赛事管理员', value: 'ADMIN' },
+  { label: '裁判员', value: 'REFEREE' },
+  { label: '选手 / 普通用户', value: 'PLAYER' },
+  { label: '摄影师', value: 'PHOTOGRAPHER' },
+] satisfies { label: string; value: AnnouncementFormValues['targetRole'] }[];
+
 const frequencyOptions = [
-  { label: '每次访问都弹', value: 'every_visit' },
-  { label: '每天只弹一次', value: 'once_per_day' },
-  { label: '只弹一次', value: 'once' },
+  { label: '每次访问都显示', value: 'every_visit' },
+  { label: '每天只显示一次', value: 'once_per_day' },
+  { label: '只显示一次', value: 'once' },
 ];
 
 const statusOptions = [
@@ -169,6 +181,7 @@ export default function AdminAnnouncementsPage() {
       type: 'normal',
       displayMode: 'popup',
       scope: 'global',
+      targetRole: 'all',
       frequency: 'every_visit',
       status: 'draft',
       startAt: dayjs(),
@@ -190,6 +203,7 @@ export default function AdminAnnouncementsPage() {
       type: normalizeAnnouncementType(record.type),
       displayMode: record.displayMode,
       scope: record.scope,
+      targetRole: record.targetRole ?? 'all',
       frequency: record.frequency,
       status: record.status,
       startAt: record.startAt ? dayjs(record.startAt) : dayjs(),
@@ -211,6 +225,7 @@ export default function AdminAnnouncementsPage() {
       type: values.type,
       displayMode: values.displayMode,
       scope: values.scope,
+      targetRole: values.targetRole === 'all' ? null : values.targetRole,
       frequency: values.frequency,
       status: values.status,
       startAt: serializeDate(values.startAt) ?? new Date().toISOString(),
@@ -307,6 +322,9 @@ export default function AdminAnnouncementsPage() {
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             {record.scope === 'global' ? '全站显示' : '仅首页显示'}
           </Typography.Text>
+          <Tag color={record.targetRole ? 'purple' : 'default'}>
+            {recipientOptions.find((option) => option.value === (record.targetRole ?? 'all'))?.label}
+          </Tag>
         </Space>
       ),
     },
@@ -427,7 +445,10 @@ export default function AdminAnnouncementsPage() {
             <Form.Item name="scope" label="显示范围" rules={[{ required: true }]}>
               <Select options={scopeOptions} />
             </Form.Item>
-            <Form.Item name="frequency" label="弹出频率" rules={[{ required: true }]}>
+            <Form.Item name="targetRole" label="接收角色" rules={[{ required: true }]}>
+              <Select options={recipientOptions} />
+            </Form.Item>
+            <Form.Item name="frequency" label="显示频率" rules={[{ required: true }]}>
               <Select options={frequencyOptions} />
             </Form.Item>
             <Form.Item name="status" label="状态" rules={[{ required: true }]}>

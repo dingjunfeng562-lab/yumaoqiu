@@ -1,5 +1,5 @@
 export const DEFAULT_PERMISSIONS: Record<string, string[]> = {
-  ADMIN: ['TOURNAMENTS', 'PLAYERS', 'PAYMENTS', 'ORDERBOOK', 'DATA_EXPORT', 'EVENTS', 'TEAMS', 'DRAWS', 'SCHEDULING', 'SCORING', 'MATCH_MANAGEMENT', 'PHOTOS', 'USERS', 'DASHBOARD', 'REGISTRATION', 'REFEREE', 'PHOTO_UPLOAD'],
+  ADMIN: ['TOURNAMENTS', 'PLAYERS', 'PAYMENTS', 'ORDERBOOK', 'DATA_EXPORT', 'EVENTS', 'TEAMS', 'DRAWS', 'SCHEDULING', 'SCORING', 'MATCH_MANAGEMENT', 'USERS', 'DASHBOARD', 'REGISTRATION', 'REFEREE', 'PHOTO_UPLOAD'],
   PLAYER: ['REGISTRATION'], REFEREE: ['REFEREE'], PHOTOGRAPHER: ['PHOTO_UPLOAD'],
 };
 export function hasFeature(role: string | undefined, permissions: string[] | undefined, key: string) {
@@ -8,6 +8,10 @@ export function hasFeature(role: string | undefined, permissions: string[] | und
 }
 export function canAccessAdminPage(role: string | undefined, pathname: string, permissions?: string[]) {
   if (role === 'ROOT') return true;
+  if (pathname === '/nicaiyixiahh/court-schedule') pathname = '/nicaiyixiahh/scheduling';
+  if (pathname === '/nicaiyixiahh/scheduling' && role !== 'ADMIN') return false;
+  // 管理员从活动图片入口查看开通状态或申请。图片管理子页仍要求权限。
+  if (pathname === '/nicaiyixiahh/photo-activities') return role === 'ADMIN';
   // 直播管理仅超级管理员可见，没有可分配的功能权限键。
   if (pathname === '/nicaiyixiahh/broadcasts') return false;
   // 全服维护开关仅超级管理员可见。
@@ -18,7 +22,7 @@ export function canAccessAdminPage(role: string | undefined, pathname: string, p
   const routes: Record<string, string[]> = {
     '/nicaiyixiahh/check-in': ['SCHEDULING', 'SCORING'],
     '/nicaiyixiahh': ['DASHBOARD'], '/nicaiyixiahh/statistics': ['DASHBOARD'], '/nicaiyixiahh/tournaments': ['TOURNAMENTS', 'TOURNAMENT_ADMIN'],
-    '/nicaiyixiahh/players': ['PLAYERS'], '/nicaiyixiahh/payments': ['PAYMENTS'], '/nicaiyixiahh/users': ['USERS'], '/nicaiyixiahh/invite-codes': ['INVITES'], '/nicaiyixiahh/photo-activities': ['PHOTOS'],
+    '/nicaiyixiahh/players': ['PLAYERS'], '/nicaiyixiahh/payments': ['PAYMENTS'], '/nicaiyixiahh/users': ['USERS'], '/nicaiyixiahh/invite-codes': ['INVITES'],
     '/nicaiyixiahh/exports': ['ORDERBOOK', 'DATA_EXPORT'], '/nicaiyixiahh/competitions': ['TOURNAMENTS', 'TOURNAMENT_ADMIN', 'PLAYERS', 'PHOTOS'],
     '/nicaiyixiahh/events': ['EVENTS'], '/nicaiyixiahh/team-competitions': ['TEAMS'], '/nicaiyixiahh/draws': ['DRAWS'],
     '/nicaiyixiahh/scheduling': ['SCHEDULING'], '/nicaiyixiahh/scoring': ['SCORING'],
@@ -29,7 +33,8 @@ export function canAccessAdminPage(role: string | undefined, pathname: string, p
   };
   const child = /^\/nicaiyixiahh\/competitions\/[^/]+\/(players|registrations|watermark|photos)$/.exec(pathname);
   const activityChild = /^\/nicaiyixiahh\/photo-activities\/[^/]+\/(watermark|photos)$/.test(pathname);
-  const keys = activityChild ? ['PHOTOS'] : child ? (['players', 'registrations'].includes(child[1]) ? ['PLAYERS'] : ['PHOTOS']) : routes[pathname];
+  if (activityChild || (child && ['watermark', 'photos'].includes(child[1]))) return role === 'ADMIN';
+  const keys = child ? ['PLAYERS'] : routes[pathname];
   return !!keys?.some((key) => hasFeature(role, permissions, key));
 }
 export function firstAdminPage(role: string | undefined, permissions?: string[]) {

@@ -19,7 +19,7 @@ export default function ForbiddenPage() {
           </ul>
         </div>
         <Link
-          href="/"
+          href="/home"
           className="mt-6 inline-flex h-11 items-center justify-center rounded-lg bg-blue-700 px-5 text-sm font-black text-white transition hover:bg-blue-800"
         >
           返回首页

@@ -11,7 +11,7 @@ export async function HomePage() {
       <HeroLanding />
       <AiShuttleChat />
       <Footer />
-      <MobileBottomNav activeHref="/" />
+      <MobileBottomNav activeHref="/home" />
     </main>
   );
 }

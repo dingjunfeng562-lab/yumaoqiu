@@ -26,7 +26,7 @@ const PAGE_SIZE = 20;
 interface Player {
   id: string;
   name: string;
-  gender: Gender;
+  gender: Gender | null;
   affiliation: string;
   contact?: string;
   notes?: string;
@@ -130,7 +130,7 @@ export default function PlayersPage() {
       title: '性别',
       dataIndex: 'gender',
       key: 'gender',
-      render: (g: Gender) => <Tag color={g === 'MALE' ? 'blue' : 'pink'}>{g === 'MALE' ? '男' : '女'}</Tag>,
+      render: (g: Gender | null) => <Tag color={g === 'MALE' ? 'blue' : g === 'FEMALE' ? 'pink' : undefined}>{g === 'MALE' ? '男' : g === 'FEMALE' ? '女' : '未填写'}</Tag>,
     },
     { title: '学院/班级', dataIndex: 'affiliation', key: 'affiliation' },
     { title: '联系方式', dataIndex: 'contact', key: 'contact', render: (v: string) => v || '-' },

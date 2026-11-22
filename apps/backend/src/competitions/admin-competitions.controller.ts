@@ -7,6 +7,7 @@ import { RolesGuard } from '../auth/roles.guard';
 import { CompetitionsService } from './competitions.service';
 import { VerifyEligibilityDto } from '../registration-groups/registration-groups.dto';
 import { UpdateCompetitionRankingsDto } from './dto/competition-rankings.dto';
+import { UpdateCompetitionOrderDto } from './dto/competition-order.dto';
 import {
   AdminBatchCompetitionPlayersDto,
   AdminCompetitionLibraryPlayerDto,
@@ -40,6 +41,18 @@ export class AdminCompetitionsController {
   @Get('competitions')
   listCompetitions(@Req() req: { user: AuthActor }) {
     return this.competitionsService.listAdminCompetitions(req.user);
+  }
+
+  @Get('competitions/order')
+  @Roles(Role.ROOT)
+  getCompetitionOrder(@Req() req: { user: AuthActor }) {
+    return this.competitionsService.getPublicCompetitionOrder(req.user);
+  }
+
+  @Patch('competitions/order')
+  @Roles(Role.ROOT)
+  updateCompetitionOrder(@Body() dto: UpdateCompetitionOrderDto, @Req() req: { user: AuthActor }) {
+    return this.competitionsService.savePublicCompetitionOrder(dto, req.user);
   }
 
   @Patch('competitions/:id/publish')

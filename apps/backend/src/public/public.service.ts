@@ -18,12 +18,15 @@ import {
 } from '../common/knockout-skeleton';
 import {
   knockoutPlacements,
+  knockoutPlacementPlayoffView,
   type KnockoutMatchLike,
 } from '../common/knockout-placement';
 import { VersionedCache } from '../common/versioned-cache';
 import { CoalescingRunner } from '../common/coalescing-runner';
 import { teamCompetitionLabel } from '../common/team-competition-label';
 import { groupCodeSortValue } from '../common/group-code';
+import { secondStageRankingLimit } from '../common/second-stage-bracket';
+import { isKnockoutPlacementPlayoff } from '../common/knockout-placement-playoff';
 
 const gzipAsync = promisify(gzip);
 
@@ -899,6 +902,9 @@ export class PublicService {
           );
           const standings = this.eventStandings(event, registrationMap);
           const completedMatches = event.matches.filter((match) => match.status === MatchStatus.COMPLETED);
+          const rankingLimit = event.secondStage?.rankingLimit == null
+            ? event.rankingLimit
+            : Math.min(event.rankingLimit ?? Infinity, secondStageRankingLimit(event.secondStage));
 
           return {
             id: event.id,
@@ -908,8 +914,8 @@ export class PublicService {
             registrations: event.registrations.length,
             matches: event.matches.length,
             completedMatches: completedMatches.length,
-            rankingLimit: event.rankingLimit,
-            standings: limitRankings(standings, event.rankingLimit).map((row) => ({
+            rankingLimit,
+            standings: limitRankings(standings, rankingLimit).map((row) => ({
               id: row.id, rank: row.rank, name: row.name,
               teamName: registrationMap.get(row.id)?.teamName ?? null,
             })),
@@ -983,6 +989,7 @@ export class PublicService {
       event.format === Format.GROUP_PLUS_KNOCKOUT_STD && knockoutPlaceholdersOnly(event.matches);
     const bracketMatches = event.matches
       .filter((match: any) => !this.isSecondStageFormalMatch(match))
+      .filter((match: any) => !isKnockoutPlacementPlayoff(match.round))
       .filter((match: any) => !(placeholderOnly && match.roundNo >= 1))
       .sort((a: any, b: any) => this.publicBracketMatchCompare(a, b));
     const firstRound = bracketMatches
@@ -1041,7 +1048,8 @@ export class PublicService {
       groups,
       knockoutSkeleton: skeleton,
       matches: bracketMatches.map((match: any) => this.publicBracketMatchView(match, registrationMap)),
-      secondStage: this.publicSecondStageView(event.secondStage, event.format, registrationMap),
+      secondStage: knockoutPlacementPlayoffView(event.matches, id => this.sideName(id, registrationMap), event.rankingLimit === 7 ? 7 : 8)
+        ?? this.publicSecondStageView(event.secondStage, event.format, registrationMap),
     };
   }
 
@@ -1117,6 +1125,7 @@ export class PublicService {
         secondStageMode: 'MANUAL_BY_REFEREE',
         modeText: '裁判手动指定',
         rankingMode: 'TOP_8',
+        rankingLimit: secondStageRankingLimit(),
         rankingModeText: '取前8名',
         slotSourceText: '组委会手动安排',
         slots: [],
@@ -1126,6 +1135,7 @@ export class PublicService {
     }
 
     const rankingMode = String(stage.rankingMode ?? 'TOP_8');
+    const rankingLimit = secondStageRankingLimit(stage);
     // 第二阶段对阵卡片统一显示「队伍名称 + 队员名」：按 entrantId 实时回查报名信息，
     // 既能拿到双打队伍名/队员名，也兼容旧的快照数据（无需重新确认即可显示队伍名）。
     const membersOf = (id: string | null): string[] => {
@@ -1146,7 +1156,8 @@ export class PublicService {
       secondStageMode: stage.mode,
       modeText: '裁判手动指定',
       rankingMode,
-      rankingModeText: rankingMode === 'TOP_6' ? '取前6名' : '取前8名',
+      rankingLimit,
+      rankingModeText: `取前${rankingLimit}名`,
       slotSourceText: '组委会手动安排',
       confirmedAt: stage.confirmedAt?.toISOString?.() ?? null,
       finishedAt: stage.finishedAt?.toISOString?.() ?? null,
@@ -1509,7 +1520,10 @@ export class PublicService {
   }
 
   private eventStandings(event: any, registrationMap: Map<string, any>) {
-    return applyFinalRankings(this.calculatedEventStandings(event, registrationMap), event.registrations);
+    const standings = applyFinalRankings(this.calculatedEventStandings(event, registrationMap), event.registrations);
+    return event.secondStage?.rankingLimit == null
+      ? standings
+      : limitRankings(standings, secondStageRankingLimit(event.secondStage));
   }
 
   private calculatedEventStandings(event: any, registrationMap: Map<string, any>) {
@@ -1643,7 +1657,7 @@ export class PublicService {
       }
     }
 
-    const rankLimit = secondStage.rankingMode === 'TOP_6' ? 6 : 8;
+    const rankLimit = secondStageRankingLimit(secondStage);
     const slotIds = new Set(
       (secondStage.slots ?? [])
         .map((slot: any) => slot.entrantId)
@@ -1656,7 +1670,14 @@ export class PublicService {
       }
     }
 
-    const eligibleRows = rows.filter((row) => !slotIds.size || slotIds.has(row.id));
+    const customRanking = secondStage.rankingLimit != null;
+    const customFinished = customRanking && secondStage.status === 'FINISHED';
+    const hasManualRanks = customRanking && event.registrations.some(
+      (registration: { finalRank?: number | null }) => registration.finalRank != null,
+    );
+    const eligibleRows = hasManualRanks
+      ? rows
+      : rows.filter((row) => customFinished ? rankMap.has(row.id) : !slotIds.size || slotIds.has(row.id));
     const usedRanks = new Set(rankMap.values());
     let fallbackRank = 1;
     const nextFallbackRank = () => {
@@ -1687,7 +1708,7 @@ export class PublicService {
           displayName: registrationMap.has(row.id) ? row.name : row.name,
         };
       })
-      .filter((row) => row.rank <= rankLimit)
+      .filter((row) => hasManualRanks || row.rank <= rankLimit)
       .sort((a, b) => a.rank - b.rank);
   }
 

@@ -60,7 +60,7 @@ export function formatDateTime(value?: string | null) {
 }
 
 /** 11-08 08:30 */
-export function formatMonthDayTime(value?: string | null) {
+export function formatMonthDayTime(value?: string | null, timeZone = TIME_ZONE) {
   if (!value) return null;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
@@ -70,14 +70,14 @@ export function formatMonthDayTime(value?: string | null) {
     hour: '2-digit',
     minute: '2-digit',
     hourCycle: 'h23',
-    timeZone: TIME_ZONE,
+    timeZone,
   }).formatToParts(date);
   const get = (type: string) => parts.find((part) => part.type === type)?.value ?? '';
   return `${get('month')}-${get('day')} ${get('hour')}:${get('minute')}`;
 }
 
 /** 08:30 */
-export function formatClock(value?: string | null) {
-  const full = formatMonthDayTime(value);
+export function formatClock(value?: string | null, timeZone?: string) {
+  const full = formatMonthDayTime(value, timeZone);
   return full ? full.slice(6) : null;
 }

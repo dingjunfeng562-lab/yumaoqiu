@@ -1,5 +1,5 @@
 import { ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { Format, MatchStatus, Prisma, Role, ScoreSheetStatus, SecondStageStatus, TeamCompetitionFormat } from '@prisma/client';
+import { Format, MatchStatus, Prisma, Role, SecondStageStatus, TeamCompetitionFormat } from '@prisma/client';
 import { AuthActor } from '../auth/admin-scope';
 import { PrismaService } from '../prisma/prisma.service';
 import { ScoringService } from '../scoring/scoring.service';
@@ -8,8 +8,7 @@ import { isSecondStageFormalRoundNo, SECOND_STAGE_FORMAL_ROUND_NO_BASE } from '.
 import { resetElimination } from './reset-elimination';
 import { mixEventIds } from './event-mix';
 
-const emptyResult = { status: MatchStatus.PENDING, winnerSide: null, startedAt: null, finishedAt: null,
-  forfeitedSide: null, forfeitReason: null, refereeId: null };
+import { clearMatchResults } from './clear-match-results';
 
 @Injectable()
 export class ResultsResetService {
@@ -18,18 +17,6 @@ export class ResultsResetService {
 
   private requireRoot(actor: AuthActor) {
     if (actor.role !== Role.ROOT) throw new ForbiddenException('仅超级管理员可清除比赛成绩');
-  }
-
-  private async clearMatches(tx: Prisma.TransactionClient, where: Prisma.MatchWhereInput) {
-    await tx.game.deleteMany({ where: { match: where } });
-    // Discard old points, serving/paused state, forfeits, cards and undo history.
-    await tx.matchEvent.deleteMany({ where: { match: where } });
-    // 签字确认过的电子比分单不再代表比赛结果：标为作废，记录和签名文件保留。
-    await tx.matchScoreSheet.updateMany({
-      where: { status: ScoreSheetStatus.VALID, match: where },
-      data: { status: ScoreSheetStatus.VOID, voidedAt: new Date(), voidReason: '超级管理员清除比赛成绩，签字作废' },
-    });
-    await tx.match.updateMany({ where, data: emptyResult });
   }
 
   async resetTeam(teamCompetitionId: string, actor: AuthActor) {
@@ -43,7 +30,7 @@ export class ResultsResetService {
       const encounters = await tx.teamMatch.findMany({ where: { teamCompetitionId }, include: { matches: true } });
       if (!encounters.length) throw new ConflictException('当前没有已生成的对阵');
       const matches = encounters.flatMap(encounter => encounter.matches);
-      await this.clearMatches(tx, { teamMatch: { teamCompetitionId } });
+      await clearMatchResults(tx, { teamMatch: { teamCompetitionId } }, '超级管理员清除比赛成绩，签字作废');
       await tx.teamMatch.updateMany({ where: { teamCompetitionId }, data: {
         status: MatchStatus.PENDING, winnerTeamId: null, team1Wins: 0, team2Wins: 0,
       } });
@@ -87,7 +74,7 @@ export class ResultsResetService {
       await tx.$queryRaw`SELECT id FROM \`Match\` WHERE eventId = ${eventId} ORDER BY id FOR UPDATE`;
       const matches = await tx.match.findMany({ where: { eventId } });
       if (!matches.length) throw new ConflictException('当前没有已生成的对阵');
-      await this.clearMatches(tx, { eventId });
+      await clearMatchResults(tx, { eventId }, '超级管理员清除比赛成绩，签字作废');
       const pureElimination = event.format === Format.SINGLE_ELIMINATION || event.format === Format.SINGLE_ELIMINATION_PLUS_GROUP_RANKING;
       const knockout = matches.filter(match => match.roundNo > 0 && !isSecondStageFormalRoundNo(match.roundNo));
       if (pureElimination) {

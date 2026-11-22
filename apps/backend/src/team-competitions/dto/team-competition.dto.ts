@@ -17,6 +17,7 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { EntrantType, EventType, Gender, ScoringMode, ScoringRule, TeamCompetitionFormat, TeamThirdPlaceMode } from '@prisma/client';
+import { StageScoringRuleDto } from '../../events/dto/event.dto';
 
 /** 团体赛每场最多的出场项目数（同一项目可重复出现）。前端 TeamCompetitionFields 保持一致。 */
 export const TEAM_ITEM_MAX = 7;
@@ -25,7 +26,34 @@ export const TEAM_ITEM_MAX = 7;
 // GROUP_ROUND_ROBIN 多组循环 / GROUP_PLUS_KNOCKOUT 小组+淘汰
 export { TeamCompetitionFormat, TeamThirdPlaceMode };
 
+/** 团体赛可单独设置计分的阶段；只在「小组赛 + 淘汰赛」赛制下生效。 */
+export const TEAM_STAGE_SCORING_KEYS = ['GROUP', 'KNOCKOUT'] as const;
+
+/**
+ * 团体赛分阶段计分。每个阶段是一套完整规则：要么给 scoringRule（预设），
+ * 要么给 customGamePoint（+ 可选封顶分、胜出局数）；没设置的阶段用团体赛默认规则。
+ */
+export class TeamStageScoringRulesDto {
+  /** 小组循环的全部团体对阵。 */
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => StageScoringRuleDto)
+  GROUP?: StageScoringRuleDto;
+
+  /** 小组出线后的全部团体对阵（含季军赛、决赛）。 */
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => StageScoringRuleDto)
+  KNOCKOUT?: StageScoringRuleDto;
+}
+
 export class TeamScoringDto {
+  /** 分阶段子项计分；null 清空。非「小组赛 + 淘汰赛」赛制时后端一律清空。 */
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => TeamStageScoringRulesDto)
+  stageScoringRules?: TeamStageScoringRulesDto | null;
+
   /** 淘汰赛第三名：BY_RECORD 按成绩排定 / SHARED 并列第三 / PLAYOFF 加赛季军赛。新建和修改共用。 */
   @IsOptional()
   @IsEnum(TeamThirdPlaceMode)

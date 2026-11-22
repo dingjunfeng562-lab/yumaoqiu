@@ -1,9 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { io, type Socket } from 'socket.io-client';
+import { useMemo, useState } from 'react';
+import { useLiveTeamBoard } from '@/lib/use-live-team-board';
+import { isTeamGroupKnockout } from '@/lib/team-competition-format';
 import {
-  fetchTeamBoard,
   teamFormatText,
   teamRoundText,
   teamScoringText,
@@ -14,146 +14,6 @@ import {
   type TeamBoardGroup,
   type TeamBoardTeam,
 } from '@/lib/team-board';
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
-const SOCKET_BASE = API_BASE.replace(/\/api\/?$/, '');
-/** 兜底刷新间隔；平时靠计分推送更新，页面不可见时不刷新。 */
-const POLL_MS = 60_000;
-
-/** scoreboard:update 推送里用得到的字段（裁判端每记一分都会推）。 */
-type ScorePush = {
-  id?: string;
-  status?: string;
-  winnerSide?: number | null;
-  forfeitedSide?: number | null;
-  games?: Array<{ gameNo: number; side1Score: number; side2Score: number; winnerSide: number | null }>;
-};
-
-function findChild(competitions: TeamBoardCompetition[], id: string) {
-  for (const competition of competitions) {
-    for (const encounter of competition.encounters) {
-      const child = encounter.children.find((item) => item.id === id);
-      if (child) return child;
-    }
-  }
-  return null;
-}
-
-/** 把一条计分推送里的比分写进对应子项，其它数据不动。 */
-function patchChild(competitions: TeamBoardCompetition[], push: ScorePush): TeamBoardCompetition[] {
-  let changed = false;
-  const next = competitions.map((competition) => {
-    let competitionChanged = false;
-    const encounters = competition.encounters.map((encounter) => {
-      const index = encounter.children.findIndex((child) => child.id === push.id);
-      if (index < 0) return encounter;
-      competitionChanged = true;
-      const children = encounter.children.slice();
-      const child = children[index];
-      children[index] = {
-        ...child,
-        status: push.status ?? child.status,
-        winnerSide: push.winnerSide !== undefined ? push.winnerSide : child.winnerSide,
-        forfeitedSide: push.forfeitedSide !== undefined ? push.forfeitedSide : child.forfeitedSide,
-        games: push.games
-          ? push.games.map((game) => ({ gameNo: game.gameNo, side1Score: game.side1Score, side2Score: game.side2Score, winnerSide: game.winnerSide }))
-          : child.games,
-      };
-      return { ...encounter, children };
-    });
-    if (!competitionChanged) return competition;
-    changed = true;
-    return { ...competition, encounters };
-  });
-  return changed ? next : competitions;
-}
-
-/**
- * 团体赛对阵表的实时数据。
- * - 子项每记一分：直接用推送里的比分改这一个子项，不重新拉取。
- * - 子项开赛或结束（出场名单、团体总比分、积分榜会变）、对阵变化、断线重连：重新拉取本赛事的团体赛。
- */
-function useLiveTeamBoard(initial: TeamBoardCompetition[], tournamentId: string) {
-  const [competitions, setCompetitions] = useState(initial);
-  const competitionsRef = useRef(competitions);
-  useEffect(() => {
-    competitionsRef.current = competitions;
-  });
-
-  const syncRef = useRef({ running: false, rerun: false });
-  const reload = useCallback(async () => {
-    const sync = syncRef.current;
-    if (sync.running) {
-      sync.rerun = true;
-      return;
-    }
-    sync.running = true;
-    try {
-      do {
-        sync.rerun = false;
-        try {
-          setCompetitions(await fetchTeamBoard(tournamentId));
-        } catch {
-          // 网络抖动时保留当前数据，下一次推送或兜底刷新再取。
-        }
-      } while (sync.rerun);
-    } finally {
-      sync.running = false;
-    }
-  }, [tournamentId]);
-
-  const timerRef = useRef<number | null>(null);
-  const scheduleReload = useCallback((delay: number) => {
-    if (timerRef.current !== null) return;
-    timerRef.current = window.setTimeout(() => {
-      timerRef.current = null;
-      void reload();
-    }, delay);
-  }, [reload]);
-  useEffect(() => () => {
-    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
-  }, []);
-
-  useEffect(() => {
-    const socket: Socket = io(`${SOCKET_BASE}/scores`, { transports: ['polling', 'websocket'], withCredentials: true });
-    let connectedBefore = false;
-    socket.on('connect', () => {
-      // 断线期间的推送收不到，重连后补拉一次。
-      if (connectedBefore) scheduleReload(0);
-      connectedBefore = true;
-    });
-    socket.on('scoreboard:update', (push: ScorePush) => {
-      if (!push?.id) return;
-      const current = findChild(competitionsRef.current, push.id);
-      if (!current) return;
-      const structural = (push.status !== undefined && push.status !== current.status)
-        || (push.forfeitedSide !== undefined && push.forfeitedSide !== current.forfeitedSide);
-      setCompetitions((prev) => patchChild(prev, push));
-      if (structural) scheduleReload(1500);
-    });
-    socket.on('bracket:update', (payload: { tournamentId?: string | null }) => {
-      if (payload?.tournamentId && payload.tournamentId !== tournamentId) return;
-      scheduleReload(800);
-    });
-    return () => {
-      socket.disconnect();
-    };
-  }, [tournamentId, scheduleReload]);
-
-  useEffect(() => {
-    const refreshIfVisible = () => {
-      if (document.visibilityState === 'visible') void reload();
-    };
-    const timer = window.setInterval(refreshIfVisible, POLL_MS);
-    document.addEventListener('visibilitychange', refreshIfVisible);
-    return () => {
-      window.clearInterval(timer);
-      document.removeEventListener('visibilitychange', refreshIfVisible);
-    };
-  }, [reload]);
-
-  return competitions;
-}
 
 export function TeamCompetitionBoard({
   tournamentId,
@@ -201,6 +61,7 @@ function TeamCompetitionCard({ competition }: { competition: TeamBoardCompetitio
             <h2 className="truncate text-base font-black tracking-wide sm:text-lg">{competition.name}</h2>
             <p className="mt-1 text-[11px] font-semibold text-emerald-50/85 sm:text-xs">
               团体赛 · {competition.entrantTypeLabel} · {teamFormatText(competition.format)} · {competition.teamCount} 队
+              {competition.timeZone ? ' · 比赛地当地时间' : ''}
             </p>
             <p className="mt-0.5 text-[11px] font-semibold text-emerald-50/75 sm:text-xs">
               每场 {competition.items.length} 项（{items}），先胜 {competition.winThreshold} 项；子项 {teamScoringText(competition)}
@@ -256,18 +117,19 @@ function TeamCompetitionCard({ competition }: { competition: TeamBoardCompetitio
                 key={group.id}
                 group={group}
                 encounters={groupEncounters.filter((encounter) => encounter.groupId === group.id)}
-                showAdvanced={competition.format === 'GROUP_PLUS_KNOCKOUT'}
+                showAdvanced={isTeamGroupKnockout(competition.format)}
                 singleGroup={competition.groups.length === 1}
+                timeZone={competition.timeZone}
               />
             ))}
             <p className="px-1 text-[11px] font-medium leading-5 text-slate-400">
               积分榜依次比较胜场（赢下的团体对阵数）、胜次（正式子项获胜数）、净胜分（正式子项逐局得分减失分）；仍相同时比较同分队之间的相互战绩，再比较负次。
               {competition.playAllMatches ? '胜负确定后补打的子项只保留比分，不计入积分。' : ''}
-              {competition.format === 'GROUP_PLUS_KNOCKOUT' && competition.advancePerGroup ? `每组前 ${competition.advancePerGroup} 名进入淘汰赛。` : ''}
+              {isTeamGroupKnockout(competition.format) && competition.advancePerGroup ? `每组前 ${competition.advancePerGroup} 名进入淘汰赛。` : ''}
             </p>
           </>
         ) : (
-          <KnockoutRounds encounters={knockout} />
+          <KnockoutRounds encounters={knockout} timeZone={competition.timeZone} />
         )}
       </div>
     </section>
@@ -279,11 +141,13 @@ function GroupCard({
   encounters,
   showAdvanced,
   singleGroup,
+  timeZone,
 }: {
   group: TeamBoardGroup;
   encounters: TeamBoardEncounter[];
   showAdvanced: boolean;
   singleGroup: boolean;
+  timeZone?: string;
 }) {
   const ordered = [...encounters].sort((a, b) => a.roundNo - b.roundNo || a.matchNo - b.matchNo);
   return (
@@ -324,7 +188,7 @@ function GroupCard({
       {ordered.length ? (
         <div className="mt-3 grid items-start gap-2 lg:grid-cols-2">
           {ordered.map((encounter) => (
-            <EncounterCard key={encounter.id} encounter={encounter} />
+            <EncounterCard key={encounter.id} encounter={encounter} timeZone={timeZone} />
           ))}
         </div>
       ) : null}
@@ -332,7 +196,7 @@ function GroupCard({
   );
 }
 
-function KnockoutRounds({ encounters }: { encounters: TeamBoardEncounter[] }) {
+function KnockoutRounds({ encounters, timeZone }: { encounters: TeamBoardEncounter[]; timeZone?: string }) {
   // 季军赛与决赛同一轮，排在决赛后面。
   const rounds = useMemo(() => {
     const byRound = new Map<string, TeamBoardEncounter[]>();
@@ -352,7 +216,7 @@ function KnockoutRounds({ encounters }: { encounters: TeamBoardEncounter[] }) {
           <h3 className="mb-2 px-1 text-sm font-black text-slate-900">{teamRoundText({ stage: 'KNOCKOUT', round })}</h3>
           <div className="grid items-start gap-2 lg:grid-cols-2">
             {list.map((encounter) => (
-              <EncounterCard key={encounter.id} encounter={encounter} showRound={false} />
+              <EncounterCard key={encounter.id} encounter={encounter} showRound={false} timeZone={timeZone} />
             ))}
           </div>
         </div>
@@ -368,16 +232,19 @@ const ENCOUNTER_STATUS: Record<string, { text: string; className: string }> = {
   CANCELLED: { text: '已取消', className: 'bg-slate-100 text-slate-400' },
 };
 
-function EncounterCard({ encounter, showRound = true }: { encounter: TeamBoardEncounter; showRound?: boolean }) {
+function EncounterCard({ encounter, showRound = true, timeZone }: { encounter: TeamBoardEncounter; showRound?: boolean; timeZone?: string }) {
   const [open, setOpen] = useState(encounter.status === 'LIVE');
   const bye = encounter.status === 'COMPLETED' && !hasBothTeams(encounter) && Boolean(encounter.winnerTeamId);
   const status = bye ? { text: '轮空晋级', className: 'bg-slate-100 text-slate-500' } : ENCOUNTER_STATUS[encounter.status] ?? ENCOUNTER_STATUS.PENDING;
   const started = encounter.status !== 'PENDING' && !bye;
-  const time = encounter.status === 'PENDING' ? teamTimeText(encounter.scheduledAt) : '';
-  const meta = [showRound ? teamRoundText(encounter) : '', time, encounter.status !== 'COMPLETED' ? encounter.venueName ?? '' : '']
+  const time = encounter.status === 'PENDING' ? teamTimeText(encounter.scheduledAt, timeZone) : '';
+  const venues = [...new Set(encounter.children.map(child => child.venueName).filter(Boolean))];
+  const meta = [showRound ? teamRoundText(encounter) : '', time, encounter.status !== 'COMPLETED' ? venues.join(' / ') : '']
     .filter(Boolean)
     .join(' · ');
-  const canOpen = hasBothTeams(encounter) && encounter.children.length > 0;
+  const canOpen = encounter.children.length > 0 && (hasBothTeams(encounter) || encounter.children.some(child => child.scheduledAt));
+  const children = [...encounter.children].sort((a, b) =>
+    (a.scheduledAt ?? '').localeCompare(b.scheduledAt ?? '') || a.matchNo - b.matchNo);
   return (
     <div className={`rounded-xl border bg-white ${encounter.status === 'LIVE' ? 'border-red-200 shadow-sm' : 'border-slate-200'}`}>
       <button
@@ -402,13 +269,13 @@ function EncounterCard({ encounter, showRound = true }: { encounter: TeamBoardEn
           <TeamLabel team={encounter.team2} winner={encounter.winnerTeamId !== null && encounter.winnerTeamId === encounter.team2?.id} placeholder={bye ? '轮空' : '待定'} alignRight />
         </div>
         {canOpen ? (
-          <p className="mt-1 text-center text-[11px] font-bold text-emerald-700">{open ? '收起子项比分' : '查看子项比分'}</p>
+          <p className="mt-1 text-center text-[11px] font-bold text-emerald-700">{open ? '收起子项' : encounter.status === 'PENDING' ? '查看子项赛程' : '查看子项比分'}</p>
         ) : null}
       </button>
       {open && canOpen ? (
         <ul className="divide-y divide-slate-100 border-t border-slate-100">
-          {encounter.children.map((child) => (
-            <ChildRow key={child.id} child={child} />
+          {children.map((child) => (
+            <ChildRow key={child.id} child={child} timeZone={timeZone} />
           ))}
         </ul>
       ) : null}
@@ -436,9 +303,9 @@ const CHILD_STATUS: Record<string, string> = {
   CANCELLED: '无需比赛',
 };
 
-function ChildRow({ child }: { child: TeamBoardChild }) {
+function ChildRow({ child, timeZone }: { child: TeamBoardChild; timeZone?: string }) {
   const games = child.games.filter((game) => game.side1Score > 0 || game.side2Score > 0 || game.winnerSide);
-  const time = child.status === 'PENDING' ? teamTimeText(child.scheduledAt) : '';
+  const time = child.status === 'PENDING' ? teamTimeText(child.scheduledAt, timeZone) : '';
   const names = (players: string[]) => (players.length ? players.join(' / ') : child.status === 'CANCELLED' ? '—' : '名单待公布');
   return (
     <li className={`px-3 py-2 ${child.status === 'CANCELLED' ? 'opacity-60' : ''}`}>
@@ -447,6 +314,7 @@ function ChildRow({ child }: { child: TeamBoardChild }) {
         <span className={child.status === 'LIVE' ? 'text-red-600' : 'text-slate-400'}>
           {CHILD_STATUS[child.status] ?? child.status}
           {time ? ` · ${time}` : ''}
+          {child.venueName ? ` · ${child.venueName}` : ''}
           {child.isSupplemental ? ' · 补打，不计成绩' : ''}
         </span>
       </div>

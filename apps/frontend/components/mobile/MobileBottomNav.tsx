@@ -69,9 +69,9 @@ export function MobileBottomNav({ activeHref }: { activeHref?: string } = {}) {
     {
       key: 'home',
       label: '首页',
-      href: '/',
+      href: '/home',
       icon: HomeIcon,
-      match: (p) => p === '/',
+      match: (p) => p === '/home',
     },
     {
       key: 'comp',

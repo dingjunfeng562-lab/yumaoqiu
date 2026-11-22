@@ -21,6 +21,18 @@ enum PhotoCategory {
   AWARD
 }
 
+enum PhotoManagementRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  REVOKED
+}
+
+enum PhotoManagementTargetType {
+  TOURNAMENT
+  ACTIVITY
+}
+
 enum UserStatus {
   ACTIVE
   DISABLED
@@ -68,6 +80,7 @@ enum TeamCompetitionFormat {
   ROUND_ROBIN            // 单组循环赛（所有队伍打一遍）
   GROUP_ROUND_ROBIN      // 多组循环赛
   GROUP_PLUS_KNOCKOUT    // 小组+淘汰赛
+  GROUP_PLUS_KNOCKOUT_STD // 小组循环赛-淘汰赛2023
 }
 
 // 团体淘汰赛第三名的决出方式
@@ -257,6 +270,7 @@ model User {
   competitionRegistrations CompetitionRegistration[]
   matches           Match[]
   refereeTournamentGrants RefereeTournamentGrant[]
+  refereeCourtAssignments RefereeCourtAssignment[]
   drawOperationLogs DrawOperationLog[] @relation("drawOperationLogOperator")
   drawSeedSettings  DrawSeedSetting[]  @relation("drawSeedSettingCreator")
   drawRedrawRequests        DrawRedrawRequest[] @relation("drawRedrawRequestRequester")
@@ -268,6 +282,7 @@ model User {
   approvedPhotoActivities PhotoActivity[] @relation("PhotoActivityApprover")
   photoOperationLogs PhotoOperationLog[]
   photoUploadGrants PhotoUploadGrant[]
+  photoManagementRequests PhotoManagementRequest[]
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
 
@@ -281,6 +296,7 @@ model Announcement {
   id          String    @id @default(cuid())
   title       String    @db.VarChar(120)
   content     String    @db.Text
+  targetRole  Role?
   displayMode String    @default("popup") @db.VarChar(24)
   scope       String    @default("global") @db.VarChar(24)
   frequency   String    @default("every_visit") @db.VarChar(24)
@@ -622,6 +638,18 @@ model RefereeTournamentGrant {
   @@map("referee_tournament_grant")
 }
 
+model RefereeCourtAssignment {
+  venueId String
+  venue Venue @relation(fields: [venueId], references: [id], onDelete: Cascade, map: "referee_court_venue_fkey")
+  userId String
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade, map: "referee_court_user_fkey")
+  assignedAt DateTime @default(now())
+
+  @@id([venueId, userId])
+  @@index([userId])
+  @@map("referee_court_assignment")
+}
+
 model EmailGlobalSetting {
   id        String   @id @default("global") @db.VarChar(32)
   enabled   Boolean  @default(true)
@@ -796,6 +824,32 @@ model PhotoOperationLog {
   @@index([operatorId])
 }
 
+model PhotoManagementRequest {
+  id                String                       @id @default(cuid())
+  applicantId       String?
+  applicant         User?                        @relation(fields: [applicantId], references: [id], onDelete: SetNull)
+  applicantName     String                       @db.VarChar(64)
+  targetType        PhotoManagementTargetType
+  targetId          String
+  targetName        String                       @db.VarChar(255)
+  purpose           String                       @db.VarChar(500)
+  status            PhotoManagementRequestStatus @default(PENDING)
+  // MySQL allows multiple NULLs in a unique index. Closed requests keep their history.
+  active            Boolean?                     @default(true)
+  createdAt         DateTime                     @default(now())
+  reviewedById      String?
+  reviewedByName    String?                      @db.VarChar(64)
+  reviewedAt        DateTime?
+  reviewReason      String?                      @db.VarChar(500)
+  revokedById       String?
+  revokedByName     String?                      @db.VarChar(64)
+  revokedAt         DateTime?
+  revokeReason      String?                      @db.VarChar(500)
+
+  @@unique([applicantId, targetType, targetId, active], map: "PhotoManagementRequest_active_target_key")
+  @@index([status, createdAt])
+}
+
 model PhotoUploadGrant {
   id           String         @id @default(cuid())
   userId       String
@@ -880,6 +934,7 @@ model SecondStage {
   status       SecondStageStatus      @default(NOT_STARTED)
   mode         SecondStageMode        @default(MANUAL_BY_REFEREE)
   rankingMode  SecondStageRankingMode @default(TOP_8) @map("ranking_mode")
+  rankingLimit Int?                   @map("ranking_limit")
   confirmedAt  DateTime?              @map("confirmed_at")
   finishedAt   DateTime?              @map("finished_at")
   createdBy    String?                @map("created_by")
@@ -1105,6 +1160,9 @@ model TeamCompetition {
   customGamePoint Int?
   customGameCap Int?
   customGamesToWin Int?
+  // 「小组赛 + 淘汰赛」赛制下按阶段覆盖子项计分规则：{ GROUP?, KNOCKOUT? }，结构同 Event.stageScoringRules；
+  // 为空时全部子项沿用上面的默认规则。阶段按团体对阵的 TeamMatch.stage 判断。
+  stageScoringRules Json?
   rankingLimit Int?
   thirdPlaceMode TeamThirdPlaceMode @default(BY_RECORD)
   isPublished  Boolean               @default(false)
@@ -1299,6 +1357,7 @@ model Match {
   side2Id               String?
   refereeId             String?
   referee               User?                @relation(fields: [refereeId], references: [id])
+  refereeClaimExpiresAt DateTime?
   venueId               String?
   venue                 Venue?               @relation(fields: [venueId], references: [id])
   scheduledAt           DateTime?
@@ -1328,6 +1387,7 @@ model Match {
   @@index([eventId, roundNo, matchNo])
   @@index([teamMatchId, teamCompetitionItemId])
   @@index([refereeId])
+  @@index([refereeClaimExpiresAt])
   @@index([venueId, scheduledAt])
   @@index([scheduledAt])
 }
@@ -1429,6 +1489,7 @@ model Venue {
   matches      Match[]
   allowedGroups GroupVenue[]
   allowedEvents EventVenue[]
+  refereeAssignments RefereeCourtAssignment[]
   broadcasts   BroadcastSession[]
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
@@ -1668,6 +1729,9 @@ model AiConfig {
   temperature    Float    @default(0.7)
   enabled        Boolean  @default(true)
   welcomeMessage String   @db.VarChar(500) @map("welcome_message")
+  // 报名表识别：复用图片审核的 DeepSeek 通道，但开关独立，只有超级管理员能改。
+  rosterEnabled  Boolean  @default(false) @map("roster_enabled")
+  rosterPrompt   String?  @db.Text @map("roster_prompt")
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -1691,6 +1755,12 @@ model UsageMetric {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("usage_metrics")
+}
+
+model PublicCompetitionOrder {
+  id         Int    @id
+  mode       String @db.VarChar(32)
+  orderedIds Json
 }
 
 // 全服维护：单行配置（id 固定为 default）。开启后除管理员、超级管理员外，

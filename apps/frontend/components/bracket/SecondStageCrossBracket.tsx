@@ -1,6 +1,7 @@
 'use client';
 
-import type { SecondStageMatch, SecondStageRankingMode } from './SecondStageBracket';
+import type { SecondStageMatch } from './SecondStageBracket';
+import { compactGroupRankLabel, includesSecondStageMatch } from '@/lib/second-stage-ranking';
 
 // 第二阶段排位赛「交叉树」对阵图：前8初始赛 A vs B / C vs D / E vs F / G vs H，
 // 胜者实线向右进入 1—4 名争夺区，负者虚线交叉向下进入 5—8 名争夺区。
@@ -50,7 +51,7 @@ const EDGES: Edge[] = [
   { from: 10, to: 12, kind: 'lose' },
 ];
 
-function roundLabel(no: number, top6: boolean) {
+function roundLabel(no: number, rankLimit: number) {
   switch (no) {
     case 1:
     case 2:
@@ -61,16 +62,17 @@ function roundLabel(no: number, top6: boolean) {
     case 6:
       return '1-4 半决赛';
     case 7:
-      return '决赛 · 1/2名';
+      return rankLimit === 1 ? '冠军决赛' : '决赛 · 1/2名';
     case 8:
-      return '3/4名';
+      return rankLimit === 3 ? '第3名决赛' : '3/4名';
     case 9:
     case 10:
-      return top6 ? '5-6 资格赛' : '5-8 半决赛';
+      if (rankLimit === 5) return '第5名资格赛';
+      return rankLimit === 6 ? '5-6 资格赛' : '5-8 半决赛';
     case 11:
-      return top6 ? '5/6名 决赛' : '5/6名';
+      return rankLimit === 5 ? '第5名决赛' : '5/6名';
     case 12:
-      return '7/8名';
+      return rankLimit === 7 ? '第7名决赛' : '7/8名';
     default:
       return '';
   }
@@ -142,7 +144,7 @@ function SideLine({
   const s = source?.trim();
   const n = name?.trim();
   const slot = s && /^[A-H]$/.test(s) ? s : null;
-  const text = n || (slot ? '待定' : s || '待定');
+  const text = compactGroupRankLabel(n || (slot ? '待定' : s || '待定'));
   const mem = (members ?? []).filter(Boolean);
   // 队员名与队伍名相同时（单打、或双打没设队伍名直接是「甲 / 乙」）不再重复显示。
   const showMembers = mem.length > 1 && mem.join(' / ') !== text;
@@ -170,21 +172,21 @@ function SideLine({
 
 export function SecondStageCrossBracket({
   matches,
-  rankingMode = 'TOP_8',
+  rankingLimit,
   variant = 'light',
 }: {
   matches: SecondStageMatch[];
-  rankingMode?: SecondStageRankingMode;
+  rankingLimit: number;
   variant?: Variant;
 }) {
   const theme = THEME[variant];
-  const top6 = rankingMode === 'TOP_6';
   const byNo = new Map(matches.map((match) => [match.matchNo, match]));
-  // TOP_6 不打第12场（7/8名），其相关连线一并去掉。
   const nos = Object.keys(POS)
     .map(Number)
-    .filter((no) => !(top6 && no === 12));
-  const edges = EDGES.filter((edge) => !(top6 && (edge.from === 12 || edge.to === 12)));
+    .filter((no) => includesSecondStageMatch(no, rankingLimit));
+  const included = new Set(nos);
+  const edges = EDGES.filter((edge) => included.has(edge.from) && included.has(edge.to));
+  const lowerSection = rankingLimit >= 5;
 
   const boardW = Math.max(...nos.map((no) => POS[no].x + CARD_W)) + PAD * 2;
   const boardH = Math.max(...nos.map((no) => POS[no].y + CARD_H)) + PAD * 2;
@@ -206,7 +208,7 @@ export function SecondStageCrossBracket({
       <div className="overflow-auto [scrollbar-width:thin]" style={{ maxHeight: 660 }}>
         <div className="relative" style={{ width: boardW, height: boardH }}>
           <svg className="pointer-events-none absolute inset-0" width={boardW} height={boardH} aria-hidden>
-            <line
+            {lowerSection && <line
               x1={PAD}
               y1={dividerY}
               x2={boardW - PAD}
@@ -214,7 +216,7 @@ export function SecondStageCrossBracket({
               stroke={theme.divider}
               strokeWidth={1}
               strokeDasharray="3 6"
-            />
+            />}
             {edges.map((edge) => (
               <path
                 key={`${edge.from}-${edge.to}`}
@@ -229,12 +231,12 @@ export function SecondStageCrossBracket({
             ))}
           </svg>
 
-          <div
+          {lowerSection && <div
             className={`absolute rounded-full border px-2.5 py-0.5 text-[10px] font-black shadow-sm ${theme.caption}`}
             style={{ left: PAD + COL_X[1], top: dividerY - 11 }}
           >
-            ▲ 1—4 名争夺区　▼ 5—8 名争夺区
-          </div>
+            ▲ 1—4 名争夺区　▼ {rankingLimit === 5 ? '第5' : `5—${rankingLimit}`} 名争夺区
+          </div>}
 
           {nos.map((no) => {
             const match = byNo.get(no);
@@ -247,7 +249,7 @@ export function SecondStageCrossBracket({
               >
                 <div className="flex items-center justify-between gap-1">
                   <span className={`truncate text-[10px] font-black ${theme.matchNo}`}>
-                    第{no}场 · {roundLabel(no, top6)}
+                    第{no}场 · {roundLabel(no, rankingLimit)}
                   </span>
                   {score ? (
                     <span className={`shrink-0 text-[10px] font-bold tabular-nums ${theme.sub}`}>{score}</span>
@@ -271,7 +273,7 @@ export function SecondStageCrossBracket({
           <svg width="26" height="6" aria-hidden>
             <line x1="0" y1="3" x2="26" y2="3" stroke={theme.lose} strokeWidth="1.8" strokeDasharray="5 4" />
           </svg>
-          负者交叉下移（进入 5—8 名区）
+          负者进入排位赛
         </span>
       </div>
     </div>

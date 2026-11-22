@@ -1,0 +1,53 @@
+.workspace {
+  --line: #d9e3ed;
+  --muted: #52667d;
+  padding: clamp(12px, 1.3vw, 24px);
+  background: #f4f7fb;
+  min-height: 100vh;
+  min-width: 0;
+  box-sizing: border-box;
+  color: #182d49;
+}
+.workspace:fullscreen { overflow: auto; overscroll-behavior: contain; }
+.heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.heading h1 { margin: 0; font-size: clamp(21px, 2vw, 29px); line-height: 1.25; }
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; max-width: 100%; }
+.controls label { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 13px; color: #394f68; min-width: 0; max-width: 100%; }
+.controls select, .controls input, .expand { box-sizing: border-box; max-width: 100%; color: #213851; background: white; border: 1px solid #bfcedd; border-radius: 6px; padding: 5px 8px; min-height: 34px; font: inherit; }
+.controls select { min-width: 0; }
+.expand { cursor: pointer; }
+.board { min-width: 0; color: #20344e; }
+.board > .controls { padding: 9px 12px; border: 1px solid #d9e3ed; border-radius: 8px; background: #fff; }
+.hint { color: #53677d; font-size: 13px; margin: 8px 0; }
+.day { margin-top: 16px; }
+.day h2 { margin: 0 0 8px; display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline; font-size: 18px; font-variant-numeric: tabular-nums; }
+.day h2 span { font-size: 13px; font-weight: 400; color: #52667d; }
+.day table { width: 100%; table-layout: fixed; border-spacing: 0; background: #f1f5f9; border-top: 1px solid #d7e1eb; border-left: 1px solid #d7e1eb; }
+.day table + table { margin-top: 16px; }
+.day th, .day td { border-right: 1px solid #d7e1eb; border-bottom: 1px solid #d7e1eb; padding: 5px; vertical-align: top; overflow-wrap: anywhere; }
+.day thead th { padding: 8px 4px; position: sticky; top: 0; z-index: 2; background: #dce8f4; color: #25405e; text-align: center; }
+.day tbody th { padding-top: 10px; color: #3c526b; font-size: 13px; background: #e9eff6; font-variant-numeric: tabular-nums; }
+.match, .slot { display: block; box-sizing: border-box; width: 100%; text-align: left; font: inherit; color: inherit; border-radius: 6px; }
+.match { border: 1px solid #c8d8e9; border-left: 3px solid #3379c7; background: white; padding: 7px 8px; cursor: grab; overflow-wrap: anywhere; white-space: normal; line-height: 1.35; }
+.match + .match { margin-top: 5px; }
+.match:disabled { cursor: default; background: #f6f8fb; border-left-color: #8798ac; }
+.meta, .round, .match > small { display: block; color: #51667c; font-size: 12px; }
+.meta { color: #2e516e; font-weight: 600; }
+.sides { display: grid; gap: 3px; margin: 7px 0; }
+.sides strong { display: flex; align-items: baseline; gap: 5px; font-size: 14px; line-height: 1.4; }
+.sides small { font-size: 11px; color: #607790; font-weight: 400; flex: none; }
+.cardFoot { display: flex; flex-wrap: wrap; gap: 2px 6px; justify-content: space-between; font-size: 12px; color: #546b82; }
+.cardFoot time { font-variant-numeric: tabular-nums; }
+.cardFoot em { color: #235d9c; font-style: normal; }
+.cardFoot [data-status="比赛中"] { color: #18683d; }
+.cardFoot [data-status="人工固定"] { color: #885810; }
+.slot { padding: 8px 4px; text-align: center; border: 1px dashed #cad5e2; background: #f7f9fc; color: #607690; min-height: 40px; cursor: pointer; }
+.board [data-over=true], .match[aria-pressed=true] { outline: 2px solid #1677ff; background: #eaf4ff; }
+.board h4 { margin: 16px 0 8px; }
+.pool { display: grid; grid-template-columns: repeat(auto-fill,minmax(min(165px,100%),1fr)); gap: 8px; }
+@media (max-width: 640px) {
+  .workspace { padding: 9px; }
+  .heading { align-items: flex-start; }
+  .controls { gap: 6px 8px; }
+  .day th, .day td { padding: 4px; }
+}

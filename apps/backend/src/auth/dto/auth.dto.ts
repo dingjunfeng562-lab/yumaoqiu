@@ -86,6 +86,15 @@ export class ResetUserPasswordDto {
   newPassword: string;
 }
 
+export class SetUserPasswordsDto extends ResetUserPasswordDto {
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayUnique()
+  @IsString({ each: true })
+  @Length(1, 191, { each: true })
+  ids: string[];
+}
+
 export class ChangePasswordDto {
   @IsString()
   @MinLength(8)

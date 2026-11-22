@@ -4,9 +4,8 @@ import sharp from 'sharp';
 import jsQR from 'jsqr';
 import { PrismaService } from '../prisma/prisma.service';
 import { UpdateImageModerationDto } from './image-moderation.dto';
+import { VISION_ENDPOINT as ENDPOINT, VISION_MODEL as MODEL } from '../common/vision-channel';
 
-const MODEL = 'deepseek-flash';
-const ENDPOINT = 'https://api.deepseek.com/chat/completions';
 const UNAVAILABLE = '图片审核服务暂不可用，图片未保存，请稍后重试或联系管理员';
 const PROMPT = `你是羽毛球赛事平台的图片内容审核器，必须执行以下禁止规则：
 1. 色情内容一律禁止：色情性行为、色情裸露、性器官或以性挑逗为目的展示私密部位、色情姿势、性剥削、色情广告。真人、动漫、绘画、截图中的色情内容同样禁止。出现则 hasSexualContent=true、decision=BLOCK、categories 包含 sexual。

@@ -6,6 +6,30 @@ import { matchesSearch } from '@/lib/search-text';
 import { HighlightText, SearchBox, replaceSearchParam } from './SearchBox';
 import { formatDateTime, normalizeCover, type PublicCompetition } from './types';
 
+const REGISTRATION_OPEN = 'REGISTRATION_OPEN';
+const REGISTRATION_NOT_STARTED = 'REGISTRATION_NOT_STARTED';
+
+type CompetitionPhase = {
+  label: string;
+  badgeClass: string;
+  timeLabel: string;
+  timeField: 'registrationStartTime' | 'registrationEndTime' | 'startDate' | 'endDate';
+};
+
+const COMPETITION_PHASES: Partial<Record<string, CompetitionPhase>> = {
+  [REGISTRATION_NOT_STARTED]: { label: '即将报名', badgeClass: 'bg-blue-700 text-white', timeLabel: '报名开始', timeField: 'registrationStartTime' },
+  [REGISTRATION_OPEN]: { label: '报名中', badgeClass: 'bg-emerald-700 text-white', timeLabel: '报名截止', timeField: 'registrationEndTime' },
+  REGISTRATION_CLOSED: { label: '报名已截止', badgeClass: 'bg-slate-100 text-slate-800', timeLabel: '比赛开始', timeField: 'startDate' },
+  ONGOING: { label: '比赛中', badgeClass: 'bg-violet-700 text-white', timeLabel: '预计结束', timeField: 'endDate' },
+  FINISHED: { label: '已完赛', badgeClass: 'bg-slate-800 text-white', timeLabel: '比赛结束', timeField: 'endDate' },
+};
+const DEFAULT_PHASE: CompetitionPhase = {
+  label: '状态待定',
+  badgeClass: 'bg-slate-100 text-slate-800',
+  timeLabel: '比赛开始',
+  timeField: 'startDate',
+};
+
 // 赛事列表：顶部按赛事名即时筛选，搜索词同步到网址 ?q=。
 export function CompetitionSearchList({
   competitions,
@@ -74,10 +98,10 @@ export function CompetitionSearchList({
   );
 }
 
-// 列表里每个赛事只放封面图，图上显示赛事名、报名起止时间和是否需要审核；
-// 整张卡片点进赛事主页（报名、选手名单、对阵、比分直播都在那里）。
 function CompetitionCard({ competition, query }: { competition: PublicCompetition; query: string }) {
-  const review = competition.needsRegistrationReview;
+  const phase = COMPETITION_PHASES[competition.status ?? ''] ?? DEFAULT_PHASE;
+  const needsReview = competition.needsRegistrationReview
+    && (competition.status === REGISTRATION_OPEN || competition.status === REGISTRATION_NOT_STARTED);
   return (
     <article className="group overflow-hidden rounded-lg border border-blue-100 bg-white shadow-sm transition hover:-translate-y-0.5 hover:border-blue-300 hover:shadow-md">
       <Link href={`/competitions/${competition.id}`} className="block">
@@ -86,15 +110,9 @@ function CompetitionCard({ competition, query }: { competition: PublicCompetitio
           style={{ backgroundImage: `url("${normalizeCover(competition.coverImage)}")` }}
         >
           <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-[#02133b]/85 via-[#02133b]/35 to-transparent" />
-          {typeof review === 'boolean' ? (
-            <span
-              className={`pointer-events-none absolute left-4 top-4 rounded-full px-3 py-1 text-xs font-black text-white shadow-sm ${
-                review ? 'bg-amber-400' : 'bg-emerald-500'
-              }`}
-            >
-              {review ? '需审核' : '无需审核'}
-            </span>
-          ) : null}
+          <span className={`pointer-events-none absolute left-4 top-4 rounded-full px-3 py-1 text-xs font-black shadow-sm ${phase.badgeClass}`}>
+            {phase.label}
+          </span>
           <div className="pointer-events-none absolute bottom-4 left-4 right-4">
             <h2 className="line-clamp-2 text-xl font-black text-white">
               <HighlightText
@@ -104,16 +122,13 @@ function CompetitionCard({ competition, query }: { competition: PublicCompetitio
               />
             </h2>
             <div className="mt-2 flex items-end justify-between gap-3">
-              <dl className="min-w-0 space-y-1 text-xs font-semibold text-blue-50/90">
-                <div className="flex gap-2">
-                  <dt className="text-white/70">报名开始</dt>
-                  <dd className="tabular-nums">{formatDateTime(competition.registrationStartTime)}</dd>
-                </div>
-                <div className="flex gap-2">
-                  <dt className="text-white/70">报名结束</dt>
-                  <dd className="tabular-nums">{formatDateTime(competition.registrationEndTime)}</dd>
-                </div>
-              </dl>
+              <div className="min-w-0 space-y-1">
+                <dl className="flex flex-wrap gap-x-2 text-xs font-semibold text-blue-50/90">
+                  <dt className="text-white/80">{phase.timeLabel}</dt>
+                  <dd className="tabular-nums">{formatDateTime(competition[phase.timeField])}</dd>
+                </dl>
+                {needsReview ? <p className="text-[11px] font-semibold text-blue-50/85">报名需审核</p> : null}
+              </div>
               <span
                 className="inline-flex shrink-0 items-center gap-1 rounded-full border border-white/25 bg-white/10 px-2.5 py-0.5 text-xs font-bold tabular-nums text-white"
                 title="浏览次数"

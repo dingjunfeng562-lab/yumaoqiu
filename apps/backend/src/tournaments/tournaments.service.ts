@@ -53,8 +53,11 @@ const EVENT_TYPE_LABELS: Record<EventType, string> = {
   MIXED_DOUBLES: '混合双打',
 };
 
+const omitPhotoTokens = { photoAccessToken: true, photoUploadToken: true } as const;
+
 type TournamentDetail = Prisma.TournamentGetPayload<{
   include: ReturnType<TournamentsService['detailInclude']>;
+  omit: typeof omitPhotoTokens;
 }>;
 
 @Injectable()
@@ -76,8 +79,7 @@ export class TournamentsService {
     const columns = courtCount <= 3 ? Math.max(1, courtCount) : courtCount <= 6 ? 3 : 4;
     const defaultCardWidth = courtCount > 6 ? 770 : 560;
     const defaultCardHeight = courtCount > 6 ? 495 : 360;
-    const defaultCardFontScale = courtCount > 6 ? 150 : 100;
-    const defaults = { columns, rows: Math.min(8, Math.max(1, Math.ceil(courtCount / columns))), scale: 100, titleFontSize: 48, cardWidth: defaultCardWidth, cardHeight: defaultCardHeight, boundaryPadding: 0, cardFontScale: defaultCardFontScale };
+    const defaults = { columns, rows: Math.min(8, Math.max(1, Math.ceil(courtCount / columns))), scale: 100, titleFontSize: 48, cardWidth: defaultCardWidth, cardHeight: defaultCardHeight, boundaryPadding: 0, cardFontScale: 174 };
     return { settings: tournament.screenSettings ?? defaults, defaults, courtCount };
   }
 
@@ -138,6 +140,7 @@ export class TournamentsService {
       const created = await tx.tournament.findUniqueOrThrow({
         where: { id: tournament.id },
         include: this.detailInclude(),
+        omit: omitPhotoTokens,
       });
       return this.withEffectiveStatus(created);
     });
@@ -161,6 +164,7 @@ export class TournamentsService {
         isPublished: true,
       },
       include: this.detailInclude(),
+      omit: omitPhotoTokens,
     });
   }
 
@@ -180,6 +184,7 @@ export class TournamentsService {
         showOnHome: false,
       },
       include: this.detailInclude(),
+      omit: omitPhotoTokens,
     });
   }
 
@@ -187,6 +192,7 @@ export class TournamentsService {
     const tournaments = await this.prisma.tournament.findMany({
       where: tournamentScope(actor),
       include: this.listInclude(),
+      omit: omitPhotoTokens,
       orderBy: [{ edition: 'desc' }],
     });
     return tournaments.map((tournament) => this.withEffectiveStatus(tournament));
@@ -196,6 +202,7 @@ export class TournamentsService {
     const tournament = await this.prisma.tournament.findUnique({
       where: { id },
       include: this.detailInclude(),
+      omit: omitPhotoTokens,
     });
     if (!tournament) throw new NotFoundException(`赛事 ${id} 不存在`);
     return this.withEffectiveStatus(tournament);
@@ -281,6 +288,7 @@ export class TournamentsService {
       const updated = await tx.tournament.findUniqueOrThrow({
         where: { id },
         include: this.detailInclude(),
+        omit: omitPhotoTokens,
       });
       return this.withEffectiveStatus(updated);
     });
@@ -293,6 +301,7 @@ export class TournamentsService {
     return this.prisma.tournament.update({
       where: { id },
       data: { isArchived: true },
+      omit: omitPhotoTokens,
     });
   }
 
@@ -304,6 +313,7 @@ export class TournamentsService {
     return this.prisma.tournament.update({
       where: { id },
       data: { isArchived: false },
+      omit: omitPhotoTokens,
     });
   }
 

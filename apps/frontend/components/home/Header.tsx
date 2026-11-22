@@ -9,7 +9,7 @@ import { useEffect, useState } from 'react';
 import { signOut, useSession } from 'next-auth/react';
 
 const navItems = [
-  { label: '首页', href: '/' },
+  { label: '首页', href: '/home' },
   { label: '赛事列表', href: '/competitions' },
   { label: '成绩排行', href: '/ranking' },
   { label: '报名查询', href: '/registration-query' },
@@ -17,7 +17,6 @@ const navItems = [
 ];
 
 function isActiveNavItem(href: string, currentPath: string) {
-  if (href === '/') return currentPath === '/';
   if (href === '/competitions') {
     return currentPath.startsWith('/competitions') || currentPath.startsWith('/bracket');
   }
@@ -53,7 +52,7 @@ export function Header({ activeHref }: { activeHref?: string }) {
     <header className="sticky top-0 z-30 border-b border-white/10 bg-gradient-to-r from-[#052163] via-[#0a5dd1] to-[#03205c] shadow-[0_10px_32px_rgba(0,44,120,0.18)]">
       <div className="mx-auto flex h-16 max-w-[1440px] items-center justify-between gap-3 px-3 sm:h-[72px] sm:gap-4 sm:px-6 lg:gap-6 lg:px-8">
         <Link
-          href="/"
+          href="/home"
           className="flex min-w-0 shrink items-center gap-2 sm:w-[250px] sm:shrink-0 sm:gap-3"
           onClick={closeMenu}
         >

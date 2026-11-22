@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from 'react';
 import { SecondStageBracket, type SecondStageData } from './SecondStageBracket';
 import { finalStage, orderFinalPair, roundTitle } from '@/lib/match-display';
+import { compactGroupRankLabel } from '@/lib/second-stage-ranking';
 
 // ─────────────────────────────────────────────────────────────────────
 // Types — kept compatible with previous callers
@@ -351,11 +352,11 @@ export function KnockoutBracket({
       ? {
           id: `${data.id}-skeleton`,
           title: `${data.groupLabel ?? '第二阶段'}对阵（出线前预排）`,
-          subtitle: '签位为「X组第N名」，小组赛出线后自动替换为真实选手',
+          subtitle: '小组赛出线后，签位自动显示对应选手',
           participants: data.knockoutSkeleton.participants.map((p) => ({
             id: p.id,
             position: p.position,
-            name: p.name,
+            name: compactGroupRankLabel(p.name),
             isBye: p.isBye,
           })),
           matches: data.knockoutSkeleton.matches

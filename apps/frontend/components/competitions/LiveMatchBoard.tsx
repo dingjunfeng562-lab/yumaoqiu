@@ -18,13 +18,12 @@ import {
 } from '@/lib/match-display';
 import { matchesSearch } from '@/lib/search-text';
 import { useLiveBrackets } from '@/lib/use-live-brackets';
+import { useLiveTeamBoard } from '@/lib/use-live-team-board';
+import { teamRoundText, type TeamBoardCompetition, type TeamBoardTeam } from '@/lib/team-board';
 import { HighlightText, SearchBox, replaceSearchParam } from './SearchBox';
 import { formatClock, formatMonthDayTime } from './types';
 
-// 赛事比分直播：把该赛事所有单打/双打项目的场次按场地、时间排成一列，
-// 可按运动员姓名筛选。比分沿用对阵表的实时推送（useLiveBrackets），
-// 每得一分只就地更新那一场，不会让每个观众重新拉全部数据。
-// 团体赛不在公开对阵数据里，暂不显示。
+// 单项和团体子项使用同一场地队列，两种比赛的计分推送分别更新对应场次。
 
 type SocketState = 'connecting' | 'synced' | 'offline';
 type BoardStatus = 'LIVE' | 'PENDING' | 'COMPLETED';
@@ -60,6 +59,10 @@ type BoardMatch = {
   sets: { side1: number; side2: number };
   forfeitText: string | null;
   secondStage: boolean;
+  teamItem?: boolean;
+  teamScore?: string;
+  isSupplemental?: boolean;
+  timeZone?: string;
   /** 该场地按排定顺序的第几场 */
   courtSeq: number | null;
   /** 待开始：同一场地前面还有几场（正在打的 + 排在前面还没打的） */
@@ -250,7 +253,39 @@ function compareBoard(a: BoardMatch, b: BoardMatch) {
   return compareCourtOrder(a, b);
 }
 
-function buildBoard(brackets: KnockoutBracketData[]) {
+function teamSide(team: TeamBoardTeam | null, members: string[], winner: boolean): SideView {
+  return { name: team?.name ?? '待定', members, showMembers: members.length > 0,
+    affiliation: team?.affiliation || null, winner, placeholder: !team };
+}
+
+function teamMatchViews(competition: TeamBoardCompetition): BoardMatch[] {
+  return competition.encounters.flatMap(encounter => encounter.children.flatMap((child): BoardMatch[] => {
+    const status = normalizeStatus(child.status);
+    if (status === 'CANCELLED' || encounter.status === 'CANCELLED') return [];
+    const games = child.games.map(game => ({ side1: game.side1Score, side2: game.side2Score }));
+    const currentGameIndex = status === 'LIVE' ? child.games.findIndex(game => game.winnerSide == null) : -1;
+    const sets = { side1: 0, side2: 0 };
+    for (const game of child.games) {
+      if (game.winnerSide === 1) sets.side1 += 1;
+      if (game.winnerSide === 2) sets.side2 += 1;
+    }
+    return [{
+      key: child.id, teamItem: true, isSupplemental: child.isSupplemental, timeZone: competition.timeZone,
+      teamScore: encounter.status === 'PENDING' && status === 'PENDING' ? undefined : `${encounter.team1Wins}:${encounter.team2Wins}`,
+      eventLabel: `${competition.name} · ${child.label}`,
+      roundLabel: `${teamRoundText(encounter)} · 第${child.matchNo}项`, roundNo: encounter.roundNo, matchNo: child.matchNo,
+      status, paused: Boolean(child.matchPaused),
+      side1: teamSide(encounter.team1, child.side1Players, child.winnerSide === 1),
+      side2: teamSide(encounter.team2, child.side2Players, child.winnerSide === 2),
+      venue: child.venueName, scheduledAt: child.scheduledAt, startedAt: child.startedAt ?? null, finishedAt: child.finishedAt ?? null,
+      games, currentGameIndex, sets,
+      forfeitText: child.forfeitedSide == null ? null : child.forfeitedSide === 0 ? '双方弃权' : `第${child.forfeitedSide}方弃权`,
+      secondStage: false, courtSeq: null, ahead: null,
+    }];
+  }));
+}
+
+function buildBoard(brackets: KnockoutBracketData[], teamCompetitions: TeamBoardCompetition[]) {
   const matches = brackets.flatMap((bracket) => {
     const eventLabel = bracket.groupLabel || bracket.title;
     const findSide = participantLookup(bracket);
@@ -260,11 +295,12 @@ function buildBoard(brackets: KnockoutBracketData[]) {
     });
     return [...main, ...secondStageViews(bracket, eventLabel)];
   });
+  matches.push(...teamCompetitions.flatMap(teamMatchViews));
   assignCourtQueue(matches);
   // 待开始里同一项目的决赛和季军赛：同时开打（或都还没排时间）时对调，季军赛在前；按时间先后排开的照时间。
   return orderFinalPair(
     matches.sort(compareBoard),
-    (a, b) => a.bracketId === b.bracketId && a.status === 'PENDING' && b.status === 'PENDING',
+    (a, b) => !a.teamItem && !b.teamItem && a.bracketId === b.bracketId && a.status === 'PENDING' && b.status === 'PENDING',
   );
 }
 
@@ -294,11 +330,15 @@ const TABS: Array<{ key: Tab; label: string }> = [
 export function LiveMatchBoard({
   tournamentId,
   initialBrackets,
+  initialTeams,
   initialPlayer,
+  initialTab = 'ALL',
 }: {
   tournamentId: string;
   initialBrackets: KnockoutBracketData[];
+  initialTeams: TeamBoardCompetition[];
   initialPlayer: string;
+  initialTab?: Tab;
 }) {
   const [socketState, setSocketState] = useState<SocketState>('connecting');
   const { brackets } = useLiveBrackets(initialBrackets, {
@@ -307,13 +347,14 @@ export function LiveMatchBoard({
     onSocketState: setSocketState,
     onRefetchError: () => setSocketState('offline'),
   });
+  const teamCompetitions = useLiveTeamBoard(initialTeams, tournamentId);
   const [query, setQuery] = useState(initialPlayer);
-  const [tab, setTab] = useState<Tab>('ALL');
+  const [tab, setTab] = useState<Tab>(initialTab);
   const keyword = query.trim();
 
   const board = useMemo(
-    () => buildBoard(brackets.filter((bracket) => bracket.tournamentId === tournamentId)),
-    [brackets, tournamentId],
+    () => buildBoard(brackets.filter((bracket) => bracket.tournamentId === tournamentId), teamCompetitions),
+    [brackets, teamCompetitions, tournamentId],
   );
   const searched = useMemo(
     () => (keyword ? board.filter((match) => sideMatches(match.side1, keyword) || sideMatches(match.side2, keyword)) : board),
@@ -403,8 +444,8 @@ export function LiveMatchBoard({
               <SearchBox
                 value={query}
                 onChange={handleQuery}
-                label="按运动员姓名查找场次"
-                placeholder="输入运动员姓名查找相关场次信息…"
+                label="按选手姓名或队名查找场次"
+                placeholder="输入选手姓名或队名…"
               />
             </div>
             {keyword ? (
@@ -423,7 +464,7 @@ export function LiveMatchBoard({
       ) : keyword && !searched.length ? (
         <EmptyCard
           title={`没有找到「${keyword}」的场次`}
-          text="请输入报名时填写的运动员姓名，可只输入其中几个字。团体赛暂不支持按姓名查询。"
+          text="可按队名或已公布的出场选手姓名查找。"
         />
       ) : !visible.length ? (
         <EmptyCard title={`暂无${TABS.find((item) => item.key === tab)?.label}的比赛`} text="切换上方状态查看其他场次。" />
@@ -443,7 +484,7 @@ export function LiveMatchBoard({
 
       {board.length ? (
         <p className="px-1 pt-1 text-xs font-medium leading-5 text-slate-400">
-          场地顺序按后台排定的时间计算，实际以现场裁判安排为准。比分随裁判记分实时更新；团体赛暂未接入此页面。
+          场地顺序按赛程计算，比分随裁判记分实时更新。
         </p>
       ) : null}
     </div>
@@ -499,10 +540,10 @@ function MatchCard({ match, keyword, focusLabel }: { match: BoardMatch; keyword:
   const current = match.currentGameIndex >= 0 ? match.games[match.currentGameIndex] : null;
   const timeText =
     match.status === 'PENDING'
-      ? `预计：${formatMonthDayTime(match.scheduledAt) ?? '时间待定'}`
+      ? `预计：${formatMonthDayTime(match.scheduledAt, match.timeZone) ?? '时间待定'}`
       : live
-        ? `开始：${formatClock(match.startedAt) ?? '--:--'}`
-        : `结束：${formatMonthDayTime(match.finishedAt) ?? '--'}`;
+        ? `开始：${formatClock(match.startedAt, match.timeZone) ?? '--:--'}`
+        : `结束：${formatMonthDayTime(match.finishedAt, match.timeZone) ?? '--'}`;
 
   return (
     <article
@@ -518,11 +559,14 @@ function MatchCard({ match, keyword, focusLabel }: { match: BoardMatch; keyword:
           {match.eventLabel}
           <span className="text-blue-300"> - </span>
           {match.roundLabel}
+          {match.isSupplemental ? <span className="ml-1 text-xs text-slate-500">补打</span> : null}
         </h3>
         <StatusPill match={match} />
       </header>
 
       <QueueBanner match={match} />
+
+      {match.teamScore ? <p className="px-4 pt-2 text-center text-xs font-bold text-slate-600">团体总比分 {match.teamScore}</p> : null}
 
       <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 px-4 py-3.5">
         <SideBlock side={match.side1} keyword={keyword} align="left" />
@@ -590,7 +634,7 @@ function MatchCard({ match, keyword, focusLabel }: { match: BoardMatch; keyword:
             '待安排'
           )}
         </span>
-        {match.secondStage ? null : <span className="tabular-nums">{timeText}</span>}
+        {match.secondStage ? null : <span className="tabular-nums">{timeText}{match.timeZone ? '（当地）' : ''}</span>}
       </footer>
     </article>
   );

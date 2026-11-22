@@ -33,7 +33,7 @@ import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 
 type AuthedRequest = {
-  user: { id: string; username?: string | null; role: Role };
+  user: AuthActor & { username?: string | null };
 };
 
 const MAX_LOGO_SIZE = 5 * 1024 * 1024;
@@ -183,6 +183,7 @@ export class AdminPhotosController {
   }
 
   @Delete('tournaments/:id/photos')
+  @Roles(Role.ROOT)
   deleteTournamentPhotos(
     @Param('id') id: string,
     @Body() dto: DeleteTournamentPhotosDto,
